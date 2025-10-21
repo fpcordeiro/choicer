@@ -1,0 +1,28 @@
+*.o
+*.so
+*.dll
+.DS_Store
+.vscode/
+### R ###
+# History files
+.Rhistory
+.Rapp.history
+# Session Data files
+.RData
+.Ruserdata
+.RDataTmp
+# User-specific files
+.Ruserdata
+# Example code in package build process
+*-Ex.R
+# Output files from R CMD build
+/*.tar.gz
+# Output files from R CMD check
+/*.Rcheck/
+# RStudio files
+.Rproj.user/
+# Temporary files created by R markdown
+*.utf8.md
+*.knit.md
+# R Environment Variables
+.Renviron

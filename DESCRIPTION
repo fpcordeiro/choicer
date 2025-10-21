@@ -1,0 +1,18 @@
+Package: choicer
+Title: Discrete Choice Models for Economists by Economists
+Version: 0.0.1
+Authors@R: 
+    person("Fernando", "Cordeiro", , "fernandolpcordeiro@gmail.com", role = c("aut", "cre"))
+Description: `choicer` aims to offer a series of choice model implementations with a focus on economic applications.
+    Computationally intensive likelihood functions are implemented in C++ and are exported to be called by any solver.
+License: LGPL (>= 3)
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+LinkingTo: 
+    Rcpp,
+    RcppArmadillo
+Imports: 
+    data.table,
+    randtoolbox,
+    Rcpp
