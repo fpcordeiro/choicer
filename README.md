@@ -68,9 +68,9 @@ result <- nloptr::nloptr(
 
 ## Alternative packages
 There are multiple R packages that offer similar functionalities. You should definitely check them out:
-- [mlogit](https://cran.r-project.org/web/packages/mlogit/index.html)
-- [logitr](https://cran.r-project.org/web/packages/logitr/)
-- [apollo](https://cran.r-project.org/web/packages/apollo/index.html)
+- [mlogit](https://CRAN.R-project.org/package=mlogit)
+- [logitr](https://CRAN.R-project.org/package=logitr)
+- [apollo](https://CRAN.R-project.org/package=apollo)
 
 # Whishlist:
 
