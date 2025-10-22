@@ -404,7 +404,7 @@ get_mnl_result <- function(
   )
 
   # Write CSV
-  if (!is.null(file_name)) write.csv(res_df, file_name, row.names = FALSE)
+  if (!is.null(file_name)) utils::write.csv(res_df, file_name, row.names = FALSE)
 
   # rint a formatted table to screen
 

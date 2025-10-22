@@ -36,6 +36,10 @@ get_mxl_result(
 
 \item{weights}{Vector of weights for each choice situation}
 
+\item{eta_draws}{Array of shape K_x x S x N with standard normal draws for random coefficients}
+
+\item{rc_correlation}{Logical indicating whether a full covariance matrix was estimated for random coefficients}
+
 \item{use_asc}{Logical indicating whether ASCs were included in the model}
 
 \item{include_outside_option}{Logical indicating whether an outside option was included in the model}

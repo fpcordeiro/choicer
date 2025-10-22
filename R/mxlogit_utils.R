@@ -470,7 +470,7 @@ get_mxl_result <- function(
   )
 
   # Write CSV
-  if(!is.null(file_name)) write.csv(res_df, file_name, row.names = FALSE)
+  if(!is.null(file_name)) utils::write.csv(res_df, file_name, row.names = FALSE)
 
   # Print a formatted table to screen
 

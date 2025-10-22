@@ -1,10 +1,10 @@
 // [[Rcpp::depends(RcppArmadillo)]]
-#include "choicer.hpp"
+#include "choicer.h"
 
 //' Log-likelihood and gradient for multinomial logit model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
@@ -170,7 +170,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' Numerical Hessian of the log-likelihood via finite differences
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
@@ -247,7 +247,7 @@ arma::mat mnl_loglik_numeric_hessian(
 //' Prediction of choice probabilities and utilities based on fitted model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param use_asc whether to use alternative-specific constants
@@ -436,7 +436,7 @@ arma::vec mnl_predict_shares_internal(
 //' Prediction of market shares based on fitted model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param weights N x 1 vector with weights for each observation
@@ -447,7 +447,7 @@ arma::vec mnl_predict_shares_internal(
 // [[Rcpp::export]]
 arma::vec mnl_predict_shares(
     const arma::vec& theta,            // K + J - 1 or K + J vector with model parameters
-    const arma::mat& X,                // sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+    const arma::mat& X,                // sum(M) x K design matrix with covariates. M\[i] x K matrix for individual i
     const arma::uvec& alt_idx,         // sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
     const Rcpp::IntegerVector& M,      // N x 1 vector with number of alternatives for each individual
     const arma::vec& weights,          // N x 1 vector with weights for each observation
@@ -499,7 +499,7 @@ arma::vec mnl_predict_shares(
 //'
 //' @param delta J x 1 vector with initial guess for deltas (ASCs)
 //' @param target_shares J x 1 vector with target shares for each alternative
-//' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+//' @param X sum(M) x K design matrix with covariates. M\[i] x K matrix for individual i
 //' @param beta K x 1 vector with model parameters
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param M N x 1 vector with number of alternatives for each individual
@@ -593,7 +593,7 @@ arma::vec blp_contraction(
 //' Hessian matrix for multinomial logit model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual

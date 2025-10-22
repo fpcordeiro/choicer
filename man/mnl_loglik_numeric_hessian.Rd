@@ -19,7 +19,7 @@ mnl_loglik_numeric_hessian(
 \arguments{
 \item{theta}{K + J - 1 or K + J vector with model parameters}
 
-\item{X}{sum(M) x K design matrix with covariates. Stacks M\link{i} x K matrices for individual i.}
+\item{X}{sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.}
 
 \item{alt_idx}{sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing}
 
@@ -32,6 +32,8 @@ mnl_loglik_numeric_hessian(
 \item{use_asc}{whether to use alternative-specific constants}
 
 \item{include_outside_option}{whether to include outside option normalized to 0 (if so, the outside option is not included in the data)}
+
+\item{eps}{finite difference step size}
 }
 \value{
 Hessian evaluated at input arguments

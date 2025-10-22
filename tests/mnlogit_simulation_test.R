@@ -107,8 +107,7 @@ logit_test <- mnl_loglik_gradient_parallel(
   include_outside_option = input_list$include_outside_option
 )
 
-time <- system.time({
-# Run the optimization
+# Run likelihood maximization
 result <- nloptr::nloptr(
   x0 = theta_init,
   eval_f = mnl_loglik_gradient_parallel,
@@ -121,10 +120,6 @@ result <- nloptr::nloptr(
   use_asc = TRUE,
   include_outside_option = input_list$include_outside_option
 )
-}
-)
-
-cat("Cpp run time", convertTime(time), "\n\n")
 
 # Extract the estimated parameters
 theta_est <- result$solution

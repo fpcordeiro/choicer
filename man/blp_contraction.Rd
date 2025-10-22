@@ -22,7 +22,7 @@ blp_contraction(
 
 \item{target_shares}{J x 1 vector with target shares for each alternative}
 
-\item{X}{sum(M) x K design matrix with covariates. M\link{i} x K matrix for individual i}
+\item{X}{sum(M) x K design matrix with covariates. M[i] x K matrix for individual i}
 
 \item{beta}{K x 1 vector with model parameters}
 

@@ -18,7 +18,7 @@ mnl_loglik_gradient_parallel(
 \arguments{
 \item{theta}{K + J - 1 or K + J vector with model parameters}
 
-\item{X}{sum(M) x K design matrix with covariates. Stacks M\link{i} x K matrices for individual i.}
+\item{X}{sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.}
 
 \item{alt_idx}{sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing}
 

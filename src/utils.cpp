@@ -1,4 +1,4 @@
-#include "choicer.hpp"
+#include "choicer.h"
 
 // Helper to safely get environment variables
 // Inspired by data.table

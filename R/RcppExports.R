@@ -4,7 +4,7 @@
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
@@ -20,13 +20,14 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 #' Numerical Hessian of the log-likelihood via finite differences
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @param eps finite difference step size
 #' @return Hessian evaluated at input arguments
 #' @export
 mnl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = TRUE, eps = 1e-6) {
@@ -36,7 +37,7 @@ mnl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, M, weights
 #' Prediction of choice probabilities and utilities based on fitted model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param use_asc whether to use alternative-specific constants
@@ -50,7 +51,7 @@ mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_op
 #' Prediction of market shares based on fitted model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
@@ -66,7 +67,7 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #'
 #' @param delta J x 1 vector with initial guess for deltas (ASCs)
 #' @param target_shares J x 1 vector with target shares for each alternative
-#' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+#' @param X sum(M) x K design matrix with covariates. M\[i] x K matrix for individual i
 #' @param beta K x 1 vector with model parameters
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param M N x 1 vector with number of alternatives for each individual
@@ -83,7 +84,7 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 #' Hessian matrix for multinomial logit model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
@@ -150,12 +151,12 @@ mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weig
     .Call(`_choicer_mxl_loglik_numeric_hessian`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option, eps)
 }
 
-#' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d[vech(Sigma)] / dTheta)
+#' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
 #'
 #' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 #' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 #' @param rc_correlation whether random coefficients are correlated
-#' @return Jacobian (d[vech(Sigma)] / dTheta)
+#' @return Jacobian (dVech(Sigma) / dTheta)
 #' @export
 jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
     .Call(`_choicer_jacobian_vech_Sigma`, L_params, K_w, rc_correlation)

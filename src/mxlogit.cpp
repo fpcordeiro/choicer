@@ -1,5 +1,5 @@
 // [[Rcpp::depends(RcppArmadillo)]]
-#include "choicer.hpp"
+#include "choicer.h"
 
 // Reconstruct lower-triangular choleski factor L from L_params
 // [[Rcpp::export]]
@@ -337,12 +337,12 @@ inline arma::vec vech(const arma::mat& M)
   return out;
 }
 
-//' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d[vech(Sigma)] / dTheta)
+//' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
 //'
 //' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
-//' @return Jacobian (d vech(Sigma) / dTheta)
+//' @return Jacobian (dVech(Sigma) / dTheta)
 //' @export
 // [[Rcpp::export]]
 arma::mat jacobian_vech_Sigma(
