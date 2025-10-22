@@ -306,6 +306,8 @@ vech <- function(M) M[lower.tri(M, diag = TRUE)]
 #' @param choice_idx Chosen alternative indices for each choice situation
 #' @param M Vector of number of alternatives per choice situation
 #' @param weights Vector of weights for each choice situation
+#' @param eta_draws Array of shape K_x x S x N with standard normal draws for random coefficients
+#' @param rc_correlation Logical indicating whether a full covariance matrix was estimated for random coefficients
 #' @param use_asc Logical indicating whether ASCs were included in the model
 #' @param include_outside_option Logical indicating whether an outside option was included in the model
 #' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table

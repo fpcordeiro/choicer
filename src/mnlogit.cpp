@@ -177,6 +177,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param eps finite difference step size
 //' @return Hessian evaluated at input arguments
 //' @export
 // [[Rcpp::export]]

@@ -1,9 +1,12 @@
 # Setup environment ------------------------------------------------------------
 rm(list = ls(all.names = TRUE))
+gc()
 
 library(data.table)
 library(nloptr)
-library(choicer)
+library(logitr)
+
+devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 1e+4              # Number of individuals
@@ -21,6 +24,12 @@ Sigma_true <- matrix(
     0.5, 1.0),
   nrow = 2
 )
+
+# Sigma_true <- matrix(
+#   c(1.0, 0.0,
+#     0.0, 1.0),
+#   nrow = K_w
+# )
 
 K_x <- length(beta_true)                # Number of variables with "fixed" coefficients
 K_w <- ncol(Sigma_true)                 # Number of random-coefficient variables
@@ -99,7 +108,39 @@ dt[, utility := delta + x1 * beta_true[1] + x2 * beta_true[2] + w1 * gamma1 + w2
 # Find choice
 dt[, choice := fifelse(seq_len(.N) == which.max(utility), 1L, 0L), by = id]
 
-# choicer estimation ----------------------------------------------------------
+# logitr -----------------------------------------------------------------------
+
+library(logitr)
+
+# Optimization settings
+nloptr_opts <- list(
+  "algorithm" = "NLOPT_LD_LBFGS",
+  "xtol_rel" = 1.0e-8,
+  "maxeval" = 1e+3,
+  "print_level" = 1L,
+  "check_derivatives" = TRUE,
+  "check_derivatives_print" = "none"
+)
+
+dt[, alt_factor := factor(alt)]
+
+halton_seq <- randtoolbox::halton(n = S, dim = J_global + K_x + K_w, normal = TRUE)
+
+logitr_test <- logitr(
+  data = dt,
+  outcome = "choice",
+  obsID = "id",
+  pars = c("x1","x2","w1","w2","alt_factor"),
+  randPars = c("w1" = "n", "w2" = "n"),
+  correlation = TRUE,
+  numDraws = S,
+  standardDraws = halton_seq,
+  options = nloptr_opts
+)
+
+logitr_test |> summary() |> print()
+
+# choicer Version --------------------------------------------------------------
 
 # Generate eta_draws with dimensions K_w x S x N
 eta_draws <- get_halton_normals(S, N, K_w)

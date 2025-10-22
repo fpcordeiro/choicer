@@ -325,7 +325,7 @@ arma::mat mxl_loglik_numeric_hessian(
   return Hess;
 }
 
-// vech(): lower‑triangular vectorisation (including the diagonal)
+// vech(): lower-triangular vectorisation (including the diagonal)
 inline arma::vec vech(const arma::mat& M)
 {
   arma::uword K = M.n_rows;
@@ -342,7 +342,7 @@ inline arma::vec vech(const arma::mat& M)
 //' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
-//' @return Jacobian (d[vech(Sigma)] / dTheta)
+//' @return Jacobian (d vech(Sigma) / dTheta)
 //' @export
 // [[Rcpp::export]]
 arma::mat jacobian_vech_Sigma(

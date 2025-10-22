@@ -1,9 +1,18 @@
 # Setup environment ------------------------------------------------------------
 rm(list = ls(all.names = TRUE))
+gc()
 
 library(data.table)
 library(nloptr)
-library(choicer)
+library(logitr)
+
+# devtools::unload()
+# devtools::clean_dll()
+# Rcpp::compileAttributes()
+# devtools::document()
+# devtools::load_all(recompile = TRUE)
+
+devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 1e+4                 # Number of choice situations
@@ -67,7 +76,35 @@ dt[, utility := delta + x1 * beta_true[1] + x2 * beta_true[2] + epsilon]
 # Find choice
 dt[, choice_id:= fifelse(seq_len(.N) == which.max(utility), 1L, 0L), by = id]
 
-# choicer estimation ----------------------------------------------------------
+# logitr -----------------------------------------------------------------------
+
+dt[, alt_factor := factor(alt)]
+
+cat("Starting logitr.\n\n")
+
+# Optimization settings
+nloptr_opts <- list(
+  "algorithm" = "NLOPT_LD_LBFGS",
+  "xtol_rel" = 1.0e-8,
+  "maxeval" = 1e+3,
+  "print_level" = 0L,
+  "check_derivatives" = TRUE,
+  "check_derivatives_print" = "none"
+)
+
+cat("Starting logtir version.\n\n")
+
+logitr_test <- logitr(
+  data = dt,
+  outcome = "choice_id",
+  obsID = "id",
+  pars = c("x1","x2","alt_factor"),
+  options = nloptr_opts
+)
+
+logitr_test |> summary() |> print()
+
+# choicer version --------------------------------------------------------------
 
 cat("Starting choicer.\n\n")
 
