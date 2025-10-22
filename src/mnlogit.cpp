@@ -4,7 +4,7 @@
 //' Log-likelihood and gradient for multinomial logit model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
@@ -15,14 +15,14 @@
 //' @export
 // [[Rcpp::export]]
 Rcpp::List mnl_loglik_gradient_parallel(
-    const arma::vec& theta,            // K + J - 1 or K + J vector with model parameters
-    const arma::mat& X,                // sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
-    const arma::uvec& alt_idx,         // sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-    const arma::uvec& choice_idx,      // N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
-    const Rcpp::IntegerVector& M,      // N x 1 vector with number of alternatives for each individual
-    const arma::vec& weights,          // N x 1 vector with weights for each observation
-    const bool use_asc = true,         // whether to use alternative-specific constants
-    const bool include_outside_option = false  // whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
 ) {
   // Extract beta and delta from theta
   const int N = M.size();
@@ -80,7 +80,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
       const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
 
-      // Build utility vector V_i ---------------------------------------------
+      // Build utility vector V_i
       arma::vec V_i = arma::zeros(num_choices);
       arma::vec inside_utils = X_i * beta;
 
@@ -170,7 +170,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' Numerical Hessian of the log-likelihood via finite differences
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
@@ -246,7 +246,7 @@ arma::mat mnl_loglik_numeric_hessian(
 //' Prediction of choice probabilities and utilities based on fitted model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param use_asc whether to use alternative-specific constants
@@ -432,6 +432,17 @@ arma::vec mnl_predict_shares_internal(
   return global_shares / denominator;
 }
 
+//' Prediction of market shares based on fitted model
+//'
+//' @param theta K + J - 1 or K + J vector with model parameters
+//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param use_asc whether to use alternative-specific constants
+//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @return vector with predicted market shares for each alternative
+//' @export
 // [[Rcpp::export]]
 arma::vec mnl_predict_shares(
     const arma::vec& theta,            // K + J - 1 or K + J vector with model parameters
@@ -576,4 +587,164 @@ arma::vec blp_contraction(
   } else {
       return delta_new;
   }
+}
+
+//' Hessian matrix for multinomial logit model
+//'
+//' @param theta K + J - 1 or K + J vector with model parameters
+//' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param use_asc whether to use alternative-specific constants
+//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @return Hessian matrix of the negative log-likelihood
+//' @export
+// [[Rcpp::export]]
+arma::mat mnl_loglik_hessian_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx, // Note: choice_idx is not needed for Hessian
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  (void)choice_idx; // silence unused-parameter warning
+
+  // Extract beta and delta from theta
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+
+  // Split theta into beta and delta (ASCs) as in your gradient function
+  arma::vec beta = theta.subvec(0, K - 1);
+  arma::vec delta;
+  int delta_length = 0;
+  
+  if (use_asc) {
+    delta_length = n_params - K;
+    if (delta_length <= 0) {
+      Rcpp::stop("Error: ASC parameters expected but not provided.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(K, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_length + 1);
+      delta.subvec(1, delta_length) = theta.subvec(K, n_params - 1);
+    }
+  } else {
+    delta_length = 0;
+    delta = arma::zeros(delta_length);
+  }
+
+  // alt_idx is 1-based indexing => shift to 0-based indexing
+  arma::uvec alt_idx0 = alt_idx - 1;
+  
+  // Compute prefix sums for indexing each individual's block in X / alt_idx
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+  
+  // Prepare global accumulator
+  arma::mat global_hess = arma::zeros(n_params, n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulator
+    arma::mat local_hess = arma::zeros(n_params, n_params);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i         = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx   = S[i];
+      const int end_idx     = start_idx + m_i - 1;
+      const double w_i      = weights[i];
+
+      // M[i] x K view of design rows for this individual (inside alts only)
+      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // inside alt IDs (0-based), length M[i]
+
+      // Build utility vector V_i
+      arma::vec V_i = arma::zeros(num_choices);
+      arma::vec inside_utils = X_i * beta;
+      
+      if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+
+      if (include_outside_option) {
+        V_i.subvec(1, num_choices - 1) = inside_utils;
+      } else {
+        V_i = inside_utils;
+      }
+      
+      // Calculate Probabilities ---------------------------------------------
+      V_i -= V_i.max(); // for numerical stability
+      double log_denom = std::log(arma::sum(arma::exp(V_i)));
+      arma::vec P_i = arma::exp(V_i - log_denom);
+      
+      // Calculate Hessian components for individual i -----------------------
+      arma::vec sum_P_Z    = arma::zeros(n_params);
+      arma::mat sum_P_Z_Zt = arma::zeros(n_params, n_params);
+      arma::vec Z_a        = arma::zeros(n_params);
+
+      for (int a = 0; a < num_choices; ++a) {
+        const double P_ia  = P_i[a];
+        
+        // Reset Z_a to zero
+        Z_a.zeros(); 
+        
+        // Construct Z_a (covariate vector for alternative a)
+        if (include_outside_option) {
+            if (a > 0) { // skip outside option (a=0)
+                // beta part
+                Z_a.subvec(0, K - 1) = X_i.row(a - 1).t();
+                // delta part
+                if (use_asc) {
+                    const int a_id = alt_idx0_i[a - 1]; // 0 ... J-1
+                    Z_a[K + a_id] = 1.0;
+                }
+            }
+            // if a == 0, Z_a remains all zeros
+        } else {
+            // beta part
+            Z_a.subvec(0, K - 1) = X_i.row(a).t();
+            // delta part
+            if (use_asc) {
+                const int a_id = alt_idx0_i[a]; // 0 ... J-1
+                if (a_id > 0) { // delta_0 is normalized to 0
+                    Z_a[K + (a_id - 1)] = 1.0;
+                }
+            }
+        }
+        
+        // Accumulate H_i components
+        sum_P_Z    += P_ia * Z_a;
+        sum_P_Z_Zt += P_ia * (Z_a * Z_a.t()); // outer product
+      } // end of alt loop
+
+      // Compute H_i and add to local accumulator
+      // H_i = sum_P_Z_Zt - (sum_P_Z * sum_P_Z.t())
+      local_hess += w_i * ( (sum_P_Z * sum_P_Z.t()) - sum_P_Z_Zt );
+
+    } // end of i loop
+
+    // Combine partial accumulators into global accumulator
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_hess += local_hess;
+    }
+  } // end parallel region
+
+  // Enforce exact symmetry (numerical tidy-up)
+  global_hess = 0.5 * (global_hess + global_hess.t());
+
+  // Return Hessian of the *negative* log-likelihood
+  return -global_hess;
 }

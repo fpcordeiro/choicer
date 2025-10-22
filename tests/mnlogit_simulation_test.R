@@ -6,11 +6,17 @@ library(data.table)
 library(nloptr)
 library(logitr)
 
+# devtools::unload()
+# devtools::clean_dll()
+# Rcpp::compileAttributes()
+# devtools::document()
+# devtools::load_all(recompile = TRUE)
+
 devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 3e+4                 # Number of choice situations
-J_global <- 10            # Number of total alternatives (excluding outside good)
+J_global <- 100            # Number of total alternatives (excluding outside good)
 
 # For reproducibility
 set.seed(123)
@@ -98,7 +104,7 @@ logitr_test <- logitr(
 
 logitr_test |> summary() |> print()
 
-# Cpp Version ------------------------------------------------------------------
+# choicer version --------------------------------------------------------------
 
 cat("Starting choicer.\n\n")
 
@@ -191,7 +197,7 @@ get_mnl_result(
   eps = 1e-8
 )
 
-# Post-Estimation -------------------------------------------------------------
+# Post-Estimation --------------------------------------------------------------
 
 # Predict individual-level choice probabilities
 model_individual_predict <- mnl_predict(

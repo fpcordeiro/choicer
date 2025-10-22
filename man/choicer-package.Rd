@@ -6,7 +6,7 @@
 \alias{choicer-package}
 \title{choicer: A package for discrete choice models.}
 \description{
-`choicer` offers a series of choice model implementations.
+`choicer` aims to offer a series of choice model implementations with a focus on economic applications. Computationally intensive likelihood functions are implemented in C++ and are exported to be called by any solver.
 }
 \author{
 \strong{Maintainer}: Fernando Cordeiro \email{fernandolpcordeiro@gmail.com}

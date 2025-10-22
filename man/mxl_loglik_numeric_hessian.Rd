@@ -41,6 +41,8 @@ mxl_loglik_numeric_hessian(
 \item{use_asc}{whether to use alternative-specific constants}
 
 \item{include_outside_option}{whether to include outside option normalized to 0 (if so, the outside option is not included in the data)}
+
+\item{eps}{numerical tolerance}
 }
 \value{
 List with loglikelihood and gradient evaluated at input arguments

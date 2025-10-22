@@ -282,7 +282,7 @@ get_mnl_result <- function(
   p_len <- length(est_theta)
 
   # Compute Hessian at est_theta
-  hess <- mnl_loglik_numeric_hessian(
+  hess <- mnl_loglik_hessian_parallel(
     theta = est_theta,
     X = X,
     alt_idx = alt_idx,
@@ -290,8 +290,7 @@ get_mnl_result <- function(
     M = M,
     weights = weights,
     use_asc = use_asc,
-    include_outside_option = include_outside_option,
-    eps = eps
+    include_outside_option = include_outside_option
   )
 
   # Try to invert Hessian for standard errors

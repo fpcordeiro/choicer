@@ -4,7 +4,7 @@
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
@@ -20,7 +20,7 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 #' Numerical Hessian of the log-likelihood via finite differences
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
@@ -36,7 +36,7 @@ mnl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, M, weights
 #' Prediction of choice probabilities and utilities based on fitted model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. M[i] x K matrix for individual i
+#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param use_asc whether to use alternative-specific constants
@@ -47,6 +47,17 @@ mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_op
     .Call(`_choicer_mnl_predict`, theta, X, alt_idx, M, use_asc, include_outside_option)
 }
 
+#' Prediction of market shares based on fitted model
+#'
+#' @param theta K + J - 1 or K + J vector with model parameters
+#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param use_asc whether to use alternative-specific constants
+#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @return vector with predicted market shares for each alternative
+#' @export
 mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_predict_shares`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
 }
@@ -67,6 +78,22 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #' @export
 blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L) {
     .Call(`_choicer_blp_contraction`, delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, tol, max_iter)
+}
+
+#' Hessian matrix for multinomial logit model
+#'
+#' @param theta K + J - 1 or K + J vector with model parameters
+#' @param X sum(M) x K design matrix with covariates. Stacks M[i] x K matrices for individual i.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+#' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param use_asc whether to use alternative-specific constants
+#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @return Hessian matrix of the negative log-likelihood
+#' @export
+mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mnl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
 
 build_L_mat <- function(L_params, K_w, rc_correlation) {
@@ -116,6 +143,7 @@ mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, we
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @param eps numerical tolerance
 #' @return List with loglikelihood and gradient evaluated at input arguments
 #' @export
 mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation = TRUE, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
