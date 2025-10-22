@@ -15,8 +15,8 @@ library(logitr)
 devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
-N <- 3e+4                 # Number of choice situations
-J_global <- 100            # Number of total alternatives (excluding outside good)
+N <- 1e+4                 # Number of choice situations
+J_global <- 10            # Number of total alternatives (excluding outside good)
 
 # For reproducibility
 set.seed(123)

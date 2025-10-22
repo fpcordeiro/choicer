@@ -10,7 +10,7 @@ devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 1e+4              # Number of individuals
-J_global <- 2          # Number of total alternatives (excluding outside good)
+J_global <- 4          # Number of total alternatives (excluding outside good)
 S <- 50 * ceiling((1.5 * sqrt(N)) / 50)     # Number of simulation draws per individual; S > sqrt(N) for consistency
 
 # Define seed for reproducibility
@@ -140,7 +140,7 @@ logitr_test <- logitr(
 
 logitr_test |> summary() |> print()
 
-# Cpp Version ------------------------------------------------------------------
+# choicer Version --------------------------------------------------------------
 
 # Generate eta_draws with dimensions K_w x S x N
 eta_draws <- get_halton_normals(S, N, K_w)
@@ -218,7 +218,7 @@ cat("Estimated Sigma:\n")
 print(Sigma_est)
 
 # Print true and estimated delta
-cat("True delta:", delta_true, "\n")
+cat("\nTrue delta:", delta_true, "\n")
 cat("Estimated delta:", delta_est, "\n\n")
 
 # Get result table

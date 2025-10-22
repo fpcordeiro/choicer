@@ -6,7 +6,7 @@
 \alias{choicer-package}
 \title{choicer: A package for discrete choice models.}
 \description{
-`choicer` aims to offer a series of choice model implementations with a focus on economic applications. Computationally intensive likelihood functions are implemented in C++ and are exported to be called by any solver.
+Tools for estimating discrete-choice models used in applied economics. Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr). The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL) and mixed logit (MXL).
 }
 \author{
 \strong{Maintainer}: Fernando Cordeiro \email{fernandolpcordeiro@gmail.com}

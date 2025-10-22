@@ -114,13 +114,13 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' Log-likelihood and gradient for Mixed Logit
 #'
 #' @param theta vector collecting model parameters (beta, L, delta (ASCs))
-#' @param X design matrix for covariates with fixed coefficients; sum(M_i) × K_x
-#' @param W design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w
+#' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w × S × N 
+#' @param eta_draws Array with choice situation draws; K_w x S x N 
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
@@ -133,13 +133,13 @@ mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, we
 #' Numerical Hessian of the log-likelihood via finite differences for mixed logit
 #'
 #' @param theta vector collecting model parameters (beta, L, delta (ASCs))
-#' @param X design matrix for covariates with fixed coefficients; sum(M_i) × K_x
-#' @param W design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w
+#' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w × S × N 
+#' @param eta_draws Array with choice situation draws; K_w x S x N 
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
@@ -150,12 +150,12 @@ mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weig
     .Call(`_choicer_mxl_loglik_numeric_hessian`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option, eps)
 }
 
-#' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d[vech(Σ)] / dθ)
+#' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d[vech(Sigma)] / dTheta)
 #'
 #' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 #' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 #' @param rc_correlation whether random coefficients are correlated
-#' @return Jacobian (d[vech(Σ)] / dθ)
+#' @return Jacobian (d[vech(Sigma)] / dTheta)
 #' @export
 jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
     .Call(`_choicer_jacobian_vech_Sigma`, L_params, K_w, rc_correlation)
@@ -164,13 +164,13 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' Analytical Hessian of the log-likelihood
 #'
 #' @param theta vector collecting model parameters (beta, L, delta (ASCs))
-#' @param X design matrix for covariates with fixed coefficients; sum(M_i) × K_x
-#' @param W design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w
+#' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w × S × N 
+#' @param eta_draws Array with choice situation draws; K_w x S x N 
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)

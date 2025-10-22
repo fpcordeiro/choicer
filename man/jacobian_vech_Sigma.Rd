@@ -2,7 +2,7 @@
 % Please edit documentation in R/RcppExports.R
 \name{jacobian_vech_Sigma}
 \alias{jacobian_vech_Sigma}
-\title{Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d\link{vech(Σ)} / dθ)}
+\title{Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d\link{vech(Sigma)} / dTheta)}
 \usage{
 jacobian_vech_Sigma(L_params, K_w, rc_correlation = TRUE)
 }
@@ -14,8 +14,8 @@ jacobian_vech_Sigma(L_params, K_w, rc_correlation = TRUE)
 \item{rc_correlation}{whether random coefficients are correlated}
 }
 \value{
-Jacobian (d\link{vech(Σ)} / dθ)
+Jacobian (d\link{vech(Sigma)} / dTheta)
 }
 \description{
-Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d\link{vech(Σ)} / dθ)
+Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d\link{vech(Sigma)} / dTheta)
 }

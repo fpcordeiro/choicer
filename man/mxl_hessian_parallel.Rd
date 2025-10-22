@@ -21,9 +21,9 @@ mxl_hessian_parallel(
 \arguments{
 \item{theta}{vector collecting model parameters (beta, L, delta (ASCs))}
 
-\item{X}{design matrix for covariates with fixed coefficients; sum(M_i) × K_x}
+\item{X}{design matrix for covariates with fixed coefficients; sum(M_i) x K_x}
 
-\item{W}{design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w}
+\item{W}{design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w}
 
 \item{alt_idx}{sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing}
 
@@ -33,7 +33,7 @@ mxl_hessian_parallel(
 
 \item{weights}{N x 1 vector with weights for each observation}
 
-\item{eta_draws}{Array with choice situation draws; K_w × S × N}
+\item{eta_draws}{Array with choice situation draws; K_w x S x N}
 
 \item{rc_correlation}{whether random coefficients should be correlated}
 

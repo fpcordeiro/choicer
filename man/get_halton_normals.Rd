@@ -14,7 +14,7 @@ get_halton_normals(S, N, K_x)
 \item{K_x}{dimension of random coefficients}
 }
 \value{
-K_x × S × N array with halton standard normal draws
+K_x x S x N array with halton standard normal draws
 }
 \description{
 Create halton normal draws in appropriate format for mixed logit estimation

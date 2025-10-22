@@ -15,6 +15,23 @@ prepare_mnl_data(
   include_outside_option = FALSE
 )
 }
+\arguments{
+\item{data}{Data frame containing choice data}
+
+\item{id_col}{Name of the column identifying choice situations (individuals)}
+
+\item{alt_col}{Name of the column identifying alternatives}
+
+\item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)}
+
+\item{covariate_cols}{Vector of names of columns to be used as covariates}
+
+\item{weights}{Optional vector of weights for each choice situation. If NULL, equal weights are used.}
+
+\item{outside_opt_label}{Label for the outside option (if any). If NULL, no outside option is assumed.}
+
+\item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
+}
 \description{
 Prepares and validates inputs for mixed logit estimation routine.
 }
