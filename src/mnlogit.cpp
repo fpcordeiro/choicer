@@ -138,13 +138,13 @@ Rcpp::List mnl_loglik_gradient_parallel(
         // delta gradient (if any)
         if (use_asc) {
             if (include_outside_option) {
-                if (a > 0) {                                    // only inside alt’s
+                if (a > 0) {                                    // only inside alt's
                     const int a_id = alt_idx0_i[a - 1];
                     local_grad[K + a_id] += val;
                 }
             } else {
-                const int a_id = alt_idx0_i[a];                  // 1 … J
-                if (a_id > 0) local_grad[K + (a_id - 1)] += val; // δ1 is normalised 0
+                const int a_id = alt_idx0_i[a];                  // 1 ... J
+                if (a_id > 0) local_grad[K + (a_id - 1)] += val; // delta_1 is normalised 0
             }
         }
       } // end of alt loop

@@ -6,18 +6,18 @@
 arma::mat build_L_mat(const arma::vec& L_params, const int K_w, const bool rc_correlation) {
   arma::mat L = arma::zeros(K_w, K_w);
   int idx = 0;
-  if (rc_correlation) {                   // full (lower‑triangular) factor
+  if (rc_correlation) {                   // full (lower-triangular) factor
     for (int i = 0; i < K_w; ++i) {
       for (int j = 0; j <= i; ++j, ++idx) {
         double val = L_params(idx);
-        if (i == j) {                     // diagonal → exp()
+        if (i == j) {                     // diagonal - exp()
           L(i, j) = std::exp(val);
         } else {
-          L(i, j) = val;                 // off‑diagonal stays unconstrained
+          L(i, j) = val;                 // off-diagonal stays unconstrained
         }
       }
     }
-  } else {                                // diagonal‑only (Σ is diagonal)
+  } else {                                // diagonal-only (Sigma is diagonal)
     for (int k = 0; k < K_w; ++k) {
       L(k, k) = std::exp(L_params(k));
     }
@@ -42,13 +42,13 @@ arma::mat build_var_mat(const arma::vec& L_params, const int K_w, const bool rc_
 //' Log-likelihood and gradient for Mixed Logit
 //'
 //' @param theta vector collecting model parameters (beta, L, delta (ASCs))
-//' @param X design matrix for covariates with fixed coefficients; sum(M_i) × K_x
-//' @param W design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w
+//' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param weights N x 1 vector with weights for each observation
-//' @param eta_draws Array with choice situation draws; K_w × S × N 
+//' @param eta_draws Array with choice situation draws; K_w x S x N 
 //' @param rc_correlation whether random coefficients should be correlated
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
@@ -81,7 +81,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
 
   // L: choleski decomposition of random coefficients matrix
   arma::vec L_params = theta.subvec(K_x, K_x + L_size - 1);
-  arma::mat L        = build_L_mat(L_params, K_w, rc_correlation);   // K_w × K_w
+  arma::mat L        = build_L_mat(L_params, K_w, rc_correlation);   // K_w x K_w
 
   // delta (ASC)
   arma::vec delta;
@@ -94,7 +94,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
       // all inside alternatives are free
       delta = theta.subvec(K_x + L_size, n_params - 1);
     } else {
-      // first delta is fixed to 0 ⇒ it's not in θ
+      // first delta is fixed to 0 -> it's not in theta
       delta = arma::zeros(delta_free_len + 1);
       delta.subvec(1, delta_free_len) = theta.subvec(K_x + L_size, n_params - 1);
     }
@@ -129,11 +129,11 @@ Rcpp::List mxl_loglik_gradient_parallel(
         const int start_idx         = S_prefix[i];
         const int end_idx           = start_idx + m_i - 1;
         const double w_i            = weights[i];
-        const auto X_i              = X.rows(start_idx, end_idx);         // m_i × K_x
+        const auto X_i              = X.rows(start_idx, end_idx);         // m_i x K_x
         const auto alt_idx0_i       = alt_idx0.subvec(start_idx, end_idx);
         arma::mat W_i;
         if (W.n_rows == X.n_rows)                           // row-aligned with X
-          W_i = W.rows(start_idx, end_idx);                 // m_i × K_w
+          W_i = W.rows(start_idx, end_idx);                 // m_i x K_w
         else                                                // global alt-level W
           W_i = W.rows(alt_idx0_i);
 
@@ -145,7 +145,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
         
         //  Per-draw accumulators
         double    log_P_avg = -std::numeric_limits<double>::infinity();
-        arma::vec grad_num  = arma::zeros(n_params);           // Σ_s P_s * g_s
+        arma::vec grad_num  = arma::zeros(n_params);           // Sigma_s P_s * g_s
 
         // Loop over simulations
         for (int s = 0; s < Sdraw; ++s) {
@@ -176,12 +176,12 @@ Rcpp::List mxl_loglik_gradient_parallel(
             log_P_avg = logSumExp( arma::vec({log_P_avg, log_P}) );
           }
           
-          // Gradient g_s = ∂ log P_choice / ∂ θ ------------------------------
+          // Gradient g_s = d(log P_choice) / d(theta) ------------------------------
           arma::vec g_s(n_params, arma::fill::zeros);
 
           for (int a = 0; a < num_choices; ++a) {
             const double diff = (a == chosen_alt ? 1.0 : 0.0) - P_s[a];
-            // β
+            // beta
             if (include_outside_option) {
               if (a > 0)
                 g_s.subvec(0, K_x - 1) += diff * X_i.row(a - 1).t();
@@ -205,7 +205,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
             int lp_idx = 0;
             for (int p = 0; p < K_w; ++p) {
               for (int q = 0; q <= p; ++q, ++lp_idx) {
-                double dLpq_dparam = (p == q ? L(p,p) : 1.0);   // ∂L/∂θ_diagonal=exp(val)
+                double dLpq_dparam = (p == q ? L(p,p) : 1.0);   // dL/dtheta_diagonal=exp(val)
                 double dgamma_p = dLpq_dparam * eta_i_s(q);
                 double w_ap = 0.0;
                 if (include_outside_option) {
@@ -217,7 +217,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
               }
             }
           } // end alt loop
-          // accumulate numerator     Σ_s P_s * g_s
+          // accumulate numerator     Sigma_s P_s * g_s
           grad_num += P_choice * g_s;
         } // end S loop
         // Compute gradient contribution for individual i
@@ -248,13 +248,13 @@ Rcpp::List mxl_loglik_gradient_parallel(
 //' Numerical Hessian of the log-likelihood via finite differences for mixed logit
 //'
 //' @param theta vector collecting model parameters (beta, L, delta (ASCs))
-//' @param X design matrix for covariates with fixed coefficients; sum(M_i) × K_x
-//' @param W design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w
+//' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param weights N x 1 vector with weights for each observation
-//' @param eta_draws Array with choice situation draws; K_w × S × N 
+//' @param eta_draws Array with choice situation draws; K_w x S x N 
 //' @param rc_correlation whether random coefficients should be correlated
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
@@ -337,12 +337,12 @@ inline arma::vec vech(const arma::mat& M)
   return out;
 }
 
-//' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d[vech(Σ)] / dθ)
+//' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (d[vech(Sigma)] / dTheta)
 //'
 //' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
-//' @return Jacobian (d[vech(Σ)] / dθ)
+//' @return Jacobian (d[vech(Sigma)] / dTheta)
 //' @export
 // [[Rcpp::export]]
 arma::mat jacobian_vech_Sigma(
@@ -357,7 +357,7 @@ arma::mat jacobian_vech_Sigma(
   arma::mat J(L_size, L_size, arma::fill::zeros);
 
   // loop over parameters
-  arma::mat E(K_w, K_w, arma::fill::zeros);   // holds dL / dθ_m
+  arma::mat E(K_w, K_w, arma::fill::zeros);   // holds dL / dtheta_m
   std::size_t idx_param = 0;
 
   if (rc_correlation) {
@@ -367,7 +367,7 @@ arma::mat jacobian_vech_Sigma(
         E.zeros();
         if (i == j) {                      // diagonal: L_ii = exp(z_i)
           E(i, j) = L(i, i);               // dL_ii / dz_i = exp(z_i)
-        } else {                           // off‑diagonal parameter
+        } else {                           // off-diagonal parameter
           E(i, j) = 1.0;
         }
         arma::mat dSigma = E * L.t() + L * E.t();   // product rule
@@ -376,11 +376,11 @@ arma::mat jacobian_vech_Sigma(
     }
 
   } else {
-    // diagonal Σ only (no correlations)
-    // Jacobian of Σ wrt L_params  (diagonal-only case)
+    // diagonal Sigma only (no correlations)
+    // Jacobian of Sigma wrt L_params  (diagonal-only case)
     for (int k = 0; k < K_w; ++k) {
-        // Σ_kk = L_kk^2  ,  L_kk = exp(z_k)
-        // dΣ_kk/dz_k = 2 * exp(2 z_k) = 2 * L_kk^2
+        // Sigma_kk = L_kk^2  ,  L_kk = exp(z_k)
+        // dSigma_kk/dz_k = 2 * exp(2 z_k) = 2 * L_kk^2
         double deriv = 2.0 * L(k,k) * L(k,k);
         J(k, k) = deriv;
     }
@@ -391,13 +391,13 @@ arma::mat jacobian_vech_Sigma(
 //' Analytical Hessian of the log-likelihood
 //'
 //' @param theta vector collecting model parameters (beta, L, delta (ASCs))
-//' @param X design matrix for covariates with fixed coefficients; sum(M_i) × K_x
-//' @param W design matrix for covariates with random coefficients; sum(M_i) × K_w or J x K_w
+//' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param weights N x 1 vector with weights for each observation
-//' @param eta_draws Array with choice situation draws; K_w × S × N 
+//' @param eta_draws Array with choice situation draws; K_w x S x N 
 //' @param rc_correlation whether random coefficients should be correlated
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)

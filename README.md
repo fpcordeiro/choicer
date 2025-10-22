@@ -14,7 +14,11 @@
 You can install the development version of `choicer` with:
 
 ``` r
+# Using `remotes`
 remotes::install_github("fpcordeiro/choicer")
+
+# Or using `pak`
+pak::pkg_install("fpcordeiro/choicer")
 ```
 
 ## Example
@@ -67,3 +71,12 @@ There are multiple R packages that offer similar functionalities. You should def
 - [mlogit](https://cran.r-project.org/web/packages/mlogit/index.html)
 - [logitr](https://cran.r-project.org/web/packages/logitr/)
 - [apollo](https://cran.r-project.org/web/packages/apollo/index.html)
+
+# Whishlist:
+
+* summary, predict
+* Robust standard errors
+* Nested Logit and Generalized Extreme-Value models
+* BLP contraction mapping
+  - Allow to be used within mixed logit
+* Goodness of fit stats

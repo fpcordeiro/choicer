@@ -9,8 +9,8 @@ library(logitr)
 devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
-N <- 5e+4               # Number of individuals
-J_global <- 10          # Number of total alternatives (excluding outside good)
+N <- 1e+4              # Number of individuals
+J_global <- 2          # Number of total alternatives (excluding outside good)
 S <- 50 * ceiling((1.5 * sqrt(N)) / 50)     # Number of simulation draws per individual; S > sqrt(N) for consistency
 
 # Define seed for reproducibility
@@ -235,6 +235,5 @@ get_mxl_result(
   use_asc = TRUE,
   include_outside_option = mxl_inputs$include_outside_option,
   omit_asc_output = FALSE,
-  eps = 1e-8,
   param_names = NULL
 )

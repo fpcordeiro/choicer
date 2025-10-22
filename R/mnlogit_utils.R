@@ -2,7 +2,19 @@
 #' Runs multinomial logit estimation
 #'
 #' Runs data preparation and validation, likelihood maximization, and result summary
-#'
+#' 
+#' @param data Data frame containing choice data
+#' @param id_col Name of the column identifying choice situations (individuals)
+#' @param alt_col Name of the column identifying alternatives
+#' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)
+#' @param covariate_cols Vector of names of columns to be used as covariates
+#' @param nloptr_opts List of options to pass to `nloptr::nloptr()`. If NULL, default options are used.
+#' @param weights Optional vector of weights for each choice situation. If NULL, equal weights are used.
+#' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
+#' @param include_outside_option Logical indicating whether to include an outside option in the model.
+#' @param use_asc Logical indicating whether to include alternative-specific constants (ASCs) in the model.
+#' @param path_output Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.
+#' @importFrom nloptr nloptr
 #' @export
 run_mnlogit <- function(
     data,
@@ -74,7 +86,6 @@ run_mnlogit <- function(
     use_asc = use_asc,
     include_outside_option = input_list$include_outside_option,
     param_names = param_names,
-    eps = 1e-8,
     file_name = path_output
   )
 
@@ -87,6 +98,14 @@ run_mnlogit <- function(
 #'
 #' Prepares and validates inputs for mixed logit estimation routine.
 #'
+#' @param data Data frame containing choice data
+#' @param id_col Name of the column identifying choice situations (individuals)
+#' @param alt_col Name of the column identifying alternatives
+#' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)
+#' @param covariate_cols Vector of names of columns to be used as covariates
+#' @param weights Optional vector of weights for each choice situation. If NULL, equal weights are used.
+#' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
+#' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @export
 prepare_mnl_data <- function(
     data,
@@ -167,21 +186,21 @@ prepare_mnl_data <- function(
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
-  X <- as.matrix(dt[, ..covariate_cols])                        # sum(M) × K
+  X <- as.matrix(dt[, ..covariate_cols])                        # sum(M) x K
   dt[, (covariate_cols) := NULL]
   X <- check_collinearity(X)
 
   ## alternative ids used for delta coefficients
   alt_idx <- as.integer(dt$alt_int)                             # length == sum(M)
 
-  ## M[i] – # alternatives per choice situation
+  ## M[i] - # alternatives per choice situation
   M <- dt[, .N, by = id_col][["N"]]                             # length N
 
-  ## N – number of individuals / choice situations
+  ## N - number of individuals / choice situations
   ids <- dt[, get(id_col)][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
   N   <- length(ids)
 
-  ## choice_idx[i] – 1-based index *within* the choice set data
+  ## choice_idx[i] - 1-based index *within* the choice set data
   ## 0 == outside option (only if chosen = 0 for all inside options & include_outside_option == TRUE)
   if (include_outside_option) {
     # start with all-zero (everyone assumed to pick the outside good)
@@ -263,6 +282,18 @@ convertTime <- function(time) {
 #'
 #' Prints and saves coefficient summary table for multinomial logit model
 #'
+#' @param opt_result Result object from nloptr optimization containing at least 'solution' element
+#' @param X Design matrix used in estimation
+#' @param alt_idx Alternative indices for each observation  
+#' @param choice_idx Chosen alternative indices for each choice situation
+#' @param M Vector of number of alternatives per choice situation
+#' @param weights Vector of weights for each choice situation
+#' @param use_asc Logical indicating whether ASCs were included in the model
+#' @param include_outside_option Logical indicating whether an outside option was included in the model
+#' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table
+#' @param param_names Optional vector of parameter names. If NULL, default names are generated.
+#' @param file_name Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.
+#' @importFrom stats pnorm
 #' @export
 get_mnl_result <- function(
     opt_result,
@@ -270,7 +301,6 @@ get_mnl_result <- function(
     use_asc = TRUE,
     include_outside_option = TRUE,
     omit_asc_output = FALSE,
-    eps = 1e-6,
     param_names = NULL,
     file_name = NULL
 ) {

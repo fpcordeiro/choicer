@@ -193,8 +193,7 @@ get_mnl_result(
   use_asc = TRUE,
   include_outside_option = input_list$include_outside_option,
   param_names = param_names,
-  omit_asc_output = FALSE,
-  eps = 1e-8
+  omit_asc_output = FALSE
 )
 
 # Post-Estimation --------------------------------------------------------------
