@@ -2,6 +2,7 @@
 # choicer: fast discrete-choice models with a focus on economic applications
 
 <!-- badges: start -->
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 <!-- badges: end -->
 
 `choicer` provides implementations of discrete-choice models with a focus on economic applications. Computationally intensive likelihoods are written in C++ and exposed for use with generic optimizers. Special care is taken to handle high-dimensional alternative-specific constants efficiently. Currently supports multinomial logit (MNL) and mixed logit (MXL); more models will be added.
@@ -10,7 +11,7 @@
 
 ## Installation
 
-You can install the development version of choicer like so:
+You can install the development version of `choicer` with:
 
 ``` r
 remotes::install_github("fpcordeiro/choicer")
@@ -62,7 +63,7 @@ result <- nloptr::nloptr(
 ```
 
 ## Alternative packages
-There are multiple R packages that offer similar functionalities. `choicer` was inspired by all of these and you should definitely check them out:
+There are multiple R packages that offer similar functionalities. You should definitely check them out:
 - [mlogit](https://cran.r-project.org/web/packages/mlogit/index.html)
 - [logitr](https://cran.r-project.org/web/packages/logitr/)
 - [apollo](https://cran.r-project.org/web/packages/apollo/index.html)
