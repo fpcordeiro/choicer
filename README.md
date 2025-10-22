@@ -4,22 +4,57 @@
 <!-- badges: start -->
 <!-- badges: end -->
 
-The goal of choicer is to ...
+`choicer` provides implementations of discrete-choice models with a focus on economic applications. Computationally intensive likelihoods are written in C++ and exposed for use with generic optimizers. Special care is taken to handle high-dimensional alternative-specific constants efficiently. Currently supports multinomial logit (MNL) and mixed logit (MXL); more models will be added.
 
 ## Installation
 
 You can install the development version of choicer like so:
 
 ``` r
-# FILL THIS IN! HOW CAN PEOPLE INSTALL YOUR DEV PACKAGE?
+remotes::install_github("fpcordeiro/choicer")
 ```
 
 ## Example
 
-This is a basic example which shows you how to solve a common problem:
-
+View `tests/mnlogit_simulation_test.R` for details
 ``` r
 library(choicer)
-## basic example code
-```
 
+# Optimization settings
+nloptr_opts <- list(
+  "algorithm" = "NLOPT_LD_LBFGS",
+  "xtol_rel" = 1.0e-8,
+  "maxeval" = 1e+3,
+  "print_level" = 0L,
+  "check_derivatives" = TRUE,
+  "check_derivatives_print" = "none"
+)
+
+# Prepare and validate data
+input_list <- prepare_mnl_data(
+  data = dt,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice_id",
+  covariate_cols = c("x1", "x2"),
+  outside_opt_label = 0L,
+  include_outside_option = FALSE
+)
+
+# Initial parameter vector theta_init
+theta_init <- runif(J_global + K_x, -1, 1)
+
+# Run the optimization
+result <- nloptr::nloptr(
+  x0 = theta_init,
+  eval_f = mnl_loglik_gradient_parallel,
+  opts = nloptr_opts,
+  X = input_list$X,
+  alt_idx = input_list$alt_idx,
+  choice_idx = input_list$choice_idx,
+  weights = input_list$weights,
+  M = input_list$M,
+  use_asc = TRUE,
+  include_outside_option = input_list$include_outside_option
+)
+```

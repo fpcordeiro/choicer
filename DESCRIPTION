@@ -3,8 +3,9 @@ Title: Discrete Choice Models for Economists by Economists
 Version: 0.0.1
 Authors@R: 
     person("Fernando", "Cordeiro", , "fernandolpcordeiro@gmail.com", role = c("aut", "cre"))
-Description: `choicer` aims to offer a series of choice model implementations with a focus on economic applications.
-    Computationally intensive likelihood functions are implemented in C++ and are exported to be called by any solver.
+Description: Tools for estimating discrete-choice models used in applied economics.
+    Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr).
+    The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL) and mixed logit (MXL).
 License: LGPL (>= 3)
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
