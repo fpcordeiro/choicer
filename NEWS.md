@@ -1,3 +1,2 @@
 # choicer 0.1.0
-
-* Initial version
+- First public alpha: MNL + MXL cores, C++ backends, data prep.
