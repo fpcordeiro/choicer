@@ -181,6 +181,45 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option)
 }
 
+#' Log-likelihood and gradient for Nested Logit model
+#'
+#' @param theta (K + n_nests + n_delta) vector with model parameters.
+#'        Order: [beta (K), lambda (n_nests), delta (n_delta)]
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
+#'        1-based index relative to rows in X_i otherwise.
+#' @param nest_idx J x 1 vector with indices of nests for each alternative; 1-based indexing (1 to n_nests).
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @return List with loglikelihood and gradient evaluated at input arguments
+#' @export
+nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
+}
+
+#' Numerical Hessian of the log-likelihood via finite differences
+#'
+#' @param theta (K + n_delta + n_nests) vector with model parameters.
+#'        Order: [beta (K), delta (n_delta), lambda (n_nests)]
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
+#'        1-based index relative to rows in X_i otherwise.
+#' @param nest_idx J x 1 vector with indices of nests for each alternative; 1-based indexing (1 to n_nests).
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @param eps finite difference step size
+#' @return Hessian evaluated at input arguments
+#' @export
+nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
+    .Call(`_choicer_nl_loglik_numeric_hessian`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, eps)
+}
+
 get_num_threads <- function() {
     invisible(.Call(`_choicer_get_num_threads`))
 }

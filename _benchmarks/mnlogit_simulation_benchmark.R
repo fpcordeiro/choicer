@@ -5,6 +5,7 @@ gc()
 library(data.table)
 library(nloptr)
 library(logitr)
+library(mlogit)
 
 # devtools::unload()
 # devtools::clean_dll()
@@ -16,7 +17,7 @@ devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 1e+4                 # Number of choice situations
-J_global <- 10            # Number of total alternatives (excluding outside good)
+J_global <- 20            # Number of total alternatives (excluding outside good)
 
 # For reproducibility
 set.seed(123)
@@ -103,6 +104,20 @@ logitr_test <- logitr(
 )
 
 logitr_test |> summary() |> print()
+
+# mlogit -----------------------------------------------------------------------
+
+dt_idx <- dfidx(as.data.frame(dt), idx = c("id", "alt_factor"))
+
+# Run mlogit
+m <- mlogit(
+  choice_id ~ x1 + x2,
+  data = dt_idx,
+  print.level = 1
+)
+
+# View results
+m |> summary() |> print()
 
 # choicer version --------------------------------------------------------------
 
@@ -195,72 +210,3 @@ get_mnl_result(
   param_names = param_names,
   omit_asc_output = FALSE
 )
-
-# Post-Estimation --------------------------------------------------------------
-
-# Predict individual-level choice probabilities
-model_individual_predict <- mnl_predict(
-  theta = result$solution,
-  X = input_list$X,
-  alt_idx = input_list$alt_idx,
-  M = input_list$M,
-  use_asc = TRUE,
-  include_outside_option = input_list$include_outside_option
-)
-
-# Predict market shares
-model_shares_predict <- mnl_predict_shares(
-  theta = result$solution,
-  X = input_list$X,
-  alt_idx = input_list$alt_idx,
-  M = input_list$M,
-  weights = input_list$weights,
-  use_asc = TRUE,
-  include_outside_option = input_list$include_outside_option
-)
-
-dt[, `:=`(
-  model_logit_prob = model_individual_predict$choice_prob,
-  model_v = model_individual_predict$utility
-)]
-
-dt[, .(
-  model_v = mean(model_v),
-  data_v = mean(utility - epsilon),
-  model_mkt_share = mean(model_logit_prob),
-  data_mkt_share = mean(choice_id)
-),
-keyby = alt
-]
-
-alt_mapping <- input_list$alt_mapping[] |> copy()
-
-alt_mapping[, MODEL_MKT_SHARE := model_shares_predict]
-
-# BLP contraction --------------------------------------------------------------
-
-delta0 <- rep(0, nrow(alt_mapping))
-
-delta_contraction <- blp_contraction(
-  delta = delta0,
-  target_shares = alt_mapping$MKT_SHARE,
-  X = input_list$X,
-  beta = result$solution[1:K_x],
-  alt_idx = input_list$alt_idx,
-  M = input_list$M,
-  weights = input_list$weights,
-  include_outside_option = input_list$include_outside_option,
-  tol = 1e-10
-)
-
-alt_mapping[, `:=`(
-  delta_mnl_est = c(0, delta_est),
-  delta_contr = delta_contraction
-)]
-
-if (exists('logitr_test')) {
-  coefs <- logitr_test$coefficients
-  coefs_len <- length(coefs)
-  alt_mapping[, delta_logitr := c(0, coefs[(K_x + 1):coefs_len])]
-  alt_mapping[, delta_diff := delta_mnl_est - delta_logitr]
-}

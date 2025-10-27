@@ -222,6 +222,45 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// nl_loglik_gradient_parallel
+Rcpp::List nl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_nl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_loglik_gradient_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
+// nl_loglik_numeric_hessian
+arma::mat nl_loglik_numeric_hessian(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, double eps);
+RcppExport SEXP _choicer_nl_loglik_numeric_hessian(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP epsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_loglik_numeric_hessian(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, eps));
+    return rcpp_result_gen;
+END_RCPP
+}
 // get_num_threads
 void get_num_threads();
 RcppExport SEXP _choicer_get_num_threads() {
@@ -255,6 +294,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_loglik_numeric_hessian", (DL_FUNC) &_choicer_mxl_loglik_numeric_hessian, 12},
     {"_choicer_jacobian_vech_Sigma", (DL_FUNC) &_choicer_jacobian_vech_Sigma, 3},
     {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 11},
+    {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
+    {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},
     {"_choicer_set_num_threads", (DL_FUNC) &_choicer_set_num_threads, 1},
     {NULL, NULL, 0}

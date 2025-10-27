@@ -98,7 +98,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
       
       // Vector of choice probabilities
       V_i -= V_i.max(); // for numerical stability
-      double log_denom = std::log(arma::sum(arma::exp(V_i)));
+      double log_denom = std::log(arma::accu(arma::exp(V_i)));
       arma::vec P_i = arma::exp(V_i - log_denom);
       
       // Identify chosen alternative

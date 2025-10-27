@@ -13,11 +13,18 @@ Rcpp::IntegerVector compute_prefix_sum(const Rcpp::IntegerVector& M);
 
 // Inline Function Definitions ------------------------------------------------
 inline double logSumExp(const arma::vec& x) {
-  double a = x.max();
-  if (!arma::is_finite(a)) {
-    return arma::datum::nan;
+  if (x.n_elem == 0) {
+    return -arma::datum::inf;                   // log(sum(empty)) = log(0)
   }
-  return a + std::log(arma::sum(arma::exp(x - a)));
+
+  const double a = x.max();
+
+  if (std::isnan(a))            return arma::datum::nan;  // propagate NaN
+  if (a ==  arma::datum::inf)   return  arma::datum::inf; // any +inf -> +inf
+  if (a == -arma::datum::inf)   return -arma::datum::inf; // all -inf -> -inf
+
+  const double s = arma::accu(arma::exp(x - a)); // s >= 1 because at least one term is exp(0)=1
+  return a + std::log(s);
 }
 
 #endif
