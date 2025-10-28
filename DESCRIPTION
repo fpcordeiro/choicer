@@ -1,5 +1,5 @@
 Package: choicer
-Title: Discrete Choice Models for Economists by Economists
+Title: Discrete Choice Models for Economic Applications
 Version: 0.1.0
 Authors@R: 
     person("Fernando", "Cordeiro", , "fernandolpcordeiro@gmail.com", role = c("aut", "cre"))

@@ -17,7 +17,7 @@ devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 1e+4                 # Number of choice situations
-J_global <- 20            # Number of total alternatives (excluding outside good)
+J_global <- 50            # Number of total alternatives (excluding outside good)
 
 # For reproducibility
 set.seed(123)

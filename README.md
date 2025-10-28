@@ -70,6 +70,7 @@ result <- nloptr::nloptr(
 There are multiple R packages that offer similar functionalities. You should definitely check them out:
 - [mlogit](https://CRAN.R-project.org/package=mlogit)
 - [logitr](https://CRAN.R-project.org/package=logitr)
+- [gmnl](https://CRAN.R-project.org/package=gmnl)
 - [apollo](https://CRAN.R-project.org/package=apollo)
 
 # Whishlist:
