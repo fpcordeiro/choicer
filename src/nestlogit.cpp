@@ -3,8 +3,8 @@
 
 //' Log-likelihood and gradient for Nested Logit model
 //'
-//' @param theta (K + n_nests + n_delta) vector with model parameters.
-//'        Order: [beta (K), lambda (n_nests), delta (n_delta)]
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
+//'        Order: [beta (K), lambda (n_non_singleton_nests), delta (n_delta)]
 //' @param X sum(M) x K design matrix with covariates.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
@@ -38,44 +38,80 @@ Rcpp::List nl_loglik_gradient_parallel(
   arma::vec beta = theta.subvec(0, K - 1);
   int delta_length = 0;
   
-  // Lambda parameters (log-sum coefficients)
-  const int lambda_start_idx = K;
-  arma::vec lambda = theta.subvec(lambda_start_idx, lambda_start_idx + n_nests - 1);
-  if (arma::any(lambda <= 0)) {
-      Rcpp::stop("Error: All lambda (nest) parameters must be > 0.");
+  // Identify singleton nests (nests with only 1 alternative)
+  arma::uvec nest_counts = arma::zeros<arma::uvec>(n_nests);
+  for (unsigned int j = 0; j < nest_idx.n_elem; ++j) {
+      if (nest_idx[j] > 0 && nest_idx[j] <= n_nests) {
+          nest_counts[nest_idx[j] - 1]++; // nest_idx is 1-based
+      } else {
+          Rcpp::stop("Invalid nest index found in nest_idx.");
+      }
   }
+  arma::uvec is_singleton = (nest_counts == 1);
+  const int n_non_singleton_nests = arma::accu(is_singleton == 0);
 
+  // Lambda parameters (inclusive value coefficients)
+  const int lambda_start_idx = K;
+  
+  // Create a *full* lambda vector (size n_nests), initialized to 1 (ingletons will keep this value)
+  arma::vec lambda = arma::ones(n_nests); 
+  
+  // Create a map to link full nest index 'k' to its gradient position in 'theta'
+  // -1 indicates a singleton nest (lambda=1, not a parameter)
+  arma::ivec nest_k_to_theta_idx = arma::ivec(n_nests).fill(-1);
+  
+  if (n_non_singleton_nests > 0) {
+    // Check if theta is long enough
+    if (theta.n_elem < K + n_non_singleton_nests) {
+        Rcpp::stop("Error: theta vector is too short for K + n_non_singleton_nests.");
+    }
+    // Extract only the non-singleton lambdas from theta
+    arma::vec non_singleton_lambdas = theta.subvec(lambda_start_idx, lambda_start_idx + n_non_singleton_nests - 1);
+    if (arma::any(non_singleton_lambdas <= 0)) {
+        Rcpp::stop("Error: All non-singleton lambda (nest) parameters must be > 0.");
+    }
+    // "Scatter" non-singleton lambdas into the full lambda vector; build the k -> theta_index map
+    int current_lambda_idx = 0;
+    for (int k = 0; k < n_nests; ++k) {
+        if (is_singleton[k] == 0) { // if NOT a singleton
+            lambda[k] = non_singleton_lambdas[current_lambda_idx];
+            nest_k_to_theta_idx[k] = lambda_start_idx + current_lambda_idx;
+            current_lambda_idx++;
+        }
+    }
+  } else {
+    Rcpp::stop("Error: No non-singleton nests found. At least one nest must have multiple alternatives.");
+  }
+  
   // ASC parameters (delta)
-  const int delta_start_idx = K + n_nests;
+  const int delta_start_idx = K + n_non_singleton_nests;
   arma::vec delta;
   
   if (use_asc) {
-    delta_length = n_params - K - n_nests;
+    // The length of delta is also calculated from the new start index
+    delta_length = n_params - K - n_non_singleton_nests;
+    
     if (delta_length < 0) {
-      Rcpp::stop("Error: Not enough parameters for K + n_nests + n_delta.");
+      Rcpp::stop("Error: Not enough parameters for K + n_non_singleton_nests + n_delta.");
     }
     
     if (delta_length > 0) {
         if (include_outside_option) {
-          // delta covers all J inside alternatives
           delta = theta.subvec(delta_start_idx, delta_start_idx + delta_length - 1);
         } else {
-          // delta_1 = 0 fixed
           delta = arma::zeros(delta_length + 1);
           delta.subvec(1, delta_length) = theta.subvec(delta_start_idx, delta_start_idx + delta_length - 1);
         }
     } else {
-        // use_asc=true but no deltas provided.
-        // Check if this is an error or just no deltas.
-        if (n_params != K + n_nests) {
-             Rcpp::stop("Error: Mismatch in parameters. Expected K + n_nests.");
+        // Check against K + n_non_singleton_nests
+        if (n_params != K + n_non_singleton_nests) {
+             Rcpp::stop("Error: Mismatch in parameters. Expected K + n_non_singleton_nests.");
         }
-        // No deltas, create empty vector
         delta = arma::zeros((include_outside_option) ? 0 : 1);
     }
   } else {
     delta_length = 0;
-    delta = arma::zeros(delta_length); // empty
+    delta = arma::zeros(delta_length);
   }
 
   // 0-based indexing for inputs
@@ -96,6 +132,9 @@ Rcpp::List nl_loglik_gradient_parallel(
     // Thread-local accumulators
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
+    
+    // Make the index map thread-private
+    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -118,6 +157,7 @@ Rcpp::List nl_loglik_gradient_parallel(
       if (use_asc) V_inside += delta.elem(alt_idx0_i);
 
       // V_ij / lambda_k
+      // This now correctly uses lambda_k=1 for singleton nests
       arma::vec V_over_lambda = V_inside / lambda.elem(nest_idx0_i);
 
       // --- 2a. Calculate log_I_k (Inclusive Value) ---
@@ -242,11 +282,15 @@ Rcpp::List nl_loglik_gradient_parallel(
             }
           }
         }
-      } // end gradient loop for beta/delta
+      } // end gradient loop for beta/delta 
 
       // 4.3: Gradient w.r.t. lambda_k
       for (int k = 0; k < n_nests; ++k) {
-        // Skip nests with no available alts in this set (avoid 0 * inf issues)
+        
+        // Check if this nest 'k' corresponds to an estimated parameter
+        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
+        if (theta_idx_k == -1) continue;
+ 
         if (!std::isfinite(log_I_k[k])) continue;
 
         const double lambda_k = lambda[k];
@@ -266,7 +310,7 @@ Rcpp::List nl_loglik_gradient_parallel(
           grad_lambda_k += -P_k_k * term_in_brackets;
         }
         
-        local_grad[lambda_start_idx + k] += w_i * grad_lambda_k;
+        local_grad[theta_idx_k] += w_i * grad_lambda_k;
         
       } // end gradient loop for lambda
     } // end of i loop

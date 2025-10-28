@@ -23,7 +23,7 @@ run_nestlogit <- function(
 
   J <- nrow(input_data$alt_mapping)
   K_x <- ncol(input_data$X)
-  K_l <- length(unique(input_data$nest_idx))
+  K_l <- sum(table(input_data$nest_idx) > 1)
 
   # Initial parameter vector theta_init
   if (is.null(theta_init) && use_asc) {

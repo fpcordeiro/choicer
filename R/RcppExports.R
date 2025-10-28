@@ -183,8 +183,8 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 
 #' Log-likelihood and gradient for Nested Logit model
 #'
-#' @param theta (K + n_nests + n_delta) vector with model parameters.
-#'        Order: [beta (K), lambda (n_nests), delta (n_delta)]
+#' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
+#'        Order: [beta (K), lambda (n_non_singleton_nests), delta (n_delta)]
 #' @param X sum(M) x K design matrix with covariates.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,

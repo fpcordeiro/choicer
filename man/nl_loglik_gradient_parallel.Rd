@@ -17,8 +17,8 @@ nl_loglik_gradient_parallel(
 )
 }
 \arguments{
-\item{theta}{(K + n_nests + n_delta) vector with model parameters.
-Order: \link{beta (K), lambda (n_nests), delta (n_delta)}}
+\item{theta}{(K + n_non_singleton_nests + n_delta) vector with model parameters.
+Order: \link{beta (K), lambda (n_non_singleton_nests), delta (n_delta)}}
 
 \item{X}{sum(M) x K design matrix with covariates.}
 

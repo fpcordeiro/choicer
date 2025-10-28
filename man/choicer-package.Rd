@@ -6,7 +6,7 @@
 \alias{choicer-package}
 \title{choicer: A package for discrete choice models.}
 \description{
-Tools for estimating discrete-choice models used in applied economics. Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr). The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL) and mixed logit (MXL).
+Tools for estimating discrete-choice models used in applied economics. Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr). The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL).
 }
 \author{
 \strong{Maintainer}: Fernando Cordeiro \email{fernandolpcordeiro@gmail.com}
