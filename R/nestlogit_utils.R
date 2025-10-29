@@ -4,6 +4,14 @@
 #' Wrapper for nested logit model estimation using nloptr optimizer
 #'
 #' @param input_data List containing prepared input data for estimation
+#' - $X: Design matrix
+#' - $alt_idx: Alternative indices for each observation
+#' - $choice_idx: Chosen alternative indices for each choice situation
+#' - $nest_idx: Nest indices for each alternative (same length as number of alternatives, one nest per alternative)
+#' - $M: Vector of number of alternatives per choice situation
+#' - $weights: Vector of weights for each choice situation
+#' - $alt_mapping: Data frame mapping alternatives to nests
+#' - $include_outside_option: Logical indicating whether an outside option is included
 #' @param use_asc Logical indicating whether to include alternative specific constants (ASCs)
 #' @param theta_init Optional initial parameter vector for optimization. If NULL, a default vector is used.
 #' @param param_names Optional vector of parameter names for result summary. If NULL, default names are generated.
@@ -23,7 +31,7 @@ run_nestlogit <- function(
 
   J <- nrow(input_data$alt_mapping)
   K_x <- ncol(input_data$X)
-  K_l <- sum(table(input_data$nest_idx) > 1)
+  K_l <- sum(table(input_data$nest_idx) > 1) # Only count nests with more than one alternative
 
   # Initial parameter vector theta_init
   if (is.null(theta_init) && use_asc) {

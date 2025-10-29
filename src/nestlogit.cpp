@@ -3,6 +3,9 @@
 
 //' Log-likelihood and gradient for Nested Logit model
 //'
+//' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
+//' Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
+//'
 //' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
 //'        Order: [beta (K), lambda (n_non_singleton_nests), delta (n_delta)]
 //' @param X sum(M) x K design matrix with covariates.
