@@ -14,7 +14,17 @@ run_nestlogit(
 )
 }
 \arguments{
-\item{input_data}{List containing prepared input data for estimation}
+\item{input_data}{List containing prepared input data for estimation
+\itemize{
+\item $X: Design matrix
+\item $alt_idx: Alternative indices for each observation
+\item $choice_idx: Chosen alternative indices for each choice situation
+\item $nest_idx: Nest indices for each alternative (same length as number of alternatives, one nest per alternative)
+\item $M: Vector of number of alternatives per choice situation
+\item $weights: Vector of weights for each choice situation
+\item $alt_mapping: Data frame mapping alternatives to nests
+\item $include_outside_option: Logical indicating whether an outside option is included
+}}
 
 \item{use_asc}{Logical indicating whether to include alternative specific constants (ASCs)}
 

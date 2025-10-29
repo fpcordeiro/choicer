@@ -3,6 +3,9 @@
 
 #' Log-likelihood and gradient for multinomial logit model
 #'
+#' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
+#' Allows for inclusion of alternative-specific constants, outside option, and observation weights.
+#'
 #' @param theta K + J - 1 or K + J vector with model parameters
 #' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
@@ -97,6 +100,26 @@ mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weight
     .Call(`_choicer_mnl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
 
+#' Compute aggregate elasticities for MNL model
+#'
+#' Computes the aggregate elasticity matrix (weighted average of individual
+#' elasticities) for the Multinomial Logit model.
+#'
+#' @param theta K + J - 1 or K + J vector with model parameters
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param choice_idx N x 1 vector (kept for API consistency, but not used)
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity
+#' @param use_asc whether to use alternative-specific constants
+#' @param include_outside_option whether to include outside option
+#' @return J x J matrix of aggregate elasticities
+#' @export
+mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mnl_elasticities_parallel`, theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
+}
+
 build_L_mat <- function(L_params, K_w, rc_correlation) {
     .Call(`_choicer_build_L_mat`, L_params, K_w, rc_correlation)
 }
@@ -182,6 +205,9 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 }
 
 #' Log-likelihood and gradient for Nested Logit model
+#'
+#' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
+#' Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
 #'
 #' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
 #'        Order: [beta (K), lambda (n_non_singleton_nests), delta (n_delta)]

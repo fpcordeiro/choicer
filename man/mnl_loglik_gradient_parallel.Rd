@@ -36,5 +36,6 @@ mnl_loglik_gradient_parallel(
 List with loglikelihood and gradient evaluated at input arguments
 }
 \description{
-Log-likelihood and gradient for multinomial logit model
+Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
+Allows for inclusion of alternative-specific constants, outside option, and observation weights.
 }

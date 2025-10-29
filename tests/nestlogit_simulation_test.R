@@ -3,7 +3,6 @@ rm(list = ls(all.names = TRUE))
 gc()
 
 library(data.table)
-library(mlogit)
 library(choicer)
 
 set.seed(42)

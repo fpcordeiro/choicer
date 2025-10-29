@@ -119,6 +119,25 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// mnl_elasticities_parallel
+arma::mat mnl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const int elast_var_idx, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_mnl_elasticities_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP elast_var_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const int >::type elast_var_idx(elast_var_idxSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnl_elasticities_parallel(theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
 // build_L_mat
 arma::mat build_L_mat(const arma::vec& L_params, const int K_w, const bool rc_correlation);
 RcppExport SEXP _choicer_build_L_mat(SEXP L_paramsSEXP, SEXP K_wSEXP, SEXP rc_correlationSEXP) {
@@ -288,6 +307,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mnl_predict_shares", (DL_FUNC) &_choicer_mnl_predict_shares, 7},
     {"_choicer_blp_contraction", (DL_FUNC) &_choicer_blp_contraction, 10},
     {"_choicer_mnl_loglik_hessian_parallel", (DL_FUNC) &_choicer_mnl_loglik_hessian_parallel, 8},
+    {"_choicer_mnl_elasticities_parallel", (DL_FUNC) &_choicer_mnl_elasticities_parallel, 9},
     {"_choicer_build_L_mat", (DL_FUNC) &_choicer_build_L_mat, 3},
     {"_choicer_build_var_mat", (DL_FUNC) &_choicer_build_var_mat, 3},
     {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 11},

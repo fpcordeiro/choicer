@@ -156,6 +156,18 @@ get_mnl_result(
 
 # Post-Estimation --------------------------------------------------------------
 
+elast_x2 <- mnl_elasticities_parallel(
+  theta = result$solution,
+  X = input_list$X,
+  alt_idx = input_list$alt_idx,
+  choice_idx = input_list$choice_idx,
+  M = input_list$M,
+  weights = input_list$weights,
+  elast_var_idx = 2L,
+  use_asc = TRUE,
+  include_outside_option = input_list$include_outside_option
+)
+
 # Predict individual-level choice probabilities
 model_individual_predict <- mnl_predict(
   theta = result$solution,
@@ -182,6 +194,8 @@ dt[, `:=`(
   model_v = model_individual_predict$utility
 )]
 
+dt[, .(own_elast = sum(result$solutio[2] * x2 * (1.0 - model_logit_prob)) / N), keyby = alt]
+
 dt[, .(
   model_v = mean(model_v),
   data_v = mean(utility - epsilon),
@@ -191,8 +205,8 @@ dt[, .(
 keyby = alt
 ]
 
-alt_mapping <- input_list$alt_mapping[] |> copy()
-
+alt_mapping <- input_list$alt_mapping |> copy()
+alt_mapping <- alt_mapping[]
 alt_mapping[, MODEL_MKT_SHARE := model_shares_predict]
 
 # BLP contraction --------------------------------------------------------------

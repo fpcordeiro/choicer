@@ -14,7 +14,17 @@ run_mxlogit(
 )
 }
 \arguments{
-\item{input_data}{List output from \code{prepare_mxl_data()}}
+\item{input_data}{List output from \code{prepare_mxl_data()}
+\itemize{
+\item $X: Design matrix
+\item $W: Design matrix for random coefficients
+\item $alt_idx: Alternative indices for each observation
+\item $choice_idx: Chosen alternative indices for each choice situation
+\item $M: Vector of number of alternatives per choice situation
+\item $weights: Vector of weights for each choice situation
+\item $include_outside_option: Logical indicating whether an outside option is included
+\item $alt_mapping: Data frame mapping alternatives to nests
+}}
 
 \item{eta_draws}{Array of shape K_x x S x N with standard normal draws for random coefficients}
 

@@ -41,5 +41,6 @@ Order: \link{beta (K), lambda (n_non_singleton_nests), delta (n_delta)}}
 List with loglikelihood and gradient evaluated at input arguments
 }
 \description{
-Log-likelihood and gradient for Nested Logit model
+Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
+Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
 }
