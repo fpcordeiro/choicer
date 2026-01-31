@@ -137,41 +137,53 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 
 #' Log-likelihood and gradient for Mixed Logit
 #'
-#' @param theta vector collecting model parameters (beta, L, delta (ASCs))
+#' Computes the log-likelihood and its gradient for the Mixed Logit model using
+#' OpenMP for parallelization. Allows for inclusion of alternative-specific
+#' constants, outside option, observation weights, correlated random coefficients.
+#'
+#' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
 #' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
 #' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N 
+#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
 #' @param rc_correlation whether random coefficients should be correlated
-#' @param use_asc whether to use alternative-specific constants
+#' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
+#' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @return List with loglikelihood and gradient evaluated at input arguments
+#' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
+#'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
+#'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
+#'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
 #' @export
-mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation = TRUE, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option)
+mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
 #' Numerical Hessian of the log-likelihood via finite differences for mixed logit
 #'
-#' @param theta vector collecting model parameters (beta, L, delta (ASCs))
+#' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
 #' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
 #' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N 
+#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
 #' @param rc_correlation whether random coefficients should be correlated
-#' @param use_asc whether to use alternative-specific constants
+#' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
+#' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @param eps numerical tolerance
 #' @return List with loglikelihood and gradient evaluated at input arguments
 #' @export
-mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation = TRUE, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
-    .Call(`_choicer_mxl_loglik_numeric_hessian`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option, eps)
+mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
+    .Call(`_choicer_mxl_loglik_numeric_hessian`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, eps)
 }
 
 #' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
@@ -185,23 +197,32 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
     .Call(`_choicer_jacobian_vech_Sigma`, L_params, K_w, rc_correlation)
 }
 
-#' Analytical Hessian of the log-likelihood
+#' Analytical Hessian of the log-likelihood v2
 #'
-#' @param theta vector collecting model parameters (beta, L, delta (ASCs))
+#' Computes the Hessian of the log-likelihood for the Mixed Logit model using
+#' OpenMP for parallelization. Mirrors the parameters of mxl_loglik_gradient_parallel.
+#'
+#' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
 #' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
 #' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N 
+#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
 #' @param rc_correlation whether random coefficients should be correlated
-#' @param use_asc whether to use alternative-specific constants
+#' @param rc_mean whether to estimate means for random coefficients.
+#' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @return Hessian evaluated at input arguments
+#' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
+#'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
+#'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
+#'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
 #' @export
-mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation = TRUE, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option)
+mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
 #' Log-likelihood and gradient for Nested Logit model
@@ -210,7 +231,7 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
 #'
 #' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
-#'        Order: [beta (K), lambda (n_non_singleton_nests), delta (n_delta)]
+#'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
 #' @param X sum(M) x K design matrix with covariates.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
@@ -229,7 +250,7 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' Numerical Hessian of the log-likelihood via finite differences
 #'
 #' @param theta (K + n_delta + n_nests) vector with model parameters.
-#'        Order: [beta (K), delta (n_delta), lambda (n_nests)]
+#'        Order: `[beta (K), delta (n_delta), lambda (n_nests)]`
 #' @param X sum(M) x K design matrix with covariates.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,

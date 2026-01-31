@@ -165,8 +165,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_loglik_gradient_parallel
-Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const bool rc_correlation, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_correlationSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -178,16 +178,18 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const arma::cube& >::type eta_draws(eta_drawsSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type rc_dist(rc_distSEXP);
     Rcpp::traits::input_parameter< const bool >::type rc_correlation(rc_correlationSEXP);
+    Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option));
+    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_loglik_numeric_hessian
-arma::mat mxl_loglik_numeric_hessian(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const bool rc_correlation, const bool use_asc, const bool include_outside_option, double eps);
-RcppExport SEXP _choicer_mxl_loglik_numeric_hessian(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_correlationSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP epsSEXP) {
+arma::mat mxl_loglik_numeric_hessian(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, double eps);
+RcppExport SEXP _choicer_mxl_loglik_numeric_hessian(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP epsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -199,11 +201,13 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const arma::cube& >::type eta_draws(eta_drawsSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type rc_dist(rc_distSEXP);
     Rcpp::traits::input_parameter< const bool >::type rc_correlation(rc_correlationSEXP);
+    Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
     Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_loglik_numeric_hessian(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option, eps));
+    rcpp_result_gen = Rcpp::wrap(mxl_loglik_numeric_hessian(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, eps));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -221,8 +225,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_hessian_parallel
-arma::mat mxl_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const bool rc_correlation, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_correlationSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat mxl_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_mxl_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -234,10 +238,12 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const arma::cube& >::type eta_draws(eta_drawsSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type rc_dist(rc_distSEXP);
     Rcpp::traits::input_parameter< const bool >::type rc_correlation(rc_correlationSEXP);
+    Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_hessian_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_correlation, use_asc, include_outside_option));
+    rcpp_result_gen = Rcpp::wrap(mxl_hessian_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -310,10 +316,10 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mnl_elasticities_parallel", (DL_FUNC) &_choicer_mnl_elasticities_parallel, 9},
     {"_choicer_build_L_mat", (DL_FUNC) &_choicer_build_L_mat, 3},
     {"_choicer_build_var_mat", (DL_FUNC) &_choicer_build_var_mat, 3},
-    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 11},
-    {"_choicer_mxl_loglik_numeric_hessian", (DL_FUNC) &_choicer_mxl_loglik_numeric_hessian, 12},
+    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 13},
+    {"_choicer_mxl_loglik_numeric_hessian", (DL_FUNC) &_choicer_mxl_loglik_numeric_hessian, 14},
     {"_choicer_jacobian_vech_Sigma", (DL_FUNC) &_choicer_jacobian_vech_Sigma, 3},
-    {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 11},
+    {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 13},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},

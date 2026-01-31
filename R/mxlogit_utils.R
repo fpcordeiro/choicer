@@ -11,9 +11,11 @@
 #' - $M: Vector of number of alternatives per choice situation
 #' - $weights: Vector of weights for each choice situation
 #' - $include_outside_option: Logical indicating whether an outside option is included
+#' - $rc_correlation: Logical indicating whether random coefficients are correlated
 #' - $alt_mapping: Data frame mapping alternatives to nests
-#' @param eta_draws Array of shape K_x x S x N with standard normal draws for random coefficients
-#' @param rc_correlation Logical indicating whether to estimate full covariance matrix for random coefficients
+#' @param eta_draws Array of shape K_w x S x N with standard normal draws for random coefficients
+#' @param rc_dist Integer vector indicating distribution of random coefficients (0=normal, 1=log-normal)
+#' @param rc_mean Logical indicating whether to estimate means for random coefficients
 #' @param use_asc Logical indicating whether to include alternative-specific constants
 #' @param theta_init Initial parameter vector for optimization. If NULL, a zero vector of appropriate length is used.
 #' @param nloptr_opts List of options to pass to `nloptr::nloptr()`. If NULL, default options are used.
@@ -23,7 +25,8 @@
 run_mxlogit <- function(
     input_data,
     eta_draws,
-    rc_correlation,
+    rc_dist = NULL,
+    rc_mean = FALSE,
     use_asc = TRUE,
     theta_init = NULL,
     nloptr_opts = NULL
@@ -35,9 +38,12 @@ run_mxlogit <- function(
     K_x <- ncol(input_data$X)
     K_w <- ncol(input_data$W)
     L_size <- if (input_data$rc_correlation) {K_w * (K_w + 1) / 2} else {K_w}
-    theta_init <- rep(0, K_x + L_size + J - 1)
+    mu_size <- if (rc_mean) K_w else 0
+    theta_init <- rep(0, K_x + mu_size + L_size + J - 1)
   }
 
+  if (is.null(rc_dist)) rc_dist <- rep(0L, ncol(input_data$W))
+  
   # Optimization options (default)
   if (is.null(nloptr_opts)) {
     nloptr_opts <- list(
@@ -60,7 +66,9 @@ run_mxlogit <- function(
       choice_idx = input_data$choice_idx,
       M = input_data$M,
       weights = input_data$weights,
-      rc_correlation = rc_correlation,
+      rc_dist = rc_dist,
+      rc_correlation = input_data$rc_correlation,
+      rc_mean = rc_mean,
       eta_draws = eta_draws,
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option
@@ -87,7 +95,8 @@ run_mxlogit <- function(
 #' @param weights Optional vector of weights for each choice situation. If NULL, equal weights are used.
 #' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
-#' @return A list containing prepared inputs for mixed logit estimation.
+#' @param rc_correlation Logical indicating whether random coefficients are correlated. Default is FALSE.
+#' @return A list containing prepared inputs for mixed logit estimation, including rc_correlation.
 #' @import data.table
 #' @export
 prepare_mxl_data <- function(
@@ -99,7 +108,8 @@ prepare_mxl_data <- function(
     random_var_cols,
     weights = NULL,
     outside_opt_label = NULL,
-    include_outside_option = FALSE
+    include_outside_option = FALSE,
+    rc_correlation = FALSE
 ) {
 
   ## Preliminary housekeeping --------------------------------------------------
@@ -175,10 +185,18 @@ prepare_mxl_data <- function(
   ## Build objects -------------------------------------------------------------
   ## design matrix
   X <- as.matrix(dt[, ..covariate_cols])
-  X <- check_collinearity(X)
+  X_res <- check_collinearity(X)
+  X <- X_res$mat
+  if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped # accumulate dropped vars if we had multiple checks
+
 
   W <- as.matrix(dt[, ..random_var_cols])
-  W <- check_collinearity(W)
+  W_res <- check_collinearity(W)
+  W <- W_res$mat
+  if (!is.null(W_res$dropped)) {
+     if(exists("dropped_vars")) dropped_vars <- c(dropped_vars, W_res$dropped)
+     else dropped_vars <- W_res$dropped
+  }
 
   cols_to_drop <- union(covariate_cols, random_var_cols)
   dt[, (cols_to_drop) := NULL]
@@ -255,7 +273,9 @@ prepare_mxl_data <- function(
     N           = N,
     weights     = weights,
     include_outside_option = include_outside_option,
-    alt_mapping = alt_mapping
+    rc_correlation = rc_correlation,
+    alt_mapping = alt_mapping[],
+    dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL
   )
 }
 
@@ -265,25 +285,34 @@ prepare_mxl_data <- function(
 #'
 #' @param S Number of draws for each choice situation
 #' @param N number of choice situations
-#' @param K_x dimension of random coefficients
-#' @return K_x x S x N array with halton standard normal draws
+#' @param K_w dimension of random coefficients (number of columns in W matrix)
+#' @return K_w x S x N array with halton standard normal draws
 #' @importFrom randtoolbox halton
 #' @export
-get_halton_normals <- function(S, N, K_x) {
+get_halton_normals <- function(S, N, K_w) {
+  # Generate all needed Halton draws at once
+  # We need S * N draws for each of K_w dimensions
+  total_draws <- S * N
+
+  # Generate Halton sequence
+  # randtoolbox::halton returns a matrix of size total_draws x K_w
+  halton_seq <- randtoolbox::halton(n = total_draws, dim = K_w, normal = TRUE)
+
   # Initialize the eta_draws array
-  eta_draws <- array(0, dim = c(K_x, S, N))
-
-  # Generate Halton draws for each individual
+  eta_draws <- array(0, dim = c(K_w, S, N))
+  
+  # Fill the array
+  # The original code used: start_index = (i - 1) * S + 1 for each individual
+  # This corresponds to taking chunks of S rows from the halton sequence
   for (i in 1:N) {
-    # Use a different starting index for each individual to reduce correlation
-    start_index <- (i - 1) * S + 1
-
-    # Generate Halton sequences
-    halton_seq <- randtoolbox::halton(n = S, dim = K_x, start = start_index, normal = TRUE)
-
-    # Store in eta_draws
-    eta_draws[, , i] <- t(halton_seq)  # Transpose to match dimensions (K_x x S)
+     start_row <- (i - 1) * S + 1
+     end_row   <- i * S
+     
+     # halton_seq[start:end, ] is S x K_x
+     # we want K_x x S for eta_draws[, , i]
+     eta_draws[, , i] <- t(halton_seq[start_row:end_row, , drop=FALSE])
   }
+
   return(eta_draws)
 }
 
@@ -326,7 +355,7 @@ vech <- function(M) M[lower.tri(M, diag = TRUE)]
 get_mxl_result <- function(
     opt_result,
     X, W, alt_idx, choice_idx, M, weights, eta_draws,
-    rc_correlation,
+    rc_dist,rc_correlation,rc_mean,
     use_asc,
     include_outside_option,
     omit_asc_output = FALSE,
@@ -342,12 +371,35 @@ get_mxl_result <- function(
 
   K_x <- ncol(X)
   K_w <- ncol(W)
-  L_size <- if (rc_correlation) {
-    K_w * (K_w + 1) / 2
+  L_size <- if (rc_correlation) K_w * (K_w + 1) / 2 else K_w
+  mu_size <- if (rc_mean) K_w else 0
+  delta_length <- length(est_theta) - K_x - mu_size - L_size
+
+  # Define Block Indices
+  idx_beta_start <- 1
+  idx_beta_end   <- K_x
+  idx_mu_start   <- K_x + 1
+  idx_mu_end     <- K_x + mu_size
+  idx_L_start    <- idx_mu_end + 1
+  idx_L_end      <- idx_mu_end + L_size
+  idx_delta_start <- idx_L_end + 1
+
+  # Generate sigma parameter names (needed for output regardless of Hessian success)
+  # Column-Major Lower Triangular Order: (1,1), (2,1), (2,2), (3,1), (3,2), (3,3), ...
+  # This matches the extraction order in C++ vech() and build_var_mat()
+  if (L_size > 0) {
+    idx_i <- integer(0)
+    idx_j <- integer(0)
+    for (j in 1:K_w) {
+      for (i in j:K_w) {
+        idx_i <- c(idx_i, i)
+        idx_j <- c(idx_j, j)
+      }
+    }
+    se_sigma_names <- sprintf("Sigma_%d%d", idx_i, idx_j)
   } else {
-    K_w
+    se_sigma_names <- character(0)
   }
-  delta_length <- length(est_theta) - K_x - L_size
 
   # Compute Hessian at est_theta
   hess <- mxl_hessian_parallel(
@@ -359,8 +411,10 @@ get_mxl_result <- function(
     M = M,
     weights = weights,
     eta_draws = eta_draws,
-    use_asc = use_asc,
+    rc_dist = rc_dist,
     rc_correlation = rc_correlation,
+    rc_mean = rc_mean,
+    use_asc = use_asc,
     include_outside_option = include_outside_option
   )
 
@@ -376,36 +430,61 @@ get_mxl_result <- function(
     message("Error computing vcov_mat (likely singular Hessian): ", e$message)
   })
 
-  # Construct SEs for Random Coefficient var-cov matrix (Sigma)
-  L_idx_start <- K_x + 1
-  L_idx_end   <- K_x + L_size
-  L_params_hat <- est_theta[L_idx_start:L_idx_end]
-  Sigma_hat <- build_var_mat(L_params_hat, K_w, rc_correlation)
-
-  if (rc_correlation) {
-    est_theta[L_idx_start:L_idx_end] <- vech(Sigma_hat)
-  } else {
-    est_theta[L_idx_start:L_idx_end] <- diag(Sigma_hat)
-  }
-
   if (!singular_flag && !is.null(vcov_mat)) {
     # successfully computed Hessian inverse
     se <- sqrt(diag(vcov_mat))
 
-    # Jacobian of g : L_params -> vech(Sigma)
-    J <- jacobian_vech_Sigma(L_params_hat, K_w, rc_correlation)
+    # Delta Method for Mean parameters (Mu)
+    if (rc_mean) {
+      # Loop through Random Coefficients
+      for (k in 1:K_w) {
+        # Check if this specific coefficient is Log-Normal
+        if (rc_dist[k] == 1) { 
+          # Current index in the theta vector
+          curr_idx <- idx_mu_start + (k - 1)
+          
+          # Get raw estimates
+          mu_hat <- est_theta[curr_idx]
+          mu_se  <- se[curr_idx]
+          
+          # Apply Transformation: exp(mu)
+          est_theta[curr_idx] <- exp(mu_hat)
+          
+          # Apply Delta Method for SE: 
+          # SE(exp(mu)) = |d/dmu exp(mu)| * SE(mu) = exp(mu) * SE(mu)
+          se[curr_idx] <- exp(mu_hat) * mu_se
+        }
+      }
+    }
 
-    ## Delta‑method variance & SEs
-    vcov_L <- vcov_mat[L_idx_start:L_idx_end, L_idx_start:L_idx_end]
-    V_sigma  <- J %*% vcov_L %*% t(J)
-    se_sigma <- sqrt(diag(V_sigma))
-
-    ## Make pretty names
-    idx_i <- unlist(lapply(seq_len(K_w),    function(i) rep(i, i)))
-    idx_j <- unlist(lapply(seq_len(K_w),    function(i) seq_len(i)))
-    se_sigma_names <- sprintf("Sigma_%d%d", idx_i, idx_j)
-
-    se[L_idx_start:L_idx_end] <- se_sigma
+    # Delta Method for Variance parameters (L -> Sigma)
+    if (L_size > 0) {
+      # Only run if we actually have random coefficients
+      L_params_hat <- est_theta[idx_L_start:idx_L_end]
+      
+      # Convert L parameters to Sigma matrix for display
+      Sigma_hat <- build_var_mat(L_params_hat, K_w, rc_correlation)
+      
+      # Replace L in est_theta with Sigma elements
+      if (rc_correlation) {
+        # vech() extracts lower triangular part
+        est_theta[idx_L_start:idx_L_end] <- vech(Sigma_hat)
+      } else {
+        est_theta[idx_L_start:idx_L_end] <- diag(Sigma_hat)
+      }
+      
+      # Jacobian of g : L_params -> vech(Sigma)
+      J <- jacobian_vech_Sigma(L_params_hat, K_w, rc_correlation)
+      
+      # Extract relevant block from full V-Cov
+      vcov_L <- vcov_mat[idx_L_start:idx_L_end, idx_L_start:idx_L_end]
+      
+      # V_sigma = J * V_L * J'
+      V_sigma  <- J %*% vcov_L %*% t(J)
+      se_sigma <- sqrt(diag(V_sigma))
+      
+      se[idx_L_start:idx_L_end] <- se_sigma
+    }
 
   } else {
     # either singular Hessian or some inversion error
@@ -433,12 +512,19 @@ get_mxl_result <- function(
 
     # Beta parameters
     for (i in seq_len(K_x)) {
-      param_names[i] <- paste0("W_", i)
+      param_names[idx_beta_start - 1 + i] <- paste0("W_", i)
+    }
+
+    # mu parameters
+    if (rc_mean) {
+      for (i in seq_len(mu_size)) {
+        param_names[idx_mu_start - 1 + i] <- paste0("Mu_", i)
+      }
     }
 
     # L paramters
     for (l in seq_len(L_size)) {
-      param_names[K_x + l] <- se_sigma_names[l]
+      param_names[idx_L_start - 1 + l] <- se_sigma_names[l]
     }
 
     # ASC parameters (if used)
@@ -447,9 +533,9 @@ get_mxl_result <- function(
         for (d in seq_len(delta_length)) {
           # If outside option is included, name them delta_1,... else skip 'delta_1'
           if (include_outside_option) {
-            param_names[K_x + L_size + d] <- paste0("ASC_", d)
+            param_names[idx_delta_start - 1 + d] <- paste0("ASC_", d)
           } else {
-            param_names[K_x + L_size + d] <- paste0("ASC_", d + 1)
+            param_names[idx_delta_start - 1 + d] <- paste0("ASC_", d + 1)
           }
         }
       } else {
@@ -547,7 +633,6 @@ check_collinearity <- function(X) {
   if (length(colnames_diff) > 0) {
     cat("The following variables were dropped due to collinearity:\n")
     cat(colnames_diff, "\n")
-    vars_drop <- colnames_diff
   }
-  return(X)
+  return(list(mat = X, dropped = colnames_diff))
 }
