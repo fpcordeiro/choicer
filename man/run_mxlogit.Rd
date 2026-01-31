@@ -7,7 +7,8 @@
 run_mxlogit(
   input_data,
   eta_draws,
-  rc_correlation,
+  rc_dist = NULL,
+  rc_mean = FALSE,
   use_asc = TRUE,
   theta_init = NULL,
   nloptr_opts = NULL
@@ -23,12 +24,15 @@ run_mxlogit(
 \item $M: Vector of number of alternatives per choice situation
 \item $weights: Vector of weights for each choice situation
 \item $include_outside_option: Logical indicating whether an outside option is included
+\item $rc_correlation: Logical indicating whether random coefficients are correlated
 \item $alt_mapping: Data frame mapping alternatives to nests
 }}
 
-\item{eta_draws}{Array of shape K_x x S x N with standard normal draws for random coefficients}
+\item{eta_draws}{Array of shape K_w x S x N with standard normal draws for random coefficients}
 
-\item{rc_correlation}{Logical indicating whether to estimate full covariance matrix for random coefficients}
+\item{rc_dist}{Integer vector indicating distribution of random coefficients (0=normal, 1=log-normal)}
+
+\item{rc_mean}{Logical indicating whether to estimate means for random coefficients}
 
 \item{use_asc}{Logical indicating whether to include alternative-specific constants}
 

@@ -13,14 +13,16 @@ mxl_loglik_numeric_hessian(
   M,
   weights,
   eta_draws,
+  rc_dist,
   rc_correlation = TRUE,
+  rc_mean = FALSE,
   use_asc = TRUE,
   include_outside_option = FALSE,
   eps = 1e-06
 )
 }
 \arguments{
-\item{theta}{vector collecting model parameters (beta, L, delta (ASCs))}
+\item{theta}{vector collecting model parameters (beta, mu, L, delta (ASCs))}
 
 \item{X}{design matrix for covariates with fixed coefficients; sum(M_i) x K_x}
 
@@ -36,9 +38,13 @@ mxl_loglik_numeric_hessian(
 
 \item{eta_draws}{Array with choice situation draws; K_w x S x N}
 
+\item{rc_dist}{K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal}
+
 \item{rc_correlation}{whether random coefficients should be correlated}
 
-\item{use_asc}{whether to use alternative-specific constants}
+\item{rc_mean}{whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.}
+
+\item{use_asc}{whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).}
 
 \item{include_outside_option}{whether to include outside option normalized to 0 (if so, the outside option is not included in the data)}
 

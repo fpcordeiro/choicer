@@ -7,7 +7,7 @@
 //' Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
 //'
 //' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
-//'        Order: [beta (K), lambda (n_non_singleton_nests), delta (n_delta)]
+//'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
 //' @param X sum(M) x K design matrix with covariates.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
@@ -338,7 +338,7 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' Numerical Hessian of the log-likelihood via finite differences
 //'
 //' @param theta (K + n_delta + n_nests) vector with model parameters.
-//'        Order: [beta (K), delta (n_delta), lambda (n_nests)]
+//'        Order: `[beta (K), delta (n_delta), lambda (n_nests)]`
 //' @param X sum(M) x K design matrix with covariates.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
 //' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,

@@ -2,7 +2,7 @@
 % Please edit documentation in R/RcppExports.R
 \name{mxl_hessian_parallel}
 \alias{mxl_hessian_parallel}
-\title{Analytical Hessian of the log-likelihood}
+\title{Analytical Hessian of the log-likelihood v2}
 \usage{
 mxl_hessian_parallel(
   theta,
@@ -13,13 +13,15 @@ mxl_hessian_parallel(
   M,
   weights,
   eta_draws,
+  rc_dist,
   rc_correlation = TRUE,
+  rc_mean = FALSE,
   use_asc = TRUE,
   include_outside_option = FALSE
 )
 }
 \arguments{
-\item{theta}{vector collecting model parameters (beta, L, delta (ASCs))}
+\item{theta}{vector collecting model parameters (beta, mu, L, delta (ASCs))}
 
 \item{X}{design matrix for covariates with fixed coefficients; sum(M_i) x K_x}
 
@@ -35,9 +37,13 @@ mxl_hessian_parallel(
 
 \item{eta_draws}{Array with choice situation draws; K_w x S x N}
 
+\item{rc_dist}{K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal}
+
 \item{rc_correlation}{whether random coefficients should be correlated}
 
-\item{use_asc}{whether to use alternative-specific constants}
+\item{rc_mean}{whether to estimate means for random coefficients.}
+
+\item{use_asc}{whether to use alternative-specific constants.}
 
 \item{include_outside_option}{whether to include outside option normalized to 0 (if so, the outside option is not included in the data)}
 }
@@ -45,5 +51,12 @@ mxl_hessian_parallel(
 Hessian evaluated at input arguments
 }
 \description{
-Analytical Hessian of the log-likelihood
+Computes the Hessian of the log-likelihood for the Mixed Logit model using
+OpenMP for parallelization. Mirrors the parameters of mxl_loglik_gradient_parallel.
+}
+\note{
+For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
+the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
+where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
+This differs from the textbook parameterization exp(mu_k + L_k * eta).
 }

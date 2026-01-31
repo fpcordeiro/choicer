@@ -13,7 +13,8 @@ prepare_mxl_data(
   random_var_cols,
   weights = NULL,
   outside_opt_label = NULL,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  rc_correlation = FALSE
 )
 }
 \arguments{
@@ -34,9 +35,11 @@ prepare_mxl_data(
 \item{outside_opt_label}{Label for the outside option (if any). If NULL, no outside option is assumed.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
+
+\item{rc_correlation}{Logical indicating whether random coefficients are correlated. Default is FALSE.}
 }
 \value{
-A list containing prepared inputs for mixed logit estimation.
+A list containing prepared inputs for mixed logit estimation, including rc_correlation.
 }
 \description{
 Prepares and validates inputs for mixed logit estimation routine.

@@ -19,7 +19,7 @@ nl_loglik_numeric_hessian(
 }
 \arguments{
 \item{theta}{(K + n_delta + n_nests) vector with model parameters.
-Order: \link{beta (K), delta (n_delta), lambda (n_nests)}}
+Order: \verb{[beta (K), delta (n_delta), lambda (n_nests)]}}
 
 \item{X}{sum(M) x K design matrix with covariates.}
 

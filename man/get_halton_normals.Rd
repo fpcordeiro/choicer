@@ -4,17 +4,17 @@
 \alias{get_halton_normals}
 \title{Halton draws for mixed logit}
 \usage{
-get_halton_normals(S, N, K_x)
+get_halton_normals(S, N, K_w)
 }
 \arguments{
 \item{S}{Number of draws for each choice situation}
 
 \item{N}{number of choice situations}
 
-\item{K_x}{dimension of random coefficients}
+\item{K_w}{dimension of random coefficients (number of columns in W matrix)}
 }
 \value{
-K_x x S x N array with halton standard normal draws
+K_w x S x N array with halton standard normal draws
 }
 \description{
 Create halton normal draws in appropriate format for mixed logit estimation
