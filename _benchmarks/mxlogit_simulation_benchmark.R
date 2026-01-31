@@ -10,7 +10,7 @@ devtools::load_all()
 
 # Simulation settings ----------------------------------------------------------
 N <- 1e+4              # Number of individuals
-J_global <- 4          # Number of total alternatives (excluding outside good)
+J_global <- 6          # Number of total alternatives (excluding outside good)
 S <- 50 * ceiling((1.5 * sqrt(N)) / 50)     # Number of simulation draws per individual; S > sqrt(N) for consistency
 
 # Define seed for reproducibility
@@ -19,8 +19,9 @@ set.seed(123)
 # Simulate DGP -----------------------------------------------------------------
 delta_true <- rep(c(0.5, -0.5), J_global/2)
 beta_true <- c(0.8, -0.6)
+mu_true <- c(0.3, 0.7)
 Sigma_true <- matrix(
-  c(1.0, 0.5,
+  c(1.5, 0.5,
     0.5, 1.0),
   nrow = 2
 )
@@ -30,6 +31,9 @@ Sigma_true <- matrix(
 #     0.0, 1.0),
 #   nrow = K_w
 # )
+
+# First random coefficient is log-normal, second is normal
+rc_dist <- c(1L, 0L)
 
 K_x <- length(beta_true)                # Number of variables with "fixed" coefficients
 K_w <- ncol(Sigma_true)                 # Number of random-coefficient variables
@@ -51,6 +55,19 @@ L_size <- if (rc_correlation) {
 
 # Simulate gamma_i for each individual
 gamma_i <- L_true  %*% matrix(rnorm(N * K_w), nrow = K_w, ncol = N)
+
+# transform to log-normal distribution for selected dimensions
+for (r in seq_len(nrow(gamma_i)) ){
+  if (rc_dist[r] == 1) {
+    # Ensure it's negative
+    gamma_i[r, ] <- exp(gamma_i[r, ])
+  } else if (rc_dist[r] != 0L) {
+    warning("rc_dist must take values either 0 or 1.")
+  }
+}
+
+# Add mean shifter to random coefficients
+gamma_i <- kronecker(matrix(mu_true, ncol=1), matrix(1, nrow=1, ncol=N)) + gamma_i
 gamma_i <- t(gamma_i)
 
 # Draw alternatives
@@ -65,9 +82,9 @@ for (i in 1:N) {
 dt <- data.table(id = rep(seq_len(N), times = choice_set_sizes))
 
 dt[, `:=`(
-  w1 = runif(.N, min = -1, max = 1),
+  w1 = -runif(.N, min = 0.1, max = 3), # NEGATIVE PRICE
   w2 = runif(.N, min = -1, max = 1),
-  x1 = runif(.N, min = -1, max = 1),
+  x1 = runif(.N, min = 0, max = 3),
   x2 = runif(.N, min = -1, max = 1)
 )]
 
@@ -103,42 +120,42 @@ setkey(dt, id, alt)
 dt[, epsilon := -log(-log(runif(.N)))]
 
 # Compute utility per individual and alternative
-dt[, utility := delta + x1 * beta_true[1] + x2 * beta_true[2] + w1 * gamma1 + w2 * gamma2 + epsilon]
+dt[, utility := delta + x1 * beta_true[1] + x2 * beta_true[2] + w1 * (gamma1) + w2 * (gamma2) + epsilon]
 
 # Find choice
 dt[, choice := fifelse(seq_len(.N) == which.max(utility), 1L, 0L), by = id]
 
 # logitr -----------------------------------------------------------------------
 
-library(logitr)
+# library(logitr)
 
-# Optimization settings
-nloptr_opts <- list(
-  "algorithm" = "NLOPT_LD_LBFGS",
-  "xtol_rel" = 1.0e-8,
-  "maxeval" = 1e+3,
-  "print_level" = 1L,
-  "check_derivatives" = TRUE,
-  "check_derivatives_print" = "none"
-)
+# # Optimization settings
+# nloptr_opts <- list(
+#   "algorithm" = "NLOPT_LD_LBFGS",
+#   "xtol_rel" = 1.0e-8,
+#   "maxeval" = 1e+3,
+#   "print_level" = 1L,
+#   "check_derivatives" = TRUE,
+#   "check_derivatives_print" = "none"
+# )
 
-dt[, alt_factor := factor(alt)]
+# dt[, alt_factor := factor(alt)]
 
-halton_seq <- randtoolbox::halton(n = S, dim = J_global + K_x + K_w, normal = TRUE)
+# halton_seq <- randtoolbox::halton(n = S, dim = J_global + K_x + K_w, normal = TRUE)
 
-logitr_test <- logitr(
-  data = dt,
-  outcome = "choice",
-  obsID = "id",
-  pars = c("x1","x2","w1","w2","alt_factor"),
-  randPars = c("w1" = "n", "w2" = "n"),
-  correlation = TRUE,
-  numDraws = S,
-  standardDraws = halton_seq,
-  options = nloptr_opts
-)
+# logitr_test <- logitr(
+#   data = dt,
+#   outcome = "choice",
+#   obsID = "id",
+#   pars = c("x1","x2","w1","w2","alt_factor"),
+#   randPars = c("w1" = "ln", "w2" = "n"),
+#   correlation = TRUE,
+#   numDraws = S,
+#   standardDraws = halton_seq,
+#   options = nloptr_opts
+# )
 
-logitr_test |> summary() |> print()
+# logitr_test |> summary() |> print()
 
 # choicer Version --------------------------------------------------------------
 
@@ -153,7 +170,8 @@ mxl_inputs <- prepare_mxl_data(
   covariate_cols = c("x1", "x2"),
   random_var_cols = c("w1", "w2"),
   outside_opt_label = 0L,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  rc_correlation = rc_correlation
 )
 
 nloptr_opts <- list(
@@ -165,22 +183,50 @@ nloptr_opts <- list(
   "check_derivatives_print" = "none"
 )
 
-# Initial parameter vector theta_init
-theta_init <- runif(J_global + K_x + L_size, -1, 1)
+result_mnl <- nloptr::nloptr(
+  x0 = rep(0, ncol(mxl_inputs$X) + nrow(mxl_inputs$alt_mapping) - 1),
+  eval_f = mnl_loglik_gradient_parallel,
+  opts = nloptr_opts,
+  X = mxl_inputs$X,
+  alt_idx = mxl_inputs$alt_idx,
+  choice_idx = mxl_inputs$choice_idx,
+  M = mxl_inputs$M,
+  weights = mxl_inputs$weights,
+  use_asc = TRUE,
+  include_outside_option = mxl_inputs$include_outside_option
+)
 
-# Run model estimation
+# Debug: Verify dimensions before optimization
+cat("=== Dimension Check ===\n")
+cat("N from simulation:", N, "\n")
+cat("N from data:", mxl_inputs$N, "\n")
+cat("N for eta_draws:", dim(eta_draws)[3], "\n")
+cat("K_x (from X):", ncol(mxl_inputs$X), "\n")
+cat("K_w (from W):", ncol(mxl_inputs$W), "\n")
+cat("J (from alt_mapping):", nrow(mxl_inputs$alt_mapping), "\n")
+expected_len <- ncol(mxl_inputs$X) + K_w + L_size + nrow(mxl_inputs$alt_mapping) - 1
+cat("Expected theta length:", expected_len, "\n")
+cat("=======================\n\n")
+
+# Run model estimation (let run_mxlogit compute theta_init for safety)
 result <- run_mxlogit(
   input_data = mxl_inputs,
   eta_draws = eta_draws,
-  rc_correlation = rc_correlation,
+  rc_dist = rc_dist,
+  rc_mean = TRUE,
   use_asc = TRUE,
-  theta_init = theta_init,
+  # theta_init = runif(ncol(mxl_inputs$X) + K_w + L_size + nrow(mxl_inputs$alt_mapping) - 1, -1, 1),
+  theta_init = c(
+    result_mnl$solution[1:ncol(mxl_inputs$X)],
+    rep(0, K_w + L_size),
+    result_mnl$solution[(ncol(mxl_inputs$X)+1):length(result_mnl$solution)]
+  ),
   nloptr_opts = nloptr_opts
 )
 
 # Compare likelihoods
 llk_true <- mxl_loglik_gradient_parallel(
-  theta = c(beta_true, L_params_true, delta_true),
+  theta = c(beta_true, mu_true, L_params_true, delta_true),
   X = mxl_inputs$X,
   W = mxl_inputs$W,
   alt_idx = mxl_inputs$alt_idx,
@@ -188,7 +234,9 @@ llk_true <- mxl_loglik_gradient_parallel(
   M = mxl_inputs$M,
   weights = mxl_inputs$weights,
   eta_draws = eta_draws,
+  rc_dist = rc_dist,
   rc_correlation = rc_correlation,
+  rc_mean = TRUE,
   use_asc = TRUE,
   include_outside_option = mxl_inputs$include_outside_option
 )
@@ -201,8 +249,9 @@ theta_est <- result$solution
 
 # Separate the estimated parameters
 beta_est <- theta_est[1:K_x]
-L_params_est <- theta_est[(K_x + 1):(K_x + L_size)]
-delta_est <- theta_est[(K_x + L_size + 1):length(theta_est)]
+mu_est <- theta_est[(K_x+1):(K_x+K_w)]
+L_params_est <- theta_est[(K_x+K_w + 1):(K_x+K_w + L_size)]
+delta_est <- theta_est[(K_x+K_w + L_size + 1):length(theta_est)]
 
 # Compute estimated Sigma matrix
 Sigma_est <- build_var_mat(L_params_est, K_w, rc_correlation)
@@ -210,6 +259,10 @@ Sigma_est <- build_var_mat(L_params_est, K_w, rc_correlation)
 # Print true and estimated beta
 cat("True beta:", beta_true, "\n")
 cat("Estimated beta:", beta_est, "\n\n")
+
+# Print true and estimated mu
+cat("True mu:", mu_true, "\n")
+cat("Estimated mu:", c(exp(mu_est[1]),mu_est[2]), "\n\n")
 
 # Print true and estimated Sigma
 cat("True Sigma:\n")
@@ -231,7 +284,9 @@ get_mxl_result(
   M = mxl_inputs$M,
   weights = mxl_inputs$weights,
   eta_draws = eta_draws,
+  rc_dist = rc_dist,
   rc_correlation = rc_correlation,
+  rc_mean = TRUE,
   use_asc = TRUE,
   include_outside_option = mxl_inputs$include_outside_option,
   omit_asc_output = FALSE,
