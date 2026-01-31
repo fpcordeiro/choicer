@@ -188,7 +188,9 @@ prepare_mnl_data <- function(
   ## design matrix
   X <- as.matrix(dt[, ..covariate_cols])                        # sum(M) x K
   dt[, (covariate_cols) := NULL]
-  X <- check_collinearity(X)
+  X_res <- check_collinearity(X)
+  X <- X_res$mat
+  if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped
 
   ## alternative ids used for delta coefficients
   alt_idx <- as.integer(dt$alt_int)                             # length == sum(M)
@@ -259,7 +261,8 @@ prepare_mnl_data <- function(
     N           = N,
     weights     = weights,
     include_outside_option = include_outside_option,
-    alt_mapping = alt_mapping
+    alt_mapping = alt_mapping,
+    dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL
   )
 }
 
@@ -472,8 +475,6 @@ check_collinearity <- function(X) {
   if (length(colnames_diff) > 0) {
     cat("The following variables were dropped due to collinearity:\n")
     cat(colnames_diff, "\n")
-    vars_drop <- colnames_diff
   }
-  return(X)
+  return(list(mat = X, dropped = colnames_diff))
 }
-
