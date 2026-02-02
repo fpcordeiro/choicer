@@ -850,3 +850,588 @@ arma::mat mxl_hessian_parallel(
 
   return -global_hess;
 }
+
+// ============================================================================
+// Mixed Logit: Share Prediction and BLP Contraction
+// ============================================================================
+
+// Internal function for computing simulated market shares
+arma::vec mxl_predict_shares_internal(
+    const arma::mat& X,
+    const arma::mat& W,
+    const arma::vec& beta,
+    const arma::vec& mu_final,         // Transformed mu (exp(mu) for log-normal)
+    const arma::mat& L,                // Cholesky factor
+    const arma::uvec& alt_idx0,        // 0-based indexing
+    const Rcpp::IntegerVector& M,
+    const Rcpp::IntegerVector& S_prefix,
+    const arma::vec& weights,
+    const arma::vec& delta,            // Full J-element delta
+    const arma::cube& eta_draws,
+    const arma::uvec& rc_dist,
+    const int num_alts,
+    const bool use_asc,
+    const bool include_outside_option
+) {
+  const int N = M.size();
+  const int K_w = W.n_cols;
+  const int Sdraw = eta_draws.n_cols;
+  const double weight_sum = arma::accu(weights);
+
+  if (weight_sum <= 0) {
+    Rcpp::stop("Error: Sum of weights must be positive.");
+  }
+
+  // Initialize global accumulator for predicted shares
+  arma::vec global_shares = arma::zeros(num_alts);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulator
+    arma::vec local_shares = arma::zeros(num_alts);
+
+    // Thread-local working vectors
+    arma::vec eta_i_s(K_w);
+    arma::vec gamma_i_s(K_w);
+    arma::vec gamma_i_s_final(K_w);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx = S_prefix[i];
+      const int end_idx = start_idx + m_i - 1;
+      const double w_i = weights[i];
+      const auto X_i = X.rows(start_idx, end_idx);
+      const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+
+      arma::mat W_i;
+      if (W.n_rows == X.n_rows)
+        W_i = W.rows(start_idx, end_idx);
+      else
+        W_i = W.rows(alt_idx0_i);
+
+      // Accumulate probabilities over draws
+      arma::vec P_bar_i = arma::zeros(num_choices);
+
+      for (int s = 0; s < Sdraw; ++s) {
+        // Get eta and compute gamma
+        eta_i_s = eta_draws.slice(i).col(s);
+        gamma_i_s = L * eta_i_s;
+
+        // Apply distribution transforms
+        gamma_i_s_final = gamma_i_s;
+        for (int k = 0; k < K_w; ++k) {
+          if (rc_dist(k) == 1) {  // log-normal
+            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
+          }
+        }
+
+        // Build utility vector
+        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec inside_utils = X_i * beta + W_i * (mu_final + gamma_i_s_final);
+
+        if (use_asc) {
+          inside_utils += delta.elem(alt_idx0_i);
+        }
+
+        if (include_outside_option) {
+          V_s.subvec(1, num_choices - 1) = inside_utils;
+        } else {
+          V_s = inside_utils;
+        }
+
+        // Compute probabilities with numerical stability
+        V_s -= V_s.max();
+        double log_denom = std::log(arma::accu(arma::exp(V_s)));
+        arma::vec P_s = arma::exp(V_s - log_denom);
+
+        P_bar_i += P_s;
+      }  // end s loop
+
+      P_bar_i /= static_cast<double>(Sdraw);
+
+      // Accumulate shares by alternative
+      if (include_outside_option) {
+        local_shares(0) += w_i * P_bar_i(0);
+      }
+      for (int a = 0; a < m_i; ++a) {
+        if (include_outside_option) {
+          local_shares(alt_idx0_i(a) + 1) += w_i * P_bar_i(a + 1);
+        } else {
+          local_shares(alt_idx0_i(a)) += w_i * P_bar_i(a);
+        }
+      }
+    }  // end i loop
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_shares += local_shares;
+    }
+  }  // end parallel region
+
+  return global_shares / weight_sum;
+}
+
+//' BLP contraction mapping for mixed logit
+//'
+//' Finds the ASC (delta) parameters such that predicted market shares
+//' match target shares, using the contraction mapping of Berry, Levinsohn,
+//' and Pakes (1995).
+//'
+//' @param delta J-1 or J vector with initial guess for deltas (ASCs)
+//' @param target_shares J vector with target market shares
+//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+//' @param beta K_x vector with fixed coefficients
+//' @param mu K_w vector with mean parameters (raw, will be transformed if log-normal)
+//' @param L_params Cholesky parameters vector
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param eta_draws Array with draws; K_w x S x N
+//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param rc_correlation whether random coefficients are correlated
+//' @param rc_mean whether mu parameters represent means (TRUE) or are zero (FALSE)
+//' @param include_outside_option whether outside option is included
+//' @param tol convergence tolerance (default 1e-8)
+//' @param max_iter maximum iterations (default 1000)
+//' @return vector with converged delta (ASC) values
+//' @export
+// [[Rcpp::export]]
+arma::vec mxl_blp_contraction(
+    const arma::vec& delta,
+    const arma::vec& target_shares,
+    const arma::mat& X,
+    const arma::mat& W,
+    const arma::vec& beta,
+    const arma::vec& mu,
+    const arma::vec& L_params,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const arma::cube& eta_draws,
+    const arma::uvec& rc_dist,
+    const bool rc_correlation = true,
+    const bool rc_mean = false,
+    const bool include_outside_option = false,
+    const double tol = 1e-8,
+    const int max_iter = 1000
+) {
+  const int K_w = W.n_cols;
+  const bool use_asc = true;
+
+  // Build L matrix
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
+
+  // Transform mu for log-normal coefficients
+  arma::vec mu_final = mu;
+  if (rc_mean) {
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        mu_final(k) = std::exp(mu(k));
+      }
+    }
+  }
+
+  // Convert to 0-based indexing
+  arma::uvec alt_idx0 = alt_idx - 1;
+
+  // Deduce number of alternatives from data
+  const int J_inside = static_cast<int>(arma::max(alt_idx0)) + 1;  // inside options
+  const int num_alts = include_outside_option ? (J_inside + 1) : J_inside;  // total options incl. outside
+
+  // Validate target shares length
+  if (static_cast<int>(target_shares.n_elem) != num_alts) {
+    Rcpp::stop("Error: target_shares must have length %d (total alternatives, incl. outside if present).", num_alts);
+  }
+
+  // Compute prefix sums
+  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // ---------------------------------------------------------------------------
+  // Harmonize delta input:
+  // - include_outside_option = TRUE: delta must have length J_inside (inside
+  //   alternatives only). The outside option has no ASC (utility normalized to 0).
+  // - include_outside_option = FALSE: allow J-1 (free) or J (full) length. Pad
+  //   a leading zero if only free deltas are provided; keep baseline anchored.
+  // ---------------------------------------------------------------------------
+  arma::vec delta_current;  // length J_inside
+  if (include_outside_option) {
+    if (static_cast<int>(delta.n_elem) == J_inside) {
+      delta_current = delta;
+    } else {
+      Rcpp::stop("Error: delta must have length %d (inside alternatives only).", J_inside);
+    }
+  } else {
+    if (static_cast<int>(delta.n_elem) == J_inside) {
+      delta_current = delta;
+    } else if (static_cast<int>(delta.n_elem) == J_inside - 1) {
+      delta_current = arma::zeros(J_inside);
+      delta_current.subvec(1, J_inside - 1) = delta;  // pad baseline with 0
+    } else {
+      Rcpp::stop("Error: delta must have length %d (full) or %d (free, with baseline omitted).",
+                 J_inside, J_inside - 1);
+    }
+    // Anchor baseline at zero for identification
+    delta_current -= delta_current(0);
+  }
+
+  // Compute initial predicted shares
+  arma::vec shares_pred = mxl_predict_shares_internal(
+    X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
+    delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option
+  );
+
+  // Work with inside shares only for the contraction step
+  arma::vec shares_pred_inside = include_outside_option
+                                 ? shares_pred.subvec(1, num_alts - 1)
+                                 : shares_pred;
+  arma::vec target_shares_inside = include_outside_option
+                                   ? target_shares.subvec(1, num_alts - 1)
+                                   : target_shares;
+
+  // Guard against zeros before taking logs
+  auto validate_positive = [](const arma::vec& v, const char* name) {
+    if (v.min() <= 0.0) {
+      Rcpp::stop("%s contains non-positive entries; cannot take logarithm.", name);
+    }
+  };
+  validate_positive(shares_pred_inside, "Predicted shares");
+  validate_positive(target_shares_inside, "Target shares");
+
+  arma::vec log_shares_old = arma::log(shares_pred_inside);
+  arma::vec log_shares_target = arma::log(target_shares_inside);
+
+  // Iteration
+  int iter = 0;
+  double residual = 10.0;
+
+  while (iter < max_iter) {
+    arma::vec delta_new = delta_current + (log_shares_target - log_shares_old);
+
+    // Re-anchor baseline each iteration when there is no outside option
+    if (!include_outside_option) {
+      delta_new -= delta_new(0);
+    }
+
+    residual = arma::max(arma::abs(delta_new - delta_current));
+
+    if (residual < tol) {
+      break;
+    }
+
+    delta_current = delta_new;
+    shares_pred = mxl_predict_shares_internal(
+      X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
+      delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option
+    );
+
+    shares_pred_inside = include_outside_option
+                         ? shares_pred.subvec(1, num_alts - 1)
+                         : shares_pred;
+    validate_positive(shares_pred_inside, "Predicted shares");
+    log_shares_old = arma::log(shares_pred_inside);
+    ++iter;
+  }
+
+  if (iter >= max_iter) {
+    Rcpp::Rcout << "Warning: Maximum iterations reached without convergence. Residual: "
+                << residual << std::endl;
+  }
+
+  return delta_current;
+}
+
+//' Compute aggregate elasticities for mixed logit model
+//'
+//' Computes the aggregate elasticity matrix (weighted average of individual
+//' elasticities) for the Mixed Logit model. The elasticity E(i,j) represents
+//' the percentage change in the probability of choosing alternative i when
+//' the attribute of alternative j changes by 1%.
+//'
+//' @param theta parameter vector (beta, [mu], L, delta)
+//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param choice_idx N x 1 vector (kept for API consistency, not used)
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param eta_draws Array with draws; K_w x S x N
+//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param elast_var_idx 1-based index of the variable for elasticity computation
+//' @param is_random_coef TRUE if variable is in W (random coef), FALSE if in X (fixed coef)
+//' @param rc_correlation whether random coefficients are correlated
+//' @param rc_mean whether mu parameters are estimated
+//' @param use_asc whether ASCs are included
+//' @param include_outside_option whether outside option is included
+//' @return J x J matrix of aggregate elasticities
+//' @export
+// [[Rcpp::export]]
+arma::mat mxl_elasticities_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::mat& W,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const arma::cube& eta_draws,
+    const arma::uvec& rc_dist,
+    const int elast_var_idx,
+    const bool is_random_coef,
+    const bool rc_correlation = true,
+    const bool rc_mean = false,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  (void)choice_idx;  // unused, kept for API consistency
+
+  // Basic dimensions
+  const int N = M.size();
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = eta_draws.n_cols;
+  const int n_params = theta.n_elem;
+  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
+
+  // Convert 1-based R index to 0-based C++ index
+  const int var_idx = elast_var_idx - 1;
+
+  // Validate variable index
+  if (is_random_coef) {
+    if (var_idx < 0 || var_idx >= K_w) {
+      Rcpp::stop("elast_var_idx (%d) is out of bounds for W matrix (K_w=%d).",
+                 elast_var_idx, K_w);
+    }
+  } else {
+    if (var_idx < 0 || var_idx >= K_x) {
+      Rcpp::stop("elast_var_idx (%d) is out of bounds for X matrix (K_x=%d).",
+                 elast_var_idx, K_x);
+    }
+  }
+
+  // Parameter block indices
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Extract beta
+  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+  const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
+
+  // Extract and transform mu
+  arma::vec mu_final = arma::zeros(K_w);
+  if (rc_mean) {
+    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
+    mu_final = mu;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        mu_final(k) = std::exp(mu(k));
+      }
+    }
+  }
+
+  // Extract L parameters and build L matrix
+  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
+
+  // Extract delta
+  arma::vec delta;
+  if (use_asc) {
+    const int delta_free_len = n_params - idx_delta_start;
+    if (delta_free_len <= 0) {
+      Rcpp::stop("Theta vector too short: missing delta parameters.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(idx_delta_start, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_free_len + 1);
+      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
+    }
+  } else {
+    delta.set_size(0);
+  }
+
+  // Convert to 0-based indexing
+  arma::uvec alt_idx0 = alt_idx - 1;
+
+  // Determine total number of alternatives
+  const int J_inside = use_asc ? static_cast<int>(delta.n_elem) : (arma::max(alt_idx0) + 1);
+  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+
+  // Compute prefix sums
+  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // Global accumulators
+  arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
+  double global_total_weight = 0.0;
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulators
+    arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
+    double local_total_weight = 0.0;
+
+    // Thread-local working vectors
+    arma::vec eta_i_s(K_w);
+    arma::vec gamma_i_s(K_w);
+    arma::vec gamma_i_s_final(K_w);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx = S_prefix[i];
+      const int end_idx = start_idx + m_i - 1;
+      const double w_i = weights[i];
+      const auto X_i = X.rows(start_idx, end_idx);
+      const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+
+      arma::mat W_i;
+      if (W.n_rows == X.n_rows)
+        W_i = W.rows(start_idx, end_idx);
+      else
+        W_i = W.rows(alt_idx0_i);
+
+      // Map local indices to global alternative indices
+      arma::uvec global_j_map(num_choices);
+      if (include_outside_option) {
+        global_j_map(0) = 0;  // Outside option is global index 0
+        global_j_map.subvec(1, m_i) = alt_idx0_i + 1;
+      } else {
+        global_j_map = alt_idx0_i;
+      }
+
+      // Get attribute values for the elasticity variable
+      arma::vec x_k_i = arma::zeros(num_choices);
+      if (is_random_coef) {
+        if (include_outside_option) {
+          x_k_i.subvec(1, num_choices - 1) = W_i.col(var_idx);
+        } else {
+          x_k_i = W_i.col(var_idx);
+        }
+      } else {
+        if (include_outside_option) {
+          x_k_i.subvec(1, num_choices - 1) = X_i.col(var_idx);
+        } else {
+          x_k_i = X_i.col(var_idx);
+        }
+      }
+
+      // Compute P_bar (average probabilities) and accumulate elasticity terms
+      arma::vec P_bar_i = arma::zeros(num_choices);
+      arma::mat elas_accum = arma::zeros(num_choices, num_choices);
+
+      for (int s = 0; s < Sdraw; ++s) {
+        // Get eta and compute gamma
+        eta_i_s = eta_draws.slice(i).col(s);
+        gamma_i_s = L * eta_i_s;
+
+        // Apply distribution transforms
+        gamma_i_s_final = gamma_i_s;
+        for (int k = 0; k < K_w; ++k) {
+          if (rc_dist(k) == 1) {  // log-normal
+            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
+          }
+        }
+
+        // Get effective coefficient for this draw
+        double beta_k_eff;
+        if (is_random_coef) {
+          beta_k_eff = mu_final(var_idx) + gamma_i_s_final(var_idx);
+        } else {
+          beta_k_eff = beta_k;
+        }
+
+        // Build utility vector
+        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec inside_utils = X_i * beta + W_i * (mu_final + gamma_i_s_final);
+
+        if (use_asc) {
+          inside_utils += delta.elem(alt_idx0_i);
+        }
+
+        if (include_outside_option) {
+          V_s.subvec(1, num_choices - 1) = inside_utils;
+        } else {
+          V_s = inside_utils;
+        }
+
+        // Compute probabilities
+        V_s -= V_s.max();
+        double log_denom = std::log(arma::accu(arma::exp(V_s)));
+        arma::vec P_s = arma::exp(V_s - log_denom);
+
+        P_bar_i += P_s;
+
+        // Accumulate elasticity terms for this draw
+        for (int j_local = 0; j_local < num_choices; ++j_local) {
+          const double P_j = P_s(j_local);
+
+          for (int m_local = 0; m_local < num_choices; ++m_local) {
+            const double P_m = P_s(m_local);
+            const double x_km = x_k_i(m_local);
+
+            double elas_term;
+            if (j_local == m_local) {
+              // Own-elasticity: beta_k * x_k * P_j * (1 - P_j)
+              elas_term = beta_k_eff * x_km * P_j * (1.0 - P_j);
+            } else {
+              // Cross-elasticity: -beta_k * x_km * P_j * P_m
+              elas_term = -beta_k_eff * x_km * P_j * P_m;
+            }
+
+            elas_accum(j_local, m_local) += elas_term;
+          }
+        }
+      }  // end s loop
+
+      P_bar_i /= static_cast<double>(Sdraw);
+      elas_accum /= static_cast<double>(Sdraw);
+
+      // Compute final elasticities: E = elas_accum / P_bar
+      // and map to global indices
+      for (int j_local = 0; j_local < num_choices; ++j_local) {
+        const int global_j = global_j_map(j_local);
+        const double P_bar_j = P_bar_i(j_local);
+
+        if (P_bar_j > 1e-12) {  // Avoid division by zero
+          for (int m_local = 0; m_local < num_choices; ++m_local) {
+            const int global_m = global_j_map(m_local);
+            double elasticity = elas_accum(j_local, m_local) / P_bar_j;
+            local_elas_matrix(global_j, global_m) += w_i * elasticity;
+          }
+        }
+      }
+
+      local_total_weight += w_i;
+    }  // end i loop
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_elas_matrix += local_elas_matrix;
+      global_total_weight += local_total_weight;
+    }
+  }  // end parallel region
+
+  // Compute weighted average
+  if (global_total_weight > 1e-10) {
+    global_elas_matrix /= global_total_weight;
+  }
+
+  return global_elas_matrix;
+}

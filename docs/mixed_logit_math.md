@@ -10,6 +10,8 @@ This document provides a detailed mathematical description of the mixed logit (r
 4. [Gradient Computation](#3-gradient-computation)
 5. [Hessian Computation](#4-hessian-computation)
 6. [Implementation Details](#5-implementation-details)
+7. [Elasticity Computation](#6-elasticity-computation)
+8. [BLP Contraction Mapping](#7-blp-contraction-mapping)
 
 ---
 
@@ -420,7 +422,132 @@ The implementation parallelizes over individuals using OpenMP:
 
 ---
 
+## 6. Elasticity Computation
+
+### 6.1 Elasticity Definitions
+
+The elasticity measures the percentage change in choice probability with respect to a percentage change in an attribute. For the mixed logit model, we compute elasticities using simulated probabilities.
+
+**Simulated Probability:**
+
+$$
+\bar{P}_{ij} = \frac{1}{S} \sum_{s=1}^{S} P_{ij}^s
+$$
+
+### 6.2 Elasticity for Fixed Coefficients (X Variables)
+
+For a variable $k$ in the design matrix $X$ with fixed coefficient $\beta_k$:
+
+**Own-Elasticity** (elasticity of $P_{ij}$ with respect to $x_{ijk}$):
+
+$$
+E_{jj}^k = \frac{\partial \bar{P}_{ij}}{\partial x_{ijk}} \cdot \frac{x_{ijk}}{\bar{P}_{ij}}
+$$
+
+Using the chain rule and averaging over draws:
+
+$$
+E_{jj}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \beta_k \cdot x_{ijk} \cdot P_{ij}^s \cdot (1 - P_{ij}^s)
+$$
+
+**Cross-Elasticity** (elasticity of $P_{ij}$ with respect to $x_{imk}$ where $m \neq j$):
+
+$$
+E_{jm}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \left( -\beta_k \cdot x_{imk} \cdot P_{ij}^s \cdot P_{im}^s \right)
+$$
+
+### 6.3 Elasticity for Random Coefficients (W Variables)
+
+For a variable $k$ in the design matrix $W$ with random coefficient, the effective coefficient for individual $i$ and draw $s$ is:
+
+$$
+\beta_{ik}^s = \mu_k^* + \gamma_{ik}^{s*}
+$$
+
+where:
+- For normal distribution: $\mu_k^* = \mu_k$, $\gamma_{ik}^{s*} = \gamma_{ik}^s$
+- For log-normal distribution: $\mu_k^* = \exp(\mu_k)$, $\gamma_{ik}^{s*} = \exp(\gamma_{ik}^s)$
+
+**Own-Elasticity:**
+
+$$
+E_{jj}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \beta_{ik}^s \cdot w_{ijk} \cdot P_{ij}^s \cdot (1 - P_{ij}^s)
+$$
+
+**Cross-Elasticity:**
+
+$$
+E_{jm}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \left( -\beta_{ik}^s \cdot w_{imk} \cdot P_{ij}^s \cdot P_{im}^s \right)
+$$
+
+### 6.4 Aggregate Elasticities
+
+The implementation computes weighted average elasticities across all individuals:
+
+$$
+\bar{E}_{jm}^k = \frac{\sum_{i=1}^{N} w_i \cdot E_{ijm}^k}{\sum_{i=1}^{N} w_i}
+$$
+
+*Code reference: [mxlogit.cpp:mxl_elasticities_parallel](../src/mxlogit.cpp)*
+
+---
+
+## 7. BLP Contraction Mapping
+
+### 7.1 Problem Statement
+
+Given observed market shares $s_j$, find the ASC parameters $\delta_j$ such that the model-predicted shares match the observed shares:
+
+$$
+\hat{s}_j(\delta) = s_j \quad \forall j
+$$
+
+where $\hat{s}_j(\delta)$ is the predicted market share for alternative $j$ computed using simulated probabilities.
+
+### 7.2 Simulated Market Shares
+
+The predicted market share for alternative $j$ is:
+
+$$
+\hat{s}_j(\delta) = \frac{1}{\sum_i w_i} \sum_{i=1}^{N} w_i \cdot \bar{P}_{ij}
+$$
+
+where:
+
+$$
+\bar{P}_{ij} = \frac{1}{S} \sum_{s=1}^{S} P_{ij}^s(\delta)
+$$
+
+and $P_{ij}^s(\delta)$ is the probability for individual $i$, alternative $j$, and draw $s$, which depends on $\delta$ through the utility specification.
+
+### 7.3 Contraction Mapping Algorithm
+
+Berry, Levinsohn, and Pakes (1995) show that the following iteration converges to the solution:
+
+$$
+\delta_j^{(t+1)} = \delta_j^{(t)} + \log(s_j) - \log(\hat{s}_j^{(t)})
+$$
+
+This can be written in vector form as:
+
+$$
+\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
+$$
+
+### 7.4 Implementation Details
+
+1. **Initialization**: Start with initial guess $\delta^{(0)}$
+2. **Prediction**: Compute predicted shares $\hat{s}(\delta^{(t)})$ using `mxl_predict_shares_internal`
+3. **Update**: Apply the contraction: $\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})$
+4. **Convergence**: Check if $\max_j |\delta_j^{(t+1)} - \delta_j^{(t)}| < \text{tol}$
+5. **Normalization**: Subtract $\delta_1$ from all ASCs to maintain identification
+
+*Code reference: [mxlogit.cpp:mxl_blp_contraction](../src/mxlogit.cpp)*
+
+---
+
 ## References
 
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation*. Cambridge University Press.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
+- Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
