@@ -4,7 +4,7 @@
 \name{choicer-package}
 \alias{choicer}
 \alias{choicer-package}
-\title{choicer: A package for discrete choice models.}
+\title{choicer: Discrete Choice Models for Economic Applications}
 \description{
 Tools for estimating discrete-choice models used in applied economics. Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr). The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL).
 }

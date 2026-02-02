@@ -14,31 +14,32 @@ run_nestlogit(
 )
 }
 \arguments{
-\item{input_data}{List containing prepared input data for estimation
+\item{input_data}{List containing prepared input data for estimation:
 \itemize{
-\item $X: Design matrix
-\item $alt_idx: Alternative indices for each observation
-\item $choice_idx: Chosen alternative indices for each choice situation
-\item $nest_idx: Nest indices for each alternative (same length as number of alternatives, one nest per alternative)
-\item $M: Vector of number of alternatives per choice situation
-\item $weights: Vector of weights for each choice situation
-\item $alt_mapping: Data frame mapping alternatives to nests
-\item $include_outside_option: Logical indicating whether an outside option is included
+\item \code{X}: Design matrix.
+\item \code{alt_idx}: Alternative indices for each observation.
+\item \code{choice_idx}: Chosen alternative indices for each choice situation.
+\item \code{nest_idx}: Nest indices for each alternative (same length as number of alternatives).
+\item \code{M}: Vector of number of alternatives per choice situation.
+\item \code{weights}: Vector of weights for each choice situation.
+\item \code{alt_mapping}: Data frame mapping alternatives to nests.
+\item \code{include_outside_option}: Logical indicating whether an outside option is included.
 }}
 
-\item{use_asc}{Logical indicating whether to include alternative specific constants (ASCs)}
+\item{use_asc}{Logical indicating whether to include alternative specific constants (ASCs).}
 
-\item{theta_init}{Optional initial parameter vector for optimization. If NULL, a default vector is used.}
+\item{theta_init}{Optional initial parameter vector for optimization. If \code{NULL}, a default vector is used.}
 
-\item{param_names}{Optional vector of parameter names for result summary. If NULL, default names are generated.}
+\item{param_names}{Optional vector of parameter names for result summary. If \code{NULL}, default names are generated.}
 
-\item{nloptr_opts}{Optional list of options for the nloptr optimizer. If NULL, default options are used.}
+\item{nloptr_opts}{Optional list of options for the nloptr optimizer. If \code{NULL}, default options are used.}
 
-\item{path_output}{Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved}
+\item{path_output}{Optional file path to save the coefficient summary table as a CSV file. If \code{NULL}, no file is saved.}
 }
 \value{
-List containing optimization result and additional information
+Result object from \code{nloptr::nloptr()}, with an added \code{alt_mapping} element
+containing a data.table mapping alternative codes to labels and summary statistics.
 }
 \description{
-Wrapper for nested logit model estimation using nloptr optimizer
+Wrapper for nested logit model estimation using nloptr optimizer.
 }

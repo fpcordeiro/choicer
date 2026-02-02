@@ -16,22 +16,36 @@ prepare_mnl_data(
 )
 }
 \arguments{
-\item{data}{Data frame containing choice data}
+\item{data}{Data frame containing choice data.}
 
-\item{id_col}{Name of the column identifying choice situations (individuals)}
+\item{id_col}{Name of the column identifying choice situations (individuals).}
 
-\item{alt_col}{Name of the column identifying alternatives}
+\item{alt_col}{Name of the column identifying alternatives.}
 
-\item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)}
+\item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen).}
 
-\item{covariate_cols}{Vector of names of columns to be used as covariates}
+\item{covariate_cols}{Vector of names of columns to be used as covariates.}
 
-\item{weights}{Optional vector of weights for each choice situation. If NULL, equal weights are used.}
+\item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.}
 
-\item{outside_opt_label}{Label for the outside option (if any). If NULL, no outside option is assumed.}
+\item{outside_opt_label}{Label for the outside option (if any). If \code{NULL}, no outside option is assumed.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
 }
+\value{
+A list containing:
+\itemize{
+\item \code{X}: Design matrix (sum(M) x K).
+\item \code{alt_idx}: Integer vector of alternative indices.
+\item \code{choice_idx}: Integer vector of chosen alternative indices.
+\item \code{M}: Integer vector with number of alternatives per choice situation.
+\item \code{N}: Number of choice situations.
+\item \code{weights}: Vector of weights.
+\item \code{include_outside_option}: Logical flag.
+\item \code{alt_mapping}: Data.table mapping alternatives to summary statistics.
+\item \code{dropped_cols}: Names of columns dropped due to collinearity, if any.
+}
+}
 \description{
-Prepares and validates inputs for mixed logit estimation routine.
+Prepares and validates inputs for multinomial logit estimation routine.
 }

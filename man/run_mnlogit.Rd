@@ -19,28 +19,32 @@ run_mnlogit(
 )
 }
 \arguments{
-\item{data}{Data frame containing choice data}
+\item{data}{Data frame containing choice data.}
 
-\item{id_col}{Name of the column identifying choice situations (individuals)}
+\item{id_col}{Name of the column identifying choice situations (individuals).}
 
-\item{alt_col}{Name of the column identifying alternatives}
+\item{alt_col}{Name of the column identifying alternatives.}
 
-\item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)}
+\item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen).}
 
-\item{covariate_cols}{Vector of names of columns to be used as covariates}
+\item{covariate_cols}{Vector of names of columns to be used as covariates.}
 
-\item{nloptr_opts}{List of options to pass to \code{nloptr::nloptr()}. If NULL, default options are used.}
+\item{nloptr_opts}{List of options to pass to \code{nloptr::nloptr()}. If \code{NULL}, default options are used.}
 
-\item{weights}{Optional vector of weights for each choice situation. If NULL, equal weights are used.}
+\item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.}
 
-\item{outside_opt_label}{Label for the outside option (if any). If NULL, no outside option is assumed.}
+\item{outside_opt_label}{Label for the outside option (if any). If \code{NULL}, no outside option is assumed.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
 
 \item{use_asc}{Logical indicating whether to include alternative-specific constants (ASCs) in the model.}
 
-\item{path_output}{Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.}
+\item{path_output}{Optional file path to save the coefficient summary table as a CSV file. If \code{NULL}, no file is saved.}
+}
+\value{
+Result object from \code{nloptr::nloptr()}, with an added \code{alt_mapping} element
+containing a data.table mapping alternative codes to labels and summary statistics.
 }
 \description{
-Runs data preparation and validation, likelihood maximization, and result summary
+Runs data preparation and validation, likelihood maximization, and result summary.
 }

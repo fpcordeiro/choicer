@@ -20,30 +20,34 @@ get_nl_result(
 )
 }
 \arguments{
-\item{opt_result}{Result object from nloptr optimization containing at least 'solution' element}
+\item{opt_result}{Result object from nloptr optimization containing at least \code{solution} element.}
 
-\item{X}{Design matrix used in estimation}
+\item{X}{Design matrix used in estimation.}
 
-\item{alt_idx}{Alternative indices for each observation}
+\item{alt_idx}{Alternative indices for each observation.}
 
-\item{choice_idx}{Chosen alternative indices for each choice situation}
+\item{choice_idx}{Chosen alternative indices for each choice situation.}
 
-\item{nest_idx}{Nest indices for each alternative (same length as number of alternatives)}
+\item{nest_idx}{Nest indices for each alternative (same length as number of alternatives).}
 
-\item{M}{Vector of number of alternatives per choice situation}
+\item{M}{Vector of number of alternatives per choice situation.}
 
-\item{weights}{Vector of weights for each choice situation}
+\item{weights}{Vector of weights for each choice situation.}
 
-\item{use_asc}{Logical indicating whether ASCs were included in the model}
+\item{use_asc}{Logical indicating whether ASCs were included in the model.}
 
-\item{include_outside_option}{Logical indicating whether an outside option was included in the model}
+\item{include_outside_option}{Logical indicating whether an outside option was included in the model.}
 
-\item{omit_asc_output}{Logical indicating whether to omit ASC parameters from the output table}
+\item{omit_asc_output}{Logical indicating whether to omit ASC parameters from the output table.}
 
-\item{param_names}{Optional vector of parameter names. If NULL, default names are generated.}
+\item{param_names}{Optional vector of parameter names. If \code{NULL}, default names are generated.}
 
-\item{file_name}{Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.}
+\item{file_name}{Optional file path to save the coefficient summary table as a CSV file. If \code{NULL}, no file is saved.}
+}
+\value{
+A data frame (invisibly) with columns: Index, Parameter, Estimate,
+Std_Error, z_value, Pr_z, and Signif. The table is also printed to the console.
 }
 \description{
-Prints and saves coefficient summary table for nested logit model
+Prints and saves coefficient summary table for nested logit model.
 }

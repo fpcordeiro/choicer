@@ -225,6 +225,63 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
+#' BLP contraction mapping for mixed logit
+#'
+#' Finds the ASC (delta) parameters such that predicted market shares
+#' match target shares, using the contraction mapping of Berry, Levinsohn,
+#' and Pakes (1995).
+#'
+#' @param delta J-1 or J vector with initial guess for deltas (ASCs)
+#' @param target_shares J vector with target market shares
+#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+#' @param beta K_x vector with fixed coefficients
+#' @param mu K_w vector with mean parameters (raw, will be transformed if log-normal)
+#' @param L_params Cholesky parameters vector
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param eta_draws Array with draws; K_w x S x N
+#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param rc_correlation whether random coefficients are correlated
+#' @param rc_mean whether mu parameters represent means (TRUE) or are zero (FALSE)
+#' @param include_outside_option whether outside option is included
+#' @param tol convergence tolerance (default 1e-8)
+#' @param max_iter maximum iterations (default 1000)
+#' @return vector with converged delta (ASC) values
+#' @export
+mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L) {
+    .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter)
+}
+
+#' Compute aggregate elasticities for mixed logit model
+#'
+#' Computes the aggregate elasticity matrix (weighted average of individual
+#' elasticities) for the Mixed Logit model. The elasticity E(i,j) represents
+#' the percentage change in the probability of choosing alternative i when
+#' the attribute of alternative j changes by 1%.
+#'
+#' @param theta parameter vector (beta, [mu], L, delta)
+#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param choice_idx N x 1 vector (kept for API consistency, not used)
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param eta_draws Array with draws; K_w x S x N
+#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param elast_var_idx 1-based index of the variable for elasticity computation
+#' @param is_random_coef TRUE if variable is in W (random coef), FALSE if in X (fixed coef)
+#' @param rc_correlation whether random coefficients are correlated
+#' @param rc_mean whether mu parameters are estimated
+#' @param use_asc whether ASCs are included
+#' @param include_outside_option whether outside option is included
+#' @return J x J matrix of aggregate elasticities
+#' @export
+mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option)
+}
+
 #' Log-likelihood and gradient for Nested Logit model
 #'
 #' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.

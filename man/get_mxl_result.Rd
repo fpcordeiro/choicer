@@ -24,34 +24,44 @@ get_mxl_result(
 )
 }
 \arguments{
-\item{opt_result}{Result object from nloptr optimization containing at least 'solution' element}
+\item{opt_result}{Result object from nloptr optimization containing at least \code{solution} element.}
 
-\item{X}{Design matrix used in estimation}
+\item{X}{Design matrix used in estimation.}
 
-\item{W}{Design matrix for random coefficients}
+\item{W}{Design matrix for random coefficients.}
 
-\item{alt_idx}{Alternative indices for each observation}
+\item{alt_idx}{Alternative indices for each observation.}
 
-\item{choice_idx}{Chosen alternative indices for each choice situation}
+\item{choice_idx}{Chosen alternative indices for each choice situation.}
 
-\item{M}{Vector of number of alternatives per choice situation}
+\item{M}{Vector of number of alternatives per choice situation.}
 
-\item{weights}{Vector of weights for each choice situation}
+\item{weights}{Vector of weights for each choice situation.}
 
-\item{eta_draws}{Array of shape K_x x S x N with standard normal draws for random coefficients}
+\item{eta_draws}{Array of shape K_w x S x N with standard normal draws for random coefficients.}
 
-\item{rc_correlation}{Logical indicating whether a full covariance matrix was estimated for random coefficients}
+\item{rc_dist}{Integer vector indicating distribution of random coefficients (0 = normal, 1 = log-normal).}
 
-\item{use_asc}{Logical indicating whether ASCs were included in the model}
+\item{rc_correlation}{Logical indicating whether a full covariance matrix was estimated for random coefficients.}
 
-\item{include_outside_option}{Logical indicating whether an outside option was included in the model}
+\item{rc_mean}{Logical indicating whether means were estimated for random coefficients.}
 
-\item{omit_asc_output}{Logical indicating whether to omit ASC parameters from the output table}
+\item{use_asc}{Logical indicating whether ASCs were included in the model.}
 
-\item{param_names}{Optional vector of parameter names. If NULL, default names are generated.}
+\item{include_outside_option}{Logical indicating whether an outside option was included in the model.}
 
-\item{file_name}{Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.}
+\item{omit_asc_output}{Logical indicating whether to omit ASC parameters from the output table.}
+
+\item{param_names}{Optional vector of parameter names. If \code{NULL}, default names are generated.}
+
+\item{file_name}{Optional file path to save the coefficient summary table as a CSV file. If \code{NULL}, no file is saved.}
+}
+\value{
+A data frame (invisibly) with columns: Index, Parameter, Estimate,
+Std_Error, z_value, Pr_z, and Signif. For variance parameters, the delta method
+is applied to transform from Cholesky to covariance scale. The table is also
+printed to the console.
 }
 \description{
-Prints and saves coefficient summary table for mixed logit model
+Prints and saves coefficient summary table for mixed logit model.
 }
