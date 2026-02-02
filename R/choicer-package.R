@@ -1,7 +1,3 @@
-#' choicer: A package for discrete choice models.
-#'
-#' @docType package
-#' @name choicer-package
 #' @keywords internal
 "_PACKAGE"
 
@@ -16,6 +12,8 @@
 #' @importFrom data.table .SD
 #' @importFrom data.table data.table
 #' @importFrom Rcpp sourceCpp
+#' @importFrom stats pnorm
+#' @importFrom utils write.csv
 #' @useDynLib choicer, .registration = TRUE
 ## usethis namespace: end
 NULL

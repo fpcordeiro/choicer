@@ -13,8 +13,14 @@ RoxygenNote: 7.3.3
 LinkingTo: 
     Rcpp,
     RcppArmadillo
-Imports: 
+Imports:
     data.table,
     nloptr,
     randtoolbox,
-    Rcpp
+    Rcpp,
+    stats,
+    utils
+Suggests:
+    testthat (>= 3.0.0),
+    numDeriv
+Config/testthat/edition: 3
