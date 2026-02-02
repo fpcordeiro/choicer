@@ -112,7 +112,8 @@ mxl_inputs <- prepare_mxl_data(
   covariate_cols = c("x1", "x2"),
   random_var_cols = c("w1", "w2"),
   outside_opt_label = 0L,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  rc_correlation = rc_correlation
 )
 
 nloptr_opts <- list(
@@ -131,7 +132,6 @@ theta_init <- runif(J_global + K_x + L_size, -1, 1)
 result <- run_mxlogit(
   input_data = mxl_inputs,
   eta_draws = eta_draws,
-  rc_correlation = rc_correlation,
   use_asc = TRUE,
   theta_init = theta_init,
   nloptr_opts = nloptr_opts
@@ -147,7 +147,8 @@ llk_true <- mxl_loglik_gradient_parallel(
   M = mxl_inputs$M,
   weights = mxl_inputs$weights,
   eta_draws = eta_draws,
-  rc_correlation = rc_correlation,
+  rc_dist = rep(0L, K_w),
+  rc_correlation = mxl_inputs$rc_correlation,
   use_asc = TRUE,
   include_outside_option = mxl_inputs$include_outside_option
 )
@@ -164,7 +165,7 @@ L_params_est <- theta_est[(K_x + 1):(K_x + L_size)]
 delta_est <- theta_est[(K_x + L_size + 1):length(theta_est)]
 
 # Compute estimated Sigma matrix
-Sigma_est <- build_var_mat(L_params_est, K_w, rc_correlation)
+Sigma_est <- build_var_mat(L_params_est, K_w, mxl_inputs$rc_correlation)
 
 # Print true and estimated beta
 cat("True beta:", beta_true, "\n")
@@ -190,7 +191,9 @@ get_mxl_result(
   M = mxl_inputs$M,
   weights = mxl_inputs$weights,
   eta_draws = eta_draws,
-  rc_correlation = rc_correlation,
+  rc_dist = rep(0L, K_w),
+  rc_correlation = mxl_inputs$rc_correlation,
+  rc_mean = FALSE,
   use_asc = TRUE,
   include_outside_option = mxl_inputs$include_outside_option,
   omit_asc_output = FALSE,
