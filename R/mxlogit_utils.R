@@ -316,41 +316,30 @@ get_halton_normals <- function(S, N, K_w) {
   return(eta_draws)
 }
 
-convertTime <- function(time) {
-  et <- time["elapsed"]
-  if (et < 1) {
-    s <- round(et, 2)
-  } else {
-    s <- round(et, 0)
-  }
-  h <- s %/% 3600
-  s <- s - 3600 * h
-  m <- s %/% 60
-  s <- s - 60 * m
-  return(paste(h, "h:", m, "m:", s, "s", sep = ""))
-}
-
-vech <- function(M) M[lower.tri(M, diag = TRUE)]
-
 #' Coefficient summary table for mixed logit model
 #'
-#' Prints and saves coefficient summary table for mixed logit model
+#' Prints and saves coefficient summary table for mixed logit model.
 #'
-#' @param opt_result Result object from nloptr optimization containing at least 'solution' element
-#' @param X Design matrix used in estimation
-#' @param W Design matrix for random coefficients
-#' @param alt_idx Alternative indices for each observation  
-#' @param choice_idx Chosen alternative indices for each choice situation
-#' @param M Vector of number of alternatives per choice situation
-#' @param weights Vector of weights for each choice situation
-#' @param eta_draws Array of shape K_x x S x N with standard normal draws for random coefficients
-#' @param rc_correlation Logical indicating whether a full covariance matrix was estimated for random coefficients
-#' @param use_asc Logical indicating whether ASCs were included in the model
-#' @param include_outside_option Logical indicating whether an outside option was included in the model
-#' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table
-#' @param param_names Optional vector of parameter names. If NULL, default names are generated.
-#' @param file_name Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.
-#' @importFrom stats pnorm
+#' @param opt_result Result object from nloptr optimization containing at least `solution` element.
+#' @param X Design matrix used in estimation.
+#' @param W Design matrix for random coefficients.
+#' @param alt_idx Alternative indices for each observation.
+#' @param choice_idx Chosen alternative indices for each choice situation.
+#' @param M Vector of number of alternatives per choice situation.
+#' @param weights Vector of weights for each choice situation.
+#' @param eta_draws Array of shape K_w x S x N with standard normal draws for random coefficients.
+#' @param rc_dist Integer vector indicating distribution of random coefficients (0 = normal, 1 = log-normal).
+#' @param rc_correlation Logical indicating whether a full covariance matrix was estimated for random coefficients.
+#' @param rc_mean Logical indicating whether means were estimated for random coefficients.
+#' @param use_asc Logical indicating whether ASCs were included in the model.
+#' @param include_outside_option Logical indicating whether an outside option was included in the model.
+#' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table.
+#' @param param_names Optional vector of parameter names. If `NULL`, default names are generated.
+#' @param file_name Optional file path to save the coefficient summary table as a CSV file. If `NULL`, no file is saved.
+#' @returns A data frame (invisibly) with columns: Index, Parameter, Estimate,
+#'   Std_Error, z_value, Pr_z, and Signif. For variance parameters, the delta method
+#'   is applied to transform from Cholesky to covariance scale. The table is also
+#'   printed to the console.
 #' @export
 get_mxl_result <- function(
     opt_result,
@@ -614,25 +603,129 @@ get_mxl_result <- function(
   invisible(res_df)
 }
 
-remove_nullspace_cols <- function(mat, tol = 1e-7) {
-  if (is.null(mat)) return(mat)
-  if (ncol(mat)==1) return(mat)
-  qrdecomp <- qr(mat, tol = tol)
-  rank <- qrdecomp$rank
-  if (rank == ncol(mat)) return(mat)
-  bad_cols_idx  <- qrdecomp$pivot[(rank + 1):ncol(mat)]
-  mat <- mat[, setdiff(1:ncol(mat), bad_cols_idx), drop=FALSE]
-  return(mat)
+#' Compute aggregate elasticities for mixed logit model
+#'
+#' Computes the aggregate elasticity matrix (weighted average of individual
+#' elasticities) for the Mixed Logit model. The elasticity E(i,j) represents
+#' the percentage change in the probability of choosing alternative i when
+#' the attribute of alternative j changes by 1%.
+#'
+#' @param opt_result Result object from `run_mxlogit()` containing `$solution`.
+#' @param input_data List output from `prepare_mxl_data()`.
+#' @param eta_draws Array of shape K_w x S x N with standard normal draws.
+#' @param rc_dist Integer vector indicating distribution (0 = normal, 1 = log-normal).
+#' @param elast_var_idx 1-based index of variable for elasticity computation.
+#'   If `is_random_coef = FALSE`, this indexes into X columns. If `is_random_coef = TRUE`,
+#'   this indexes into W columns.
+#' @param is_random_coef Logical. `TRUE` if the variable has a random coefficient (is in W),
+#'   `FALSE` if it has a fixed coefficient (is in X). Default is `FALSE`.
+#' @param rc_mean Logical indicating whether means were estimated for random coefficients.
+#' @param use_asc Logical indicating whether ASCs were included in the model.
+#' @returns A J x J elasticity matrix where entry (i, j) is the elasticity of P_i
+#'   with respect to the attribute of alternative j. Row and column names are set
+#'   from the alternative labels if available.
+#' @export
+mxl_elasticities <- function(
+    opt_result,
+    input_data,
+    eta_draws,
+    rc_dist,
+    elast_var_idx,
+    is_random_coef = FALSE,
+    rc_mean = FALSE,
+    use_asc = TRUE
+) {
+  if (is.null(opt_result$solution)) {
+    stop("opt_result must contain '$solution' with the parameter estimates.")
+  }
+
+  elas_mat <- mxl_elasticities_parallel(
+    theta = opt_result$solution,
+    X = input_data$X,
+    W = input_data$W,
+    alt_idx = input_data$alt_idx,
+    choice_idx = input_data$choice_idx,
+    M = input_data$M,
+    weights = input_data$weights,
+    eta_draws = eta_draws,
+    rc_dist = rc_dist,
+    elast_var_idx = elast_var_idx,
+    is_random_coef = is_random_coef,
+    rc_correlation = input_data$rc_correlation,
+    rc_mean = rc_mean,
+    use_asc = use_asc,
+    include_outside_option = input_data$include_outside_option
+  )
+
+  # Add row and column names from alt_mapping if available
+  if (!is.null(input_data$alt_mapping)) {
+    alt_labels <- input_data$alt_mapping[[2]]  # Second column has alternative labels
+    if (length(alt_labels) == nrow(elas_mat)) {
+      rownames(elas_mat) <- alt_labels
+      colnames(elas_mat) <- alt_labels
+    }
+  }
+
+  return(elas_mat)
 }
 
-check_collinearity <- function(X) {
-  colnames_before <- colnames(X)
-  X <- remove_nullspace_cols(X)
-  colnames_after <- colnames(X)
-  colnames_diff <- setdiff(colnames_before, colnames_after)
-  if (length(colnames_diff) > 0) {
-    cat("The following variables were dropped due to collinearity:\n")
-    cat(colnames_diff, "\n")
-  }
-  return(list(mat = X, dropped = colnames_diff))
+#' BLP contraction mapping for mixed logit
+#'
+#' Finds the ASC (delta) parameters such that predicted market shares
+#' match target shares, using the contraction mapping of Berry, Levinsohn,
+#' and Pakes (1995). This is useful for demand estimation and counterfactual
+#' simulations.
+#'
+#' @param delta_init Initial guess for delta (ASC) values. Should be J-1 elements
+#'   if `include_outside_option = FALSE`, or J elements if `include_outside_option = TRUE`.
+#' @param target_shares Target market shares. Must have J elements (including
+#'   outside option if applicable).
+#' @param input_data List output from `prepare_mxl_data()`.
+#' @param beta Fixed coefficients vector (K_x elements).
+#' @param mu Mean parameters for random coefficients (K_w elements). Use zeros
+#'   if `rc_mean = FALSE`.
+#' @param L_params Cholesky parameters vector. Length is K_w * (K_w + 1) / 2 if
+#'   `rc_correlation = TRUE`, or K_w if `rc_correlation = FALSE`.
+#' @param eta_draws Array of shape K_w x S x N with standard normal draws.
+#' @param rc_dist Integer vector indicating distribution (0 = normal, 1 = log-normal).
+#' @param rc_mean Logical indicating whether means are estimated for random coefficients.
+#' @param tol Convergence tolerance. Default is 1e-8.
+#' @param max_iter Maximum number of iterations. Default is 1000.
+#' @returns Converged delta (ASC) vector. Length is J-1 if `include_outside_option = FALSE`,
+#'   or J if `include_outside_option = TRUE`.
+#' @export
+mxl_blp <- function(
+    delta_init,
+    target_shares,
+    input_data,
+    beta,
+    mu,
+    L_params,
+    eta_draws,
+    rc_dist,
+    rc_mean = FALSE,
+    tol = 1e-8,
+    max_iter = 1000
+) {
+  delta_out <- mxl_blp_contraction(
+    delta = delta_init,
+    target_shares = target_shares,
+    X = input_data$X,
+    W = input_data$W,
+    beta = beta,
+    mu = mu,
+    L_params = L_params,
+    alt_idx = input_data$alt_idx,
+    M = input_data$M,
+    weights = input_data$weights,
+    eta_draws = eta_draws,
+    rc_dist = rc_dist,
+    rc_correlation = input_data$rc_correlation,
+    rc_mean = rc_mean,
+    include_outside_option = input_data$include_outside_option,
+    tol = tol,
+    max_iter = max_iter
+  )
+
+  return(delta_out)
 }

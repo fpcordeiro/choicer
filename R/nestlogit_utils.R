@@ -1,23 +1,26 @@
 
 #' Runs nested logit estimation
 #'
-#' Wrapper for nested logit model estimation using nloptr optimizer
+#' Wrapper for nested logit model estimation using nloptr optimizer.
 #'
-#' @param input_data List containing prepared input data for estimation
-#' - $X: Design matrix
-#' - $alt_idx: Alternative indices for each observation
-#' - $choice_idx: Chosen alternative indices for each choice situation
-#' - $nest_idx: Nest indices for each alternative (same length as number of alternatives, one nest per alternative)
-#' - $M: Vector of number of alternatives per choice situation
-#' - $weights: Vector of weights for each choice situation
-#' - $alt_mapping: Data frame mapping alternatives to nests
-#' - $include_outside_option: Logical indicating whether an outside option is included
-#' @param use_asc Logical indicating whether to include alternative specific constants (ASCs)
-#' @param theta_init Optional initial parameter vector for optimization. If NULL, a default vector is used.
-#' @param param_names Optional vector of parameter names for result summary. If NULL, default names are generated.
-#' @param nloptr_opts Optional list of options for the nloptr optimizer. If NULL, default options are used.
-#' @param path_output Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved
-#' @return List containing optimization result and additional information
+#' @param input_data List containing prepared input data for estimation:
+#'   \itemize{
+#'     \item `X`: Design matrix.
+#'     \item `alt_idx`: Alternative indices for each observation.
+#'     \item `choice_idx`: Chosen alternative indices for each choice situation.
+#'     \item `nest_idx`: Nest indices for each alternative (same length as number of alternatives).
+#'     \item `M`: Vector of number of alternatives per choice situation.
+#'     \item `weights`: Vector of weights for each choice situation.
+#'     \item `alt_mapping`: Data frame mapping alternatives to nests.
+#'     \item `include_outside_option`: Logical indicating whether an outside option is included.
+#'   }
+#' @param use_asc Logical indicating whether to include alternative specific constants (ASCs).
+#' @param theta_init Optional initial parameter vector for optimization. If `NULL`, a default vector is used.
+#' @param param_names Optional vector of parameter names for result summary. If `NULL`, default names are generated.
+#' @param nloptr_opts Optional list of options for the nloptr optimizer. If `NULL`, default options are used.
+#' @param path_output Optional file path to save the coefficient summary table as a CSV file. If `NULL`, no file is saved.
+#' @returns Result object from `nloptr::nloptr()`, with an added `alt_mapping` element
+#'   containing a data.table mapping alternative codes to labels and summary statistics.
 #' @importFrom nloptr nloptr
 #' @export
 run_nestlogit <- function(
@@ -95,38 +98,24 @@ run_nestlogit <- function(
   return(result)
 }
 
-# Converts elapsed time to a nicely formatted string
-convertTime <- function(time) {
-  et <- time["elapsed"]
-  if (et < 1) {
-    s <- round(et, 2)
-  } else {
-    s <- round(et, 0)
-  }
-  h <- s %/% 3600
-  s <- s - 3600 * h
-  m <- s %/% 60
-  s <- s - 60 * m
-  return(paste(h, "h:", m, "m:", s, "s", sep = ""))
-}
-
 #' Coefficient summary table for nested logit model
 #'
-#' Prints and saves coefficient summary table for nested logit model
+#' Prints and saves coefficient summary table for nested logit model.
 #'
-#' @param opt_result Result object from nloptr optimization containing at least 'solution' element
-#' @param X Design matrix used in estimation
-#' @param alt_idx Alternative indices for each observation
-#' @param choice_idx Chosen alternative indices for each choice situation
-#' @param nest_idx Nest indices for each alternative (same length as number of alternatives)
-#' @param M Vector of number of alternatives per choice situation
-#' @param weights Vector of weights for each choice situation
-#' @param use_asc Logical indicating whether ASCs were included in the model
-#' @param include_outside_option Logical indicating whether an outside option was included in the model
-#' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table
-#' @param param_names Optional vector of parameter names. If NULL, default names are generated.
-#' @param file_name Optional file path to save the coefficient summary table as a CSV file. If NULL, no file is saved.
-#' @importFrom stats pnorm
+#' @param opt_result Result object from nloptr optimization containing at least `solution` element.
+#' @param X Design matrix used in estimation.
+#' @param alt_idx Alternative indices for each observation.
+#' @param choice_idx Chosen alternative indices for each choice situation.
+#' @param nest_idx Nest indices for each alternative (same length as number of alternatives).
+#' @param M Vector of number of alternatives per choice situation.
+#' @param weights Vector of weights for each choice situation.
+#' @param use_asc Logical indicating whether ASCs were included in the model.
+#' @param include_outside_option Logical indicating whether an outside option was included in the model.
+#' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table.
+#' @param param_names Optional vector of parameter names. If `NULL`, default names are generated.
+#' @param file_name Optional file path to save the coefficient summary table as a CSV file. If `NULL`, no file is saved.
+#' @returns A data frame (invisibly) with columns: Index, Parameter, Estimate,
+#'   Std_Error, z_value, Pr_z, and Signif. The table is also printed to the console.
 #' @export
 get_nl_result <- function(
     opt_result,
