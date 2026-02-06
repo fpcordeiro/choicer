@@ -10,8 +10,9 @@ This document provides a detailed mathematical description of the multinomial lo
 4. [Gradient Computation](#3-gradient-computation)
 5. [Hessian Computation](#4-hessian-computation)
 6. [Elasticity Computation](#5-elasticity-computation)
-7. [BLP Contraction Mapping](#6-blp-contraction-mapping)
-8. [Implementation Details](#7-implementation-details)
+7. [Diversion Ratio Computation](#6-diversion-ratio-computation)
+8. [BLP Contraction Mapping](#7-blp-contraction-mapping)
+9. [Implementation Details](#8-implementation-details)
 
 ---
 
@@ -293,9 +294,84 @@ where $E_{ijm}^k$ is the elasticity for individual $i$.
 
 ---
 
-## 6. BLP Contraction Mapping
+## 6. Diversion Ratio Computation
 
-### 6.1 Problem Statement
+### 6.1 Definition
+
+The diversion ratio from alternative $j$ to alternative $k$ measures the fraction of demand lost by $j$ that is captured by $k$ when $j$ becomes less attractive (e.g., due to a price increase). It is a key metric in antitrust analysis and merger simulation.
+
+$$
+DR(j \to k) = -\frac{\partial Q_k / \partial p_j}{\partial Q_j / \partial p_j}
+$$
+
+where $Q_j = \sum_i w_i P_{ij}$ is the (weighted) aggregate demand for alternative $j$ and $p_j$ is the price of $j$.
+
+### 6.2 Derivation for MNL
+
+From the MNL choice probability derivatives (Section 5.2), the demand derivatives with respect to price $p_j$ (with coefficient $\beta_p$) are:
+
+$$
+\frac{\partial Q_k}{\partial p_j} = -\beta_p \sum_{i=1}^{N} w_i \, P_{ij} \, P_{ik} \quad (k \neq j)
+$$
+
+$$
+\frac{\partial Q_j}{\partial p_j} = \beta_p \sum_{i=1}^{N} w_i \, P_{ij} \, (1 - P_{ij})
+$$
+
+Substituting into the diversion ratio formula:
+
+$$
+DR(j \to k) = -\frac{-\beta_p \sum_i w_i \, P_{ij} \, P_{ik}}{\beta_p \sum_i w_i \, P_{ij} \, (1 - P_{ij})} = \frac{\sum_i w_i \, P_{ij} \, P_{ik}}{\sum_i w_i \, P_{ij} \, (1 - P_{ij})}
+$$
+
+The price coefficient $\beta_p$ cancels, so the diversion ratio does not depend on which covariate we differentiate with respect to. This is a consequence of the IIA property.
+
+### 6.3 Aggregate Diversion Ratio Matrix
+
+The implementation computes the full $J \times J$ diversion ratio matrix $D$ where:
+
+$$
+D_{kj} = DR(j \to k) = \frac{\sum_{i=1}^{N} w_i \, P_{ij} \, P_{ik}}{\sum_{i=1}^{N} w_i \, P_{ij} \, (1 - P_{ij})} \quad (k \neq j)
+$$
+
+$$
+D_{jj} = 0
+$$
+
+### 6.4 Properties
+
+**Column sums equal one.** For a given alternative $j$, the off-diagonal entries in column $j$ sum to 1, meaning all diverted demand is accounted for:
+
+$$
+\sum_{k \neq j} DR(j \to k) = \frac{\sum_i w_i \, P_{ij} \sum_{k \neq j} P_{ik}}{\sum_i w_i \, P_{ij} (1 - P_{ij})} = \frac{\sum_i w_i \, P_{ij} (1 - P_{ij})}{\sum_i w_i \, P_{ij} (1 - P_{ij})} = 1
+$$
+
+where we used $\sum_{k \neq j} P_{ik} = 1 - P_{ij}$.
+
+**IIA proportionality.** When all individuals face the same choice set and the same covariates (so $P_{ij}$ does not vary across $i$), the diversion ratio simplifies to:
+
+$$
+DR(j \to k) = \frac{P_j \, P_k}{P_j (1 - P_j)} = \frac{P_k}{1 - P_j} = \frac{s_k}{1 - s_j}
+$$
+
+where $s_j$ is the market share of alternative $j$. This means diversion is proportional to the receiving alternative's market share, independent of any characteristics of the losing alternative $j$ other than its own share. This is a well-known limitation of MNL due to IIA.
+
+### 6.5 Implementation
+
+The function accumulates two quantities in parallel across individuals:
+
+1. **Numerator matrix**: $N_{kj} = \sum_i w_i \, P_{ij} \, P_{ik}$ for each pair $(k, j)$
+2. **Denominator vector**: $d_j = \sum_i w_i \, P_{ij} \, (1 - P_{ij})$ for each $j$
+
+The final matrix is computed as $D_{kj} = N_{kj} / d_j$ for $k \neq j$, with $D_{jj} = 0$.
+
+*Code reference: [mnlogit.cpp:938-1069](../src/mnlogit.cpp#L938-L1069)*
+
+---
+
+## 7. BLP Contraction Mapping
+
+### 7.1 Problem Statement
 
 Given observed market shares $s_j$, find the ASC parameters $\delta_j$ such that the model-predicted shares match the observed shares:
 
@@ -305,7 +381,7 @@ $$
 
 where $\hat{s}_j(\delta)$ is the predicted market share for alternative $j$.
 
-### 6.2 Contraction Mapping Algorithm
+### 7.2 Contraction Mapping Algorithm
 
 Berry, Levinsohn, and Pakes (1995) show that the following iteration converges to the solution:
 
@@ -319,7 +395,7 @@ $$
 \delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
 $$
 
-### 6.3 Implementation Details
+### 7.3 Implementation Details
 
 1. **Initialization**: Start with initial guess $\delta^{(0)}$
 2. **Prediction**: Compute predicted shares $\hat{s}(\delta^{(t)})$ using `mnl_predict_shares_internal`
@@ -331,9 +407,9 @@ $$
 
 ---
 
-## 7. Implementation Details
+## 8. Implementation Details
 
-### 7.1 Parameter Vector Structure
+### 8.1 Parameter Vector Structure
 
 The full parameter vector $\theta$ is organized as:
 
@@ -346,14 +422,14 @@ where $J_{asc} = J - 1$ without outside option (first ASC normalized to 0), or $
 
 *Code reference: [mnlogit.cpp:30-55](../src/mnlogit.cpp#L30-L55)*
 
-### 7.2 Data Organization
+### 8.2 Data Organization
 
 - **Design matrix $X$**: Stacked matrix of dimension $(\sum_i M_i) \times K$, where $M_i$ is the number of (inside) alternatives for individual $i$
 - **Alternative indices**: 1-based indexing in R, converted to 0-based in C++
 - **Choice indices**: 1-based for inside alternatives, 0 for outside option when included
 - **Prefix sums $S$**: Used for efficient indexing into the stacked data: $S_i = \sum_{j < i} M_j$
 
-### 7.3 OpenMP Parallelization
+### 8.3 OpenMP Parallelization
 
 The implementation parallelizes over individuals using OpenMP:
 - Each thread maintains local accumulators for log-likelihood, gradient, and Hessian
@@ -362,7 +438,7 @@ The implementation parallelizes over individuals using OpenMP:
 
 *Code reference: [mnlogit.cpp:66-164](../src/mnlogit.cpp#L66-L164)*
 
-### 7.4 Negated Objectives
+### 8.4 Negated Objectives
 
 The C++ functions return:
 - $-\ell(\theta)$ (negated log-likelihood)
