@@ -932,3 +932,164 @@ arma::mat mnl_elasticities_parallel(
 
   return global_elas_matrix;
 }
+
+
+// =============================================================================
+// Diversion Ratios
+// =============================================================================
+
+//' Compute MNL diversion ratios (parallelized over individuals)
+//'
+//' Computes the diversion ratio matrix DR(j->k), which measures the fraction
+//' of demand lost by alternative j that is captured by alternative k.
+//' For MNL: DR(j->k) = sum_n(w_n * P_nj * P_nk) / sum_n(w_n * P_nj * (1 - P_nj))
+//'
+//' @param theta K + J - 1 or K + J vector with model parameters
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param use_asc whether to use alternative-specific constants
+//' @param include_outside_option whether to include outside option
+//' @return J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+//' @export
+// [[Rcpp::export]]
+arma::mat mnl_diversion_ratios_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  // --- 1. Parameter and Variable Setup ---
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+
+  // Extract beta and delta (same logic as elasticities/loglik)
+  arma::vec beta = theta.subvec(0, K - 1);
+  arma::vec delta;
+  int delta_length = 0;
+
+  if (use_asc) {
+    delta_length = n_params - K;
+    if (delta_length <= 0) {
+      Rcpp::stop("Error: ASC parameters expected but not provided.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(K, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_length + 1);
+      delta.subvec(1, delta_length) = theta.subvec(K, n_params - 1);
+    }
+  } else {
+    delta_length = 0;
+    delta = arma::zeros(delta_length);
+  }
+
+  // alt_idx is 1-based indexing => shift to 0-based indexing
+  arma::uvec alt_idx0 = alt_idx - 1;
+
+  // Determine total number of alternatives for the output matrix
+  const int J_inside = use_asc ? delta.n_elem : (arma::max(alt_idx0) + 1);
+  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+
+  // Compute prefix sums for indexing
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  // Prepare global accumulators
+  // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j)
+  // denominator(j) = sum_n w_n * P_nj * (1 - P_nj)
+  arma::mat global_numerator = arma::zeros(J_total, J_total);
+  arma::vec global_denominator = arma::zeros(J_total);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulators
+    arma::mat local_numerator = arma::zeros(J_total, J_total);
+    arma::vec local_denominator = arma::zeros(J_total);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i         = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx   = S[i];
+      const int end_idx     = start_idx + m_i - 1;
+      const double w_i      = weights[i];
+      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
+
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+
+      // --- 2. Compute Probabilities ---
+      arma::vec V_i = arma::zeros(num_choices);
+      arma::vec inside_utils = X_i * beta;
+
+      if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+
+      if (include_outside_option) {
+        V_i.subvec(1, num_choices - 1) = inside_utils;
+      } else {
+        V_i = inside_utils;
+      }
+
+      V_i -= V_i.max(); // for numerical stability
+      double log_denom = std::log(arma::accu(arma::exp(V_i)));
+      arma::vec P_i = arma::exp(V_i - log_denom);
+
+      // --- 3. Map local indices to global alternative indices ---
+      arma::uvec global_j_map(num_choices);
+      if (include_outside_option) {
+        global_j_map[0] = 0; // Outside option is global index 0
+        global_j_map.subvec(1, m_i) = alt_idx0_i + 1; // Inside alts are 1...J
+      } else {
+        global_j_map = alt_idx0_i; // No outside option, alts are 0...J-1
+      }
+
+      // --- 4. Accumulate numerator and denominator ---
+      for (int j_local = 0; j_local < num_choices; ++j_local) {
+        const int global_j = global_j_map[j_local];
+        const double P_nj = P_i[j_local];
+
+        // Denominator: w_i * P_nj * (1 - P_nj)
+        local_denominator(global_j) += w_i * P_nj * (1.0 - P_nj);
+
+        // Numerator: w_i * P_nj * P_nk for k != j
+        for (int k_local = 0; k_local < num_choices; ++k_local) {
+          if (k_local == j_local) continue;
+          const int global_k = global_j_map[k_local];
+          const double P_nk = P_i[k_local];
+          local_numerator(global_k, global_j) += w_i * P_nj * P_nk;
+        }
+      }
+    } // end of i loop
+
+    // Combine partial accumulators into global accumulators
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_numerator += local_numerator;
+      global_denominator += local_denominator;
+    }
+  } // end parallel region
+
+  // --- 5. Compute diversion ratios ---
+  arma::mat diversion_matrix = arma::zeros(J_total, J_total);
+  for (int j = 0; j < J_total; ++j) {
+    if (global_denominator(j) > 1e-15) {
+      for (int k = 0; k < J_total; ++k) {
+        if (k != j) {
+          diversion_matrix(k, j) = global_numerator(k, j) / global_denominator(j);
+        }
+      }
+    }
+  }
+
+  return diversion_matrix;
+}

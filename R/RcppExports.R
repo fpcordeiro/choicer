@@ -120,6 +120,25 @@ mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
     .Call(`_choicer_mnl_elasticities_parallel`, theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
 }
 
+#' Compute MNL diversion ratios (parallelized over individuals)
+#'
+#' Computes the diversion ratio matrix DR(j->k), which measures the fraction
+#' of demand lost by alternative j that is captured by alternative k.
+#' For MNL: DR(j->k) = sum_n(w_n * P_nj * P_nk) / sum_n(w_n * P_nj * (1 - P_nj))
+#'
+#' @param theta K + J - 1 or K + J vector with model parameters
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param use_asc whether to use alternative-specific constants
+#' @param include_outside_option whether to include outside option
+#' @return J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+#' @export
+mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mnl_diversion_ratios_parallel`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
+}
+
 build_L_mat <- function(L_params, K_w, rc_correlation) {
     .Call(`_choicer_build_L_mat`, L_params, K_w, rc_correlation)
 }

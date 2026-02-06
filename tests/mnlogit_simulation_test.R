@@ -168,6 +168,20 @@ elast_x2 <- mnl_elasticities_parallel(
   include_outside_option = input_list$include_outside_option
 )
 
+# Diversion ratios
+cat("\n--- Diversion Ratios ---\n")
+div_ratios <- mnl_diversion_ratios_parallel(
+  theta = result$solution,
+  X = input_list$X,
+  alt_idx = input_list$alt_idx,
+  M = input_list$M,
+  weights = input_list$weights,
+  use_asc = TRUE,
+  include_outside_option = input_list$include_outside_option
+)
+print(round(div_ratios, 4))
+cat("Column sums (should be ~1):", round(colSums(div_ratios), 6), "\n")
+
 # Predict individual-level choice probabilities
 model_individual_predict <- mnl_predict(
   theta = result$solution,
