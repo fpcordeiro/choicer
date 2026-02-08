@@ -280,7 +280,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, 
 #' the percentage change in the probability of choosing alternative i when
 #' the attribute of alternative j changes by 1%.
 #'
-#' @param theta parameter vector (beta, [mu], L, delta)
+#' @param theta parameter vector (beta, \[mu\], L, delta)
 #' @param X design matrix for fixed coefficients; sum(M_i) x K_x
 #' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing

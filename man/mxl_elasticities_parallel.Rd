@@ -23,7 +23,7 @@ mxl_elasticities_parallel(
 )
 }
 \arguments{
-\item{theta}{parameter vector (beta, \link{mu}, L, delta)}
+\item{theta}{parameter vector (beta, [mu], L, delta)}
 
 \item{X}{design matrix for fixed coefficients; sum(M_i) x K_x}
 
