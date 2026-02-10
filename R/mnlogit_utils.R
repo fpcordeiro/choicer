@@ -1,68 +1,112 @@
 
 #' Runs multinomial logit estimation
 #'
-#' Runs data preparation and validation, likelihood maximization, and result summary.
+#' Estimates a multinomial logit model via maximum likelihood.
 #'
-#' @param data Data frame containing choice data.
+#' Two workflows are supported:
+#' \describe{
+#'   \item{Convenience (default)}{Supply \code{data} and column names. Data
+#'     preparation (\code{\link{prepare_mnl_data}}) is handled automatically.}
+#'   \item{Advanced}{Call \code{\link{prepare_mnl_data}} yourself and pass the
+#'     result via \code{input_data}.}
+#' }
+#'
+#' @param data Data frame containing choice data (convenience workflow).
+#'   Mutually exclusive with \code{input_data}.
 #' @param id_col Name of the column identifying choice situations (individuals).
 #' @param alt_col Name of the column identifying alternatives.
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen).
 #' @param covariate_cols Vector of names of columns to be used as covariates.
-#' @param nloptr_opts List of options to pass to `nloptr::nloptr()`. If `NULL`, default options are used.
-#' @param weights Optional vector of weights for each choice situation. If `NULL`, equal weights are used.
-#' @param outside_opt_label Label for the outside option (if any). If `NULL`, no outside option is assumed.
+#' @param input_data List output from \code{\link{prepare_mnl_data}} (advanced
+#'   workflow). Mutually exclusive with \code{data}.
+#' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"}, or
+#'   a custom function with signature \code{f(theta_init, eval_f, lower, upper, control)}
+#'   where \code{eval_f(theta)} returns \code{list(objective, gradient)}.
+#'   Must return a list with \code{par}/\code{value} (or \code{solution}/\code{objective}).
+#'   If the custom function accepts \code{control} or \code{...}, the \code{control}
+#'   argument is forwarded; otherwise it is silently ignored.
+#' @param control List of optimizer-specific control parameters passed to the
+#'   chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).
+#' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.
+#' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param use_asc Logical indicating whether to include alternative-specific constants (ASCs) in the model.
-#' @param path_output Optional file path to save the coefficient summary table as a CSV file. If `NULL`, no file is saved.
-#' @returns Result object from `nloptr::nloptr()`, with an added `alt_mapping` element
-#'   containing a data.table mapping alternative codes to labels and summary statistics.
+#' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in the
+#'   returned object for \code{predict()} and post-estimation functions.
+#' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control} instead.
+#' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
+#'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
+#'   \code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
 #' @importFrom nloptr nloptr
 #' @export
 run_mnlogit <- function(
-    data,
-    id_col,
-    alt_col,
-    choice_col,
-    covariate_cols,
-    nloptr_opts = NULL,
+    data = NULL,
+    id_col = NULL,
+    alt_col = NULL,
+    choice_col = NULL,
+    covariate_cols = NULL,
+    input_data = NULL,
+    optimizer = NULL,
+    control = list(),
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
     use_asc = TRUE,
-    path_output = NULL
+    keep_data = TRUE,
+    nloptr_opts = NULL
 ) {
+  cl <- match.call()
 
-  # Validate inputs and prepare data
-  input_list <- prepare_mnl_data(
-    data,
-    id_col,
-    alt_col,
-    choice_col,
-    covariate_cols,
-    weights = weights,
-    outside_opt_label,
-    include_outside_option
-  )
-
-  # Initial parameter vector theta_init
-  J <- nrow(input_list$alt_mapping)
-  theta_init <- rep(0, ncol(input_list$X) + J - 1)
-
-  if (is.null(nloptr_opts)) {
-    nloptr_opts <- list(
-      "algorithm" = "NLOPT_LD_LBFGS",
-      "xtol_rel" = 1.0e-8,
-      "maxeval" = 1e+3,
-      "print_level" = 0L
-    )
+  # Backward compatibility: nloptr_opts -> optimizer + control
+  if (!is.null(nloptr_opts)) {
+    message("'nloptr_opts' is deprecated. Use 'optimizer' and 'control' instead.")
+    optimizer <- optimizer %||% "nloptr"
+    control <- nloptr_opts
   }
 
-  time <- system.time({
-    # Run the optimization
-    result <- nloptr::nloptr(
-      x0 = theta_init,
-      eval_f = mnl_loglik_gradient_parallel,
-      opts = nloptr_opts,
+  # --- Resolve input pathway --------------------------------------------------
+  has_data <- !is.null(data)
+  has_input <- !is.null(input_data)
+
+  if (has_data && has_input) {
+    stop("Supply either 'data' (convenience) or 'input_data' (advanced), not both.")
+  }
+  if (!has_data && !has_input) {
+    stop("Supply either 'data' (convenience) or 'input_data' (advanced).")
+  }
+
+  if (has_data) {
+    # Convenience workflow: validate required column-name arguments
+    if (is.null(id_col) || is.null(alt_col) || is.null(choice_col) ||
+        is.null(covariate_cols)) {
+      stop("Convenience workflow requires: id_col, alt_col, choice_col, ",
+           "and covariate_cols.")
+    }
+    input_list <- prepare_mnl_data(
+      data, id_col, alt_col, choice_col, covariate_cols,
+      weights = weights,
+      outside_opt_label = outside_opt_label,
+      include_outside_option = include_outside_option
+    )
+  } else {
+    # Advanced workflow: use input_data directly
+    input_list <- input_data
+  }
+
+  # Resolve alt_col for parameter naming (needed by both workflows)
+  if (is.null(alt_col)) alt_col <- names(input_list$alt_mapping)[2]
+
+  # Parameter dimensions
+  K_x <- ncol(input_list$X)
+  J <- nrow(input_list$alt_mapping)
+  n_asc <- if (use_asc) J - 1 else 0
+  n_params <- K_x + n_asc
+  theta_init <- rep(0, n_params)
+
+  # Build eval_f closure (captures data in environment)
+  eval_f <- function(theta) {
+    mnl_loglik_gradient_parallel(
+      theta = theta,
       X = input_list$X,
       alt_idx = input_list$alt_idx,
       choice_idx = input_list$choice_idx,
@@ -71,29 +115,89 @@ run_mnlogit <- function(
       use_asc = use_asc,
       include_outside_option = input_list$include_outside_option
     )
+  }
+
+  # Run optimizer
+  elapsed <- system.time({
+    opt <- run_optimizer(
+      optimizer = optimizer,
+      theta_init = theta_init,
+      eval_f = eval_f,
+      control = control
+    )
   })
 
-  cat("Optimization run time", convertTime(time), "\n\n")
+  message("Optimization run time ", convertTime(elapsed))
 
-  asc_names <- paste0("ASC_", input_list$alt_mapping[2:J][[alt_col]])
-  param_names <- c(covariate_cols, asc_names)
+  # Parameter names and index map
+  theta_hat <- opt$par
+  asc_names <- if (use_asc) {
+    paste0("ASC_", input_list$alt_mapping[2:J][[alt_col]])
+  } else {
+    character(0)
+  }
+  param_names <- c(colnames(input_list$X), asc_names)
+  names(theta_hat) <- param_names
 
-  get_mnl_result(
-    opt_result = result,
+  param_map <- list(beta = seq_len(K_x))
+  if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
+
+  # Compute vcov eagerly
+  hess <- mnl_loglik_hessian_parallel(
+    theta = theta_hat,
     X = input_list$X,
     alt_idx = input_list$alt_idx,
     choice_idx = input_list$choice_idx,
     M = input_list$M,
     weights = input_list$weights,
     use_asc = use_asc,
-    include_outside_option = input_list$include_outside_option,
-    param_names = param_names,
-    file_name = path_output
+    include_outside_option = input_list$include_outside_option
   )
+  vcov_result <- invert_hessian(hess)
+  if (!is.null(vcov_result$vcov)) {
+    rownames(vcov_result$vcov) <- param_names
+    colnames(vcov_result$vcov) <- param_names
+    names(vcov_result$se) <- param_names
+  }
 
-  result$alt_mapping <- input_list$alt_mapping
-
-  return(result)
+  # Build S3 object
+  new_choicer_mnl(
+    call = cl,
+    coefficients = theta_hat,
+    loglik = -opt$value,
+    nobs = input_list$N,
+    n_params = n_params,
+    convergence = opt$convergence,
+    message = opt$message,
+    data_spec = input_list$data_spec %||% list(
+      id_col = id_col,
+      alt_col = alt_col,
+      choice_col = choice_col,
+      covariate_cols = covariate_cols,
+      outside_opt_label = outside_opt_label
+    ),
+    alt_mapping = input_list$alt_mapping,
+    param_map = param_map,
+    use_asc = use_asc,
+    include_outside_option = input_list$include_outside_option,
+    optimizer = list(
+      name = if (is.function(optimizer)) "custom" else (optimizer %||% "nloptr"),
+      control = control,
+      elapsed_time = elapsed[["elapsed"]],
+      iterations = opt$iterations
+    ),
+    vcov = vcov_result$vcov,
+    se = vcov_result$se,
+    data = if (keep_data) {
+      list(
+        X = input_list$X,
+        alt_idx = input_list$alt_idx,
+        choice_idx = input_list$choice_idx,
+        M = input_list$M,
+        weights = input_list$weights
+      )
+    }
+  )
 }
 
 #' Prepare inputs for `mnl_loglik_gradient_parallel()`
@@ -267,191 +371,26 @@ prepare_mnl_data <- function(
   )
 
   ## return output -------------------------------------------------------------
-  list(
-    X           = X,
-    alt_idx     = alt_idx,
-    choice_idx  = as.integer(choice_idx),
-    M           = M,
-    N           = N,
-    weights     = weights,
-    include_outside_option = include_outside_option,
-    alt_mapping = alt_mapping,
-    dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL
-  )
-}
-
-#' Coefficient summary table for multinomial logit model
-#'
-#' Prints and saves coefficient summary table for multinomial logit model.
-#'
-#' @param opt_result Result object from nloptr optimization containing at least `solution` element.
-#' @param X Design matrix used in estimation.
-#' @param alt_idx Alternative indices for each observation.
-#' @param choice_idx Chosen alternative indices for each choice situation.
-#' @param M Vector of number of alternatives per choice situation.
-#' @param weights Vector of weights for each choice situation.
-#' @param use_asc Logical indicating whether ASCs were included in the model.
-#' @param include_outside_option Logical indicating whether an outside option was included in the model.
-#' @param omit_asc_output Logical indicating whether to omit ASC parameters from the output table.
-#' @param param_names Optional vector of parameter names. If `NULL`, default names are generated.
-#' @param file_name Optional file path to save the coefficient summary table as a CSV file. If `NULL`, no file is saved.
-#' @returns A data frame (invisibly) with columns: Index, Parameter, Estimate,
-#'   Std_Error, z_value, Pr_z, and Signif. The table is also printed to the console.
-#' @export
-get_mnl_result <- function(
-    opt_result,
-    X, alt_idx, choice_idx, M, weights,
-    use_asc = TRUE,
-    include_outside_option = TRUE,
-    omit_asc_output = FALSE,
-    param_names = NULL,
-    file_name = NULL
-) {
-  # Extract the estimated parameter vector
-  if (is.null(opt_result$solution)) {
-    stop("opt_result must contain '$solution' with the parameter estimates.")
-  }
-  est_theta <- opt_result$solution
-  p_len <- length(est_theta)
-
-  # Compute Hessian at est_theta
-  hess <- mnl_loglik_hessian_parallel(
-    theta = est_theta,
-    X = X,
-    alt_idx = alt_idx,
-    choice_idx = choice_idx,
-    M = M,
-    weights = weights,
-    use_asc = use_asc,
-    include_outside_option = include_outside_option
-  )
-
-  # Try to invert Hessian for standard errors
-  vcov_mat <- NULL
-  se <- rep(NA, p_len)  # default in case of errors
-
-  singular_flag <- FALSE
-  tryCatch({
-    vcov_mat <- solve(hess)
-  }, error = function(e) {
-    singular_flag <<- TRUE
-    message("Error computing vcov_mat (likely singular Hessian): ", e$message)
-  })
-
-  if (!singular_flag && !is.null(vcov_mat)) {
-    # successfully computed Hessian inverse
-    se <- sqrt(diag(vcov_mat))
-  } else {
-    # either singular Hessian or some inversion error
-    message("Standard errors set to NA due to Hessian inversion failure.")
-  }
-
-  # Compute z-values and p-values
-  zval <- est_theta / se
-  # two-sided p-value under normal approximation
-  pval <- 2 * (1 - pnorm(abs(zval)))
-
-  # significance codes
-  significance_code <- function(p) {
-    if (is.na(p)) return("")
-    if (p < 0.001) return("***")
-    else if (p < 0.01) return("**")
-    else if (p < 0.05) return("*")
-    else return("")
-  }
-
-  # Determine parameter names if not provided
-  if (is.null(param_names)) {
-    # We assume the first K_x = ncol(X) are X_1,...,X_K_w
-    K_x <- ncol(X)
-    param_names <- character(p_len)
-
-    # Beta parameters
-    for (i in seq_len(K_x)) {
-      param_names[i] <- paste0("X_", i)
-    }
-
-    # ASC parameters (if used)
-    if (use_asc && !omit_asc_output) {
-      delta_length <- p_len - K_x
-      if (delta_length > 0) {
-        for (d in seq_len(delta_length)) {
-          # If outside option is included, name them delta_1,... else skip 'delta_1'
-          if (include_outside_option) {
-            param_names[K_x + d] <- paste0("ASC_", d)
-          } else {
-            param_names[K_x + d] <- paste0("ASC_", d + 1)
-          }
-        }
-      }
-    }
-  } else {
-    # If param_names is provided, ensure it has the correct length
-    if (length(param_names) != p_len) {
-      stop("param_names must have the same length as the number of parameters.")
-    }
-  }
-
-  # Build a data frame for results
-  # Add an "Index" column that goes 1, 2, ..., p_len
-  final_len <- if (omit_asc_output) ncol(X) else p_len
-  res_df <- data.frame(
-    Index     = seq_len(final_len),
-    Parameter = param_names[1:final_len],
-    Estimate  = est_theta[1:final_len],
-    Std_Error = se[1:final_len],
-    z_value   = zval[1:final_len],
-    Pr_z      = pval[1:final_len],
-    Signif    = sapply(pval[1:final_len], significance_code),
-    stringsAsFactors = FALSE
-  )
-
-  # Write CSV
-  if (!is.null(file_name)) utils::write.csv(res_df, file_name, row.names = FALSE)
-
-  # rint a formatted table to screen
-
-  # compute dynamic column widths:
-  # - index_colwidth: enough for the largest index
-  index_colwidth <- max(nchar(as.character(p_len)), nchar("Index"))
-
-  # - param_colwidth: depends on the longest parameter name
-  param_colwidth <- max(nchar(res_df$Parameter), nchar("Parameter"))
-
-  # Helper to print each row
-  print_row <- function(x) {
-    cat(sprintf(
-      # Format: index, param, estimate, std.error, z-value, Pr(>|z|), Signif
-      paste0(
-        "%", index_colwidth, "d  ",    # Index
-        "%-", param_colwidth, "s  ",  # Parameter name (left-justified)
-        "%10.6f %10.6f %8.4f %9.2e  %s\n"
-      ),
-      as.integer(x["Index"]),
-      x["Parameter"],
-      as.numeric(x["Estimate"]),
-      as.numeric(x["Std_Error"]),
-      as.numeric(x["z_value"]),
-      as.numeric(x["Pr_z"]),
-      x["Signif"]
-    ))
-  }
-
-  # Header row
-  cat("Model Coefficients:\n")
-  cat(sprintf(
-    paste0(
-      "%", index_colwidth, "s  ",
-      "%-", param_colwidth, "s  ",
-      "%10s %10s %8s %9s  %s\n"
+  structure(
+    list(
+      X           = X,
+      alt_idx     = alt_idx,
+      choice_idx  = as.integer(choice_idx),
+      M           = M,
+      N           = N,
+      weights     = weights,
+      include_outside_option = include_outside_option,
+      alt_mapping = alt_mapping,
+      dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL,
+      data_spec = list(
+        id_col = id_col,
+        alt_col = alt_col,
+        choice_col = choice_col,
+        covariate_cols = covariate_cols,
+        outside_opt_label = outside_opt_label
+      )
     ),
-    "Index", "Parameter", "Estimate", "Std.Error", "z-value", "Pr(>|z|)", ""
-  ))
-
-  # Print each row
-  for (i in seq_len(nrow(res_df))) {
-    print_row(res_df[i, ])
-  }
-
-  invisible(res_df)
+    class = "choicer_data_mnl"
+  )
 }
+
