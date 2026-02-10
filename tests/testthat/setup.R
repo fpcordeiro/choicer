@@ -3,7 +3,11 @@
 
 library(data.table)
 
-# Helper to create nested logit inputs from MNL data (used in multiple test files)
+# Helper to create nested logit inputs from prepare_nl_data() (used in multiple test files)
+# Creates 6 explicit alternatives in 3 nests:
+#   Nest "A": j=0 (singleton, zero covariates — acts as outside option)
+#   Nest "B": j=1,2
+#   Nest "C": j=3,4,5
 create_nl_inputs <- function(seed = 123) {
   set.seed(seed)
   N <- 30
@@ -15,25 +19,18 @@ create_nl_inputs <- function(seed = 123) {
     x1 = rnorm(N * J),
     x2 = runif(N * J, -1, 1)
   )
-  # Outside option (j=0) has zero covariates
+  # "Outside option" (j=0) has zero covariates
   dt[j == 0, c("x1", "x2") := 0]
   dt[, choice := 0L]
   dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 
-  # Prepare using MNL data prep
-  inputs <- prepare_mnl_data(
+  # Add nest column
+  dt[, nest := fifelse(j == 0, "A", fifelse(j <= 2, "B", "C"))]
+
+  prepare_nl_data(
     dt, "id", "j", "choice", c("x1", "x2"),
-    outside_opt_label = 0L,
-    include_outside_option = TRUE
+    nest_col = "nest"
   )
-
-  # Add nest structure:
-  # Nest 1: j=0 (singleton - outside option)
-  # Nest 2: j=1,2
-  # Nest 3: j=3,4,5
-  inputs$nest_idx <- c(1L, 2L, 2L, 3L, 3L, 3L)
-
-  inputs
 }
 
 # Numerical tolerances for comparisons

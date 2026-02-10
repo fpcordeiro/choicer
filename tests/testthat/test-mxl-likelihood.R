@@ -85,7 +85,7 @@ test_that("mxl_loglik_gradient has accurate gradient (uncorrelated)", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("mxl_loglik_gradient has accurate gradient (correlated)", {
@@ -133,7 +133,7 @@ test_that("mxl_loglik_gradient has accurate gradient (correlated)", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("mxl_loglik_gradient handles log-normal distribution", {
@@ -183,7 +183,7 @@ test_that("mxl_loglik_gradient handles log-normal distribution", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("mxl_loglik_gradient handles rc_mean = TRUE", {
@@ -232,7 +232,7 @@ test_that("mxl_loglik_gradient handles rc_mean = TRUE", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("mxl_loglik_gradient is deterministic", {

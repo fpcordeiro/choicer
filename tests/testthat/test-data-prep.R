@@ -1,6 +1,7 @@
 # Tests for data preparation functions:
 # - prepare_mnl_data()
 # - prepare_mxl_data()
+# - prepare_nl_data()
 # - check_collinearity()
 # - remove_nullspace_cols()
 
@@ -50,8 +51,9 @@ test_that("prepare_mnl_data errors when all data has NA", {
     x1 = NA_real_
   )
 
+  # Warns about removed rows before erroring
   expect_error(
-    prepare_mnl_data(dt, "id", "alt", "choice", "x1"),
+    suppressWarnings(prepare_mnl_data(dt, "id", "alt", "choice", "x1")),
     "All choice situations removed"
   )
 })
@@ -188,6 +190,140 @@ test_that("prepare_mxl_data handles rc_correlation flag", {
 
   expect_false(result_uncorr$rc_correlation)
   expect_true(result_corr$rc_correlation)
+})
+
+# --- S3 class checks for prepare_*_data() ---
+
+test_that("prepare_mnl_data returns choicer_data_mnl class", {
+  dt <- create_small_mnl_data()
+  result <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+
+  expect_s3_class(result, "choicer_data_mnl")
+  expect_true(is.list(result))
+  expect_true(!is.null(result$data_spec))
+  expect_equal(result$data_spec$id_col, "id")
+  expect_equal(result$data_spec$alt_col, "alt")
+})
+
+test_that("prepare_mxl_data returns choicer_data_mxl class", {
+  dt <- create_small_mxl_data()
+  result <- prepare_mxl_data(
+    dt, "id", "alt", "choice", "x1", c("w1", "w2"),
+    rc_correlation = FALSE
+  )
+
+  expect_s3_class(result, "choicer_data_mxl")
+  expect_true(is.list(result))
+  expect_true(!is.null(result$data_spec))
+  expect_equal(result$data_spec$random_var_cols, c("w1", "w2"))
+})
+
+test_that("prepare_nl_data returns choicer_data_nl class", {
+  dt <- create_small_nl_data()
+  result <- prepare_nl_data(
+    dt, "id", "alt", "choice", c("x1", "x2"),
+    nest_col = "nest"
+  )
+
+  expect_s3_class(result, "choicer_data_nl")
+  expect_true(is.list(result))
+  expect_true(!is.null(result$nest_idx))
+  expect_true(!is.null(result$data_spec))
+  expect_equal(result$data_spec$nest_col, "nest")
+})
+
+# --- prepare_nl_data tests ---
+
+test_that("prepare_nl_data returns correct structure", {
+  dt <- create_small_nl_data()
+  result <- prepare_nl_data(
+    dt, "id", "alt", "choice", c("x1", "x2"),
+    nest_col = "nest"
+  )
+
+  expect_true("X" %in% names(result))
+  expect_true("alt_idx" %in% names(result))
+  expect_true("choice_idx" %in% names(result))
+  expect_true("M" %in% names(result))
+  expect_true("nest_idx" %in% names(result))
+  expect_true("alt_mapping" %in% names(result))
+
+  # nest_idx has length J (number of alternatives)
+  J <- nrow(result$alt_mapping)
+  expect_length(result$nest_idx, J)
+
+  # 2 nests in test data
+  expect_equal(length(unique(result$nest_idx)), 2)
+})
+
+test_that("prepare_nl_data validates missing nest_col", {
+  dt <- create_small_nl_data()
+
+  expect_error(
+    prepare_nl_data(
+      dt, "id", "alt", "choice", c("x1", "x2"),
+      nest_col = "nonexistent"
+    ),
+    "Missing column"
+  )
+})
+
+test_that("prepare_nl_data validates alternatives in multiple nests", {
+  dt <- create_small_nl_data()
+  # Create conflicting nest assignments: alt 1 in both nests
+  dt[alt == 1 & id == 1, nest := 2L]
+
+  expect_error(
+    prepare_nl_data(
+      dt, "id", "alt", "choice", c("x1", "x2"),
+      nest_col = "nest"
+    ),
+    "multiple nests"
+  )
+})
+
+test_that("prepare_nl_data validates at least 2 nests", {
+  dt <- create_small_nl_data()
+  dt[, nest := 1L]  # All in same nest
+
+  expect_error(
+    prepare_nl_data(
+      dt, "id", "alt", "choice", c("x1", "x2"),
+      nest_col = "nest"
+    ),
+    "At least 2 nests"
+  )
+})
+
+test_that("prepare_nl_data validates no NA nest assignments", {
+  dt <- create_small_nl_data()
+  dt[alt == 1, nest := NA_integer_]
+
+  expect_error(
+    prepare_nl_data(
+      dt, "id", "alt", "choice", c("x1", "x2"),
+      nest_col = "nest"
+    ),
+    "Missing nest assignments"
+  )
+})
+
+test_that("prepare_nl_data output is compatible with run_nestlogit()", {
+  dt <- create_small_nl_data()
+  nl_data <- prepare_nl_data(
+    dt, "id", "alt", "choice", c("x1", "x2"),
+    nest_col = "nest"
+  )
+
+  # Should have all fields needed by run_nestlogit(input_data = ...)
+  expect_true(!is.null(nl_data$X))
+  expect_true(!is.null(nl_data$alt_idx))
+  expect_true(!is.null(nl_data$choice_idx))
+  expect_true(!is.null(nl_data$nest_idx))
+  expect_true(!is.null(nl_data$M))
+  expect_true(!is.null(nl_data$weights))
+  expect_true(!is.null(nl_data$alt_mapping))
+  expect_true(!is.null(nl_data$include_outside_option))
 })
 
 # --- check_collinearity tests ---

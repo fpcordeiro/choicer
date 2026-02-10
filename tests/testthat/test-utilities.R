@@ -107,17 +107,11 @@ test_that("get_halton_normals produces approximately standard normal draws", {
 })
 
 test_that("get_halton_normals handles K_w = 1", {
-  # Skip if K_w=1 causes dimension issues (known limitation in some versions)
   S <- 50
   N <- 20
   K_w <- 1
 
-  eta <- tryCatch(
-    get_halton_normals(S, N, K_w),
-    error = function(e) {
-      skip("get_halton_normals with K_w=1 not supported")
-    }
-  )
+  eta <- get_halton_normals(S, N, K_w)
 
   expect_equal(dim(eta), c(1, S, N))
 })

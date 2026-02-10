@@ -117,7 +117,7 @@ test_that("mxl_elasticities_parallel returns correct dimensions", {
     use_asc = TRUE,
     include_outside_option = FALSE,
     elast_var_idx = 1L,
-    is_rc_var = FALSE
+    is_random_coef = FALSE
   )
 
   expect_equal(dim(elast), c(J, J))
@@ -158,7 +158,7 @@ test_that("mxl_elasticities_parallel works for random coefficient variable", {
     use_asc = TRUE,
     include_outside_option = FALSE,
     elast_var_idx = 1L,
-    is_rc_var = TRUE
+    is_random_coef = TRUE
   )
 
   expect_equal(dim(elast), c(J, J))

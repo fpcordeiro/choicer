@@ -138,9 +138,12 @@ test_that("jacobian_vech_Sigma works for diagonal case", {
 
   J_anal <- jacobian_vech_Sigma(L_params, K_w, rc_correlation = FALSE)
 
+  # In the diagonal case, jacobian_vech_Sigma returns the Jacobian of
+
+  # diag(Sigma) w.r.t. L_params (K_w x K_w), not the full vech(Sigma).
   vech_sigma_fn <- function(lp) {
     S <- build_var_mat(lp, K_w, rc_correlation = FALSE)
-    S[lower.tri(S, diag = TRUE)]
+    diag(S)
   }
 
   J_num <- numDeriv::jacobian(vech_sigma_fn, L_params)

@@ -62,7 +62,7 @@ test_that("nl_loglik_gradient has accurate gradient", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("nl_loglik_gradient is accurate at zero beta", {
@@ -93,7 +93,7 @@ test_that("nl_loglik_gradient is accurate at zero beta", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("nl_loglik_gradient works without ASCs", {
@@ -165,7 +165,7 @@ test_that("nl_loglik_gradient handles lambda near boundary", {
 
   numeric_grad <- numDeriv::grad(obj_fn, theta, method = "Richardson")
 
-  expect_equal(analytic_grad, numeric_grad, tolerance = TOL_GRAD)
+  expect_equal(drop(analytic_grad), numeric_grad, tolerance = TOL_GRAD)
 })
 
 test_that("nl_loglik_gradient returns finite with various lambda values", {
