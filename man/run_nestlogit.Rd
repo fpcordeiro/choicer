@@ -5,41 +5,87 @@
 \title{Runs nested logit estimation}
 \usage{
 run_nestlogit(
-  input_data,
+  data = NULL,
+  id_col = NULL,
+  alt_col = NULL,
+  choice_col = NULL,
+  covariate_cols = NULL,
+  nest_col = NULL,
+  input_data = NULL,
   use_asc = TRUE,
   theta_init = NULL,
   param_names = NULL,
-  nloptr_opts = NULL,
-  path_output = NULL
+  optimizer = NULL,
+  control = list(),
+  weights = NULL,
+  outside_opt_label = NULL,
+  include_outside_option = FALSE,
+  keep_data = TRUE,
+  nloptr_opts = NULL
 )
 }
 \arguments{
-\item{input_data}{List containing prepared input data for estimation:
-\itemize{
-\item \code{X}: Design matrix.
-\item \code{alt_idx}: Alternative indices for each observation.
-\item \code{choice_idx}: Chosen alternative indices for each choice situation.
-\item \code{nest_idx}: Nest indices for each alternative (same length as number of alternatives).
-\item \code{M}: Vector of number of alternatives per choice situation.
-\item \code{weights}: Vector of weights for each choice situation.
-\item \code{alt_mapping}: Data frame mapping alternatives to nests.
-\item \code{include_outside_option}: Logical indicating whether an outside option is included.
-}}
+\item{data}{Data frame containing choice data (convenience workflow).
+Mutually exclusive with \code{input_data}.}
 
-\item{use_asc}{Logical indicating whether to include alternative specific constants (ASCs).}
+\item{id_col}{Name of the column identifying choice situations.}
 
-\item{theta_init}{Optional initial parameter vector for optimization. If \code{NULL}, a default vector is used.}
+\item{alt_col}{Name of the column identifying alternatives.}
 
-\item{param_names}{Optional vector of parameter names for result summary. If \code{NULL}, default names are generated.}
+\item{choice_col}{Name of the column indicating chosen alternative (1/0).}
 
-\item{nloptr_opts}{Optional list of options for the nloptr optimizer. If \code{NULL}, default options are used.}
+\item{covariate_cols}{Vector of column names for covariates.}
 
-\item{path_output}{Optional file path to save the coefficient summary table as a CSV file. If \code{NULL}, no file is saved.}
+\item{nest_col}{Name of the column mapping each alternative to its nest
+(convenience workflow).}
+
+\item{input_data}{List containing prepared input data for estimation
+(advanced workflow). Mutually exclusive with \code{data}.}
+
+\item{use_asc}{Logical indicating whether to include alternative specific
+constants (ASCs).}
+
+\item{theta_init}{Optional initial parameter vector. If \code{NULL}, a
+default vector is used.}
+
+\item{param_names}{Optional vector of parameter names. If \code{NULL},
+default names are generated.}
+
+\item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
+or a custom function. See \code{\link{run_mnlogit}} for details.}
+
+\item{control}{List of optimizer-specific control parameters.}
+
+\item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
+equal weights are used.}
+
+\item{outside_opt_label}{Label for the outside option (convenience workflow).}
+
+\item{include_outside_option}{Logical whether to include an outside option
+(convenience workflow).}
+
+\item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in
+the returned object for post-estimation functions.}
+
+\item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control}
+instead.}
 }
 \value{
-Result object from \code{nloptr::nloptr()}, with an added \code{alt_mapping} element
-containing a data.table mapping alternative codes to labels and summary statistics.
+A \code{choicer_nl} object (inherits from \code{choicer_fit}).
+Standard S3 methods available: \code{summary()}, \code{coef()},
+\code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
+\code{nobs()}.
 }
 \description{
-Wrapper for nested logit model estimation using nloptr optimizer.
+Estimates a nested logit model via maximum likelihood.
+}
+\details{
+Two workflows are supported:
+\describe{
+\item{Convenience}{Supply \code{data} and column names (including
+\code{nest_col}). Data preparation (\code{\link{prepare_nl_data}}) is
+handled automatically.}
+\item{Advanced}{Call \code{\link{prepare_nl_data}} (or build the input
+list manually) and pass it via \code{input_data}.}
+}
 }

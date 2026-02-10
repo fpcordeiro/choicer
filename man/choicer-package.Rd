@@ -8,6 +8,14 @@
 \description{
 Tools for estimating discrete-choice models used in applied economics. Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr). The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL).
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/fpcordeiro/choicer}
+  \item Report bugs at \url{https://github.com/fpcordeiro/choicer/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Fernando Cordeiro \email{fernandolpcordeiro@gmail.com}
 

@@ -5,21 +5,25 @@
 \title{Runs multinomial logit estimation}
 \usage{
 run_mnlogit(
-  data,
-  id_col,
-  alt_col,
-  choice_col,
-  covariate_cols,
-  nloptr_opts = NULL,
+  data = NULL,
+  id_col = NULL,
+  alt_col = NULL,
+  choice_col = NULL,
+  covariate_cols = NULL,
+  input_data = NULL,
+  optimizer = NULL,
+  control = list(),
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   use_asc = TRUE,
-  path_output = NULL
+  keep_data = TRUE,
+  nloptr_opts = NULL
 )
 }
 \arguments{
-\item{data}{Data frame containing choice data.}
+\item{data}{Data frame containing choice data (convenience workflow).
+Mutually exclusive with \code{input_data}.}
 
 \item{id_col}{Name of the column identifying choice situations (individuals).}
 
@@ -29,7 +33,18 @@ run_mnlogit(
 
 \item{covariate_cols}{Vector of names of columns to be used as covariates.}
 
-\item{nloptr_opts}{List of options to pass to \code{nloptr::nloptr()}. If \code{NULL}, default options are used.}
+\item{input_data}{List output from \code{\link{prepare_mnl_data}} (advanced
+workflow). Mutually exclusive with \code{data}.}
+
+\item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"}, or
+a custom function with signature \code{f(theta_init, eval_f, lower, upper, control)}
+where \code{eval_f(theta)} returns \code{list(objective, gradient)}.
+Must return a list with \code{par}/\code{value} (or \code{solution}/\code{objective}).
+If the custom function accepts \code{control} or \code{...}, the \code{control}
+argument is forwarded; otherwise it is silently ignored.}
+
+\item{control}{List of optimizer-specific control parameters passed to the
+chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).}
 
 \item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.}
 
@@ -39,12 +54,25 @@ run_mnlogit(
 
 \item{use_asc}{Logical indicating whether to include alternative-specific constants (ASCs) in the model.}
 
-\item{path_output}{Optional file path to save the coefficient summary table as a CSV file. If \code{NULL}, no file is saved.}
+\item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in the
+returned object for \code{predict()} and post-estimation functions.}
+
+\item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control} instead.}
 }
 \value{
-Result object from \code{nloptr::nloptr()}, with an added \code{alt_mapping} element
-containing a data.table mapping alternative codes to labels and summary statistics.
+A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
+Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
+\code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
 }
 \description{
-Runs data preparation and validation, likelihood maximization, and result summary.
+Estimates a multinomial logit model via maximum likelihood.
+}
+\details{
+Two workflows are supported:
+\describe{
+\item{Convenience (default)}{Supply \code{data} and column names. Data
+preparation (\code{\link{prepare_mnl_data}}) is handled automatically.}
+\item{Advanced}{Call \code{\link{prepare_mnl_data}} yourself and pass the
+result via \code{input_data}.}
+}
 }
