@@ -27,3 +27,4 @@
 # R Environment Variables
 .Renviron
 CLAUDE.md
+.claude/

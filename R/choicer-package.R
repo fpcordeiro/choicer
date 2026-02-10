@@ -1,6 +1,12 @@
 #' @keywords internal
 "_PACKAGE"
 
+# Suppress R CMD check NOTEs for data.table NSE variables
+utils::globalVariables(c(
+  ".", "..covariate_cols", "..random_var_cols",
+  "HAS_NA", "N_CHOICES", "N_OBS", "alt_int", "idx_in_group"
+))
+
 ## usethis namespace: start
 #' @importFrom data.table :=
 #' @importFrom data.table .BY
@@ -12,8 +18,7 @@
 #' @importFrom data.table .SD
 #' @importFrom data.table data.table
 #' @importFrom Rcpp sourceCpp
-#' @importFrom stats pnorm
-#' @importFrom utils write.csv
+#' @importFrom stats coef logLik nobs predict vcov pnorm
 #' @useDynLib choicer, .registration = TRUE
 ## usethis namespace: end
 NULL

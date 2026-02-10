@@ -7,6 +7,8 @@ Description: Tools for estimating discrete-choice models used in applied economi
     Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr).
     The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL).
 License: LGPL (>= 3)
+URL: https://github.com/fpcordeiro/choicer
+BugReports: https://github.com/fpcordeiro/choicer/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
@@ -18,9 +20,10 @@ Imports:
     nloptr,
     randtoolbox,
     Rcpp,
-    stats,
-    utils
+    stats
 Suggests:
     testthat (>= 3.0.0),
-    numDeriv
+    numDeriv,
+    knitr,
+    rmarkdown
 Config/testthat/edition: 3

@@ -2,3 +2,8 @@
 ^\.Rproj\.user$
 ^LICENSE\.md$
 ^_benchmarks$
+^CLAUDE\.md$
+^\.claude$
+^docs$
+^\.vscode$
+^\.DS_Store$
