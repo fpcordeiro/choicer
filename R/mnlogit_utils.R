@@ -250,6 +250,14 @@ prepare_mnl_data <- function(
     dt[, (vars_to_drop) := NULL]
   }
 
+  ## Remove outside-option rows when modelling it implicitly ------------------
+  if (include_outside_option && !is.null(outside_opt_label)) {
+    dt <- dt[get(alt_col) != outside_opt_label]
+    if (nrow(dt) == 0) {
+      stop("No inside alternatives remain after removing outside option rows.")
+    }
+  }
+
   ## Drop ids with missing observations ----------------------------------------
   dt[, HAS_NA := rowSums(is.na(.SD)) > 0]
   ids_to_drop <- dt[HAS_NA==TRUE, get(id_col)] |> unique()

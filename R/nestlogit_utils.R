@@ -306,8 +306,14 @@ prepare_nl_data <- function(
     include_outside_option = include_outside_option
   )
 
-  # Build nest_idx aligned with alt_mapping row order
-  alt_labels <- result$alt_mapping[[alt_col]]
+  # Build nest_idx aligned with alt_mapping row order (inside alternatives only;
+
+  # the outside option is handled implicitly in C++ when include_outside_option=TRUE)
+  if (include_outside_option) {
+    alt_labels <- result$alt_mapping[alt_int > 0][[alt_col]]
+  } else {
+    alt_labels <- result$alt_mapping[[alt_col]]
+  }
   nest_labels <- nest_map[[nest_col]][match(alt_labels, nest_map[[alt_col]])]
 
   # Check all alternatives have a nest assignment
