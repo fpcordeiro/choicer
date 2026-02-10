@@ -124,6 +124,10 @@ Rcpp::List nl_loglik_gradient_parallel(
   // Compute prefix sums for indexing
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -135,7 +139,7 @@ Rcpp::List nl_loglik_gradient_parallel(
     // Thread-local accumulators
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
-    
+
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
 
@@ -147,17 +151,16 @@ Rcpp::List nl_loglik_gradient_parallel(
       const int start_idx   = S[i];
       const int end_idx     = start_idx + m_i - 1;
       const double w_i      = weights[i];
-      
+
       // Get individual-specific data
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
       arma::uvec nest_idx0_i= nest_idx0.elem(alt_idx0_i); // m_i
 
       // --- 2. Calculate Utilities and Probabilities ---
-      
-      // V_ij = X_ij * beta + delta_j
-      arma::vec V_inside = X_i * beta;
-      if (use_asc) V_inside += delta.elem(alt_idx0_i);
+
+      // V_ij = X_ij * beta + delta_j (pre-computed)
+      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
 
       // V_ij / lambda_k
       // This now correctly uses lambda_k=1 for singleton nests

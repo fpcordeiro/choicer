@@ -59,6 +59,10 @@ Rcpp::List mnl_loglik_gradient_parallel(
   // Compute prefix sums for indexing
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -85,10 +89,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
 
       // Build utility vector V_i
       arma::vec V_i = arma::zeros(num_choices);
-      arma::vec inside_utils = X_i * beta;
-
-      // Add delta to inside utilities
-      if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
 
       if (include_outside_option) {
         // outside option at index 0
@@ -298,6 +299,10 @@ Rcpp::List mnl_predict(
   // Compute prefix sums for indexing
   Rcpp::IntegerVector S = compute_prefix_sum(M);
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Preallocate predicted values
   arma::vec V_all = arma::zeros(X.n_rows);
   arma::vec P_all = arma::zeros(X.n_rows);
@@ -310,15 +315,10 @@ Rcpp::List mnl_predict(
     const int num_choices = include_outside_option ? m_i + 1 : m_i;
     const int start_idx   = S[i];
     const int end_idx     = start_idx + m_i - 1;
-    const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-    arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
 
     // Build utility vector V_i
     arma::vec V_i = arma::zeros(num_choices);
-    arma::vec inside_utils = X_i * beta;
-
-    // Add delta to inside utilities
-    if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+    arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
 
     if (include_outside_option) {
       // outside option at index 0
@@ -367,6 +367,10 @@ arma::vec mnl_predict_shares_internal(
   if (denominator <= 0) {
     Rcpp::stop("Error: Sum of weights must be positive.");
   }
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Initialize global accumulator for predicted shares
   arma::vec global_shares = arma::zeros(num_alts);
 
@@ -386,15 +390,11 @@ arma::vec mnl_predict_shares_internal(
     const int num_choices = include_outside_option ? m_i + 1 : m_i;
     const int start_idx   = S[i];
     const int end_idx     = start_idx + m_i - 1;
-    const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
     arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
 
     // Build utility vector V_i
     arma::vec V_i = arma::zeros(num_choices);
-    arma::vec inside_utils = X_i * beta;
-
-    // Add delta to inside utilities
-    if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+    arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
 
     if (include_outside_option) {
       // outside option at index 0
@@ -649,7 +649,11 @@ arma::mat mnl_loglik_hessian_parallel(
   
   // Compute prefix sums for indexing each individual's block in X / alt_idx
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
-  
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Prepare global accumulator
   arma::mat global_hess = arma::zeros(n_params, n_params);
 
@@ -676,9 +680,7 @@ arma::mat mnl_loglik_hessian_parallel(
 
       // Build utility vector V_i
       arma::vec V_i = arma::zeros(num_choices);
-      arma::vec inside_utils = X_i * beta;
-      
-      if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
 
       if (include_outside_option) {
         V_i.subvec(1, num_choices - 1) = inside_utils;
@@ -826,6 +828,10 @@ arma::mat mnl_elasticities_parallel(
   // Compute prefix sums for indexing
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Prepare global accumulators
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
@@ -852,9 +858,7 @@ arma::mat mnl_elasticities_parallel(
 
       // --- 2. Compute Probabilities (same as loglik) ---
       arma::vec V_i = arma::zeros(num_choices);
-      arma::vec inside_utils = X_i * beta;
-
-      if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
 
       if (include_outside_option) {
         V_i.subvec(1, num_choices - 1) = inside_utils;
@@ -999,6 +1003,10 @@ arma::mat mnl_diversion_ratios_parallel(
   // Compute prefix sums for indexing
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
   // Prepare global accumulators
   // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j)
   // denominator(j) = sum_n w_n * P_nj * (1 - P_nj)
@@ -1022,15 +1030,12 @@ arma::mat mnl_diversion_ratios_parallel(
       const int start_idx   = S[i];
       const int end_idx     = start_idx + m_i - 1;
       const double w_i      = weights[i];
-      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
 
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
 
       // --- 2. Compute Probabilities ---
       arma::vec V_i = arma::zeros(num_choices);
-      arma::vec inside_utils = X_i * beta;
-
-      if (use_asc) inside_utils += delta.elem(alt_idx0_i);
+      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
 
       if (include_outside_option) {
         V_i.subvec(1, num_choices - 1) = inside_utils;

@@ -182,6 +182,19 @@ Rcpp::List mxl_loglik_gradient_parallel(
     }
   }
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  // base_util = X*beta + W*mu_final + delta, computed once for all rows
+  arma::vec base_util = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util += W * mu_final;
+  } else {
+    arma::vec W_mu = W * mu_final;
+    base_util += W_mu.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util += delta.elem(alt_idx0);
+  }
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -195,14 +208,6 @@ Rcpp::List mxl_loglik_gradient_parallel(
     arma::vec local_grad = arma::zeros(n_params);
 
     // --- Pre-allocate working memory for the thread ---
-    // Max dimension estimation (safe upper bounds)
-    // We don't know max(m_i) easily without a pass, but standard vectors can be
-    // resized efficiently if needed. However, here we mostly depend on K_w,
-    // n_params which are fixed. For variable sized vectors like V_s (depends on
-    // m_i), we can just declare them and let them reallocate if size changes or
-    // just construct them. The critical ones are the fixed-size parameter
-    // vectors.
-
     arma::vec eta_i_s(K_w);
     arma::vec gamma_i_s(K_w);
     arma::vec gamma_i_s_final(K_w);
@@ -239,6 +244,9 @@ Rcpp::List mxl_loglik_gradient_parallel(
       if (!include_outside_option)
         chosen_alt -= 1; // to 0-based inside-only
 
+      // Pre-computed base utility for this individual (includes X*beta + W*mu_final + delta)
+      const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
+
       //  Per-draw accumulators
       double log_P_avg = -std::numeric_limits<double>::infinity();
       arma::vec grad_num = arma::zeros(n_params); // Sigma_s P_s * g_s
@@ -269,10 +277,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
         // Build utility vector V_i_s for individual i and simulation s
         V_s.zeros(); // Reset V_s
 
-        inside_utils =
-            X_i * beta + W_i * (mu_final + gamma_i_s_final); // Length m_i
-        if (use_asc)
-          inside_utils += delta.elem(alt_idx0_i);
+        inside_utils = base_util_i + W_i * gamma_i_s_final; // Length m_i
         if (include_outside_option)
           V_s.subvec(1, num_choices - 1) = inside_utils;
         else
@@ -641,6 +646,18 @@ arma::mat mxl_hessian_parallel(
     }
   }
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util_h = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util_h += W * mu_final;
+  } else {
+    arma::vec W_mu_h = W * mu_final;
+    base_util_h += W_mu_h.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util_h += delta.elem(alt_idx0);
+  }
+
   // Global accumulator
   arma::mat global_hess = arma::zeros(n_params, n_params);
 
@@ -672,6 +689,9 @@ arma::mat mxl_hessian_parallel(
       if (!include_outside_option)
         chosen_alt -= 1;
 
+      // Pre-computed base utility for this individual
+      const arma::vec base_util_i = base_util_h.subvec(start_idx, end_idx);
+
       // Per-individual accumulators
       arma::vec P_s_vec = arma::zeros(Sdraw);
       arma::vec grad_numerator = arma::zeros(n_params);
@@ -697,11 +717,8 @@ arma::mat mxl_hessian_parallel(
 
         // === 3. Utility ===
         arma::vec V_s = arma::zeros(num_choices);
-        arma::vec inside_utils =
-            X_i * beta + W_i * (mu_final + gamma_i_s_final);
+        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
 
-        if (use_asc)
-          inside_utils += delta.elem(alt_idx0_i);
         if (include_outside_option)
           V_s.subvec(1, num_choices - 1) = inside_utils;
         else
@@ -882,6 +899,18 @@ arma::vec mxl_predict_shares_internal(
     Rcpp::stop("Error: Sum of weights must be positive.");
   }
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util_s = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util_s += W * mu_final;
+  } else {
+    arma::vec W_mu_s = W * mu_final;
+    base_util_s += W_mu_s.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util_s += delta.elem(alt_idx0);
+  }
+
   // Initialize global accumulator for predicted shares
   arma::vec global_shares = arma::zeros(num_alts);
 
@@ -906,7 +935,6 @@ arma::vec mxl_predict_shares_internal(
       const int start_idx = S_prefix[i];
       const int end_idx = start_idx + m_i - 1;
       const double w_i = weights[i];
-      const auto X_i = X.rows(start_idx, end_idx);
       const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
 
       arma::mat W_i;
@@ -914,6 +942,9 @@ arma::vec mxl_predict_shares_internal(
         W_i = W.rows(start_idx, end_idx);
       else
         W_i = W.rows(alt_idx0_i);
+
+      // Pre-computed base utility for this individual
+      const arma::vec base_util_i = base_util_s.subvec(start_idx, end_idx);
 
       // Accumulate probabilities over draws
       arma::vec P_bar_i = arma::zeros(num_choices);
@@ -933,11 +964,7 @@ arma::vec mxl_predict_shares_internal(
 
         // Build utility vector
         arma::vec V_s = arma::zeros(num_choices);
-        arma::vec inside_utils = X_i * beta + W_i * (mu_final + gamma_i_s_final);
-
-        if (use_asc) {
-          inside_utils += delta.elem(alt_idx0_i);
-        }
+        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
 
         if (include_outside_option) {
           V_s.subvec(1, num_choices - 1) = inside_utils;
@@ -1270,6 +1297,18 @@ arma::mat mxl_elasticities_parallel(
   // Compute prefix sums
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util_e = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util_e += W * mu_final;
+  } else {
+    arma::vec W_mu_e = W * mu_final;
+    base_util_e += W_mu_e.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util_e += delta.elem(alt_idx0);
+  }
+
   // Global accumulators
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
@@ -1304,6 +1343,9 @@ arma::mat mxl_elasticities_parallel(
         W_i = W.rows(start_idx, end_idx);
       else
         W_i = W.rows(alt_idx0_i);
+
+      // Pre-computed base utility for this individual
+      const arma::vec base_util_i = base_util_e.subvec(start_idx, end_idx);
 
       // Map local indices to global alternative indices
       arma::uvec global_j_map(num_choices);
@@ -1357,11 +1399,7 @@ arma::mat mxl_elasticities_parallel(
 
         // Build utility vector
         arma::vec V_s = arma::zeros(num_choices);
-        arma::vec inside_utils = X_i * beta + W_i * (mu_final + gamma_i_s_final);
-
-        if (use_asc) {
-          inside_utils += delta.elem(alt_idx0_i);
-        }
+        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
 
         if (include_outside_option) {
           V_s.subvec(1, num_choices - 1) = inside_utils;
