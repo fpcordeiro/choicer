@@ -19,3 +19,7 @@ K_w x S x N array with halton standard normal draws
 \description{
 Create halton normal draws in appropriate format for mixed logit estimation
 }
+\examples{
+draws <- get_halton_normals(S = 50, N = 10, K_w = 2)
+dim(draws)  # 2 x 50 x 10
+}

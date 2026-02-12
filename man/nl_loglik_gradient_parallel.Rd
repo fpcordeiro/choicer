@@ -44,3 +44,21 @@ List with loglikelihood and gradient evaluated at input arguments
 Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
 Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 4
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, nest := ifelse(alt <= 2, "A", "B")]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+result <- nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+  d$choice_idx, d$nest_idx, d$M, d$weights)
+result$objective
+}
+}

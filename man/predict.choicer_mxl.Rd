@@ -17,3 +17,9 @@ A list with simulated choice probabilities.
 \description{
 Computes simulated choice probabilities using stored Halton draws.
 }
+\examples{
+\donttest{
+# predict() for mixed logit is not yet implemented.
+# Use elasticities() for post-estimation analysis.
+}
+}

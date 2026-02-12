@@ -15,6 +15,21 @@
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 //' @return List with loglikelihood and gradient evaluated at input arguments
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+//' theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
+//' result <- mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+//'   d$choice_idx, d$M, d$weights)
+//' result$objective  # negative log-likelihood
+//' }
 //' @export
 // [[Rcpp::export]]
 Rcpp::List mnl_loglik_gradient_parallel(
@@ -171,83 +186,6 @@ Rcpp::List mnl_loglik_gradient_parallel(
   );
 }
 
-//' Numerical Hessian of the log-likelihood via finite differences
-//'
-//' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
-//' @param M N x 1 vector with number of alternatives for each individual
-//' @param weights N x 1 vector with weights for each observation
-//' @param use_asc whether to use alternative-specific constants
-//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @param eps finite difference step size
-//' @return Hessian evaluated at input arguments
-//' @export
-// [[Rcpp::export]]
-arma::mat mnl_loglik_numeric_hessian(
-  const arma::vec& theta,
-  const arma::mat& X,
-  const arma::uvec& alt_idx,
-  const arma::uvec& choice_idx,
-  const Rcpp::IntegerVector& M,
-  const arma::vec& weights,
-  bool use_asc = true,
-  bool include_outside_option = true,
-  double eps = 1e-6
-) {
-  int p = theta.n_elem;
-  arma::mat Hess(p, p, arma::fill::zeros);
-
-  // For each dimension i, we do a +/- eps perturbation
-  // Then measure the difference in the gradient
-  for (int i = 0; i < p; i++) {
-    // Create a copy of theta
-    arma::vec theta_pos = theta;
-    arma::vec theta_neg = theta;
-
-    double eps_scaled = eps * std::max(std::abs(theta(i)), 1.0);
-
-    theta_pos(i) += eps_scaled;
-    theta_neg(i) -= eps_scaled;
-
-    // Evaluate gradient at theta_pos
-    Rcpp::List pos_eval = mnl_loglik_gradient_parallel(theta_pos, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option);
-    arma::vec grad_pos  = Rcpp::as<arma::vec>(pos_eval["gradient"]);
-
-    // Evaluate gradient at theta_neg
-    Rcpp::List neg_eval = mnl_loglik_gradient_parallel(theta_neg, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option);
-    arma::vec grad_neg  = Rcpp::as<arma::vec>(neg_eval["gradient"]);
-
-    // Check for NaN or Inf in grad_pos and grad_neg
-    if (!grad_pos.is_finite()) {
-      Rcpp::Rcout << "Warning: NaN or Inf in grad_pos at index " << i << std::endl;
-      grad_pos.fill(0.0); // fallback to zero
-    }
-    if (!grad_neg.is_finite()) {
-      Rcpp::Rcout << "Warning: NaN or Inf in grad_neg at index " << i << std::endl;
-      grad_neg.fill(0.0); // fallback to zero
-    }
-
-    // central difference for gradient
-    arma::vec diff_grad_i = (grad_pos - grad_neg) / (2.0 * eps_scaled);
-
-    // Check for NaN or Inf in diff_grad_i
-    if (!diff_grad_i.is_finite()) {
-      Rcpp::Rcout << "Warning: NaN or Inf in diff_grad_i at index " << i << std::endl;
-      diff_grad_i.fill(0.0); // fallback to zero
-    }
-    
-    // Put diff_grad_i into column i of Hess
-    // Because Hess[i, j] = derivative of gradient[j] wrt theta[i]
-    // i.e. row = j, col = i
-    for (int j = 0; j < p; j++) {
-      Hess(j, i) = diff_grad_i(j);
-    }
-  }
-  return Hess;
-}
-
 //' Prediction of choice probabilities and utilities based on fitted model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
@@ -257,6 +195,20 @@ arma::mat mnl_loglik_numeric_hessian(
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 //' @return List with choice probability and utility for each choice situation evaluated at input arguments
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' pred <- mnl_predict(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$M, use_asc = TRUE)
+//' head(pred$choice_prob)
+//' }
 //' @export
 // [[Rcpp::export]]
 Rcpp::List mnl_predict(
@@ -446,6 +398,20 @@ arma::vec mnl_predict_shares_internal(
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 //' @return vector with predicted market shares for each alternative
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' shares <- mnl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$M, fit$data$weights, use_asc = TRUE)
+//' shares
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::vec mnl_predict_shares(
@@ -511,6 +477,21 @@ arma::vec mnl_predict_shares(
 //' @param tol convergence tolerance
 //' @param max_iter maximum number of iterations
 //' @return vector with contraction's delta (ASCs) output
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' beta <- coef(fit)[fit$param_map$beta]
+//' delta <- blp_contraction(rep(0, J), rep(1/J, J), fit$data$X,
+//'   beta, fit$data$alt_idx, fit$data$M, fit$data$weights)
+//' delta
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::vec blp_contraction(
@@ -604,6 +585,20 @@ arma::vec blp_contraction(
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 //' @return Hessian matrix of the negative log-likelihood
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' H <- mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$choice_idx, fit$data$M, fit$data$weights)
+//' dim(H)
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::mat mnl_loglik_hessian_parallel(
@@ -770,6 +765,20 @@ arma::mat mnl_loglik_hessian_parallel(
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option
 //' @return J x J matrix of aggregate elasticities
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' elas <- mnl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$choice_idx, fit$data$M, fit$data$weights, elast_var_idx = 1L)
+//' elas
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::mat mnl_elasticities_parallel(
@@ -956,6 +965,20 @@ arma::mat mnl_elasticities_parallel(
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option
 //' @return J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' dr <- mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$M, fit$data$weights)
+//' dr
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::mat mnl_diversion_ratios_parallel(

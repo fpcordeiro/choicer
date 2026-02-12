@@ -15,26 +15,24 @@
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @return List with loglikelihood and gradient evaluated at input arguments
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+#' theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
+#' result <- mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+#'   d$choice_idx, d$M, d$weights)
+#' result$objective  # negative log-likelihood
+#' }
 #' @export
 mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
-}
-
-#' Numerical Hessian of the log-likelihood via finite differences
-#'
-#' @param theta K + J - 1 or K + J vector with model parameters
-#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
-#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-#' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
-#' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param use_asc whether to use alternative-specific constants
-#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @param eps finite difference step size
-#' @return Hessian evaluated at input arguments
-#' @export
-mnl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = TRUE, eps = 1e-6) {
-    .Call(`_choicer_mnl_loglik_numeric_hessian`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option, eps)
 }
 
 #' Prediction of choice probabilities and utilities based on fitted model
@@ -46,6 +44,20 @@ mnl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, M, weights
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @return List with choice probability and utility for each choice situation evaluated at input arguments
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' pred <- mnl_predict(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$M, use_asc = TRUE)
+#' head(pred$choice_prob)
+#' }
 #' @export
 mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_predict`, theta, X, alt_idx, M, use_asc, include_outside_option)
@@ -61,6 +73,20 @@ mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_op
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @return vector with predicted market shares for each alternative
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' shares <- mnl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$M, fit$data$weights, use_asc = TRUE)
+#' shares
+#' }
 #' @export
 mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_predict_shares`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
@@ -79,6 +105,21 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #' @param tol convergence tolerance
 #' @param max_iter maximum number of iterations
 #' @return vector with contraction's delta (ASCs) output
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' beta <- coef(fit)[fit$param_map$beta]
+#' delta <- blp_contraction(rep(0, J), rep(1/J, J), fit$data$X,
+#'   beta, fit$data$alt_idx, fit$data$M, fit$data$weights)
+#' delta
+#' }
 #' @export
 blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L) {
     .Call(`_choicer_blp_contraction`, delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, tol, max_iter)
@@ -95,6 +136,20 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @return Hessian matrix of the negative log-likelihood
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' H <- mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$choice_idx, fit$data$M, fit$data$weights)
+#' dim(H)
+#' }
 #' @export
 mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
@@ -115,6 +170,20 @@ mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weight
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option
 #' @return J x J matrix of aggregate elasticities
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' elas <- mnl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$choice_idx, fit$data$M, fit$data$weights, elast_var_idx = 1L)
+#' elas
+#' }
 #' @export
 mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_elasticities_parallel`, theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
@@ -134,6 +203,20 @@ mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option
 #' @return J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' dr <- mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$M, fit$data$weights)
+#' dr
+#' }
 #' @export
 mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_diversion_ratios_parallel`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
@@ -149,6 +232,10 @@ build_L_mat <- function(L_params, K_w, rc_correlation) {
 #' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 #' @param rc_correlation whether random coefficients are correlated
 #' @return matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
+#' @examples
+#' L_params <- c(log(1.0), 0.3, log(0.5))
+#' Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
+#' Sigma  # 2x2 covariance matrix
 #' @export
 build_var_mat <- function(L_params, K_w, rc_correlation) {
     .Call(`_choicer_build_var_mat`, L_params, K_w, rc_correlation)
@@ -178,31 +265,27 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 #'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
 #'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, d$N, ncol(d$W))
+#' K_x <- ncol(d$X); K_w <- ncol(d$W); J <- nrow(d$alt_mapping)
+#' theta <- rep(0, K_x + K_w + J - 1)
+#' result <- mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
+#'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, K_w),
+#'   rc_correlation = FALSE, rc_mean = FALSE)
+#' result$objective
+#' }
 #' @export
 mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
-}
-
-#' Numerical Hessian of the log-likelihood via finite differences for mixed logit
-#'
-#' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
-#' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
-#' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
-#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-#' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
-#' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N
-#' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
-#' @param rc_correlation whether random coefficients should be correlated
-#' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
-#' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
-#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @param eps numerical tolerance
-#' @return List with loglikelihood and gradient evaluated at input arguments
-#' @export
-mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
-    .Call(`_choicer_mxl_loglik_numeric_hessian`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, eps)
 }
 
 #' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
@@ -211,6 +294,10 @@ mxl_loglik_numeric_hessian <- function(theta, X, W, alt_idx, choice_idx, M, weig
 #' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 #' @param rc_correlation whether random coefficients are correlated
 #' @return Jacobian (dVech(Sigma) / dTheta)
+#' @examples
+#' L_params <- c(log(0.8), 0.2, log(0.6))
+#' J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
+#' dim(J_mat)  # 3 x 3 for K_w=2 correlated
 #' @export
 jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
     .Call(`_choicer_jacobian_vech_Sigma`, L_params, K_w, rc_correlation)
@@ -239,6 +326,23 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 #'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
 #'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, d$N, ncol(d$W))
+#' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
+#' H <- mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+#'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+#'   rc_correlation = FALSE, rc_mean = FALSE)
+#' dim(H)
+#' }
 #' @export
 mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
@@ -268,6 +372,25 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' @param tol convergence tolerance (default 1e-8)
 #' @param max_iter maximum iterations (default 1000)
 #' @return vector with converged delta (ASC) values
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, d$N, ncol(d$W))
+#' fit <- run_mxlogit(input_data = d, eta_draws = eta)
+#' pm <- fit$param_map
+#' delta <- mxl_blp_contraction(rep(0, J), rep(1/J, J), d$X, d$W,
+#'   coef(fit)[pm$beta], rep(0, ncol(d$W)), coef(fit)[pm$sigma],
+#'   d$alt_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+#'   rc_correlation = FALSE, rc_mean = FALSE)
+#' delta
+#' }
 #' @export
 mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L) {
     .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter)
@@ -296,6 +419,24 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, 
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
 #' @return J x J matrix of aggregate elasticities
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, d$N, ncol(d$W))
+#' fit <- run_mxlogit(input_data = d, eta_draws = eta)
+#' elas <- mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
+#'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+#'   elast_var_idx = 1L, is_random_coef = FALSE,
+#'   rc_correlation = FALSE, rc_mean = FALSE)
+#' elas
+#' }
 #' @export
 mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option)
@@ -318,6 +459,23 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
 #' @return List with loglikelihood and gradient evaluated at input arguments
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+#' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+#' result <- nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+#'   d$choice_idx, d$nest_idx, d$M, d$weights)
+#' result$objective
+#' }
 #' @export
 nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
@@ -338,6 +496,23 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
 #' @param eps finite difference step size
 #' @return Hessian evaluated at input arguments
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+#' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+#' H <- nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
+#'   d$nest_idx, d$M, d$weights)
+#' dim(H)
+#' }
 #' @export
 nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
     .Call(`_choicer_nl_loglik_numeric_hessian`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, eps)

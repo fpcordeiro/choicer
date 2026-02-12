@@ -49,27 +49,6 @@ test_that("mnl_loglik_hessian_parallel is symmetric", {
   expect_equal(H, t(H), tolerance = 1e-12)
 })
 
-test_that("mnl_loglik_numeric_hessian matches analytical", {
-  dt <- create_small_mnl_data()
-  inputs <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
-
-  K <- ncol(inputs$X)
-  J <- nrow(inputs$alt_mapping)
-  theta <- runif(K + J - 1, -0.2, 0.2)
-
-  H_anal <- mnl_loglik_hessian_parallel(
-    theta, inputs$X, inputs$alt_idx, inputs$choice_idx,
-    inputs$M, inputs$weights, TRUE, FALSE
-  )
-
-  H_num <- mnl_loglik_numeric_hessian(
-    theta, inputs$X, inputs$alt_idx, inputs$choice_idx,
-    inputs$M, inputs$weights, TRUE, FALSE
-  )
-
-  expect_equal(H_anal, H_num, tolerance = TOL_HESS)
-})
-
 test_that("mnl_loglik_hessian at zero parameters", {
   skip_if_not_installed("numDeriv")
 
@@ -171,35 +150,6 @@ test_that("mxl_hessian_parallel is symmetric", {
   )
 
   expect_equal(H, t(H), tolerance = 1e-10)
-})
-
-test_that("mxl_loglik_numeric_hessian returns correct dimensions", {
-  dt <- create_small_mxl_data()
-  inputs <- prepare_mxl_data(
-    dt, "id", "alt", "choice", "x1", c("w1", "w2"),
-    rc_correlation = FALSE
-  )
-
-  N <- inputs$N
-  K_x <- ncol(inputs$X)
-  K_w <- ncol(inputs$W)
-  J <- nrow(inputs$alt_mapping)
-  S <- 20
-
-  eta_draws <- get_halton_normals(S, N, K_w)
-  n_params <- K_x + K_w + J - 1
-  theta <- rep(0, n_params)
-
-  H <- mxl_loglik_numeric_hessian(
-    theta, inputs$X, inputs$W, inputs$alt_idx, inputs$choice_idx,
-    inputs$M, inputs$weights, eta_draws,
-    rc_dist = rep(0L, K_w),
-    rc_correlation = FALSE, rc_mean = FALSE,
-    use_asc = TRUE, include_outside_option = FALSE
-  )
-
-  expect_equal(dim(H), c(n_params, n_params))
-  expect_true(all(is.finite(H)))
 })
 
 # --- NL Hessian tests ---

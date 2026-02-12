@@ -53,6 +53,22 @@
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
 #'   \code{nobs()}.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N), w2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#'
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = c("w1", "w2"), S = 50L
+#' )
+#' summary(fit)
+#' }
 #' @importFrom nloptr nloptr
 #' @export
 run_mxlogit <- function(
@@ -304,6 +320,17 @@ run_mxlogit <- function(
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param rc_correlation Logical indicating whether random coefficients are correlated. Default is FALSE.
 #' @return A list containing prepared inputs for mixed logit estimation, including rc_correlation.
+#' @examples
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N), w2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' input <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", c("w1", "w2"))
+#' str(input$X)
+#' str(input$W)
 #' @import data.table
 #' @export
 prepare_mxl_data <- function(
@@ -505,6 +532,9 @@ prepare_mxl_data <- function(
 #' @param N number of choice situations
 #' @param K_w dimension of random coefficients (number of columns in W matrix)
 #' @return K_w x S x N array with halton standard normal draws
+#' @examples
+#' draws <- get_halton_normals(S = 50, N = 10, K_w = 2)
+#' dim(draws)  # 2 x 50 x 10
 #' @importFrom randtoolbox halton
 #' @export
 get_halton_normals <- function(S, N, K_w) {
@@ -558,6 +588,23 @@ get_halton_normals <- function(S, N, K_w) {
 #' @returns A J x J elasticity matrix where entry (i, j) is the elasticity of P_i
 #'   with respect to the attribute of alternative j. Row and column names are set
 #'   from the alternative labels if available.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' input <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, input$N, ncol(input$W))
+#' fit <- run_mxlogit(input_data = input, eta_draws = eta)
+#' elas <- mxl_elasticities(
+#'   list(solution = coef(fit)), input, eta,
+#'   rc_dist = rep(0L, ncol(input$W)), elast_var_idx = 1L
+#' )
+#' }
 #' @export
 mxl_elasticities <- function(
     opt_result,
@@ -627,6 +674,25 @@ mxl_elasticities <- function(
 #' @param max_iter Maximum number of iterations. Default is 1000.
 #' @returns Converged delta (ASC) vector. Length is J-1 if `include_outside_option = FALSE`,
 #'   or J if `include_outside_option = TRUE`.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' input <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, input$N, ncol(input$W))
+#' fit <- run_mxlogit(input_data = input, eta_draws = eta)
+#' pm <- fit$param_map
+#' delta <- mxl_blp(
+#'   delta_init = rep(0, J), target_shares = rep(1/J, J),
+#'   input, beta = coef(fit)[pm$beta], mu = rep(0, ncol(input$W)),
+#'   L_params = coef(fit)[pm$sigma], eta, rc_dist = rep(0L, ncol(input$W))
+#' )
+#' }
 #' @export
 mxl_blp <- function(
     delta_init,

@@ -76,3 +76,21 @@ preparation (\code{\link{prepare_mnl_data}}) is handled automatically.}
 result via \code{input_data}.}
 }
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 100; J <- 3; beta_true <- c(1.0, -0.5)
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, V := drop(as.matrix(.SD) \%*\% beta_true), .SDcols = c("x1","x2")]
+dt[, prob := exp(V) / sum(exp(V)), by = id]
+dt[, choice := as.integer(alt == sample(alt, 1, prob = prob)), by = id]
+
+fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+summary(fit)
+coef(fit)
+AIC(fit)
+predict(fit, type = "shares")
+}
+}

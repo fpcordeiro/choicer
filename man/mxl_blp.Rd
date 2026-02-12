@@ -55,3 +55,23 @@ match target shares, using the contraction mapping of Berry, Levinsohn,
 and Pakes (1995). This is useful for demand estimation and counterfactual
 simulations.
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 100; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+input <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+eta <- get_halton_normals(50, input$N, ncol(input$W))
+fit <- run_mxlogit(input_data = input, eta_draws = eta)
+pm <- fit$param_map
+delta <- mxl_blp(
+  delta_init = rep(0, J), target_shares = rep(1/J, J),
+  input, beta = coef(fit)[pm$beta], mu = rep(0, ncol(input$W)),
+  L_params = coef(fit)[pm$sigma], eta, rc_dist = rep(0L, ncol(input$W))
+)
+}
+}

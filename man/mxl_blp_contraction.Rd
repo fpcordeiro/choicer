@@ -67,3 +67,23 @@ Finds the ASC (delta) parameters such that predicted market shares
 match target shares, using the contraction mapping of Berry, Levinsohn,
 and Pakes (1995).
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+eta <- get_halton_normals(50, d$N, ncol(d$W))
+fit <- run_mxlogit(input_data = d, eta_draws = eta)
+pm <- fit$param_map
+delta <- mxl_blp_contraction(rep(0, J), rep(1/J, J), d$X, d$W,
+  coef(fit)[pm$beta], rep(0, ncol(d$W)), coef(fit)[pm$sigma],
+  d$alt_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+  rc_correlation = FALSE, rc_mean = FALSE)
+delta
+}
+}

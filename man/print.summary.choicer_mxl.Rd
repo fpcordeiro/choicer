@@ -17,3 +17,19 @@ The object invisibly.
 \description{
 Print summary for mixed logit model
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+fit <- run_mxlogit(
+  data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+  covariate_cols = "x1", random_var_cols = "w1", S = 50L
+)
+print(summary(fit))
+}
+}

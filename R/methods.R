@@ -20,6 +20,18 @@ model_display_name <- function(model) {
 #' @param x A choicer_fit object.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' print(fit)
+#' }
 #' @export
 print.choicer_fit <- function(x, ...) {
   cat(model_display_name(x$model), "model\n")
@@ -39,6 +51,18 @@ print.choicer_fit <- function(x, ...) {
 #' @param object A choicer_fit object.
 #' @param ... Additional arguments (ignored).
 #' @returns Named numeric vector of estimated coefficients.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' coef(fit)
+#' }
 #' @export
 coef.choicer_fit <- function(object, ...) {
   object$coefficients
@@ -53,6 +77,18 @@ coef.choicer_fit <- function(object, ...) {
 #' @param object A choicer_fit object.
 #' @param ... Additional arguments (ignored).
 #' @returns Named variance-covariance matrix, or NULL if unavailable.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' vcov(fit)
+#' }
 #' @export
 vcov.choicer_fit <- function(object, ...) {
   object <- ensure_vcov(object)
@@ -68,6 +104,20 @@ vcov.choicer_fit <- function(object, ...) {
 #' @param object A choicer_fit object.
 #' @param ... Additional arguments (ignored).
 #' @returns A logLik object with df and nobs attributes.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' logLik(fit)
+#' AIC(fit)
+#' BIC(fit)
+#' }
 #' @export
 logLik.choicer_fit <- function(object, ...) {
   val <- object$loglik
@@ -84,6 +134,18 @@ logLik.choicer_fit <- function(object, ...) {
 #' @param object A choicer_fit object.
 #' @param ... Additional arguments (ignored).
 #' @returns Integer number of choice situations.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' nobs(fit)
+#' }
 #' @export
 nobs.choicer_fit <- function(object, ...) {
   object$nobs
@@ -129,6 +191,18 @@ build_coef_table <- function(estimates, se, param_names) {
 #' @param object A choicer_mnl object.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mnl object (list with coefficients table and metadata).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' summary(fit)
+#' }
 #' @export
 summary.choicer_mnl <- function(object, ...) {
   object <- ensure_vcov(object)
@@ -158,6 +232,18 @@ summary.choicer_mnl <- function(object, ...) {
 #' @param x A summary.choicer_mnl object.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' print(summary(fit))
+#' }
 #' @export
 print.summary.choicer_mnl <- function(x, ...) {
   cat(model_display_name(x$model), "model\n\n")
@@ -178,6 +264,21 @@ print.summary.choicer_mnl <- function(x, ...) {
 #' @param object A choicer_mxl object.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mxl object.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
+#' )
+#' summary(fit)
+#' }
 #' @export
 summary.choicer_mxl <- function(object, ...) {
   object <- ensure_vcov(object)
@@ -255,6 +356,21 @@ summary.choicer_mxl <- function(object, ...) {
 #' @param x A summary.choicer_mxl object.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
+#' )
+#' print(summary(fit))
+#' }
 #' @export
 print.summary.choicer_mxl <- function(x, ...) {
   cat(model_display_name(x$model), "model\n\n")
@@ -278,6 +394,22 @@ print.summary.choicer_mxl <- function(x, ...) {
 #' @param object A choicer_nl object.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_nl object.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = c("x1", "x2"), nest_col = "nest"
+#' )
+#' summary(fit)
+#' }
 #' @export
 summary.choicer_nl <- function(object, ...) {
   object <- ensure_vcov(object)
@@ -307,6 +439,22 @@ summary.choicer_nl <- function(object, ...) {
 #' @param x A summary.choicer_nl object.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = c("x1", "x2"), nest_col = "nest"
+#' )
+#' print(summary(fit))
+#' }
 #' @export
 print.summary.choicer_nl <- function(x, ...) {
   cat(model_display_name(x$model), "model\n\n")
@@ -373,6 +521,19 @@ print_footer <- function(x) {
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
 #'   For "shares": a named numeric vector of market shares per alternative.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' predict(fit, type = "shares")
+#' predict(fit, type = "probabilities")
+#' }
 #' @export
 predict.choicer_mnl <- function(object, type = c("probabilities", "shares"), ...) {
   type <- match.arg(type)
@@ -415,6 +576,11 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"), ...
 #' @param object A choicer_mxl object.
 #' @param ... Additional arguments (ignored).
 #' @returns A list with simulated choice probabilities.
+#' @examples
+#' \donttest{
+#' # predict() for mixed logit is not yet implemented.
+#' # Use elasticities() for post-estimation analysis.
+#' }
 #' @export
 predict.choicer_mxl <- function(object, ...) {
   if (is.null(object$data) || is.null(object$draws_info)) {
@@ -495,6 +661,18 @@ apply_mxl_delta_method <- function(est_theta, se, vcov_mat,
 #' @param object A fitted model object.
 #' @param ... Additional arguments passed to methods.
 #' @returns A J x J elasticity matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' elasticities(fit, "x1")
+#' }
 #' @export
 elasticities <- function(object, ...) UseMethod("elasticities")
 
@@ -507,6 +685,18 @@ elasticities <- function(object, ...) UseMethod("elasticities")
 #' @param object A fitted model object.
 #' @param ... Additional arguments passed to methods.
 #' @returns A J x J diversion ratio matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' diversion_ratios(fit)
+#' }
 #' @export
 diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 
@@ -520,6 +710,18 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #' @param target_shares Numeric vector of target market shares (length J).
 #' @param ... Additional arguments passed to methods.
 #' @returns Converged delta (ASC) vector.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' blp(fit, target_shares = rep(1/J, J))
+#' }
 #' @export
 blp <- function(object, target_shares, ...) UseMethod("blp")
 
@@ -532,6 +734,18 @@ blp <- function(object, target_shares, ...) UseMethod("blp")
 #'   or 1-based index into the design matrix X.
 #' @param ... Additional arguments (ignored).
 #' @returns A J x J elasticity matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' elasticities(fit, "x1")
+#' }
 #' @export
 elasticities.choicer_mnl <- function(object, elast_var, ...) {
   if (is.null(object$data)) {
@@ -562,6 +776,18 @@ elasticities.choicer_mnl <- function(object, elast_var, ...) {
 #' @param object A \code{choicer_mnl} object fitted with \code{keep_data = TRUE}.
 #' @param ... Additional arguments (ignored).
 #' @returns A J x J diversion ratio matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' diversion_ratios(fit)
+#' }
 #' @export
 diversion_ratios.choicer_mnl <- function(object, ...) {
   if (is.null(object$data)) {
@@ -594,6 +820,18 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @param max_iter Maximum iterations (default 1000).
 #' @param ... Additional arguments (ignored).
 #' @returns Converged delta (ASC) vector.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' blp(fit, target_shares = rep(1/J, J))
+#' }
 #' @export
 blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
                             tol = 1e-8, max_iter = 1000, ...) {
@@ -640,6 +878,22 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
 #'   coefficient (is in W), \code{FALSE} if fixed (in X). Default \code{FALSE}.
 #' @param ... Additional arguments (ignored).
 #' @returns A J x J elasticity matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
+#' )
+#' elasticities(fit, "x1")
+#' elasticities(fit, "w1", is_random_coef = TRUE)
+#' }
 #' @export
 elasticities.choicer_mxl <- function(object, elast_var,
                                      is_random_coef = FALSE, ...) {
@@ -690,6 +944,21 @@ elasticities.choicer_mxl <- function(object, elast_var,
 #' @param max_iter Maximum iterations (default 1000).
 #' @param ... Additional arguments (ignored).
 #' @returns Converged delta (ASC) vector.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
+#' )
+#' blp(fit, target_shares = rep(1/J, J))
+#' }
 #' @export
 blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
                             tol = 1e-8, max_iter = 1000, ...) {

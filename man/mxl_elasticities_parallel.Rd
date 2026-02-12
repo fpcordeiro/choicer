@@ -62,3 +62,22 @@ elasticities) for the Mixed Logit model. The elasticity E(i,j) represents
 the percentage change in the probability of choosing alternative i when
 the attribute of alternative j changes by 1\%.
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+eta <- get_halton_normals(50, d$N, ncol(d$W))
+fit <- run_mxlogit(input_data = d, eta_draws = eta)
+elas <- mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
+  d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+  elast_var_idx = 1L, is_random_coef = FALSE,
+  rc_correlation = FALSE, rc_mean = FALSE)
+elas
+}
+}

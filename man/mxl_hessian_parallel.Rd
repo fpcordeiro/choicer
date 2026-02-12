@@ -60,3 +60,21 @@ the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
 This differs from the textbook parameterization exp(mu_k + L_k * eta).
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+eta <- get_halton_normals(50, d$N, ncol(d$W))
+theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
+H <- mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+  d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+  rc_correlation = FALSE, rc_mean = FALSE)
+dim(H)
+}
+}

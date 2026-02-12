@@ -37,3 +37,18 @@ Computes the diversion ratio matrix DR(j->k), which measures the fraction
 of demand lost by alternative j that is captured by alternative k.
 For MNL: DR(j->k) = sum_n(w_n * P_nj * P_nk) / sum_n(w_n * P_nj * (1 - P_nj))
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+dr <- mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+  fit$data$M, fit$data$weights)
+dr
+}
+}

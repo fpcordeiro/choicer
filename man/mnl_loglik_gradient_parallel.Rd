@@ -39,3 +39,19 @@ List with loglikelihood and gradient evaluated at input arguments
 Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
 Allows for inclusion of alternative-specific constants, outside option, and observation weights.
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
+result <- mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+  d$choice_idx, d$M, d$weights)
+result$objective  # negative log-likelihood
+}
+}

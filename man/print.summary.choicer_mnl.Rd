@@ -17,3 +17,16 @@ The object invisibly.
 \description{
 Print summary for multinomial logit model
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+print(summary(fit))
+}
+}

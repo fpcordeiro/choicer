@@ -44,3 +44,15 @@ A list containing prepared inputs for mixed logit estimation, including rc_corre
 \description{
 Prepares and validates inputs for mixed logit estimation routine.
 }
+\examples{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N), w2 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+input <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", c("w1", "w2"))
+str(input$X)
+str(input$W)
+}

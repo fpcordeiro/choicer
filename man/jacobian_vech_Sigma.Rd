@@ -19,3 +19,8 @@ Jacobian (dVech(Sigma) / dTheta)
 \description{
 Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
 }
+\examples{
+L_params <- c(log(0.8), 0.2, log(0.6))
+J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
+dim(J_mat)  # 3 x 3 for K_w=2 correlated
+}

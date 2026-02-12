@@ -37,6 +37,23 @@
 #' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
 #'   \code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3; beta_true <- c(1.0, -0.5)
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, V := drop(as.matrix(.SD) %*% beta_true), .SDcols = c("x1","x2")]
+#' dt[, prob := exp(V) / sum(exp(V)), by = id]
+#' dt[, choice := as.integer(alt == sample(alt, 1, prob = prob)), by = id]
+#'
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' summary(fit)
+#' coef(fit)
+#' AIC(fit)
+#' predict(fit, type = "shares")
+#' }
 #' @importFrom nloptr nloptr
 #' @export
 run_mnlogit <- function(
@@ -224,6 +241,17 @@ run_mnlogit <- function(
 #'     \item `alt_mapping`: Data.table mapping alternatives to summary statistics.
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
 #'   }
+#' @examples
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' input <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+#' str(input$X)
+#' input$alt_mapping
 #' @export
 prepare_mnl_data <- function(
     data,

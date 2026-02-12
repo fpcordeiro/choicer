@@ -52,3 +52,16 @@ Validates inputs, builds design matrices, and constructs nest structure
 for nested logit estimation. Calls \code{\link{prepare_mnl_data}} internally
 for base data preparation, then adds nest-specific fields.
 }
+\examples{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 4
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, nest := ifelse(alt <= 2, "A", "B")]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+input <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+input$nest_idx
+input$alt_mapping
+}

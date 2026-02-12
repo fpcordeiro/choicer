@@ -44,6 +44,23 @@
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
 #'   \code{nobs()}.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#'
+#' fit <- run_nestlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = c("x1", "x2"), nest_col = "nest"
+#' )
+#' summary(fit)
+#' }
 #' @importFrom nloptr nloptr
 #' @export
 run_nestlogit <- function(
@@ -254,6 +271,18 @@ run_nestlogit <- function(
 #'       (in \code{alt_mapping} row order) to its nest.
 #'     \item \code{data_spec}: List with column name metadata including \code{nest_col}.
 #'   }
+#' @examples
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' input <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' input$nest_idx
+#' input$alt_mapping
 #' @export
 prepare_nl_data <- function(
     data,

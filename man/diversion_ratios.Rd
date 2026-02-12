@@ -19,3 +19,16 @@ Computes a J x J matrix of diversion ratios. Entry (i, j) is the fraction
 of demand lost by alternative j that is captured by alternative i when
 alternative j becomes less attractive.
 }
+\examples{
+\donttest{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+diversion_ratios(fit)
+}
+}

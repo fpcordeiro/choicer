@@ -49,3 +49,15 @@ A list containing:
 \description{
 Prepares and validates inputs for multinomial logit estimation routine.
 }
+\examples{
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+input <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+str(input$X)
+input$alt_mapping
+}

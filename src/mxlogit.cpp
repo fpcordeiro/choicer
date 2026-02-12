@@ -42,6 +42,10 @@ arma::mat build_L_mat(const arma::vec &L_params, const int K_w,
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
 //' @return matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
+//' @examples
+//' L_params <- c(log(1.0), 0.3, log(0.5))
+//' Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
+//' Sigma  # 2x2 covariance matrix
 //' @export
 // [[Rcpp::export]]
 arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
@@ -75,6 +79,24 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 //'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
 //'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+//' eta <- get_halton_normals(50, d$N, ncol(d$W))
+//' K_x <- ncol(d$X); K_w <- ncol(d$W); J <- nrow(d$alt_mapping)
+//' theta <- rep(0, K_x + K_w + J - 1)
+//' result <- mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
+//'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, K_w),
+//'   rc_correlation = FALSE, rc_mean = FALSE)
+//' result$objective
+//' }
 //' @export
 // [[Rcpp::export]]
 Rcpp::List mxl_loglik_gradient_parallel(
@@ -403,89 +425,6 @@ Rcpp::List mxl_loglik_gradient_parallel(
                             Rcpp::Named("gradient") = -global_grad);
 }
 
-//' Numerical Hessian of the log-likelihood via finite differences for mixed logit
-//'
-//' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
-//' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
-//' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
-//' @param M N x 1 vector with number of alternatives for each individual
-//' @param weights N x 1 vector with weights for each observation
-//' @param eta_draws Array with choice situation draws; K_w x S x N
-//' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
-//' @param rc_correlation whether random coefficients should be correlated
-//' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
-//' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
-//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @param eps numerical tolerance
-//' @return List with loglikelihood and gradient evaluated at input arguments
-//' @export
-// [[Rcpp::export]]
-arma::mat mxl_loglik_numeric_hessian(
-    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
-    const Rcpp::IntegerVector &M, const arma::vec &weights,
-    const arma::cube &eta_draws, const arma::uvec &rc_dist,
-    const bool rc_correlation = true, const bool rc_mean = false,
-    const bool use_asc = true, const bool include_outside_option = false,
-    double eps = 1e-6) {
-  int p = theta.n_elem;
-  arma::mat Hess(p, p, arma::fill::zeros);
-
-  // For each dimension i, do a +/- eps perturbation
-  for (int i = 0; i < p; i++) {
-    // Create a copy of theta
-    arma::vec theta_pos = theta;
-    arma::vec theta_neg = theta;
-
-    double eps_scaled = eps * std::max(std::abs(theta(i)), 1.0);
-
-    theta_pos(i) += eps_scaled;
-    theta_neg(i) -= eps_scaled;
-
-    // Evaluate gradient at theta_pos
-    Rcpp::List pos_eval = mxl_loglik_gradient_parallel(
-        theta_pos, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist,
-        rc_correlation, rc_mean, use_asc, include_outside_option);
-    arma::vec grad_pos = Rcpp::as<arma::vec>(pos_eval["gradient"]);
-
-    // Evaluate gradient at theta_neg
-    Rcpp::List neg_eval = mxl_loglik_gradient_parallel(
-        theta_neg, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist,
-        rc_correlation, rc_mean, use_asc, include_outside_option);
-    arma::vec grad_neg = Rcpp::as<arma::vec>(neg_eval["gradient"]);
-
-    // Check for NaN or Inf in grad_pos and grad_neg
-    if (!grad_pos.is_finite()) {
-      Rcpp::Rcout << "Warning: NaN or Inf in grad_pos at index " << i
-                  << std::endl;
-      grad_pos.fill(0.0); // fallback to zero
-    }
-    if (!grad_neg.is_finite()) {
-      Rcpp::Rcout << "Warning: NaN or Inf in grad_neg at index " << i
-                  << std::endl;
-      grad_neg.fill(0.0); // fallback to zero
-    }
-
-    // central difference for gradient
-    arma::vec diff_grad_i = (grad_pos - grad_neg) / (2.0 * eps_scaled);
-
-    // Check for NaN or Inf in diff_grad_i
-    if (!diff_grad_i.is_finite()) {
-      Rcpp::Rcout << "Warning: NaN or Inf in diff_grad_i at index " << i
-                  << std::endl;
-      diff_grad_i.fill(0.0); // fallback to zero
-    }
-
-    // Put diff_grad_i into column i of Hess
-    for (int j = 0; j < p; j++) {
-      Hess(j, i) = diff_grad_i(j);
-    }
-  }
-  return Hess;
-}
-
 // vech(): lower-triangular vectorisation (including the diagonal)
 inline arma::vec vech(const arma::mat &M) {
   arma::uword K = M.n_rows;
@@ -503,6 +442,10 @@ inline arma::vec vech(const arma::mat &M) {
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
 //' @return Jacobian (dVech(Sigma) / dTheta)
+//' @examples
+//' L_params <- c(log(0.8), 0.2, log(0.6))
+//' J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
+//' dim(J_mat)  # 3 x 3 for K_w=2 correlated
 //' @export
 // [[Rcpp::export]]
 arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
@@ -568,6 +511,23 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 //'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
 //'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+//' eta <- get_halton_normals(50, d$N, ncol(d$W))
+//' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
+//' H <- mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+//'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+//'   rc_correlation = FALSE, rc_mean = FALSE)
+//' dim(H)
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::mat mxl_hessian_parallel(
@@ -1030,6 +990,25 @@ arma::vec mxl_predict_shares_internal(
 //' @param tol convergence tolerance (default 1e-8)
 //' @param max_iter maximum iterations (default 1000)
 //' @return vector with converged delta (ASC) values
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+//' eta <- get_halton_normals(50, d$N, ncol(d$W))
+//' fit <- run_mxlogit(input_data = d, eta_draws = eta)
+//' pm <- fit$param_map
+//' delta <- mxl_blp_contraction(rep(0, J), rep(1/J, J), d$X, d$W,
+//'   coef(fit)[pm$beta], rep(0, ncol(d$W)), coef(fit)[pm$sigma],
+//'   d$alt_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+//'   rc_correlation = FALSE, rc_mean = FALSE)
+//' delta
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::vec mxl_blp_contraction(
@@ -1199,6 +1178,24 @@ arma::vec mxl_blp_contraction(
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
 //' @return J x J matrix of aggregate elasticities
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+//' eta <- get_halton_normals(50, d$N, ncol(d$W))
+//' fit <- run_mxlogit(input_data = d, eta_draws = eta)
+//' elas <- mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
+//'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+//'   elast_var_idx = 1L, is_random_coef = FALSE,
+//'   rc_correlation = FALSE, rc_mean = FALSE)
+//' elas
+//' }
 //' @export
 // [[Rcpp::export]]
 arma::mat mxl_elasticities_parallel(
