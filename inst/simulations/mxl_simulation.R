@@ -4,7 +4,7 @@
 source("inst/simulations/helpers.R")
 
 # DGP =========================================================================
-dgp <- simulate_mxl_data(N = 5e+4, J = 8, seed = 123)
+dgp <- simulate_mxl_data(N = 5e+3, J = 8, seed = 123)
 cat("MXL simulation: N =", dgp$settings$N, ", J =", dgp$settings$J, "\n\n")
 
 # Data preparation ============================================================
@@ -30,7 +30,7 @@ fit <- run_mxlogit(
   input_data = mxl_inputs,
   eta_draws  = eta_draws,
   use_asc    = TRUE,
-  control = list(print_level = 1L)
+  control = list(print_level = 1L, check_derivatives=TRUE)
 )
 
 cat("\n")
