@@ -238,9 +238,10 @@ Rcpp::List mxl_loglik_gradient_parallel(
     arma::vec V_s;          // Re-sized per individual
     arma::vec inside_utils; // Re-sized per individual
     arma::vec P_s;          // Re-sized per individual
+    arma::vec diff_vec;     // Re-sized per individual
 
     arma::vec g_s(n_params);
-    arma::vec w_ap_vec(K_w);
+    arma::vec Wt_diff(K_w); // W_i^T * diff_inside, shared by mu and L blocks
 
 // Loop over individuals in parallel
 #ifdef _OPENMP
@@ -276,6 +277,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
       // Size variable vectors for this individual
       V_s.set_size(num_choices);
       inside_utils.set_size(m_i);
+      diff_vec.set_size(num_choices);
       // P_s set_size happens implicitly or can be reserved
 
       // Loop over simulations
@@ -321,82 +323,79 @@ Rcpp::List mxl_loglik_gradient_parallel(
         }
 
         // Gradient g_s = d(log P_choice) / d(theta)
-        // ------------------------------
-        g_s.zeros(); // Reset g_s
+        // Vectorized: build diff_vec = e_{chosen} - P_s, then replace the
+        // per-alternative scatter loop with two mat-vec multiplies.
+        //
+        // For parameter block theta_k the gradient is:
+        //   g_s[k] = sum_a diff[a] * dV_a/dtheta_k
+        // Factoring out scalars that don't depend on a gives:
+        //   beta:   X_i^T * diff_inside  (BLAS dgemv)
+        //   mu_p:   (W_i^T * diff_inside)_p * dmu_final_dmu(p)
+        //   ell_pq: (W_i^T * diff_inside)_p * dgamma_final_dgamma(p)
+        //             * dL_pq/d(ell_pq) * eta_q^s
+        //   delta:  scatter (kept as loop — irregular indexing)
+        g_s.zeros(); // Zero needed for delta scatter below
 
-        for (int a = 0; a < num_choices; ++a) {
-          const double diff = (a == chosen_alt ? 1.0 : 0.0) - P_s[a];
-          // beta
-          if (include_outside_option) {
-            if (a > 0)
-              g_s.subvec(idx_beta_start, idx_mu_start - 1) +=
-                  diff * X_i.row(a - 1).t();
-          } else {
-            g_s.subvec(idx_beta_start, idx_mu_start - 1) +=
-                diff * X_i.row(a).t();
+        // diff_vec[a] = 1{a == chosen_alt} - P_s[a]
+        diff_vec = -P_s;
+        diff_vec(chosen_alt) += 1.0;
+
+        // ---- Beta and W blocks: mat-vec with inside-alt slice of diff_vec ----
+        // When include_outside_option: inside alts occupy diff_vec[1..m_i];
+        // X_i and W_i have m_i rows with no row for the outside option.
+        if (include_outside_option) {
+          const auto diff_inside = diff_vec.subvec(1, m_i); // subview, no copy
+          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_inside;
+          Wt_diff = W_i.t() * diff_inside;
+        } else {
+          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_vec;
+          Wt_diff = W_i.t() * diff_vec;
+        }
+
+        // ---- Mu block: element-wise scale of Wt_diff by dmu_final/dmu ----
+        // dV_{ij}/dmu_p = W_{ijp} * dmu_final_dmu(p)  (see math doc §3.4.2)
+        if (rc_mean) {
+          g_s.subvec(idx_mu_start, idx_L_start - 1) = Wt_diff % dmu_final_dmu;
+        }
+
+        // ---- L block ----
+        // dV_{ij}/d(ell_pq) = W_{ijp} * dgamma_final_dgamma(p) * dL_pq * eta_q^s
+        // Summing over j: (W_i^T * diff)_p * dgamma_final_dgamma(p) * dL_pq * eta_q^s
+        // (see math doc §3.4.3, steps 1-4)
+        if (rc_correlation) {
+          // Full lower-triangular L: parameters indexed row-major (p >= q)
+          int lp_idx = 0;
+          for (int p = 0; p < K_w; ++p) {
+            // Factor out the row-p weight: Wt_diff(p) * dgamma_final_dgamma(p)
+            const double Wt_p = Wt_diff(p) * dgamma_final_dgamma(p);
+            for (int q = 0; q <= p; ++q, ++lp_idx) {
+              // dL_pq/d(ell_pq): exp(ell_pp) = L(p,p) on diagonal, 1 off-diagonal
+              const double dLpq = (p == q) ? L(p, p) : 1.0;
+              g_s[idx_L_start + lp_idx] = Wt_p * dLpq * eta_i_s(q);
+            }
           }
-          // delta
-          if (use_asc) {
+        } else {
+          // Diagonal L: g[L_start + p] = Wt_diff(p) * dgamma(p) * L(p,p) * eta_p^s
+          g_s.subvec(idx_L_start, idx_L_start + K_w - 1) =
+              Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s;
+        }
+
+        // ---- Delta block (scatter — irregular alt-index mapping) ----
+        if (use_asc) {
+          for (int a = 0; a < num_choices; ++a) {
+            const double diff_a = diff_vec(a);
             if (include_outside_option) {
               if (a > 0) {
                 const int id = alt_idx0_i[a - 1];
-                g_s[idx_delta_start + id] += diff;
+                g_s[idx_delta_start + id] += diff_a;
               }
-            } else { // alt 0 normalised
+            } else { // alt 0 normalised — first inside alt has no free delta
               const int id = alt_idx0_i[a];
               if (id > 0)
-                g_s[idx_delta_start + (id - 1)] += diff;
+                g_s[idx_delta_start + (id - 1)] += diff_a;
             }
           }
-
-          // mu parameters
-          w_ap_vec.zeros(); // technically not needed if we overwrite, but safer
-          if (include_outside_option) {
-            if (a > 0)
-              w_ap_vec = W_i.row(a - 1).t();
-          } else {
-            w_ap_vec = W_i.row(a).t();
-          }
-          if (rc_mean) {
-            for (int p = 0; p < K_w; ++p) {
-              // d(Ua) / d(mu_p) = W_ap * dmu_final_dmu(p)
-              double dUa_dmu_p = w_ap_vec(p) * dmu_final_dmu(p);
-              g_s[idx_mu_start + p] += diff * dUa_dmu_p;
-            }
-          }
-
-          // L parameters
-          if (rc_correlation) {
-            // Full L matrix
-            int lp_idx = 0;
-            for (int p = 0; p < K_w; ++p) {            // loop over rows of L
-              for (int q = 0; q <= p; ++q, ++lp_idx) { // loop over cols of L
-                // d(L_pq) / d(theta_r)
-                double dLpq_dparam = (p == q ? L(p, p) : 1.0);
-                // d(gamma_p) / d(theta_r) = [d(L_pq)/d(theta_r)] * eta_q
-                double dgamma_p_dtheta_r = dLpq_dparam * eta_i_s(q);
-                // d(gamma_p_final) / d(gamma_p)
-                double dgamma_p_final_dgamma_p = dgamma_final_dgamma(p);
-                // d(Utility_a) / d(theta_r) = W_ap *
-                // [d(gamma_p_final)/d(gamma_p)] * [d(gamma_p)/d(theta_r)]
-                double dUa_dtheta_r =
-                    w_ap_vec(p) * dgamma_p_final_dgamma_p * dgamma_p_dtheta_r;
-                // d(logP) / d(theta_r) = [d(logP)/d(U_a)] * [d(U_a)/d(theta_r)]
-                g_s[idx_L_start + lp_idx] += diff * dUa_dtheta_r;
-              }
-            }
-          } else {
-            // Diagonal L matrix
-            for (int p = 0; p < K_w; ++p) {
-              double dLpp_dparam = L(p, p);
-              double dgamma_p_dtheta_r = dLpp_dparam * eta_i_s(p);
-              double dgamma_p_final_dgamma_p = dgamma_final_dgamma(p);
-              double dUa_dtheta_r =
-                  w_ap_vec(p) * dgamma_p_final_dgamma_p * dgamma_p_dtheta_r;
-              g_s[idx_L_start + p] += diff * dUa_dtheta_r;
-            }
-          }
-        } // end alt loop
+        }
 
         // accumulate numerator     Sigma_s P_s * g_s
         grad_num += P_choice * g_s;

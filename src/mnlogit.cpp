@@ -89,6 +89,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
     // Thread-local accumulators
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
+    arma::vec diff_vec; // pre-allocated per-thread, resized per individual
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -141,32 +142,34 @@ Rcpp::List mnl_loglik_gradient_parallel(
       local_loglik += w_i * log_P_choice;
 
       // Gradient -------------------------------------------------------------
-      for (int a = 0; a < num_choices; ++a) {
-        const double P_ia  = P_i[a];
-        const double val   = w_i * ( (a == chosen_alt ? 1.0 : 0.0) - P_ia );
+      // diff_vec[a] = 1{a == chosen_alt} - P_i[a]
+      diff_vec.set_size(num_choices);
+      diff_vec = -P_i;
+      diff_vec(chosen_alt) += 1.0;
 
-        // beta gradient
-        if (include_outside_option) {
-            if (a > 0) {                                      // skip outside
-                local_grad.subvec(0, K - 1) += val * X_i.row(a - 1).t();
-            }
-        } else {
-            local_grad.subvec(0, K - 1) += val * X_i.row(a).t();
-        }
+      // ---- Beta block: single BLAS dgemv ----
+      if (include_outside_option) {
+        const auto diff_inside = diff_vec.subvec(1, m_i); // subview, no copy; m_i elements
+        local_grad.subvec(0, K - 1) += w_i * X_i.t() * diff_inside;
+      } else {
+        local_grad.subvec(0, K - 1) += w_i * X_i.t() * diff_vec;
+      }
 
-        // delta gradient (if any)
-        if (use_asc) {
-            if (include_outside_option) {
-                if (a > 0) {                                    // only inside alt's
-                    const int a_id = alt_idx0_i[a - 1];
-                    local_grad[K + a_id] += val;
-                }
-            } else {
-                const int a_id = alt_idx0_i[a];                  // 1 ... J
-                if (a_id > 0) local_grad[K + (a_id - 1)] += val; // delta_1 is normalised 0
+      // ---- Delta block: scatter (irregular alt-index mapping) ----
+      if (use_asc) {
+        for (int a = 0; a < num_choices; ++a) {
+          const double val = w_i * diff_vec[a];
+          if (include_outside_option) {
+            if (a > 0) {
+              const int a_id = alt_idx0_i[a - 1];
+              local_grad[K + a_id] += val;
             }
+          } else {
+            const int a_id = alt_idx0_i[a];
+            if (a_id > 0) local_grad[K + (a_id - 1)] += val; // delta_1 is normalised 0
+          }
         }
-      } // end of alt loop
+      }
     } // end of i loop
 
     // Combine partial accumulators into global accumulators
