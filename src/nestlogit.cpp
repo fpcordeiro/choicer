@@ -156,6 +156,7 @@ Rcpp::List nl_loglik_gradient_parallel(
     // Thread-local accumulators
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
+    arma::vec grad_vec; // pre-allocated per-thread, resized per individual
 
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
@@ -276,36 +277,39 @@ Rcpp::List nl_loglik_gradient_parallel(
       }
 
       // 4.2: Gradient w.r.t. beta and delta
-      for (int j = 0; j < m_i; ++j) {
-        const int k_j = nest_idx0_i[j];
-        const double lambda_k_j = lambda[k_j];
-        
-        double grad_term_j = -P_i[j];
-        
-        if (k_j == chosen_nest_k) { 
-          grad_term_j += P_j_given_k[j] * (1.0 - 1.0 / lambda_k_j);
-          if (j == chosen_inside_idx) { 
-            grad_term_j += 1.0 / lambda_k_j;
+      // Build grad_vec (NL analogue of diff_vec in MNL):
+      //   grad_vec[j] = -P_i[j]
+      //               + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
+      //               + 1/lambda_k                          if j == chosen alt
+      grad_vec.set_size(m_i);
+      grad_vec = -P_i;
+      if (chosen_nest_k >= 0) { // not outside option
+        const double lambda_chosen = lambda[chosen_nest_k];
+        const double term_scale = 1.0 - 1.0 / lambda_chosen;
+        for (int j = 0; j < m_i; ++j) {
+          if ((int)nest_idx0_i[j] == chosen_nest_k) {
+            grad_vec[j] += P_j_given_k[j] * term_scale;
           }
         }
-        
-        grad_term_j *= w_i;
-        
-        // beta gradient
-        local_grad.subvec(0, K - 1) += grad_term_j * X_i.row(j).t();
-        
-        // delta gradient
-        if (use_asc && delta_length > 0) {
+        grad_vec[chosen_inside_idx] += 1.0 / lambda_chosen;
+      }
+
+      // Beta block: single BLAS dgemv (analogous to MNL)
+      local_grad.subvec(0, K - 1) += w_i * X_i.t() * grad_vec;
+
+      // Delta block: scatter loop (irregular alt-index mapping)
+      if (use_asc && delta_length > 0) {
+        for (int j = 0; j < m_i; ++j) {
           const int a_id = alt_idx0_i[j];
           if (include_outside_option) {
-            local_grad[delta_start_idx + a_id] += grad_term_j;
+            local_grad[delta_start_idx + a_id] += w_i * grad_vec[j];
           } else {
             if (a_id > 0) {
-                local_grad[delta_start_idx + (a_id - 1)] += grad_term_j;
+              local_grad[delta_start_idx + (a_id - 1)] += w_i * grad_vec[j];
             }
           }
         }
-      } // end gradient loop for beta/delta 
+      } // end gradient block for beta/delta
 
       // 4.3: Gradient w.r.t. lambda_k
       for (int k = 0; k < n_nests; ++k) {

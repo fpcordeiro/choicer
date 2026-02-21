@@ -27,7 +27,7 @@ fit <- run_nestlogit(
   use_asc        = TRUE,
   include_outside_option = TRUE,
   outside_opt_label = 0L,
-  control = list(print_level = 1L)
+  control = list(print_level = 1L, check_derivatives=TRUE)
 )
 
 cat("\n")
