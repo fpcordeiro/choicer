@@ -58,7 +58,7 @@ The ASC parameters $\delta_j$ capture the average effect of unobserved factors f
 
 - **With outside option** (`include_outside_option = TRUE`): The outside option (alternative 0) has utility $V_{i0} = 0$, serving as the reference. All $J$ inside alternatives have free ASC parameters.
 
-*Code reference: [mnlogit.cpp:39-55](../src/mnlogit.cpp#L39-L55)*
+*Code reference: [mnlogit.cpp:50-70](../src/mnlogit.cpp#L50-L70)*
 
 ---
 
@@ -74,7 +74,7 @@ $$
 
 If an outside option is included, the denominator includes $\exp(V_{i0}) = \exp(0) = 1$.
 
-*Code reference: [mnlogit.cpp:102-105](../src/mnlogit.cpp#L102-L105)*
+*Code reference: [mnlogit.cpp:119-122](../src/mnlogit.cpp#L119-L122)*
 
 ### 2.2 Log-Likelihood
 
@@ -92,7 +92,7 @@ $$
 \log P_{ij_i} = V_{ij_i} - \log\left(\sum_{k=1}^{J_i} \exp(V_{ik})\right)
 $$
 
-*Code reference: [mnlogit.cpp:117-125](../src/mnlogit.cpp#L117-L125)*
+*Code reference: [mnlogit.cpp:133-142](../src/mnlogit.cpp#L133-L142)*
 
 ### 2.3 Log-Sum-Exp Trick for Numerical Stability
 
@@ -116,7 +116,7 @@ $$
 \log P_{ij_i} = (V_{ij_i} - V_{\max}) - \log\left(\sum_k \exp(V_{ik} - V_{\max})\right)
 $$
 
-*Code reference: [mnlogit.cpp:103-104](../src/mnlogit.cpp#L103-L104)*
+*Code reference: [mnlogit.cpp:119-122](../src/mnlogit.cpp#L119-L122)*
 
 ---
 
@@ -152,7 +152,9 @@ $$
 \nabla_\beta \ell = \sum_{i=1}^{N} w_i \left( X_{ij_i}^T - \sum_{j=1}^{J_i} P_{ij} X_{ij}^T \right)
 $$
 
-*Code reference: [mnlogit.cpp:132-139](../src/mnlogit.cpp#L132-L139)*
+**Implementation note.** Define the difference vector $d_i \in \mathbb{R}^{J_i}$ with entries $d_{ij} = \mathbf{1}_{j = j_i} - P_{ij}$. Then the sum above is $X_i^T d_i$, a single BLAS matrix-vector product (`X_i.t() * diff_vec`). When an outside option is present, $X_i$ covers only the $M_i$ inside alternatives and $d_i$ is sliced accordingly (`diff_vec.subvec(1, m_i)`).
+
+*Code reference: [mnlogit.cpp:146-156](../src/mnlogit.cpp#L146-L156)*
 
 ### 3.3 Gradient with Respect to $\delta$
 
@@ -166,7 +168,9 @@ The gradient is computed only for the free ASC parameters:
 - Without outside option: $\delta_1 = 0$ (fixed), so we compute for $a = 2, \ldots, J$
 - With outside option: we compute for all inside alternatives $a = 1, \ldots, J$
 
-*Code reference: [mnlogit.cpp:141-152](../src/mnlogit.cpp#L141-L152)*
+The delta gradient reuses the same difference vector $d_i$ computed for the beta block; its entries are scattered into the appropriate positions of the gradient vector via an irregular index mapping.
+
+*Code reference: [mnlogit.cpp:158-172](../src/mnlogit.cpp#L158-L172)*
 
 ---
 
@@ -205,22 +209,7 @@ In the code:
 - `sum_P_Z_Zt` = $\sum_j P_{ij} Z_j Z_j^T$
 - `H_i` = $w_i \cdot (\text{sum\_P\_Z} \cdot \text{sum\_P\_Z}^T - \text{sum\_P\_Z\_Zt})$
 
-*Code reference: [mnlogit.cpp:695-736](../src/mnlogit.cpp#L695-L736)*
-
-### 4.2 Numerical Hessian
-
-The implementation also provides a numerical Hessian via central finite differences for verification:
-
-$$
-H_{jk} \approx \frac{g_k(\theta + \epsilon_j e_j) - g_k(\theta - \epsilon_j e_j)}{2\epsilon_j}
-$$
-
-where:
-- $e_j$ is the unit vector in direction $j$
-- $\epsilon_j = \epsilon \cdot \max(|\theta_j|, 1)$ provides adaptive step size
-- $g$ is the gradient function
-
-*Code reference: [mnlogit.cpp:203-246](../src/mnlogit.cpp#L203-L246)*
+*Code reference: [mnlogit.cpp:694-736](../src/mnlogit.cpp#L694-L736)*
 
 ---
 
@@ -290,7 +279,7 @@ $$
 
 where $E_{ijm}^k$ is the elasticity for individual $i$.
 
-*Code reference: [mnlogit.cpp:892-912](../src/mnlogit.cpp#L892-L912)*
+*Code reference: [mnlogit.cpp:906-930](../src/mnlogit.cpp#L906-L930)*
 
 ---
 
@@ -365,7 +354,7 @@ The function accumulates two quantities in parallel across individuals:
 
 The final matrix is computed as $D_{kj} = N_{kj} / d_j$ for $k \neq j$, with $D_{jj} = 0$.
 
-*Code reference: [mnlogit.cpp:938-1069](../src/mnlogit.cpp#L938-L1069)*
+*Code reference: [mnlogit.cpp:1085-1100](../src/mnlogit.cpp#L1085-L1100)*
 
 ---
 
@@ -403,7 +392,7 @@ $$
 4. **Convergence**: Check if $\max_j |\delta_j^{(t+1)} - \delta_j^{(t)}| < \text{tol}$
 5. **Normalization**: Subtract $\delta_1$ from all ASCs to maintain identification
 
-*Code reference: [mnlogit.cpp:566-586](../src/mnlogit.cpp#L566-L586)*
+*Code reference: [mnlogit.cpp:547-567](../src/mnlogit.cpp#L547-L567)*
 
 ---
 
@@ -420,7 +409,7 @@ The full parameter vector $\theta$ is organized as:
 
 where $J_{asc} = J - 1$ without outside option (first ASC normalized to 0), or $J_{asc} = J$ with outside option.
 
-*Code reference: [mnlogit.cpp:30-55](../src/mnlogit.cpp#L30-L55)*
+*Code reference: [mnlogit.cpp:50-70](../src/mnlogit.cpp#L50-L70)*
 
 ### 8.2 Data Organization
 
@@ -436,7 +425,7 @@ The implementation parallelizes over individuals using OpenMP:
 - Thread results are combined using `#pragma omp critical` sections
 - Dynamic scheduling is used for load balancing: `#pragma omp for schedule(dynamic)`
 
-*Code reference: [mnlogit.cpp:66-164](../src/mnlogit.cpp#L66-L164)*
+*Code reference: [mnlogit.cpp:85-183](../src/mnlogit.cpp#L85-L183)*
 
 ### 8.4 Negated Objectives
 
@@ -447,7 +436,7 @@ The C++ functions return:
 
 This is for compatibility with minimization routines (e.g., `nloptr`) that expect a loss function to minimize rather than a likelihood to maximize.
 
-*Code reference: [mnlogit.cpp:167-170](../src/mnlogit.cpp#L167-L170)*
+*Code reference: [mnlogit.cpp:185-189](../src/mnlogit.cpp#L185-L189)*
 
 ---
 

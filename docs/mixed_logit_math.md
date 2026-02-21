@@ -187,6 +187,18 @@ $$
 g_i^s = \frac{\partial \log P_{ij_i}^s}{\partial \theta} = \sum_{j=1}^{J_i} \left(\mathbf{1}_{j = j_i} - P_{ij}^s\right) z_{ij}^s
 $$
 
+**Vectorized implementation.** Define the logit residual vector $\mathbf{d}_i^s \in \mathbb{R}^{J_i}$ with elements $d_{ij}^s = \mathbf{1}_{j = j_i} - P_{ij}^s$. The per-block gradient components collapse to matrix-vector products — computed once per draw rather than looped over alternatives:
+
+| Block | Scalar sum | Vectorized form |
+|-------|------------|-----------------|
+| $\beta$ | $\sum_j d_{ij}^s X_{ij}^T$ | $X_i^T \mathbf{d}_i^s$ |
+| $\mu_p$ | $\sum_j d_{ij}^s W_{ijp} \cdot \partial\mu_p^*/\partial\mu_p$ | $(\tilde{w}_i^s)_p \cdot \partial\mu_p^*/\partial\mu_p$ |
+| $\ell_{pq}$ | $\sum_j d_{ij}^s W_{ijp} \cdot \partial\gamma_p^{s*}/\partial\gamma_p^s \cdot \partial L_{pq}/\partial\ell_{pq} \cdot \eta_q^s$ | $(\tilde{w}_i^s)_p \cdot \partial\gamma_p^{s*}/\partial\gamma_p^s \cdot \partial L_{pq}/\partial\ell_{pq} \cdot \eta_q^s$ |
+
+where $\tilde{w}_i^s = W_i^T \mathbf{d}_i^s \in \mathbb{R}^{K_w}$ (`Wt_diff` in the code) is computed once and shared across the $\mu$ and $L$ blocks. The $\delta$ block uses an irregular alt-index scatter and is kept as a loop.
+
+*Code reference: [mxlogit.cpp:325-398](../src/mxlogit.cpp#L325-L398)*
+
 ### 3.3 Gradient of Simulated Log-Likelihood
 
 Using the identity for the derivative of a logarithm of a sum:
@@ -201,6 +213,8 @@ $$
 \nabla_\theta \ell = \sum_{i=1}^{N} w_i \cdot \frac{\sum_s P_{ij_i}^s \cdot g_i^s}{\sum_s P_{ij_i}^s}
 $$
 
+*Code reference: [mxlogit.cpp:400-409](../src/mxlogit.cpp#L400-L409)*
+
 ### 3.4 Utility Derivatives by Parameter Block
 
 #### 3.4.1 Fixed Coefficients ($\beta$)
@@ -209,7 +223,9 @@ $$
 \frac{\partial V_{ij}^s}{\partial \beta} = X_{ij}^T
 $$
 
-*Code reference: [mxlogit.cpp:303-310](../src/mxlogit.cpp#L303-L310)*
+Summing over alternatives: $\sum_j d_{ij}^s X_{ij}^T = X_i^T \mathbf{d}_i^s$.
+
+*Code reference: [mxlogit.cpp:343-352](../src/mxlogit.cpp#L343-L352)*
 
 #### 3.4.2 Random Coefficient Means ($\mu$)
 
@@ -223,7 +239,9 @@ $$
 \frac{\partial V_{ij}^s}{\partial \mu_p} = W_{ijp} \cdot \exp(\mu_p)
 $$
 
-*Code reference: [mxlogit.cpp:333-339](../src/mxlogit.cpp#L333-L339)*
+Both cases are captured by `dmu_final_dmu(p)` ($= 1$ for normal, $= \exp(\mu_p)$ for log-normal). Summing over alternatives: $g_\mu = \tilde{w}_i^s \odot \text{dmu\_final\_dmu}$.
+
+*Code reference: [mxlogit.cpp:355-359](../src/mxlogit.cpp#L355-L359)*
 
 #### 3.4.3 Cholesky Parameters ($L$)
 
@@ -261,7 +279,14 @@ $$
 \frac{\partial V_{ij}^s}{\partial \ell_{pq}} = W_{ijp} \cdot \frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pq}}
 $$
 
-*Code reference: [mxlogit.cpp:342-371](../src/mxlogit.cpp#L342-L371)*
+**Step 5**: Summing over alternatives using $\tilde{w}_i^s = W_i^T \mathbf{d}_i^s$:
+$$
+g_{\ell_{pq}}^s = (\tilde{w}_i^s)_p \cdot \frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} \cdot \frac{\partial L_{pq}}{\partial \ell_{pq}} \cdot \eta_q^s
+$$
+
+For the diagonal case, all $K_w$ parameters are computed simultaneously as `Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s`. For the full correlated case, `Wt_p = Wt_diff(p) * dgamma_final_dgamma(p)` is factored out per row $p$.
+
+*Code reference: [mxlogit.cpp:361-381](../src/mxlogit.cpp#L361-L381)*
 
 #### 3.4.4 Alternative-Specific Constants ($\delta$)
 
@@ -269,9 +294,9 @@ $$
 \frac{\partial V_{ij}^s}{\partial \delta_a} = \mathbf{1}_{j = a}
 $$
 
-where $\delta_1 = 0$ (normalized) if no outside option, or all $\delta_j$ for $j \geq 1$ are free if outside option is included.
+where $\delta_1 = 0$ (normalized) if no outside option, or all $\delta_j$ for $j \geq 1$ are free if outside option is included. The sum over alternatives is a simple scatter (one non-zero contribution per alternative), implemented as a loop.
 
-*Code reference: [mxlogit.cpp:312-323](../src/mxlogit.cpp#L312-L323)*
+*Code reference: [mxlogit.cpp:383-398](../src/mxlogit.cpp#L383-L398)*
 
 ---
 
@@ -296,7 +321,7 @@ $$
 \nabla^2_\theta \ell = \sum_{i=1}^{N} w_i \cdot H_i
 $$
 
-*Code reference: [mxlogit.cpp:829-840](../src/mxlogit.cpp#L829-L840)*
+*Code reference: [mxlogit.cpp:809-815](../src/mxlogit.cpp#L809-L815)*
 
 ### 4.2 Per-Draw Hessian
 
@@ -315,7 +340,7 @@ In the code, this is computed as:
 
 Then: $H_i^s = -\text{sum\_Pzz} + \text{sum\_Pz} \cdot \text{sum\_Pz}' + \text{sum\_diff\_H\_V}$
 
-*Code reference: [mxlogit.cpp:826](../src/mxlogit.cpp#L826)*
+*Code reference: [mxlogit.cpp:802](../src/mxlogit.cpp#L802)*
 
 ### 4.3 Second Derivatives of Utility
 
@@ -328,7 +353,7 @@ $$
 \frac{\partial^2 V_{ij}^s}{\partial \mu_p^2} = W_{ijp} \cdot \exp(\mu_p)
 $$
 
-*Code reference: [mxlogit.cpp:750-752](../src/mxlogit.cpp#L750-L752)*
+*Code reference: [mxlogit.cpp:725-727](../src/mxlogit.cpp#L725-L727)*
 
 #### 4.3.2 Cholesky Diagonal Parameters ($\ell_{pp}$)
 
@@ -349,18 +374,20 @@ $$
 
 where $\frac{\partial^2 \gamma_p^s}{\partial \ell_{pp}^2} = L_{pp} \cdot \eta_p^s$.
 
-*Code reference: [mxlogit.cpp:774-778](../src/mxlogit.cpp#L774-L778)*
+*Code reference: [mxlogit.cpp:783-786](../src/mxlogit.cpp#L783-L786)*
 
 #### 4.3.3 Cholesky Cross-Derivatives ($\ell_{pq}$, $\ell_{pr}$)
 
-For off-diagonal elements with the same row $p$ but different columns $q \neq r$:
+For off-diagonal elements with the same row $p$ but different columns $q \neq r$ (both $< p$):
 
 This contributes through the log-normal transformation (when applicable):
 $$
 \frac{\partial^2 V_{ij}^s}{\partial \ell_{pq} \partial \ell_{pr}} = W_{ijp} \cdot \gamma_p^{s*} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pq}} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pr}}
 $$
 
-*Code reference: [mxlogit.cpp:782-790](../src/mxlogit.cpp#L782-L790)*
+Note: since both $q < p$ and $r < p$, both derivatives $\partial L_{pq}/\partial \ell_{pq} = 1$ and $\partial L_{pr}/\partial \ell_{pr} = 1$ (off-diagonal elements are unconstrained).
+
+*Code reference: [mxlogit.cpp:757-765](../src/mxlogit.cpp#L757-L765)*
 
 ---
 
@@ -377,19 +404,7 @@ The full parameter vector $\theta$ is organized as:
 | $L$ | next block | $K_w(K_w+1)/2$ or $K_w$ | Cholesky parameters |
 | $\delta$ | remaining | $J-1$ or $J$ | ASCs |
 
-### 5.2 Numerical Hessian (Alternative)
-
-The implementation also provides a numerical Hessian via central finite differences:
-
-$$
-H_{jk} \approx \frac{g_k(\theta + \epsilon_j e_j) - g_k(\theta - \epsilon_j e_j)}{2\epsilon_j}
-$$
-
-where $\epsilon_j = \epsilon \cdot \max(|\theta_j|, 1)$ for adaptive step size.
-
-*Code reference: [mxlogit.cpp:419-482](../src/mxlogit.cpp#L419-L482)*
-
-### 5.3 Delta Method for Variance Parameters
+### 5.2 Delta Method for Variance Parameters
 
 When reporting results, the Cholesky parameters $\ell$ are transformed to variance matrix elements $\Sigma = LL'$.
 
@@ -400,25 +415,29 @@ $$
 \frac{\partial \Sigma_{ij}}{\partial \ell_{pq}} = \frac{\partial L_{pq}}{\partial \ell_{pq}} \left( L_{jq} \mathbf{1}_{i=p} + L_{iq} \mathbf{1}_{j=p} \right)
 $$
 
+This follows from the product rule applied to $\Sigma = LL^T$: $\partial \Sigma / \partial \ell_{pq} = E \cdot L^T + L \cdot E^T$, where $E$ is the matrix with a single non-zero entry $E_{pq} = \partial L_{pq} / \partial \ell_{pq}$.
+
 The variance-covariance matrix of $\text{vech}(\Sigma)$ is then:
 $$
 V_\Sigma = J \cdot V_\ell \cdot J'
 $$
 
-*Code reference: [mxlogit.cpp:503-541](../src/mxlogit.cpp#L503-L541)*
+*Code reference: [mxlogit.cpp:462-474](../src/mxlogit.cpp#L462-L474)*
 
-### 5.4 OpenMP Parallelization
+### 5.3 OpenMP Parallelization
 
 The implementation parallelizes over individuals using OpenMP:
 - Each thread maintains local accumulators for log-likelihood and gradient/Hessian
 - Thread results are combined using `#pragma omp critical` sections
 - Dynamic scheduling is used for load balancing: `#pragma omp for schedule(dynamic)`
 
-### 5.5 Practical Notes
+### 5.4 Practical Notes
 
 1. **Negated Objectives**: The C++ functions return $-\ell(\theta)$ and $-\nabla\ell(\theta)$ (and $-\nabla^2\ell(\theta)$ for the Hessian) for compatibility with minimization routines that expect a loss function.
 
 2. **ASC Identification**: When `include_outside_option = FALSE`, the first inside alternative's ASC ($\delta_1$) is fixed to zero for identification. When `include_outside_option = TRUE`, all inside ASCs are free parameters (the outside option with $V=0$ serves as the reference).
+
+3. **Gradient vectorization**: The per-draw gradient is computed without a per-alternative loop. After forming $\mathbf{d}_i^s = \mathbf{e}_{j_i} - P_i^s$, the $\beta$ and $\mu$/$L$ blocks are evaluated with two BLAS dgemv calls ($X_i^T \mathbf{d}_i^s$ and $W_i^T \mathbf{d}_i^s$). The delta block uses an irregular scatter and remains a loop.
 
 ---
 
