@@ -399,9 +399,13 @@ compute_hessian <- function(object) {
   )
 }
 
-#' Invert Hessian to get vcov matrix
-#' @param hess Hessian matrix (negative second derivatives)
-#' @returns List with vcov (matrix or NULL) and se (numeric vector)
+#' Invert an observed information matrix to get vcov
+#'
+#' Accepts either a negated-Hessian or a BHHH/OPG estimate of the observed
+#' information matrix and returns its inverse plus standard errors.
+#'
+#' @param hess Observed information matrix (negated Hessian or BHHH/OPG).
+#' @returns List with vcov (matrix or NULL) and se (numeric vector).
 #' @noRd
 invert_hessian <- function(hess) {
   p_len <- nrow(hess)
@@ -413,13 +417,13 @@ invert_hessian <- function(hess) {
     vcov_mat <- solve(hess)
   }, error = function(e) {
     singular_flag <<- TRUE
-    message("Error computing vcov (likely singular Hessian): ", e$message)
+    message("Error inverting information matrix (likely singular): ", e$message)
   })
 
   if (!singular_flag && !is.null(vcov_mat)) {
     se <- sqrt(diag(vcov_mat))
   } else {
-    message("Standard errors set to NA due to Hessian inversion failure.")
+    message("Standard errors set to NA due to information matrix inversion failure.")
   }
 
   list(vcov = vcov_mat, se = se)

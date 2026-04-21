@@ -92,6 +92,25 @@ create_small_nl_data <- function(seed = 123) {
   dt[]
 }
 
+# Create an identified MXL dataset with real signal (N=200, J=3, K_x=1, K_w=1).
+# Unlike `create_small_mxl_data()` (uniform-random choices, flat likelihood),
+# this fixture places the MLE at an interior point so standard-error estimators
+# can be meaningfully compared.
+create_identified_mxl_data <- function(seed = 101, N = 200, J = 3) {
+  set.seed(seed)
+  dt <- data.table(
+    id = rep(seq_len(N), each = J),
+    alt = rep(seq_len(J), N),
+    x1 = rnorm(N * J),
+    w1 = rnorm(N * J)
+  )
+  U <- 1.0 * dt$x1 + 0.5 * dt$w1 + rnorm(N * J)
+  dt[, U := U]
+  dt[, choice := as.integer(U == max(U)), by = id]
+  dt[, U := NULL]
+  dt[]
+}
+
 # Create dataset with known probabilities (equal utilities -> equal probs)
 create_equal_prob_data <- function(N = 100, J = 3, seed = 999) {
   set.seed(seed)

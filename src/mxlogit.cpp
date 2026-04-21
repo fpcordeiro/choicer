@@ -128,6 +128,10 @@ Rcpp::List mxl_loglik_gradient_parallel(
     Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
                eta_draws.n_rows, K_w);
   }
+  if (static_cast<int>(weights.n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights.n_elem, N);
+  }
 
   // Define parameter block start indices
   const int idx_beta_start = 0;
@@ -547,6 +551,10 @@ arma::mat mxl_hessian_parallel(
   if (rc_dist.n_elem != K_w) {
     Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
   }
+  if (static_cast<int>(weights.n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights.n_elem, N);
+  }
 
   // === 1. Parameter Parsing ===
   const int idx_beta_start = 0;
@@ -905,6 +913,10 @@ arma::mat mxl_bhhh_parallel(
   if (eta_draws.n_rows != K_w) {
     Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
                eta_draws.n_rows, K_w);
+  }
+  if (static_cast<int>(weights.n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights.n_elem, N);
   }
 
   // Define parameter block start indices
