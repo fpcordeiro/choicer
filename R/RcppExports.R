@@ -348,6 +348,59 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
+#' BHHH (outer product of gradients) information matrix for Mixed Logit
+#'
+#' Computes the BHHH approximation to the observed information matrix for the
+#' Mixed Logit model: \eqn{H_{BHHH} = \sum_i w_i \cdot s_i s_i^\top}, where
+#' \eqn{s_i} is the per-individual score (gradient of \eqn{\log \bar{P}_i}).
+#' This outer product of gradients (OPG) estimator provides an alternative to
+#' the analytical Hessian for standard error computation that scales to large
+#' problems where the analytical Hessian is infeasible (e.g., many alternatives
+#' or simulation draws).
+#'
+#' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
+#' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+#' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
+#' @param rc_correlation whether random coefficients should be correlated
+#' @param rc_mean whether to estimate means for random coefficients.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @return n_params x n_params PSD matrix representing the observed information
+#'   matrix estimated by the outer product of gradients (same sign convention
+#'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
+#'   be inverted directly to obtain vcov).
+#' @note The BHHH/OPG estimator is only asymptotically equivalent to the
+#'   Hessian-based information matrix at the true MLE. In finite samples it can
+#'   underestimate standard errors, particularly when the model is mis-specified
+#'   or away from the optimum.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, d$N, ncol(d$W))
+#' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
+#' H <- mxl_bhhh_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+#'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+#'   rc_correlation = FALSE, rc_mean = FALSE)
+#' dim(H)
+#' }
+#' @export
+mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
+}
+
 #' BLP contraction mapping for mixed logit
 #'
 #' Finds the ASC (delta) parameters such that predicted market shares

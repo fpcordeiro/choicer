@@ -346,7 +346,8 @@ summary.choicer_mxl <- function(object, ...) {
       convergence = object$convergence,
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
-      sigma = object$sigma
+      sigma = object$sigma,
+      se_method = object$se_method %||% "hessian"
     ),
     class = "summary.choicer_mxl"
   )
@@ -381,6 +382,9 @@ print.summary.choicer_mxl <- function(x, ...) {
     print(x$sigma)
     cat("\n")
   }
+  cat("Std. Errors:",
+      if (isTRUE(x$se_method == "bhhh")) "BHHH (OPG)" else "Analytical Hessian",
+      "\n")
   print_footer(x)
   invisible(x)
 }

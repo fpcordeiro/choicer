@@ -64,6 +64,8 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #' @param rc_correlation Logical whether correlated random coefficients
 #' @param rc_mean Logical whether means were estimated
 #' @param sigma Reconstructed covariance matrix of random coefficients (or NULL)
+#' @param se_method Character. Method used for standard errors: "hessian"
+#'   (analytical Hessian, default) or "bhhh" (outer product of gradients).
 #' @returns A choicer_mxl object (S3 class)
 #' @noRd
 new_choicer_mxl <- function(call, coefficients, loglik,
@@ -74,7 +76,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
                             vcov = NULL, se = NULL, data = NULL,
                             draws_info = NULL,
                             rc_dist = NULL, rc_correlation = FALSE,
-                            rc_mean = FALSE, sigma = NULL) {
+                            rc_mean = FALSE, sigma = NULL,
+                            se_method = "hessian") {
   structure(
     list(
       call = call,
@@ -98,7 +101,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
       rc_dist = rc_dist,
       rc_correlation = rc_correlation,
       rc_mean = rc_mean,
-      sigma = sigma
+      sigma = sigma,
+      se_method = se_method
     ),
     class = c("choicer_mxl", "choicer_fit")
   )
@@ -345,21 +349,40 @@ compute_hessian <- function(object) {
         N = object$draws_info$N,
         K_w = object$draws_info$K_w
       )
-      mxl_hessian_parallel(
-        theta = theta,
-        X = object$data$X,
-        W = object$data$W,
-        alt_idx = object$data$alt_idx,
-        choice_idx = object$data$choice_idx,
-        M = object$data$M,
-        weights = object$data$weights,
-        eta_draws = eta_draws,
-        rc_dist = object$rc_dist,
-        rc_correlation = object$rc_correlation,
-        rc_mean = object$rc_mean,
-        use_asc = object$use_asc,
-        include_outside_option = object$include_outside_option
-      )
+      se_method <- object$se_method %||% "hessian"
+      if (se_method == "bhhh") {
+        mxl_bhhh_parallel(
+          theta = theta,
+          X = object$data$X,
+          W = object$data$W,
+          alt_idx = object$data$alt_idx,
+          choice_idx = object$data$choice_idx,
+          M = object$data$M,
+          weights = object$data$weights,
+          eta_draws = eta_draws,
+          rc_dist = object$rc_dist,
+          rc_correlation = object$rc_correlation,
+          rc_mean = object$rc_mean,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      } else {
+        mxl_hessian_parallel(
+          theta = theta,
+          X = object$data$X,
+          W = object$data$W,
+          alt_idx = object$data$alt_idx,
+          choice_idx = object$data$choice_idx,
+          M = object$data$M,
+          weights = object$data$weights,
+          eta_draws = eta_draws,
+          rc_dist = object$rc_dist,
+          rc_correlation = object$rc_correlation,
+          rc_mean = object$rc_mean,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      }
     },
     nl = nl_loglik_numeric_hessian(
       theta = theta,

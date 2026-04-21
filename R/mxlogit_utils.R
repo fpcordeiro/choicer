@@ -40,6 +40,12 @@
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 #'   or a custom function. See \code{\link{run_mnlogit}} for details.
 #' @param control List of optimizer-specific control parameters.
+#' @param se_method Method for computing standard errors. Either
+#'   \code{"hessian"} (default) for the analytical Hessian of the simulated
+#'   log-likelihood, or \code{"bhhh"} for the BHHH/outer-product-of-gradients
+#'   (OPG) estimator. BHHH scales better to large problems (many alternatives
+#'   or simulation draws) but may underestimate standard errors in finite
+#'   samples or away from the optimum.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
 #'   equal weights are used.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
@@ -88,6 +94,7 @@ run_mxlogit <- function(
     theta_init = NULL,
     optimizer = NULL,
     control = list(),
+    se_method = c("hessian", "bhhh"),
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
@@ -95,6 +102,8 @@ run_mxlogit <- function(
     nloptr_opts = NULL
 ) {
   cl <- match.call()
+
+  se_method <- match.arg(se_method)
 
   # Backward compatibility: nloptr_opts -> optimizer + control
   if (!is.null(nloptr_opts)) {
@@ -225,21 +234,39 @@ run_mxlogit <- function(
   pos <- pos + L_size
   param_map$asc <- pos + seq_len(n_asc)
 
-  # Compute vcov eagerly
-  hess <- mxl_hessian_parallel(
-    theta = theta_hat,
-    X = input_data$X,
-    W = input_data$W,
-    alt_idx = input_data$alt_idx,
-    choice_idx = input_data$choice_idx,
-    M = input_data$M,
-    weights = input_data$weights,
-    eta_draws = eta_draws,
-    rc_dist = rc_dist,
-    rc_correlation = rc_correlation,
-    rc_mean = rc_mean,
-    use_asc = use_asc,
-    include_outside_option = input_data$include_outside_option
+  # Compute vcov eagerly using the selected SE method
+  hess <- switch(
+    se_method,
+    hessian = mxl_hessian_parallel(
+      theta = theta_hat,
+      X = input_data$X,
+      W = input_data$W,
+      alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx,
+      M = input_data$M,
+      weights = input_data$weights,
+      eta_draws = eta_draws,
+      rc_dist = rc_dist,
+      rc_correlation = rc_correlation,
+      rc_mean = rc_mean,
+      use_asc = use_asc,
+      include_outside_option = input_data$include_outside_option
+    ),
+    bhhh = mxl_bhhh_parallel(
+      theta = theta_hat,
+      X = input_data$X,
+      W = input_data$W,
+      alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx,
+      M = input_data$M,
+      weights = input_data$weights,
+      eta_draws = eta_draws,
+      rc_dist = rc_dist,
+      rc_correlation = rc_correlation,
+      rc_mean = rc_mean,
+      use_asc = use_asc,
+      include_outside_option = input_data$include_outside_option
+    )
   )
   vcov_result <- invert_hessian(hess)
   if (!is.null(vcov_result$vcov)) {
@@ -300,7 +327,8 @@ run_mxlogit <- function(
     rc_dist = rc_dist,
     rc_correlation = rc_correlation,
     rc_mean = rc_mean,
-    sigma = sigma_mat
+    sigma = sigma_mat,
+    se_method = se_method
   )
 }
 
