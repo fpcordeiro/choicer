@@ -128,6 +128,10 @@ Rcpp::List mxl_loglik_gradient_parallel(
     Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
                eta_draws.n_rows, K_w);
   }
+  if (static_cast<int>(weights.n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights.n_elem, N);
+  }
 
   // Define parameter block start indices
   const int idx_beta_start = 0;
@@ -547,6 +551,10 @@ arma::mat mxl_hessian_parallel(
   if (rc_dist.n_elem != K_w) {
     Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
   }
+  if (static_cast<int>(weights.n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights.n_elem, N);
+  }
 
   // === 1. Parameter Parsing ===
   const int idx_beta_start = 0;
@@ -825,6 +833,346 @@ arma::mat mxl_hessian_parallel(
   } // end parallel region
 
   return -global_hess;
+}
+
+//' BHHH (outer product of gradients) information matrix for Mixed Logit
+//'
+//' Computes the BHHH approximation to the observed information matrix for the
+//' Mixed Logit model: \eqn{H_{BHHH} = \sum_i w_i \cdot s_i s_i^\top}, where
+//' \eqn{s_i} is the per-individual score (gradient of \eqn{\log \bar{P}_i}).
+//' This outer product of gradients (OPG) estimator provides an alternative to
+//' the analytical Hessian for standard error computation that scales to large
+//' problems where the analytical Hessian is infeasible (e.g., many alternatives
+//' or simulation draws).
+//'
+//' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
+//' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for covariates with random coefficients; sum(M_i) x K_w or J x K_w
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param eta_draws Array with choice situation draws; K_w x S x N
+//' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
+//' @param rc_correlation whether random coefficients should be correlated
+//' @param rc_mean whether to estimate means for random coefficients.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @return n_params x n_params PSD matrix representing the observed information
+//'   matrix estimated by the outer product of gradients (same sign convention
+//'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
+//'   be inverted directly to obtain vcov).
+//' @note The BHHH/OPG estimator is only asymptotically equivalent to the
+//'   Hessian-based information matrix at the true MLE. In finite samples it can
+//'   underestimate standard errors, particularly when the model is mis-specified
+//'   or away from the optimum.
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+//' eta <- get_halton_normals(50, d$N, ncol(d$W))
+//' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
+//' H <- mxl_bhhh_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+//'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
+//'   rc_correlation = FALSE, rc_mean = FALSE)
+//' dim(H)
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::mat mxl_bhhh_parallel(
+    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &M, const arma::vec &weights,
+    const arma::cube &eta_draws, const arma::uvec &rc_dist,
+    const bool rc_correlation = true, const bool rc_mean = false,
+    const bool use_asc = true, const bool include_outside_option = false) {
+
+  // Basic dimensions
+  const int N = M.size();
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = eta_draws.n_cols; // # simulations per individual
+  const int n_params = theta.n_elem;
+  const int L_size =
+      rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
+
+  // Check rc_dist input
+  if (rc_dist.n_elem != K_w) {
+    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
+  }
+  if (eta_draws.n_slices != N) {
+    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
+               eta_draws.n_slices, N);
+  }
+  if (eta_draws.n_rows != K_w) {
+    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
+               eta_draws.n_rows, K_w);
+  }
+  if (static_cast<int>(weights.n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights.n_elem, N);
+  }
+
+  // Define parameter block start indices
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Validate parameter indices
+  if (K_x <= 0) {
+    Rcpp::stop("K_x must be positive, got %d", K_x);
+  }
+  if (idx_mu_start > n_params) {
+    Rcpp::stop("idx_mu_start (%d) exceeds n_params (%d)", idx_mu_start, n_params);
+  }
+  if (idx_L_start > n_params) {
+    Rcpp::stop("idx_L_start (%d) exceeds n_params (%d)", idx_L_start, n_params);
+  }
+  if (idx_delta_start > n_params + 1) {
+    Rcpp::stop("idx_delta_start (%d) exceeds n_params + 1 (%d)", idx_delta_start, n_params + 1);
+  }
+
+  // beta: coefficients for design matrix X
+  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+
+  // mu: means of random coefficients
+  arma::vec mu;
+  if (rc_mean) {
+    if (idx_L_start > n_params)
+      Rcpp::stop("Theta vector too short: missing mu parameters.");
+    mu = theta.subvec(idx_mu_start, idx_L_start - 1);
+  } else {
+    mu = arma::zeros(K_w); // Fix means to zero if not estimated
+  }
+
+  // L: choleski decomposition of random coefficients matrix
+  if (idx_delta_start > n_params)
+    Rcpp::stop("Theta vector too short: missing L parameters.");
+  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation); // K_w x K_w
+
+  // delta (ASC)
+  arma::vec delta;
+  if (use_asc) {
+    const int delta_free_len = n_params - idx_delta_start;
+    if (delta_free_len <= 0) {
+      Rcpp::stop("Theta vector too short: missing delta parameters.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(idx_delta_start, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_free_len + 1);
+      delta.subvec(1, delta_free_len) =
+          theta.subvec(idx_delta_start, n_params - 1);
+    }
+  } else {
+    delta.set_size(0);
+  }
+
+  // Convenience objects shared by all threads
+  arma::uvec alt_idx0 = alt_idx - 1; // 0-based
+  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // mu transformations for distributions
+  arma::vec mu_final = mu;
+  arma::vec dmu_final_dmu = arma::ones(K_w);
+  if (rc_mean) {
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) { // 1 == log-normal
+        mu_final(k) = std::exp(mu(k));
+        dmu_final_dmu(k) = mu_final(k);
+      }
+    }
+  }
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util += W * mu_final;
+  } else {
+    arma::vec W_mu = W * mu_final;
+    base_util += W_mu.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util += delta.elem(alt_idx0);
+  }
+
+  // Global BHHH accumulator
+  arma::mat global_bhhh = arma::zeros(n_params, n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulator
+    arma::mat local_bhhh = arma::zeros(n_params, n_params);
+
+    // --- Pre-allocate working memory for the thread ---
+    arma::vec eta_i_s(K_w);
+    arma::vec gamma_i_s(K_w);
+    arma::vec gamma_i_s_final(K_w);
+    arma::vec dgamma_final_dgamma(K_w);
+
+    arma::vec V_s;
+    arma::vec inside_utils;
+    arma::vec P_s;
+    arma::vec diff_vec;
+
+    arma::vec g_s(n_params);
+    arma::vec Wt_diff(K_w);
+
+// Loop over individuals in parallel
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      //  Slice data for individual i
+      const int m_i = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx = S_prefix[i];
+      const int end_idx = start_idx + m_i - 1;
+      const double w_i = weights[i];
+      const auto X_i = X.rows(start_idx, end_idx);
+      const auto alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      arma::mat W_i;
+      if (W.n_rows == X.n_rows)
+        W_i = W.rows(start_idx, end_idx);
+      else
+        W_i = W.rows(alt_idx0_i);
+
+      int chosen_alt = choice_idx[i];
+      if (!include_outside_option)
+        chosen_alt -= 1;
+
+      const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
+
+      //  Per-draw accumulators
+      double log_P_avg = -std::numeric_limits<double>::infinity();
+      arma::vec grad_num = arma::zeros(n_params); // Sum_s P_s * g_s
+
+      V_s.set_size(num_choices);
+      inside_utils.set_size(m_i);
+      diff_vec.set_size(num_choices);
+
+      // Loop over simulations
+      for (int s = 0; s < Sdraw; ++s) {
+        eta_i_s = eta_draws.slice(i).col(s);
+        gamma_i_s = L * eta_i_s;
+
+        gamma_i_s_final = gamma_i_s;
+        dgamma_final_dgamma.fill(1.0);
+        for (int k = 0; k < K_w; ++k) {
+          if (rc_dist(k) == 1) { // log-normal
+            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
+            dgamma_final_dgamma(k) = gamma_i_s_final(k);
+          }
+        }
+
+        // Build utility vector
+        V_s.zeros();
+        inside_utils = base_util_i + W_i * gamma_i_s_final;
+        if (include_outside_option)
+          V_s.subvec(1, num_choices - 1) = inside_utils;
+        else
+          V_s = inside_utils;
+
+        // Probabilities
+        V_s -= V_s.max();
+        const double log_denom = std::log(arma::accu(arma::exp(V_s)));
+        P_s = arma::exp(V_s - log_denom);
+        double P_choice = P_s(chosen_alt);
+        double log_P = std::log(P_choice);
+
+        // log-sum-exp over draws (log of un-normalized sum_s P_choice_s)
+        if (s == 0) {
+          log_P_avg = log_P;
+        } else {
+          log_P_avg = logSumExp2(log_P_avg, log_P);
+        }
+
+        // Gradient g_s = d(log P_choice) / d(theta)
+        g_s.zeros();
+
+        diff_vec = -P_s;
+        diff_vec(chosen_alt) += 1.0;
+
+        // Beta and W blocks
+        if (include_outside_option) {
+          const auto diff_inside = diff_vec.subvec(1, m_i);
+          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_inside;
+          Wt_diff = W_i.t() * diff_inside;
+        } else {
+          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_vec;
+          Wt_diff = W_i.t() * diff_vec;
+        }
+
+        // Mu block
+        if (rc_mean) {
+          g_s.subvec(idx_mu_start, idx_L_start - 1) = Wt_diff % dmu_final_dmu;
+        }
+
+        // L block
+        if (rc_correlation) {
+          int lp_idx = 0;
+          for (int p = 0; p < K_w; ++p) {
+            const double Wt_p = Wt_diff(p) * dgamma_final_dgamma(p);
+            for (int q = 0; q <= p; ++q, ++lp_idx) {
+              const double dLpq = (p == q) ? L(p, p) : 1.0;
+              g_s[idx_L_start + lp_idx] = Wt_p * dLpq * eta_i_s(q);
+            }
+          }
+        } else {
+          g_s.subvec(idx_L_start, idx_L_start + K_w - 1) =
+              Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s;
+        }
+
+        // Delta block
+        if (use_asc) {
+          for (int a = 0; a < num_choices; ++a) {
+            const double diff_a = diff_vec(a);
+            if (include_outside_option) {
+              if (a > 0) {
+                const int id = alt_idx0_i[a - 1];
+                g_s[idx_delta_start + id] += diff_a;
+              }
+            } else {
+              const int id = alt_idx0_i[a];
+              if (id > 0)
+                g_s[idx_delta_start + (id - 1)] += diff_a;
+            }
+          }
+        }
+
+        // accumulate numerator sum_s P_s * g_s
+        grad_num += P_choice * g_s;
+
+      } // end S loop
+
+      // Per-individual score: s_i = grad_num / sum_s P_choice_s
+      // log_P_avg currently holds log(sum_s P_choice_s) -- BEFORE the
+      // "-= log(Sdraw)" normalization used by the gradient function. Use it
+      // directly since the 1/S factor cancels between numerator and denominator.
+      arma::vec s_i = grad_num * std::exp(-log_P_avg);
+      local_bhhh += w_i * s_i * s_i.t();
+    } // end N loop
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_bhhh += local_bhhh;
+    }
+  } // end parallel region
+
+  // Return PSD information matrix (same sign convention as negated Hessian).
+  return global_bhhh;
 }
 
 // ============================================================================

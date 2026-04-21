@@ -21,6 +21,7 @@ run_mxlogit(
   theta_init = NULL,
   optimizer = NULL,
   control = list(),
+  se_method = c("hessian", "bhhh"),
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
@@ -71,6 +72,13 @@ constants.}
 or a custom function. See \code{\link{run_mnlogit}} for details.}
 
 \item{control}{List of optimizer-specific control parameters.}
+
+\item{se_method}{Method for computing standard errors. Either
+\code{"hessian"} (default) for the analytical Hessian of the simulated
+log-likelihood, or \code{"bhhh"} for the BHHH/outer-product-of-gradients
+(OPG) estimator. BHHH scales better to large problems (many alternatives
+or simulation draws) but may underestimate standard errors in finite
+samples or away from the optimum.}
 
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
 equal weights are used.}
