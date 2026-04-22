@@ -1225,11 +1225,6 @@ arma::vec mxl_predict_shares_internal(
     // Thread-local accumulator
     arma::vec local_shares = arma::zeros(num_alts);
 
-    // Thread-local working vectors
-    arma::vec eta_i_s(K_w);
-    arma::vec gamma_i_s(K_w);
-    arma::vec gamma_i_s_final(K_w);
-
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
@@ -1253,18 +1248,18 @@ arma::vec mxl_predict_shares_internal(
       // Accumulate probabilities over draws
       arma::vec P_bar_i = arma::zeros(num_choices);
 
-      for (int s = 0; s < Sdraw; ++s) {
-        // Get eta and compute gamma
-        eta_i_s = eta_draws.slice(i).col(s);
-        gamma_i_s = L * eta_i_s;
-
-        // Apply distribution transforms
-        gamma_i_s_final = gamma_i_s;
-        for (int k = 0; k < K_w; ++k) {
-          if (rc_dist(k) == 1) {  // log-normal
-            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
-          }
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      arma::mat Gamma_final = L * eta_i;                   // single dgemm
+      for (int k = 0; k < K_w; ++k) {
+        if (rc_dist(k) == 1) { // log-normal
+          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
         }
+      }
+
+      for (int s = 0; s < Sdraw; ++s) {
+        // Column view into the batched matrix (zero-copy)
+        const arma::vec gamma_i_s_final = Gamma_final.col(s);
 
         // Build utility vector
         arma::vec V_s = arma::zeros(num_choices);
@@ -1662,11 +1657,6 @@ arma::mat mxl_elasticities_parallel(
     arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
     double local_total_weight = 0.0;
 
-    // Thread-local working vectors
-    arma::vec eta_i_s(K_w);
-    arma::vec gamma_i_s(K_w);
-    arma::vec gamma_i_s_final(K_w);
-
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
@@ -1717,18 +1707,18 @@ arma::mat mxl_elasticities_parallel(
       arma::vec P_bar_i = arma::zeros(num_choices);
       arma::mat elas_accum = arma::zeros(num_choices, num_choices);
 
-      for (int s = 0; s < Sdraw; ++s) {
-        // Get eta and compute gamma
-        eta_i_s = eta_draws.slice(i).col(s);
-        gamma_i_s = L * eta_i_s;
-
-        // Apply distribution transforms
-        gamma_i_s_final = gamma_i_s;
-        for (int k = 0; k < K_w; ++k) {
-          if (rc_dist(k) == 1) {  // log-normal
-            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
-          }
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      arma::mat Gamma_final = L * eta_i;                   // single dgemm
+      for (int k = 0; k < K_w; ++k) {
+        if (rc_dist(k) == 1) { // log-normal
+          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
         }
+      }
+
+      for (int s = 0; s < Sdraw; ++s) {
+        // Column view into the batched matrix (zero-copy)
+        const arma::vec gamma_i_s_final = Gamma_final.col(s);
 
         // Get effective coefficient for this draw
         double beta_k_eff;
