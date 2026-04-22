@@ -152,6 +152,55 @@ test_that("mxl_hessian_parallel is symmetric", {
   expect_equal(H, t(H), tolerance = 1e-10)
 })
 
+test_that("mxl_hessian_parallel matches numerical Hessian with mixed rc_dist", {
+  skip_if_not_installed("numDeriv")
+
+  dt <- create_small_mxl_data(seed = 333)
+  inputs <- prepare_mxl_data(
+    dt, "id", "alt", "choice", "x1", c("w1", "w2"),
+    rc_correlation = FALSE
+  )
+
+  N <- inputs$N
+  K_x <- ncol(inputs$X)
+  K_w <- ncol(inputs$W)
+  J <- nrow(inputs$alt_mapping)
+  S <- 30
+
+  eta_draws <- get_halton_normals(S, N, K_w)
+  rc_dist <- c(0L, 1L)  # mix of normal + log-normal
+
+  set.seed(42)
+  theta <- c(
+    runif(K_x, -0.2, 0.2),
+    runif(K_w, -0.1, 0.1),           # mu (rc_mean = TRUE)
+    log(runif(K_w, 0.4, 0.7)),       # L diagonal on log scale
+    runif(J - 1, -0.1, 0.1)
+  )
+
+  H_anal <- mxl_hessian_parallel(
+    theta, inputs$X, inputs$W, inputs$alt_idx, inputs$choice_idx,
+    inputs$M, inputs$weights, eta_draws,
+    rc_dist = rc_dist,
+    rc_correlation = FALSE, rc_mean = TRUE,
+    use_asc = TRUE, include_outside_option = FALSE
+  )
+
+  obj_fn <- function(th) {
+    mxl_loglik_gradient_parallel(
+      th, inputs$X, inputs$W, inputs$alt_idx, inputs$choice_idx,
+      inputs$M, inputs$weights, eta_draws,
+      rc_dist = rc_dist,
+      rc_correlation = FALSE, rc_mean = TRUE,
+      use_asc = TRUE, include_outside_option = FALSE
+    )$objective
+  }
+
+  H_num <- numDeriv::hessian(obj_fn, theta, method = "Richardson")
+
+  expect_equal(H_anal, H_num, tolerance = TOL_HESS)
+})
+
 # --- NL Hessian tests ---
 
 test_that("nl_loglik_numeric_hessian returns correct dimensions", {
