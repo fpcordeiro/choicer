@@ -280,7 +280,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
       // P_s set_size happens implicitly or can be reserved
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = L * eta_i;                   // single dgemm
       arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
       for (int k = 0; k < K_w; ++k) {
@@ -293,9 +293,9 @@ Rcpp::List mxl_loglik_gradient_parallel(
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
         // Column views into the batched matrices (zero-copy)
-        const arma::vec eta_i_s             = eta_i.col(s);
-        const arma::vec gamma_i_s_final     = Gamma_final.col(s);
-        const arma::vec dgamma_final_dgamma = Dgamma1.col(s);
+        const auto eta_i_s             = eta_i.col(s);
+        const auto gamma_i_s_final     = Gamma_final.col(s);
+        const auto dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector V_i_s for individual i and simulation s
         V_s.zeros(); // Reset V_s
@@ -660,7 +660,7 @@ arma::mat mxl_hessian_parallel(
       arma::mat hess_term1_numerator = arma::zeros(n_params, n_params);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = L * eta_i;                   // single dgemm
       arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
       arma::mat Dgamma2(K_w, Sdraw, arma::fill::zeros);
@@ -675,10 +675,10 @@ arma::mat mxl_hessian_parallel(
       // Loop over simulations (draws) s
       for (int s = 0; s < Sdraw; ++s) {
         // Column views into the batched matrices (zero-copy)
-        const arma::vec eta_i_s                = eta_i.col(s);
-        const arma::vec gamma_i_s_final        = Gamma_final.col(s);
-        const arma::vec dgamma_final_dgamma    = Dgamma1.col(s);
-        const arma::vec d2gamma_final_dgamma2  = Dgamma2.col(s);
+        const auto eta_i_s                = eta_i.col(s);
+        const auto gamma_i_s_final        = Gamma_final.col(s);
+        const auto dgamma_final_dgamma    = Dgamma1.col(s);
+        const auto d2gamma_final_dgamma2  = Dgamma2.col(s);
 
         // === 3. Utility ===
         arma::vec V_s = arma::zeros(num_choices);
@@ -1055,7 +1055,7 @@ arma::mat mxl_bhhh_parallel(
       diff_vec.set_size(num_choices);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = L * eta_i;                   // single dgemm
       arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
       for (int k = 0; k < K_w; ++k) {
@@ -1068,9 +1068,9 @@ arma::mat mxl_bhhh_parallel(
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
         // Column views into the batched matrices (zero-copy)
-        const arma::vec eta_i_s             = eta_i.col(s);
-        const arma::vec gamma_i_s_final     = Gamma_final.col(s);
-        const arma::vec dgamma_final_dgamma = Dgamma1.col(s);
+        const auto eta_i_s             = eta_i.col(s);
+        const auto gamma_i_s_final     = Gamma_final.col(s);
+        const auto dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector
         V_s.zeros();
@@ -1249,7 +1249,7 @@ arma::vec mxl_predict_shares_internal(
       arma::vec P_bar_i = arma::zeros(num_choices);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = L * eta_i;                   // single dgemm
       for (int k = 0; k < K_w; ++k) {
         if (rc_dist(k) == 1) { // log-normal
@@ -1259,7 +1259,7 @@ arma::vec mxl_predict_shares_internal(
 
       for (int s = 0; s < Sdraw; ++s) {
         // Column view into the batched matrix (zero-copy)
-        const arma::vec gamma_i_s_final = Gamma_final.col(s);
+        const auto gamma_i_s_final = Gamma_final.col(s);
 
         // Build utility vector
         arma::vec V_s = arma::zeros(num_choices);
@@ -1708,7 +1708,7 @@ arma::mat mxl_elasticities_parallel(
       arma::mat elas_accum = arma::zeros(num_choices, num_choices);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = L * eta_i;                   // single dgemm
       for (int k = 0; k < K_w; ++k) {
         if (rc_dist(k) == 1) { // log-normal
@@ -1718,7 +1718,7 @@ arma::mat mxl_elasticities_parallel(
 
       for (int s = 0; s < Sdraw; ++s) {
         // Column view into the batched matrix (zero-copy)
-        const arma::vec gamma_i_s_final = Gamma_final.col(s);
+        const auto gamma_i_s_final = Gamma_final.col(s);
 
         // Get effective coefficient for this draw
         double beta_k_eff;
