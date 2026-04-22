@@ -1,212 +1,41 @@
-# Setup environment ------------------------------------------------------------
+# MNL cross-package benchmark
+# Compares choicer against mlogit and logitr on a common simulated DGP.
+# Run from package root: Rscript _benchmarks/mnlogit_simulation_benchmark.R
+
 rm(list = ls(all.names = TRUE))
 gc()
 
-library(data.table)
-library(nloptr)
-library(logitr)
-library(mlogit)
-
-# devtools::unload()
-# devtools::clean_dll()
-# Rcpp::compileAttributes()
-# devtools::document()
-# devtools::load_all(recompile = TRUE)
-
 devtools::load_all()
+source("_benchmarks/bench_helpers.R")
 
-# Simulation settings ----------------------------------------------------------
-N <- 1e+4                 # Number of choice situations
-J_global <- 50            # Number of total alternatives (excluding outside good)
+# Simulated DGP ----------------------------------------------------------------
+sim <- simulate_mnl_data(
+  N    = 1e4,
+  J    = 50,
+  beta = c(0.8, -0.6),
+  seed = 123
+)
+print(sim)
 
-# For reproducibility
-set.seed(123)
-
-# Simulate DGP -----------------------------------------------------------------
-
-# True parameter values
-delta_true <- rep(c(0.5, -0.5), J_global/2)
-beta_true <- c(0.8, -0.6)
-K_x <- length(beta_true)        # Number of covariate variables in W
-
-# Draw alternatives
-choice_set_sizes <- sample(2:J_global, N, replace = TRUE)
-J_sum <- sum(choice_set_sizes)
-alt_indices <- vector("list", length = N)
-for (i in 1:N) {
-  alt_indices[[i]] <- sample(J_global, choice_set_sizes[i]) |> sort()
-}
-
-# Create data.table
-dt <- data.table(id = rep(seq_len(N), times = choice_set_sizes))
-
-dt[, `:=`(
-  x1 = runif(.N, min = -1, max = 1),
-  x2 = runif(.N, min = -1, max = 1)
-)]
-
-# Add alternatives and deltas
-dt[, `:=`(
-  alt = alt_indices[[id]],
-  delta = delta_true[alt_indices[[id]]]
-),
-by = id
-]
-
-# Add outside option
-dt <- dt[
-  , .(alt = 0L),
-  keyby = id
-] |>
-  list(dt) |>
-  rbindlist(use.names = TRUE, fill = TRUE)
-
-# Set variables to zero for outside option
-cols <- setdiff(names(dt), c("id","alt","choice"))
-dt[alt == 0L, (cols) := 0]
-
-# Set key for data.table
-setkey(dt, id, alt)
-
-# Logit error shock
-dt[, epsilon := -log(-log(runif(.N)))]
-
-# Compute utility per individual and alternative
-dt[, utility := delta + x1 * beta_true[1] + x2 * beta_true[2] + epsilon]
-
-# Find choice
-dt[, choice_id:= fifelse(seq_len(.N) == which.max(utility), 1L, 0L), by = id]
-
-# logitr -----------------------------------------------------------------------
-
-dt[, alt_factor := factor(alt)]
-
-cat("Starting logitr.\n\n")
-
-# Optimization settings
-nloptr_opts <- list(
-  "algorithm" = "NLOPT_LD_LBFGS",
-  "xtol_rel" = 1.0e-8,
-  "maxeval" = 1e+3,
-  "print_level" = 0L,
-  "check_derivatives" = TRUE,
-  "check_derivatives_print" = "none"
+# Run benchmarks ---------------------------------------------------------------
+res <- benchmark_fit(
+  sim,
+  packages = c("choicer", "mlogit", "logitr")
 )
 
-cat("Starting logtir version.\n\n")
+print(res)
 
-logitr_test <- logitr(
-  data = dt,
-  outcome = "choice_id",
-  obsID = "id",
-  pars = c("x1","x2","alt_factor"),
-  options = nloptr_opts
+# Parameter recovery (choicer rows only) ---------------------------------------
+fit <- run_mnlogit(
+  data                   = sim$data,
+  id_col                 = "id",
+  alt_col                = "alt",
+  choice_col             = "choice",
+  covariate_cols         = c("x1", "x2"),
+  outside_opt_label      = 0L,
+  include_outside_option = FALSE,
+  use_asc                = TRUE,
+  control                = list(print_level = 0L)
 )
-
-logitr_test |> summary() |> print()
-
-# mlogit -----------------------------------------------------------------------
-
-dt_idx <- dfidx(as.data.frame(dt), idx = c("id", "alt_factor"))
-
-# Run mlogit
-m <- mlogit(
-  choice_id ~ x1 + x2,
-  data = dt_idx,
-  print.level = 1
-)
-
-# View results
-m |> summary() |> print()
-
-# choicer version --------------------------------------------------------------
-
-cat("Starting choicer.\n\n")
-
-# Optimization settings
-nloptr_opts <- list(
-  "algorithm" = "NLOPT_LD_LBFGS",
-  "xtol_rel" = 1.0e-8,
-  "maxeval" = 1e+3,
-  "print_level" = 0L,
-  "check_derivatives" = TRUE,
-  "check_derivatives_print" = "none"
-)
-
-input_list <- prepare_mnl_data(
-  data = dt,
-  id_col = "id",
-  alt_col = "alt",
-  choice_col = "choice_id",
-  covariate_cols = c("x1", "x2"),
-  outside_opt_label = 0L,
-  include_outside_option = FALSE
-)
-
-gc()
-
-# Initial parameter vector theta_init
-theta_init <- runif(J_global + K_x, -1, 1)
-
-logit_test <- mnl_loglik_gradient_parallel(
-  theta = theta_init,
-  X = input_list$X,
-  alt_idx = input_list$alt_idx,
-  choice_idx = input_list$choice_idx,
-  M = input_list$M,
-  weights = input_list$weights,
-  use_asc = TRUE,
-  include_outside_option = input_list$include_outside_option
-)
-
-time <- system.time({
-# Run the optimization
-result <- nloptr::nloptr(
-  x0 = theta_init,
-  eval_f = mnl_loglik_gradient_parallel,
-  opts = nloptr_opts,
-  X = input_list$X,
-  alt_idx = input_list$alt_idx,
-  choice_idx = input_list$choice_idx,
-  weights = input_list$weights,
-  M = input_list$M,
-  use_asc = TRUE,
-  include_outside_option = input_list$include_outside_option
-)
-}
-)
-
-cat("Cpp run time", convertTime(time), "\n\n")
-
-# Extract the estimated parameters
-theta_est <- result$solution
-
-# Separate the estimated parameters
-beta_est <- theta_est[1:K_x]
-delta_est <- theta_est[(K_x+1):length(theta_est)]
-
-# Log-likelihood
-cat("Log-likelihood:", -result$objective, "\n\n")
-
-# Print true and estimated delta
-cat("True delta:", delta_true, "\n")
-cat("Estimated delta:", delta_est, "\n\n")
-
-# Print true and estimated beta
-cat("True beta:", beta_true, "\n")
-cat("Estimated beta:", beta_est, "\n\n")
-
-param_names <- c("x1", "x2", as.character(input_list$alt_mapping[alt != 0L, alt]))
-
-get_mnl_result(
-  opt_result = result,
-  X = input_list$X,
-  alt_idx = input_list$alt_idx,
-  choice_idx = input_list$choice_idx,
-  M = input_list$M,
-  weights = input_list$weights,
-  use_asc = TRUE,
-  include_outside_option = input_list$include_outside_option,
-  param_names = param_names,
-  omit_asc_output = FALSE
-)
+cat("\n--- choicer Parameter Recovery ---\n")
+print(recovery_table(fit, sim$true_params))
