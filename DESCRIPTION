@@ -25,5 +25,7 @@ Suggests:
     testthat (>= 3.0.0),
     numDeriv,
     knitr,
-    rmarkdown
+    rmarkdown,
+    digest,
+    future.apply
 Config/testthat/edition: 3
