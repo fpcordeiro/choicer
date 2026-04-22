@@ -659,23 +659,26 @@ arma::mat mxl_hessian_parallel(
       arma::vec grad_numerator = arma::zeros(n_params);
       arma::mat hess_term1_numerator = arma::zeros(n_params, n_params);
 
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      arma::mat Gamma_final = L * eta_i;                   // single dgemm
+      arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
+      arma::mat Dgamma2(K_w, Sdraw, arma::fill::zeros);
+      for (int k = 0; k < K_w; ++k) {
+        if (rc_dist(k) == 1) { // 1 == log-normal
+          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+          Dgamma1.row(k) = Gamma_final.row(k);
+          Dgamma2.row(k) = Gamma_final.row(k);
+        }
+      }
+
       // Loop over simulations (draws) s
       for (int s = 0; s < Sdraw; ++s) {
-        const arma::vec eta_i_s = eta_draws.slice(i).col(s);
-        const arma::vec gamma_i_s = L * eta_i_s;
-
-        // === 2. Transformations ===
-        arma::vec gamma_i_s_final = gamma_i_s;
-        arma::vec dgamma_final_dgamma = arma::ones(K_w);
-        arma::vec d2gamma_final_dgamma2 = arma::zeros(K_w);
-
-        for (int k = 0; k < K_w; ++k) {
-          if (rc_dist(k) == 1) { // 1 == log-normal
-            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
-            dgamma_final_dgamma(k) = gamma_i_s_final(k);
-            d2gamma_final_dgamma2(k) = gamma_i_s_final(k);
-          }
-        }
+        // Column views into the batched matrices (zero-copy)
+        const arma::vec eta_i_s                = eta_i.col(s);
+        const arma::vec gamma_i_s_final        = Gamma_final.col(s);
+        const arma::vec dgamma_final_dgamma    = Dgamma1.col(s);
+        const arma::vec d2gamma_final_dgamma2  = Dgamma2.col(s);
 
         // === 3. Utility ===
         arma::vec V_s = arma::zeros(num_choices);
@@ -1010,11 +1013,6 @@ arma::mat mxl_bhhh_parallel(
     arma::mat local_bhhh = arma::zeros(n_params, n_params);
 
     // --- Pre-allocate working memory for the thread ---
-    arma::vec eta_i_s(K_w);
-    arma::vec gamma_i_s(K_w);
-    arma::vec gamma_i_s_final(K_w);
-    arma::vec dgamma_final_dgamma(K_w);
-
     arma::vec V_s;
     arma::vec inside_utils;
     arma::vec P_s;
@@ -1056,19 +1054,23 @@ arma::mat mxl_bhhh_parallel(
       inside_utils.set_size(m_i);
       diff_vec.set_size(num_choices);
 
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      arma::mat Gamma_final = L * eta_i;                   // single dgemm
+      arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
+      for (int k = 0; k < K_w; ++k) {
+        if (rc_dist(k) == 1) { // log-normal
+          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+          Dgamma1.row(k) = Gamma_final.row(k);
+        }
+      }
+
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
-        eta_i_s = eta_draws.slice(i).col(s);
-        gamma_i_s = L * eta_i_s;
-
-        gamma_i_s_final = gamma_i_s;
-        dgamma_final_dgamma.fill(1.0);
-        for (int k = 0; k < K_w; ++k) {
-          if (rc_dist(k) == 1) { // log-normal
-            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
-            dgamma_final_dgamma(k) = gamma_i_s_final(k);
-          }
-        }
+        // Column views into the batched matrices (zero-copy)
+        const arma::vec eta_i_s             = eta_i.col(s);
+        const arma::vec gamma_i_s_final     = Gamma_final.col(s);
+        const arma::vec dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector
         V_s.zeros();
