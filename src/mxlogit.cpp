@@ -234,11 +234,6 @@ Rcpp::List mxl_loglik_gradient_parallel(
     arma::vec local_grad = arma::zeros(n_params);
 
     // --- Pre-allocate working memory for the thread ---
-    arma::vec eta_i_s(K_w);
-    arma::vec gamma_i_s(K_w);
-    arma::vec gamma_i_s_final(K_w);
-    arma::vec dgamma_final_dgamma(K_w);
-
     arma::vec V_s;          // Re-sized per individual
     arma::vec inside_utils; // Re-sized per individual
     arma::vec P_s;          // Re-sized per individual
@@ -284,23 +279,23 @@ Rcpp::List mxl_loglik_gradient_parallel(
       diff_vec.set_size(num_choices);
       // P_s set_size happens implicitly or can be reserved
 
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const arma::mat& eta_i = eta_draws.slice(i);        // K_w x Sdraw view
+      arma::mat Gamma_final = L * eta_i;                   // single dgemm
+      arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
+      for (int k = 0; k < K_w; ++k) {
+        if (rc_dist(k) == 1) { // log-normal
+          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+          Dgamma1.row(k) = Gamma_final.row(k);
+        }
+      }
+
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
-        // Get eta_i^s and compute gamma_i^s
-        eta_i_s = eta_draws.slice(i).col(s); // Length K_w
-        gamma_i_s = L * eta_i_s;             // Length K_w
-
-        // gamma transformations for distributions
-        gamma_i_s_final = gamma_i_s;
-        dgamma_final_dgamma.fill(1.0); // Reset
-
-        for (int k = 0; k < K_w; ++k) {
-          if (rc_dist(k) == 1) { // 1 == log-normal
-            gamma_i_s_final(k) = std::exp(gamma_i_s(k));
-            dgamma_final_dgamma(k) =
-                gamma_i_s_final(k); // d(exp(g))/dg = exp(g)
-          }
-        }
+        // Column views into the batched matrices (zero-copy)
+        const arma::vec eta_i_s             = eta_i.col(s);
+        const arma::vec gamma_i_s_final     = Gamma_final.col(s);
+        const arma::vec dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector V_i_s for individual i and simulation s
         V_s.zeros(); // Reset V_s
