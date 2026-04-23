@@ -65,9 +65,39 @@ parallel R-level replications combine with 2-thread OpenMP per fit without
 oversubscribing the machine. Set `OMP_NUM_THREADS=1` if you plan to use
 more parallel workers; set higher if your cores are hyper-threaded.
 
+### Run tagging and checkpointing
+
+Every run writes its artifacts under a tagged subfolder
+`_validation/output/<RUN_TAG>/`. Default: `RUN_TAG=YYYYMMDD-HHMMSS`, so
+each run is isolated by timestamp.
+
+```bash
+# Fresh run, timestamped folder
+Rscript _validation/mxl_monte_carlo.R
+
+# Named run (e.g., before/after a code change)
+RUN_TAG=post-batch-cholesky Rscript _validation/mxl_monte_carlo.R
+
+# Resume a preempted run: the driver skips any scenario whose
+# mc_<id>_raw.rds already exists in <tag>/, and rehydrates those for the
+# cross-scenario summary and REPORT.md
+RUN_TAG=20260423-120000 Rscript _validation/mxl_monte_carlo.R
+
+# Re-run a subset of scenarios into an existing folder (e.g., after a
+# spot-instance preemption killed Scenario F midway)
+RUN_TAG=20260423-120000 SCENARIOS=F Rscript _validation/mxl_monte_carlo.R
+
+# Comma-separated list is supported
+SCENARIOS=B,B2,F Rscript _validation/mxl_monte_carlo.R
+```
+
+`_validation/output/latest` is a symlink (or, on filesystems without
+symlink support, a `LATEST` pointer file) to the most recent run so
+ad-hoc tooling can find outputs without knowing the tag.
+
 ## Output artifacts
 
-Under `_validation/output/`:
+Under `_validation/output/<RUN_TAG>/`:
 
 - `mc_<scenario>_raw.rds`, `mc_<scenario>_natural.rds`: long per-rep
   `choicer_mc` objects on the raw (Cholesky / log-mu) and natural

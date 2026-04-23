@@ -6,11 +6,25 @@
 #   QUICK=TRUE   ~90 min pre-flight; small R, trimmed N-grid and S-grid
 #   (default)    full overnight run; see _validation/README.md
 #
+# Run tagging and checkpointing:
+#   RUN_TAG=<name>     Resume into or create the folder
+#                      _validation/output/<name>/. If the folder exists,
+#                      any scenario with an existing mc_<id>_raw.rds is
+#                      skipped and rehydrated from disk (useful after a
+#                      spot preemption).
+#   SCENARIOS=A,B,F    Only run this comma-separated subset. Combined with
+#                      RUN_TAG=<existing> to re-run specific scenarios
+#                      into an existing folder.
+#
+#   Default behavior (no RUN_TAG): fresh folder named by timestamp
+#   YYYYMMDD-HHMMSS. _validation/output/latest always points at the most
+#   recent run.
+#
 # Parallelism:
 #   OMP_NUM_THREADS=2 externally; future::plan(multisession) over floor(cores/2)
 #   workers to avoid oversubscription. Each run_mxlogit() uses OpenMP internally.
 #
-# Output artifacts (written under _validation/output/):
+# Output artifacts (written under _validation/output/<RUN_TAG>/):
 #   mc_<scenario>.rds
 #   asymptotics_<scenario>_raw.csv
 #   asymptotics_<scenario>_natural.csv
@@ -73,11 +87,50 @@ if (!file.exists(file.path(this_dir, "mxl_mc_helpers.R"))) {
 }
 source(file.path(this_dir, "mxl_mc_helpers.R"))
 
-out_dir <- file.path(this_dir, "output")
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+# Run tag: controls the output subfolder under _validation/output/.
+#   - Unset (default): fresh run, use timestamp YYYYMMDD-HHMMSS.
+#   - RUN_TAG=<name>: resume into an existing tagged folder (so partial
+#     outputs from a prior spot-preempted run are reused) OR create a
+#     named fresh folder.
+# The `latest` symlink / LATEST pointer file in _validation/output always
+# points at the most recent run so ad-hoc tooling works without a tag.
+root_out <- file.path(this_dir, "output")
+if (!dir.exists(root_out)) dir.create(root_out, recursive = TRUE)
+run_tag <- args_env("RUN_TAG", format(Sys.time(), "%Y%m%d-%H%M%S"))
+out_dir <- file.path(root_out, run_tag)
+resuming <- dir.exists(out_dir)
+if (!resuming) dir.create(out_dir, recursive = TRUE)
+
+# Update the `latest` pointer. Prefer a symlink; fall back to a text file
+# on filesystems that reject symlinks (rare on *nix, but e.g. some S3-
+# backed mounts). Guard against edge cases where the target exists as a
+# regular file (e.g., old flat layout) or as a dangling symlink.
+latest_link <- file.path(root_out, "latest")
+existing_target <- suppressWarnings(Sys.readlink(latest_link))
+if (file.exists(latest_link) || (!is.na(existing_target) && nzchar(existing_target))) {
+  try(unlink(latest_link, force = TRUE), silent = TRUE)
+}
+symlink_ok <- tryCatch(
+  isTRUE(file.symlink(run_tag, latest_link)),
+  error = function(e) FALSE, warning = function(w) FALSE
+)
+if (!symlink_ok) writeLines(run_tag, file.path(root_out, "LATEST"))
+
+# Scenario filter: SCENARIOS=A,B,B2 runs the intersection with the six
+# defined scenarios. Unset = run all. Combines with RUN_TAG=<existing> to
+# re-run individual scenarios into an existing folder after a preemption.
+scenario_filter <- args_env("SCENARIOS", "")
+scenario_filter <- if (nzchar(scenario_filter)) {
+  toupper(trimws(strsplit(scenario_filter, ",")[[1]]))
+} else NULL
 
 message("[driver] QUICK=", QUICK, " workers=", n_workers,
-        " OMP_NUM_THREADS=", Sys.getenv("OMP_NUM_THREADS"))
+        " OMP_NUM_THREADS=", Sys.getenv("OMP_NUM_THREADS"),
+        " RUN_TAG=", run_tag, " resuming=", resuming,
+        " out_dir=", out_dir)
+if (!is.null(scenario_filter)) {
+  message("[driver] SCENARIOS filter: ", paste(scenario_filter, collapse = ","))
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -94,6 +147,28 @@ message("[driver] QUICK=", QUICK, " workers=", n_workers,
   tryCatch(mc_asymptotics(mc, se_col = "se_bhhh"),
            error = function(e) { message("BHHH asymptotics failed: ",
                                          conditionMessage(e)); NULL })
+}
+
+# Checkpointing: a scenario is "done" if its primary RDS output already
+# exists in out_dir. We use mc_<id>_raw.rds as the completion sentinel
+# because every scenario writes it last (after the per-rep loop completes).
+.scenario_is_done <- function(id, out_dir) {
+  file.exists(file.path(out_dir, sprintf("mc_%s_raw.rds", id)))
+}
+
+# Scenario selection: apply SCENARIOS filter AND the RUN_TAG-based
+# completed-scenario skip. Returns TRUE if this scenario should run.
+.should_run_scenario <- function(id, out_dir, filter = NULL) {
+  if (!is.null(filter) && !(id %in% filter)) {
+    message(sprintf("[scenario %s] skipped (not in SCENARIOS filter)", id))
+    return(FALSE)
+  }
+  if (.scenario_is_done(id, out_dir)) {
+    message(sprintf("[scenario %s] skipped (already complete in %s)",
+                    id, basename(out_dir)))
+    return(FALSE)
+  }
+  TRUE
 }
 
 # ---------------------------------------------------------------------------
@@ -240,6 +315,39 @@ scenario_ids <- c("A", "B", "B2", "C", "D", "F")
 scenario_results <- list()
 
 for (id in scenario_ids) {
+  if (!.should_run_scenario(id, out_dir, filter = scenario_filter)) {
+    # Resume path: rehydrate outputs from disk so cross-scenario aggregation
+    # (SE-ratio plot, REPORT.md) still sees them. If the RDS is missing
+    # we silently skip aggregation for this scenario.
+    if (.scenario_is_done(id, out_dir)) {
+      mc_raw_path <- file.path(out_dir, sprintf("mc_%s_raw.rds", id))
+      mc_nat_path <- file.path(out_dir, sprintf("mc_%s_natural.rds", id))
+      mc_raw <- tryCatch(readRDS(mc_raw_path), error = function(e) NULL)
+      mc_nat <- if (file.exists(mc_nat_path)) {
+        tryCatch(readRDS(mc_nat_path), error = function(e) NULL)
+      } else NULL
+      # For Scenario A / D the on-disk RDS is a named list of per-arm
+      # choicer_mc objects; pick the biggest arm for the summary table,
+      # matching the fresh-run behavior further down.
+      pick_biggest <- function(mc_list) {
+        if (is.null(mc_list) || !length(mc_list)) return(NULL)
+        if (inherits(mc_list, "choicer_mc")) return(mc_list)
+        mc_list[[as.character(max(as.numeric(names(mc_list))))]]
+      }
+      mc_big_raw <- pick_biggest(mc_raw)
+      mc_big_nat <- pick_biggest(mc_nat)
+      scenario_results[[id]] <- list(
+        asymptotics_raw      = if (!is.null(mc_big_raw)) mc_asymptotics(mc_big_raw) else NULL,
+        asymptotics_raw_bhhh = .safe_mc_asymptotics_bhhh(mc_big_raw),
+        asymptotics_natural  = if (!is.null(mc_big_nat)) mc_asymptotics(mc_big_nat) else NULL,
+        meta   = list(purpose = scenario_spec(id, quick = QUICK)$purpose,
+                      resumed = TRUE),
+        extras = list()
+      )
+    }
+    next
+  }
+
   t_scn <- Sys.time()
   scn <- scenario_spec(id, quick = QUICK)
   message("[scenario ", id, "] ", scn$purpose)
