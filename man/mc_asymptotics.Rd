@@ -4,13 +4,23 @@
 \alias{mc_asymptotics}
 \title{Asymptotic diagnostics for a Monte Carlo study}
 \usage{
-mc_asymptotics(mc, level = 0.95)
+mc_asymptotics(mc, level = 0.95, se_col = "se")
 }
 \arguments{
 \item{mc}{A \code{choicer_mc} object returned by \code{\link[=monte_carlo]{monte_carlo()}}.}
 
 \item{level}{Confidence level for the Wilson bands on coverage rates.
 Defaults to \code{0.95}.}
+
+\item{se_col}{Name of the column in \code{mc$replications} to use as the
+standard-error source. Defaults to \code{"se"} (the Hessian-based SE stored
+by \code{\link[=monte_carlo]{monte_carlo()}}). Callers that augment replications with an
+alternative SE flavor (e.g., \code{"se_bhhh"} for a BHHH/OPG comparison)
+can pass that column name to recompute every SE-dependent diagnostic
+(\code{mean_se}, \code{se_ratio}, \code{mean_se_w}, \code{cov90/95/99}, z-moments,
+normality tests, pass flags) against that flavor. Useful for the
+information-matrix-equality check in Claim 4 of the MXL validation
+suite.}
 }
 \value{
 An object of class \code{choicer_mc_asymptotics} — a \code{data.table}

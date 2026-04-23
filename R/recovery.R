@@ -449,6 +449,15 @@ print.choicer_mc_summary <- function(x, ...) {
 #' @param mc A `choicer_mc` object returned by [monte_carlo()].
 #' @param level Confidence level for the Wilson bands on coverage rates.
 #'   Defaults to `0.95`.
+#' @param se_col Name of the column in `mc$replications` to use as the
+#'   standard-error source. Defaults to `"se"` (the Hessian-based SE stored
+#'   by [monte_carlo()]). Callers that augment replications with an
+#'   alternative SE flavor (e.g., `"se_bhhh"` for a BHHH/OPG comparison)
+#'   can pass that column name to recompute every SE-dependent diagnostic
+#'   (`mean_se`, `se_ratio`, `mean_se_w`, `cov90/95/99`, z-moments,
+#'   normality tests, pass flags) against that flavor. Useful for the
+#'   information-matrix-equality check in Claim 4 of the MXL validation
+#'   suite.
 #' @return An object of class `choicer_mc_asymptotics` — a `data.table`
 #'   with one row per unique parameter and columns documented above — with
 #'   `meta` attached as an attribute (`attr(x, "meta")`).
@@ -465,7 +474,7 @@ print.choicer_mc_summary <- function(x, ...) {
 #' mc_asymptotics(mc)
 #' }
 #' @export
-mc_asymptotics <- function(mc, level = 0.95) {
+mc_asymptotics <- function(mc, level = 0.95, se_col = "se") {
   if (!inherits(mc, "choicer_mc")) {
     stop("`mc` must be a `choicer_mc` object.")
   }
@@ -473,6 +482,12 @@ mc_asymptotics <- function(mc, level = 0.95) {
   reps <- mc$replications
   if (!nrow(reps)) {
     stop("mc_asymptotics: replications are empty.")
+  }
+  if (!se_col %in% names(reps)) {
+    stop(sprintf(
+      "mc_asymptotics: column '%s' not found in mc$replications. ",
+      se_col
+    ))
   }
 
   # Parameters are identified by (parameter, group, true). The same parameter
@@ -490,7 +505,7 @@ mc_asymptotics <- function(mc, level = 0.95) {
 
   rows <- keep[, {
     est <- estimate
-    se_i <- se
+    se_i <- get(se_col)
     tru <- true[1]
     n <- .N
     mean_est <- mean(est, na.rm = TRUE)
@@ -612,6 +627,7 @@ mc_asymptotics <- function(mc, level = 0.95) {
   attr(rows, "meta") <- list(
     R_total = R_total,
     level   = level,
+    se_col  = se_col,
     timestamp = Sys.time()
   )
   rows

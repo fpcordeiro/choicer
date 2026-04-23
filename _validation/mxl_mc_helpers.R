@@ -767,11 +767,21 @@ build_report <- function(scenario_results, outfile) {
       se_range <- range(a$se_ratio, na.rm = TRUE)
       push(sprintf("- |bias / MC-SE| range: [%.2f, %.2f]",
                    bias_range[1], bias_range[2]))
-      push(sprintf("- se_ratio range: [%.3f, %.3f]",
+      push(sprintf("- se_ratio (Hessian) range: [%.3f, %.3f]",
                    se_range[1], se_range[2]))
       push(sprintf("- cov95 range: [%.3f, %.3f]",
                    min(a$cov95, na.rm = TRUE),
                    max(a$cov95, na.rm = TRUE)))
+    }
+
+    ab <- sr$asymptotics_raw_bhhh
+    if (!is.null(ab) && nrow(ab)) {
+      se_range_b <- range(ab$se_ratio, na.rm = TRUE)
+      cov95_range_b <- range(ab$cov95, na.rm = TRUE)
+      push(sprintf("- se_ratio (BHHH) range: [%.3f, %.3f]",
+                   se_range_b[1], se_range_b[2]))
+      push(sprintf("- cov95 (BHHH) range: [%.3f, %.3f]",
+                   cov95_range_b[1], cov95_range_b[2]))
     }
 
     nat <- sr$asymptotics_natural
@@ -800,6 +810,17 @@ build_report <- function(scenario_results, outfile) {
       }
       if (!is.null(ex$conv_rate)) {
         push(sprintf("- convergence rate: %.3f", ex$conv_rate))
+      }
+      if (!is.null(ex$simbias_slopes) && nrow(ex$simbias_slopes)) {
+        push("- claim 5: OLS slope of |bias| on 1/S (positive slope + t > 0 ",
+             "=> bias decays toward zero as S grows):")
+        sb <- ex$simbias_slopes
+        for (i in seq_len(nrow(sb))) {
+          push(sprintf("  - %s: slope=%.4f (se=%.4f, t=%.2f, p=%.3f)",
+                       sb$parameter[i],
+                       sb$slope[i], sb$slope_se[i],
+                       sb$slope_t[i], sb$slope_p[i]))
+        }
       }
     }
     push("")

@@ -252,6 +252,38 @@ test_that("Jarque-Bera p-value is high for normal data, low for skewed data", {
   expect_lt(jb_p(stats::rexp(1000, rate = 1)), 0.01)
 })
 
+test_that("mc_asymptotics(se_col) selects alternative SE column", {
+  # Fixture: est ~ N(true, sd_true). Two SE columns on the replications:
+  # `se` is correctly calibrated (matches sd_true); `se_bhhh` is inflated
+  # by 2x. We should see se_ratio ~ 1 with default se_col = "se" and
+  # se_ratio ~ 2 with se_col = "se_bhhh".
+  set.seed(2050)
+  R <- 1000
+  true <- 0.5
+  sd_true <- 0.1
+  estimates <- stats::rnorm(R, mean = true, sd = sd_true)
+  ses <- rep(sd_true, R)
+  mc <- single_param_mc(estimates, ses, true = true)
+  mc$replications[, se_bhhh := 2 * ses]
+
+  out_hess <- mc_asymptotics(mc, se_col = "se")
+  out_bhhh <- mc_asymptotics(mc, se_col = "se_bhhh")
+
+  expect_true(abs(out_hess$se_ratio - 1) < 0.1)
+  expect_true(abs(out_bhhh$se_ratio - 2) < 0.1)
+
+  # meta attribute records which column was used.
+  expect_equal(attr(out_hess, "meta")$se_col, "se")
+  expect_equal(attr(out_bhhh, "meta")$se_col, "se_bhhh")
+
+  # cov95 with inflated SE should be > 0.95 (bands are too wide).
+  expect_gt(out_bhhh$cov95, out_hess$cov95)
+
+  # Error when se_col doesn't exist.
+  expect_error(mc_asymptotics(mc, se_col = "does_not_exist"),
+               "not found in mc\\$replications")
+})
+
 test_that("print.choicer_mc_asymptotics shows pass/fail matrix header", {
   set.seed(2036)
   R <- 300

@@ -24,7 +24,19 @@
 
 t0 <- Sys.time()
 suppressPackageStartupMessages({
-  library(choicer)
+  # Prefer devtools::load_all() when running from a development checkout so
+  # the driver sees the in-tree source (including any unreleased edits to
+  # mc_asymptotics() etc.). Fall back to library(choicer) when running from
+  # an installed package (e.g., on a CI machine without devtools).
+  loaded <- FALSE
+  if (requireNamespace("devtools", quietly = TRUE)) {
+    pkg_root <- tryCatch(rprojroot::find_package_root_file(), error = function(e) NULL)
+    if (!is.null(pkg_root) && file.exists(file.path(pkg_root, "DESCRIPTION"))) {
+      devtools::load_all(pkg_root, quiet = TRUE)
+      loaded <- TRUE
+    }
+  }
+  if (!loaded) library(choicer)
   library(data.table)
 })
 
@@ -66,6 +78,23 @@ if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 message("[driver] QUICK=", QUICK, " workers=", n_workers,
         " OMP_NUM_THREADS=", Sys.getenv("OMP_NUM_THREADS"))
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Compute mc_asymptotics() against the BHHH per-rep SE column (`se_bhhh`,
+# populated by augment_replication() in mxl_mc_helpers.R). Returns NULL
+# gracefully if the column is absent or every value is NA -- BHHH failure
+# on a subset of reps is expected on weak-identification scenarios.
+.safe_mc_asymptotics_bhhh <- function(mc) {
+  if (is.null(mc) || !inherits(mc, "choicer_mc")) return(NULL)
+  if (!"se_bhhh" %in% names(mc$replications)) return(NULL)
+  if (all(is.na(mc$replications$se_bhhh))) return(NULL)
+  tryCatch(mc_asymptotics(mc, se_col = "se_bhhh"),
+           error = function(e) { message("BHHH asymptotics failed: ",
+                                         conditionMessage(e)); NULL })
+}
 
 # ---------------------------------------------------------------------------
 # Helper: run one MC scenario and assemble outputs
@@ -246,6 +275,7 @@ for (id in scenario_ids) {
     biggest <- as.character(max(scn$N_grid))
     asymp_raw <- if (!is.null(mc_list_raw[[biggest]])) mc_asymptotics(mc_list_raw[[biggest]]) else NULL
     asymp_nat <- if (!is.null(mc_list_nat[[biggest]])) mc_asymptotics(mc_list_nat[[biggest]]) else NULL
+    asymp_raw_bhhh <- .safe_mc_asymptotics_bhhh(mc_list_raw[[biggest]])
 
     # Persist.
     saveRDS(mc_list_raw, file.path(out_dir, sprintf("mc_%s_raw.rds", id)))
@@ -311,15 +341,24 @@ for (id in scenario_ids) {
 
     hess_err <- if (nrow(hess_all)) median(hess_all$max_rel_err, na.rm = TRUE) else NA_real_
 
-    # Convergence rate across all arms (fraction of reps that converged).
+    # Per-arm convergence rate: group by (N_label, rep_id) so reps that
+    # converged in one N-arm but not another are counted per-arm, not
+    # collapsed across arms via any().
     conv_rate <- if (length(mc_list_raw)) {
-      reps_all <- rbindlist(lapply(mc_list_raw, function(mc) mc$replications),
-                            use.names = TRUE, fill = TRUE)
-      mean(reps_all[, any(converged, na.rm = TRUE), by = rep_id]$V1)
+      reps_all <- rbindlist(
+        lapply(names(mc_list_raw), function(nN) {
+          r <- data.table::copy(mc_list_raw[[nN]]$replications)
+          r[, N_label := nN]
+          r
+        }),
+        use.names = TRUE, fill = TRUE
+      )
+      mean(reps_all[, any(converged, na.rm = TRUE), by = .(N_label, rep_id)]$V1)
     } else NA_real_
 
     scenario_results[[id]] <- list(
       asymptotics_raw = asymp_raw,
+      asymptotics_raw_bhhh = asymp_raw_bhhh,
       asymptotics_natural = asymp_nat,
       meta = list(purpose = scn$purpose),
       extras = list(
@@ -353,6 +392,7 @@ for (id in scenario_ids) {
     biggest <- as.character(max(scn$S_grid))
     asymp_raw <- if (!is.null(mc_list_raw[[biggest]])) mc_asymptotics(mc_list_raw[[biggest]]) else NULL
     asymp_nat <- if (!is.null(mc_list_nat[[biggest]])) mc_asymptotics(mc_list_nat[[biggest]]) else NULL
+    asymp_raw_bhhh <- .safe_mc_asymptotics_bhhh(mc_list_raw[[biggest]])
 
     saveRDS(mc_list_raw, file.path(out_dir, sprintf("mc_%s_raw.rds", id)))
     saveRDS(mc_list_nat, file.path(out_dir, sprintf("mc_%s_natural.rds", id)))
@@ -380,12 +420,33 @@ for (id in scenario_ids) {
       plot_sim_bias(simbias_tbl, outfile = file.path(out_dir, "plot_sim_bias.png"))
     }
 
+    # Claim 5: per-parameter OLS of |bias| on 1/S. Expected slope > 0 and
+    # t-stat meaningfully away from zero if simulation bias is O(1/S).
+    simbias_slopes <- if (nrow(simbias_tbl) && length(unique(simbias_tbl$S)) >= 2) {
+      simbias_tbl[, {
+        d <- data.frame(abs_bias = abs_bias, inv_S = 1 / S)
+        d <- d[is.finite(d$abs_bias) & is.finite(d$inv_S), ]
+        if (nrow(d) >= 2) {
+          fit <- stats::lm(abs_bias ~ inv_S, data = d)
+          cf <- stats::coef(summary(fit))
+          if (nrow(cf) >= 2) {
+            list(slope = cf[2, 1], slope_se = cf[2, 2],
+                 slope_t = cf[2, 3], slope_p = cf[2, 4])
+          } else list(slope = NA_real_, slope_se = NA_real_,
+                      slope_t = NA_real_, slope_p = NA_real_)
+        } else list(slope = NA_real_, slope_se = NA_real_,
+                    slope_t = NA_real_, slope_p = NA_real_)
+      }, by = parameter]
+    } else NULL
+
     hess_err <- if (nrow(hess_all)) median(hess_all$max_rel_err, na.rm = TRUE) else NA_real_
     scenario_results[[id]] <- list(
       asymptotics_raw = asymp_raw,
+      asymptotics_raw_bhhh = asymp_raw_bhhh,
       asymptotics_natural = asymp_nat,
       meta = list(purpose = scn$purpose),
-      extras = list(hessian_err = hess_err)
+      extras = list(hessian_err = hess_err,
+                    simbias_slopes = simbias_slopes)
     )
 
   } else {
@@ -394,6 +455,7 @@ for (id in scenario_ids) {
                       hessian_first_rep = TRUE)
     asymp_raw <- if (!is.null(r$mc_raw)) mc_asymptotics(r$mc_raw) else NULL
     asymp_nat <- if (!is.null(r$mc_natural)) mc_asymptotics(r$mc_natural) else NULL
+    asymp_raw_bhhh <- .safe_mc_asymptotics_bhhh(r$mc_raw)
 
     if (!is.null(r$mc_raw))
       saveRDS(r$mc_raw, file.path(out_dir, sprintf("mc_%s_raw.rds", id)))
@@ -421,6 +483,7 @@ for (id in scenario_ids) {
 
     scenario_results[[id]] <- list(
       asymptotics_raw = asymp_raw,
+      asymptotics_raw_bhhh = asymp_raw_bhhh,
       asymptotics_natural = asymp_nat,
       meta = list(purpose = scn$purpose),
       extras = list(hessian_err = hess_err, conv_rate = r$conv_rate)
@@ -435,15 +498,24 @@ for (id in scenario_ids) {
 # Cross-scenario plots and final report
 # ---------------------------------------------------------------------------
 
-# SE ratio plot across scenarios on the raw scale.
+# SE ratio plot across scenarios on the raw scale. Both Hessian-based and
+# BHHH-based ratios are surfaced so Claim 4 (information-matrix equality)
+# is fully adjudicated: under correct specification, both should converge
+# to 1.
 se_rows <- list()
 for (id in names(scenario_results)) {
   a <- scenario_results[[id]]$asymptotics_raw
   if (is.null(a) || !nrow(a)) next
+  ab <- scenario_results[[id]]$asymptotics_raw_bhhh
+  # Align BHHH rows to the Hessian parameter order (same (parameter, group)
+  # keys since they come from the same choicer_mc); left-join by parameter.
+  bhhh_ratio <- if (!is.null(ab) && nrow(ab)) {
+    ab[match(a$parameter, ab$parameter), se_ratio]
+  } else rep(NA_real_, nrow(a))
   se_rows[[id]] <- data.table(
     scenario = id, parameter = a$parameter,
     hess_ratio = a$se_ratio,
-    bhhh_ratio = NA_real_  # BHHH SE ratio is computed separately; see below
+    bhhh_ratio = bhhh_ratio
   )
 }
 se_tbl <- rbindlist(se_rows, use.names = TRUE, fill = TRUE)
