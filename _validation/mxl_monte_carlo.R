@@ -311,6 +311,13 @@ for (id in scenario_ids) {
 
     hess_err <- if (nrow(hess_all)) median(hess_all$max_rel_err, na.rm = TRUE) else NA_real_
 
+    # Convergence rate across all arms (fraction of reps that converged).
+    conv_rate <- if (length(mc_list_raw)) {
+      reps_all <- rbindlist(lapply(mc_list_raw, function(mc) mc$replications),
+                            use.names = TRUE, fill = TRUE)
+      mean(reps_all[, any(converged, na.rm = TRUE), by = rep_id]$V1)
+    } else NA_real_
+
     scenario_results[[id]] <- list(
       asymptotics_raw = asymp_raw,
       asymptotics_natural = asymp_nat,
@@ -319,8 +326,7 @@ for (id in scenario_ids) {
         lr_ks_p = lr_ks_p, lr_size = lr_size,
         lr_size_lower = lr_wilson$lower, lr_size_upper = lr_wilson$upper,
         hessian_err = hess_err,
-        conv_rate = mean(lr_all[, .N] / length(scn$N_grid) /
-                         mean(unlist(scn$R_map)))  # approximate
+        conv_rate = conv_rate
       )
     )
 
