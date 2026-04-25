@@ -592,7 +592,7 @@ predict.choicer_mxl <- function(object, ...) {
          "Refit with keep_data = TRUE.")
   }
   stop("predict() for mixed logit is not yet implemented. ",
-       "Use mxl_elasticities() for post-estimation analysis.")
+       "Use elasticities() for post-estimation analysis.")
 }
 
 # --- Delta method for MXL summary -------------------------------------------
