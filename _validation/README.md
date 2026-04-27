@@ -137,3 +137,12 @@ sqrt(N)-rate claim would not apply. That study is out of scope here.
 `outside_option = TRUE`. A separate no-OO scenario would exercise the
 first-ASC-normalization branch of `run_mxlogit()` but is deliberately
 excluded here to keep dimensionality down.
+
+## Conventions
+
+**Cholesky packing:** All MXL functions in `choicer` pack `L_params` row-major
+lower-triangular: `[L_11, L_21, L_22, L_31, L_32, L_33, ...]`, with diagonals on
+the log scale (`L_kk` is `log(chol(Sigma)[k, k])`). The simulator
+`simulate_mxl_data()` and the fitted-object names follow the same convention.
+Custom `vech` extractors should match `build_var_mat()` / `build_L_mat()` in
+`src/mxlogit.cpp`.

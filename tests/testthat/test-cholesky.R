@@ -97,11 +97,11 @@ test_that("jacobian_vech_Sigma is numerically accurate", {
   # Analytical Jacobian from C++
   J_anal <- jacobian_vech_Sigma(L_params, K_w, rc_correlation = TRUE)
 
-  # Numerical Jacobian using numDeriv
+  # Numerical Jacobian using numDeriv (row-major vech to match
+  # jacobian_vech_Sigma's row ordering).
   vech_sigma_fn <- function(lp) {
     S <- build_var_mat(lp, K_w, rc_correlation = TRUE)
-    # Extract lower triangle including diagonal (column-major order)
-    S[lower.tri(S, diag = TRUE)]
+    choicer:::vech_row(S)
   }
 
   J_num <- numDeriv::jacobian(vech_sigma_fn, L_params)
@@ -122,7 +122,7 @@ test_that("jacobian_vech_Sigma works for larger K_w", {
 
   vech_sigma_fn <- function(lp) {
     S <- build_var_mat(lp, K_w, rc_correlation = TRUE)
-    S[lower.tri(S, diag = TRUE)]
+    choicer:::vech_row(S)
   }
 
   J_num <- numDeriv::jacobian(vech_sigma_fn, L_params)

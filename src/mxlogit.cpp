@@ -423,13 +423,15 @@ Rcpp::List mxl_loglik_gradient_parallel(
                             Rcpp::Named("gradient") = -global_grad);
 }
 
-// vech(): lower-triangular vectorisation (including the diagonal)
+// vech(): lower-triangular vectorisation (including the diagonal), row-major
+// Matches the row-major packing of L_params used by build_L_mat() above and
+// by the outer parameter loop in jacobian_vech_Sigma() below.
 inline arma::vec vech(const arma::mat &M) {
   arma::uword K = M.n_rows;
   arma::vec out(K * (K + 1) / 2);
   arma::uword idx = 0;
-  for (arma::uword j = 0; j < K; ++j)
-    for (arma::uword i = j; i < K; ++i)
+  for (arma::uword i = 0; i < K; ++i)
+    for (arma::uword j = 0; j <= i; ++j)
       out(idx++) = M(i, j);
   return out;
 }

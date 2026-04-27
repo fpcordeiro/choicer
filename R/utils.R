@@ -59,11 +59,36 @@ check_collinearity <- function(X) {
   return(list(mat = X, dropped = colnames_diff))
 }
 
-#' Extract lower triangular elements (vech)
+#' Extract lower triangular elements (column-major vech)
+#'
+#' Column-major lower-triangular vectorization. For a K x K matrix M,
+#' returns a length K(K+1)/2 vector ordered by column:
+#' c(M_11, M_21, ..., M_K1, M_22, M_32, ..., M_K2, ..., M_KK).
+#'
+#' Note: this is the conventional `vech` ordering. The choicer C++
+#' engine uses the row-major variant; see `vech_row()` below.
 #' @param M A square matrix
 #' @returns Vector of lower triangular elements including diagonal
 #' @noRd
-vech <- function(M) M[lower.tri(M, diag = TRUE)]
+vech_col <- function(M) M[lower.tri(M, diag = TRUE)]
+
+# Row-major vech: lower-triangular vectorization in row-major order.
+# For a K x K matrix M, returns a length K(K+1)/2 vector
+# c(M_11, M_21, M_22, M_31, M_32, M_33, ...).
+# Matches the convention used by build_L_mat() and jacobian_vech_Sigma()
+# in src/mxlogit.cpp. Contrast with the column-major [vech_col()].
+vech_row <- function(M) {
+  K <- nrow(M)
+  out <- numeric(K * (K + 1) / 2)
+  idx <- 1L
+  for (i in seq_len(K)) {
+    for (j in seq_len(i)) {
+      out[idx] <- M[i, j]
+      idx <- idx + 1L
+    }
+  }
+  out
+}
 
 #' Resolve a variable name or index to a 1-based integer index
 #'

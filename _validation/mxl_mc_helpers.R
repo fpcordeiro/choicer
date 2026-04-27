@@ -17,6 +17,38 @@ suppressPackageStartupMessages({
   library(data.table)
 })
 
+# ---- Cholesky round-trip startup assert ------------------------------------
+#
+# Catches a row-major-vs-column-major regression in the simulator's L_params
+# packing by reconstructing Sigma via build_var_mat() and comparing against
+# the input Sigma. Cheap (N=50, J=3) and runs once per correlated scenario.
+
+.assert_chol_roundtrip <- function(Sigma, K_w, label = "scenario") {
+  if (K_w < 2) return(invisible(NULL))
+  sim <- tryCatch(
+    simulate_mxl_data(N = 50L, J = 3L, beta = c(0.1, -0.1),
+                      Sigma = Sigma, seed = 1L,
+                      outside_option = TRUE, vary_choice_set = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(sim) || is.null(sim$true_params$L_params)) {
+    message(sprintf("[%s] chol round-trip skipped (no sim)", label))
+    return(invisible(NULL))
+  }
+  L_params <- sim$true_params$L_params
+  # Detect packing variant by length: K_w*(K_w+1)/2 = correlated, K_w = diagonal.
+  rc_corr <- length(L_params) == K_w * (K_w + 1L) / 2L
+  Sigma_round <- build_var_mat(L_params, K_w, rc_corr)
+  if (!isTRUE(all.equal(Sigma_round, Sigma, tolerance = 1e-10,
+                        check.attributes = FALSE))) {
+    stop(sprintf(
+      "[%s] Cholesky round-trip failed: simulator's L_params do not reconstruct Sigma. Likely a row-major vs column-major packing mismatch.",
+      label
+    ))
+  }
+  invisible(NULL)
+}
+
 # ---- Scenario DSL ----------------------------------------------------------
 
 # Every scenario is a list:
@@ -138,6 +170,7 @@ scenario_spec <- function(id, quick = FALSE) {
     B = {
       N <- 5000L
       R <- if (quick) 50L else 1000L
+      .assert_chol_roundtrip(.sigma_correlated_2, 2L, label = "B")
       list(
         id = "B", purpose = "Correlated Sigma, K_w = 2",
         N = N, R = R,
@@ -155,6 +188,7 @@ scenario_spec <- function(id, quick = FALSE) {
     B2 = {
       N <- 5000L
       R <- if (quick) 50L else 1000L
+      .assert_chol_roundtrip(.sigma_correlated_3, 3L, label = "B2")
       list(
         id = "B2", purpose = "Correlated Sigma, K_w = 3",
         N = N, R = R,
@@ -192,6 +226,7 @@ scenario_spec <- function(id, quick = FALSE) {
       N <- 5000L
       R <- if (quick) 50L else 300L
       S_grid <- if (quick) c(25L, 100L) else c(25L, 50L, 100L, 250L, 500L)
+      .assert_chol_roundtrip(.sigma_uncorrelated, 2L, label = "D")
       list(
         id = "D", purpose = "Simulation bias O(1 / S)",
         N = N, R = R, S_grid = S_grid,
@@ -405,7 +440,7 @@ hessian_agreement <- function(fit, sim = NULL) {
     L_params_hat <- theta[idx_s]
     Sigma_hat <- build_var_mat(L_params_hat, K_w, rc_correlation)
     if (rc_correlation) {
-      est[idx_s] <- Sigma_hat[lower.tri(Sigma_hat, diag = TRUE)]
+      est[idx_s] <- vech_row(Sigma_hat)
     } else {
       est[idx_s] <- diag(Sigma_hat)
     }
@@ -418,7 +453,7 @@ hessian_agreement <- function(fit, sim = NULL) {
 }
 
 # Build a recovery_table-shaped data.table on the natural scale. Raw
-# parameters become exp(mu) and vech(Sigma) (or diag(Sigma) when uncorrelated).
+# parameters become exp(mu) and vech_row(Sigma) (or diag(Sigma) when uncorrelated).
 natural_scale_recovery <- function(fit, sim, level = 0.95) {
   pm <- fit$param_map
   vv <- fit$vcov
@@ -443,7 +478,7 @@ natural_scale_recovery <- function(fit, sim, level = 0.95) {
   # Natural-scale truth block:
   #   beta: as is
   #   mu  : exp(mu) elementwise where rc_dist == 1
-  #   sigma: vech(Sigma) if correlated, else diag(Sigma)
+  #   sigma: vech_row(Sigma) if correlated, else diag(Sigma)
   #   asc : as is
   rows <- list()
 
@@ -473,7 +508,7 @@ natural_scale_recovery <- function(fit, sim, level = 0.95) {
     idx_s <- pm$sigma
     Sigma_true <- truth$Sigma
     if (fit$rc_correlation) {
-      sigma_true_nat <- Sigma_true[lower.tri(Sigma_true, diag = TRUE)]
+      sigma_true_nat <- vech_row(Sigma_true)
     } else {
       sigma_true_nat <- diag(Sigma_true)
     }

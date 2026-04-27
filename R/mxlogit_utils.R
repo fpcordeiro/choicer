@@ -202,12 +202,12 @@ run_mxlogit <- function(
   beta_names <- colnames(input_data$X)
   mu_names <- if (rc_mean) paste0("Mu_", colnames(input_data$W)) else character(0)
 
-  # Cholesky parameter names (lower triangular order)
+  # Cholesky parameter names (lower triangular order, row-major)
   if (rc_correlation) {
     sigma_names <- character(L_size)
     idx <- 1
-    for (j in seq_len(K_w)) {
-      for (i in j:K_w) {
+    for (i in seq_len(K_w)) {
+      for (j in seq_len(i)) {
         sigma_names[idx] <- sprintf("L_%d%d", i, j)
         idx <- idx + 1
       }
