@@ -595,7 +595,10 @@ plot_qq <- function(reps, scenario_id, outfile) {
     z <- reps[parameter == p, z_vs_true]
     z <- z[is.finite(z)]
     if (!length(z)) { plot.new(); title(p); next }
-    stats::qqnorm(z, main = p, cex.main = 0.85, pch = 16, cex = 0.4)
+    stats::qqnorm(z,
+                  main = sprintf("%s (mean=%.2f, sd=%.2f)", p, mean(z), sd(z)),
+                  cex.main = 0.75, pch = 16, cex = 0.4)
+    abline(0, 1, col = "grey50", lty = 3)
     stats::qqline(z, col = "red", lwd = 1)
   }
   invisible(NULL)
@@ -611,6 +614,19 @@ plot_consistency <- function(consistency_tbl, outfile) {
   params <- unique(consistency_tbl$parameter)
   cols <- grDevices::rainbow(length(params))
 
+  # Per-parameter OLS slopes of log(y) ~ log(N).
+  slope_bias <- vapply(params, function(p) {
+    d <- consistency_tbl[parameter == p & abs_bias > 0]
+    if (nrow(d) < 2) return(NA_real_)
+    unname(coef(stats::lm(log(abs_bias) ~ log(N), data = d))[2])
+  }, numeric(1))
+
+  slope_rmse <- vapply(params, function(p) {
+    d <- consistency_tbl[parameter == p & rmse > 0]
+    if (nrow(d) < 2) return(NA_real_)
+    unname(coef(stats::lm(log(rmse) ~ log(N), data = d))[2])
+  }, numeric(1))
+
   # log|bias| vs log N with fitted slope for each parameter.
   x_range <- log(range(consistency_tbl$N))
   y_range <- log(range(consistency_tbl$abs_bias[consistency_tbl$abs_bias > 0], na.rm = TRUE))
@@ -624,10 +640,9 @@ plot_consistency <- function(consistency_tbl, outfile) {
       lines(log(d$N), log(d$abs_bias), col = cols[i])
     }
   }
-  abline(lm(y ~ x, data = data.frame(
-    x = log(consistency_tbl$N),
-    y = log(pmax(consistency_tbl$abs_bias, 1e-12))
-  )), col = "grey40", lty = 2)
+  leg_labels <- sprintf("%s (slope=%.2f)", params, slope_bias)
+  legend("bottomleft", legend = leg_labels, col = cols, pch = 16, lty = 1,
+         cex = 0.55, bty = "n", ncol = 2)
 
   y_range2 <- log(range(consistency_tbl$rmse[consistency_tbl$rmse > 0], na.rm = TRUE))
   plot(NA, xlim = x_range, ylim = y_range2,
@@ -637,10 +652,15 @@ plot_consistency <- function(consistency_tbl, outfile) {
     points(log(d$N), log(d$rmse), col = cols[i], pch = 16)
     if (nrow(d) >= 2) lines(log(d$N), log(d$rmse), col = cols[i])
   }
-  abline(lm(y ~ x, data = data.frame(
-    x = log(consistency_tbl$N),
-    y = log(pmax(consistency_tbl$rmse, 1e-12))
-  )), col = "grey40", lty = 2)
+  N_min <- min(consistency_tbl$N)
+  y_anchor <- mean(log(consistency_tbl$rmse[consistency_tbl$N == N_min &
+                                            consistency_tbl$rmse > 0]),
+                   na.rm = TRUE)
+  intercept <- y_anchor - (-0.5) * log(N_min)
+  abline(intercept, -0.5, col = "grey40", lty = 2)
+  leg_labels <- sprintf("%s (slope=%.2f)", params, slope_rmse)
+  legend("bottomleft", legend = leg_labels, col = cols, pch = 16, lty = 1,
+         cex = 0.55, bty = "n", ncol = 2)
   invisible(NULL)
 }
 
