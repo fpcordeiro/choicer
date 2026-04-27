@@ -433,12 +433,13 @@ print.choicer_mc_summary <- function(x, ...) {
 #' Jarque-Bera statistic, and a one-sample Kolmogorov-Smirnov test against
 #' `N(0, 1)`).
 #'
-#' Five logical pass / fail flags are attached to every parameter row:
+#' Six logical pass / fail flags are attached to every parameter row:
 #' `pass_bias` requires `|bias_mc_se| < 3`; `pass_se_ratio` requires
 #' `se_ratio` in `[0.9, 1.1]`; `pass_cov95` requires the nominal 95 percent
 #' level to lie in the Wilson band for empirical coverage; `pass_skew`
 #' requires `|skew_z| < 0.3`; `pass_kurt` requires excess kurtosis of `z`
-#' in `[-0.5, 1.0]`.
+#' in `[-0.5, 1.0]`; `pass_convergence` requires the per-parameter
+#' convergence rate (`R_used / R_total`) to meet `conv_threshold`.
 #'
 #' Non-converged replications are excluded per parameter (reported in
 #' `R_excluded`). Winsorized (5 percent / 95 percent) versions of `bias`,
@@ -458,6 +459,11 @@ print.choicer_mc_summary <- function(x, ...) {
 #'   normality tests, pass flags) against that flavor. Useful for the
 #'   information-matrix-equality check in Claim 4 of the MXL validation
 #'   suite.
+#' @param conv_threshold Numeric in `[0, 1]`. Minimum fraction of
+#'   replications that must converge for the per-parameter
+#'   `pass_convergence` flag to be `TRUE`. The flag compares
+#'   `R_used / R_total` (per parameter) against this threshold. Defaults
+#'   to `0.99`.
 #' @return An object of class `choicer_mc_asymptotics` — a `data.table`
 #'   with one row per unique parameter and columns documented above — with
 #'   `meta` attached as an attribute (`attr(x, "meta")`).
@@ -474,7 +480,8 @@ print.choicer_mc_summary <- function(x, ...) {
 #' mc_asymptotics(mc)
 #' }
 #' @export
-mc_asymptotics <- function(mc, level = 0.95, se_col = "se") {
+mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
+                           conv_threshold = 0.99) {
   if (!inherits(mc, "choicer_mc")) {
     stop("`mc` must be a `choicer_mc` object.")
   }
@@ -571,6 +578,9 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se") {
                               0.95 >= c95$lower && 0.95 <= c95$upper)
     pass_skew     <- isTRUE(is.finite(skew_z) && abs(skew_z) < 0.3)
     pass_kurt     <- isTRUE(is.finite(kurt_z) && kurt_z >= -0.5 && kurt_z <= 1.0)
+    conv_rate_p   <- if (R_total > 0) n / R_total else NA_real_
+    pass_convergence <- isTRUE(is.finite(conv_rate_p) &&
+                                 conv_rate_p >= conv_threshold)
 
     list(
       true         = tru,
@@ -606,7 +616,8 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se") {
       pass_se_ratio = pass_se_ratio,
       pass_cov95   = pass_cov95,
       pass_skew    = pass_skew,
-      pass_kurt    = pass_kurt
+      pass_kurt    = pass_kurt,
+      pass_convergence = pass_convergence
     )
   }, by = .(parameter, group)]
 
@@ -620,7 +631,8 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se") {
       "cov99", "cov99_lower", "cov99_upper",
       "mean_z", "sd_z", "skew_z", "kurt_excess_z",
       "shapiro_p", "ad_p", "jb_p", "ks_p",
-      "pass_bias", "pass_se_ratio", "pass_cov95", "pass_skew", "pass_kurt")
+      "pass_bias", "pass_se_ratio", "pass_cov95", "pass_skew", "pass_kurt",
+      "pass_convergence")
   )
 
   class(rows) <- c("choicer_mc_asymptotics", class(rows))
@@ -628,6 +640,7 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se") {
     R_total = R_total,
     level   = level,
     se_col  = se_col,
+    conv_threshold = conv_threshold,
     timestamp = Sys.time()
   )
   rows
@@ -640,7 +653,7 @@ print.choicer_mc_asymptotics <- function(x, ...) {
       " wilson_level=", meta$level, "\n", sep = "")
 
   pass_cols <- c("pass_bias", "pass_se_ratio", "pass_cov95",
-                 "pass_skew", "pass_kurt")
+                 "pass_skew", "pass_kurt", "pass_convergence")
   n_params <- nrow(x)
   for (col in pass_cols) {
     frac <- sum(as.logical(x[[col]]), na.rm = TRUE)

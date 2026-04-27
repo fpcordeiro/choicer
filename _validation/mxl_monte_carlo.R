@@ -208,7 +208,9 @@ run_scenario <- function(scn, tag = scn$id, base_seed = 20260423L,
     if (inherits(fit, "error")) {
       return(list(
         rep_id = r, seed = seed_r, error = conditionMessage(fit),
-        time_sec = elapsed, reps = NULL, lr = NULL, hess = NULL
+        error_class = class(fit)[1],
+        time_sec = elapsed, reps = NULL, lr = NULL, hess = NULL,
+        max_grad = NA_real_, boundary = NA
       ))
     }
 
@@ -234,11 +236,44 @@ run_scenario <- function(scn, tag = scn$id, base_seed = 20260423L,
       )
     }
 
+    # Diagnostics on the successful fit:
+    #   max_grad  = max abs element of fit$gradient if available, else NA.
+    #   boundary  = TRUE if any element of theta_hat is within 1e-4 of an
+    #               nloptr lower/upper bound; FALSE if no bounds were used;
+    #               NA if theta_hat itself is unavailable.
+    grad_vec <- fit$gradient
+    max_grad <- if (!is.null(grad_vec) && length(grad_vec)) {
+      suppressWarnings(max(abs(grad_vec), na.rm = TRUE))
+    } else NA_real_
+    if (!is.finite(max_grad)) max_grad <- NA_real_
+
+    theta_hat <- tryCatch(stats::coef(fit), error = function(e) NULL)
+    lower_b <- fit$optimizer$control$lower %||%
+      fit$optimizer$control$lb %||% NULL
+    upper_b <- fit$optimizer$control$upper %||%
+      fit$optimizer$control$ub %||% NULL
+    boundary <- if (is.null(theta_hat)) {
+      NA
+    } else if (is.null(lower_b) && is.null(upper_b)) {
+      FALSE
+    } else {
+      tol <- 1e-4
+      hit_lower <- if (!is.null(lower_b)) {
+        any(is.finite(lower_b) & abs(theta_hat - lower_b) < tol)
+      } else FALSE
+      hit_upper <- if (!is.null(upper_b)) {
+        any(is.finite(upper_b) & abs(theta_hat - upper_b) < tol)
+      } else FALSE
+      isTRUE(hit_lower) || isTRUE(hit_upper)
+    }
+
     list(
       rep_id = r, seed = seed_r, error = NA_character_,
+      error_class = NA_character_,
       time_sec = elapsed, loglik = as.numeric(stats::logLik(fit)),
       converged = choicer:::.is_converged(fit),
-      reps = reps, lr = lr_rec, hess = hess_rec
+      reps = reps, lr = lr_rec, hess = hess_rec,
+      max_grad = max_grad, boundary = boundary
     )
   }
 
@@ -300,11 +335,32 @@ run_scenario <- function(scn, tag = scn$id, base_seed = 20260423L,
   hess_tbl <- rbindlist(lapply(results, `[[`, "hess"),
                         use.names = TRUE, fill = TRUE)
 
+  # Per-rep failure summary: one row per replication that errored out
+  # inside fit_fun(). Empty data.table when all reps succeeded. Surfaced
+  # in aux_<id>.rds so attrition is debuggable instead of opaque.
+  failure_rows <- lapply(results, function(res) {
+    if (is.null(res$error) || is.na(res$error)) return(NULL)
+    data.table(
+      rep_id = res$rep_id,
+      seed = res$seed,
+      error = res$error,
+      error_class = res$error_class %||% NA_character_
+    )
+  })
+  failures_tbl <- rbindlist(failure_rows, use.names = TRUE, fill = TRUE)
+  if (!nrow(failures_tbl)) {
+    failures_tbl <- data.table(
+      rep_id = integer(0), seed = integer(0),
+      error = character(0), error_class = character(0)
+    )
+  }
+
   conv_rate <- mean(vapply(results, function(x) isTRUE(x$converged),
                            logical(1)))
 
   list(mc_raw = mc_raw, mc_natural = mc_natural,
-       lr = lr_tbl, hess = hess_tbl, conv_rate = conv_rate)
+       lr = lr_tbl, hess = hess_tbl, failures = failures_tbl,
+       conv_rate = conv_rate)
 }
 
 # ---------------------------------------------------------------------------
@@ -355,7 +411,7 @@ for (id in scenario_ids) {
   if (id == "A") {
     # N-grid; augment each arm with LR test + Hessian-agreement first rep.
     mc_list_raw <- list(); mc_list_nat <- list()
-    lr_list <- list(); hess_list <- list()
+    lr_list <- list(); hess_list <- list(); fail_list <- list()
     for (N in scn$N_grid) {
       r <- run_scenario(scn, tag = paste0("A_N", N), N_override = N,
                         with_lr = TRUE,
@@ -377,6 +433,10 @@ for (id in scenario_ids) {
         r$hess[, N := N]
         hess_list[[as.character(N)]] <- r$hess
       }
+      if (!is.null(r$failures) && nrow(r$failures)) {
+        r$failures[, N := N]
+        fail_list[[as.character(N)]] <- r$failures
+      }
     }
 
     # For the per-scenario asymptotics table we use the largest-N arm.
@@ -390,7 +450,8 @@ for (id in scenario_ids) {
     saveRDS(mc_list_nat, file.path(out_dir, sprintf("mc_%s_natural.rds", id)))
     lr_all <- rbindlist(lr_list, use.names = TRUE, fill = TRUE)
     hess_all <- rbindlist(hess_list, use.names = TRUE, fill = TRUE)
-    saveRDS(list(lr = lr_all, hess = hess_all),
+    failures_all <- rbindlist(fail_list, use.names = TRUE, fill = TRUE)
+    saveRDS(list(lr = lr_all, hess = hess_all, failures = failures_all),
             file.path(out_dir, sprintf("aux_%s.rds", id)))
     if (!is.null(asymp_raw))
       data.table::fwrite(asymp_raw, file.path(out_dir, sprintf("asymptotics_%s_raw.csv", id)))
@@ -480,7 +541,7 @@ for (id in scenario_ids) {
   } else if (id == "D") {
     # S-grid at fixed N for simulation-bias regression.
     mc_list_raw <- list(); mc_list_nat <- list()
-    hess_list <- list()
+    hess_list <- list(); fail_list <- list()
     for (S in scn$S_grid) {
       r <- run_scenario(scn, tag = paste0("D_S", S), S_override = S,
                         with_lr = FALSE, hessian_first_rep = TRUE)
@@ -496,6 +557,10 @@ for (id in scenario_ids) {
         r$hess[, S := S]
         hess_list[[as.character(S)]] <- r$hess
       }
+      if (!is.null(r$failures) && nrow(r$failures)) {
+        r$failures[, S := S]
+        fail_list[[as.character(S)]] <- r$failures
+      }
     }
     biggest <- as.character(max(scn$S_grid))
     asymp_raw <- if (!is.null(mc_list_raw[[biggest]])) mc_asymptotics(mc_list_raw[[biggest]]) else NULL
@@ -505,7 +570,9 @@ for (id in scenario_ids) {
     saveRDS(mc_list_raw, file.path(out_dir, sprintf("mc_%s_raw.rds", id)))
     saveRDS(mc_list_nat, file.path(out_dir, sprintf("mc_%s_natural.rds", id)))
     hess_all <- rbindlist(hess_list, use.names = TRUE, fill = TRUE)
-    saveRDS(list(hess = hess_all), file.path(out_dir, sprintf("aux_%s.rds", id)))
+    failures_all <- rbindlist(fail_list, use.names = TRUE, fill = TRUE)
+    saveRDS(list(hess = hess_all, failures = failures_all),
+            file.path(out_dir, sprintf("aux_%s.rds", id)))
     if (!is.null(asymp_raw))
       data.table::fwrite(asymp_raw, file.path(out_dir, sprintf("asymptotics_%s_raw.csv", id)))
     if (!is.null(asymp_nat))
@@ -569,9 +636,16 @@ for (id in scenario_ids) {
       saveRDS(r$mc_raw, file.path(out_dir, sprintf("mc_%s_raw.rds", id)))
     if (!is.null(r$mc_natural))
       saveRDS(r$mc_natural, file.path(out_dir, sprintf("mc_%s_natural.rds", id)))
-    if (!is.null(r$hess) && nrow(r$hess))
-      saveRDS(list(hess = r$hess),
-              file.path(out_dir, sprintf("aux_%s.rds", id)))
+    has_hess <- !is.null(r$hess) && nrow(r$hess)
+    has_fail <- !is.null(r$failures) && nrow(r$failures)
+    if (has_hess || has_fail) {
+      aux_payload <- list()
+      if (has_hess) aux_payload$hess <- r$hess
+      aux_payload$failures <- if (has_fail) r$failures else
+        data.table(rep_id = integer(0), seed = integer(0),
+                   error = character(0), error_class = character(0))
+      saveRDS(aux_payload, file.path(out_dir, sprintf("aux_%s.rds", id)))
+    }
     if (!is.null(asymp_raw))
       data.table::fwrite(asymp_raw,
                          file.path(out_dir, sprintf("asymptotics_%s_raw.csv", id)))

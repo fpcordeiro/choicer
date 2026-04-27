@@ -4,7 +4,7 @@
 \alias{mc_asymptotics}
 \title{Asymptotic diagnostics for a Monte Carlo study}
 \usage{
-mc_asymptotics(mc, level = 0.95, se_col = "se")
+mc_asymptotics(mc, level = 0.95, se_col = "se", conv_threshold = 0.99)
 }
 \arguments{
 \item{mc}{A \code{choicer_mc} object returned by \code{\link[=monte_carlo]{monte_carlo()}}.}
@@ -21,6 +21,12 @@ can pass that column name to recompute every SE-dependent diagnostic
 normality tests, pass flags) against that flavor. Useful for the
 information-matrix-equality check in Claim 4 of the MXL validation
 suite.}
+
+\item{conv_threshold}{Numeric in \verb{[0, 1]}. Minimum fraction of
+replications that must converge for the per-parameter
+\code{pass_convergence} flag to be \code{TRUE}. The flag compares
+\code{R_used / R_total} (per parameter) against this threshold. Defaults
+to \code{0.99}.}
 }
 \value{
 An object of class \code{choicer_mc_asymptotics} — a \code{data.table}
@@ -39,12 +45,13 @@ Jarque-Bera statistic, and a one-sample Kolmogorov-Smirnov test against
 \code{N(0, 1)}).
 }
 \details{
-Five logical pass / fail flags are attached to every parameter row:
+Six logical pass / fail flags are attached to every parameter row:
 \code{pass_bias} requires \verb{|bias_mc_se| < 3}; \code{pass_se_ratio} requires
 \code{se_ratio} in \verb{[0.9, 1.1]}; \code{pass_cov95} requires the nominal 95 percent
 level to lie in the Wilson band for empirical coverage; \code{pass_skew}
 requires \verb{|skew_z| < 0.3}; \code{pass_kurt} requires excess kurtosis of \code{z}
-in \verb{[-0.5, 1.0]}.
+in \verb{[-0.5, 1.0]}; \code{pass_convergence} requires the per-parameter
+convergence rate (\code{R_used / R_total}) to meet \code{conv_threshold}.
 
 Non-converged replications are excluded per parameter (reported in
 \code{R_excluded}). Winsorized (5 percent / 95 percent) versions of \code{bias},
