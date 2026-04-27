@@ -445,7 +445,14 @@ print.choicer_mc_summary <- function(x, ...) {
 #' `R_excluded`). Winsorized (5 percent / 95 percent) versions of `bias`,
 #' `sd_emp`, and `mean_se` are reported in parallel columns
 #' (`bias_w`, `sd_emp_w`, `mean_se_w`) so silent outlier exclusion is
-#' transparent to the reader.
+#' transparent to the reader. Two robust SE-to-SD ratios accompany the
+#' Hessian-mean-based `se_ratio`: `se_ratio_med` (median SE divided by
+#' the empirical SD) and `se_ratio_w` (winsorized mean SE divided by the
+#' winsorized empirical SD); both stay near `1` when 1-2 replications
+#' produce near-singular Hessians that inflate `mean_se`. The companion
+#' `se_med` column reports the median per-replication SE used by
+#' `se_ratio_med`. Neither robust ratio drives a `pass_*` flag — they
+#' are purely informational.
 #'
 #' @param mc A `choicer_mc` object returned by [monte_carlo()].
 #' @param level Confidence level for the Wilson bands on coverage rates.
@@ -521,6 +528,8 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     bias_v   <- mean_est - tru
     bias_mc_se <- bias_v / (sd_emp / sqrt(n))
     se_ratio <- if (is.finite(sd_emp) && sd_emp > 0) mean_se / sd_emp else NA_real_
+    se_med   <- stats::median(se_i, na.rm = TRUE)
+    se_ratio_med <- if (is.finite(sd_emp) && sd_emp > 0) se_med / sd_emp else NA_real_
 
     # Winsorized diagnostics
     est_w <- .winsorize(est)
@@ -528,6 +537,7 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     sd_emp_w <- stats::sd(est_w, na.rm = TRUE)
     bias_w   <- mean(est_w, na.rm = TRUE) - tru
     mean_se_w <- mean(se_w_vec, na.rm = TRUE)
+    se_ratio_w <- if (is.finite(sd_emp_w) && sd_emp_w > 0) mean_se_w / sd_emp_w else NA_real_
 
     # z vs truth
     z <- (est - tru) / se_i
@@ -592,9 +602,12 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
       bias         = bias_v,
       bias_mc_se   = bias_mc_se,
       se_ratio     = se_ratio,
+      se_med       = se_med,
+      se_ratio_med = se_ratio_med,
       bias_w       = bias_w,
       sd_emp_w     = sd_emp_w,
       mean_se_w    = mean_se_w,
+      se_ratio_w   = se_ratio_w,
       cov90        = c90$rate,
       cov90_lower  = c90$lower,
       cov90_upper  = c90$upper,
@@ -625,7 +638,8 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     rows,
     c("parameter", "group", "true", "R_used", "R_excluded",
       "mean_est", "sd_emp", "mean_se", "bias", "bias_mc_se", "se_ratio",
-      "bias_w", "sd_emp_w", "mean_se_w",
+      "se_med", "se_ratio_med",
+      "bias_w", "sd_emp_w", "mean_se_w", "se_ratio_w",
       "cov90", "cov90_lower", "cov90_upper",
       "cov95", "cov95_lower", "cov95_upper",
       "cov99", "cov99_lower", "cov99_upper",

@@ -453,10 +453,31 @@ for (id in scenario_ids) {
     failures_all <- rbindlist(fail_list, use.names = TRUE, fill = TRUE)
     saveRDS(list(lr = lr_all, hess = hess_all, failures = failures_all),
             file.path(out_dir, sprintf("aux_%s.rds", id)))
-    if (!is.null(asymp_raw))
+    if (!is.null(asymp_raw)) {
+      bhhh_col <- if (!is.null(asymp_raw_bhhh) && nrow(asymp_raw_bhhh)) {
+        asymp_raw_bhhh$se_ratio[match(asymp_raw$parameter, asymp_raw_bhhh$parameter)]
+      } else {
+        rep(NA_real_, nrow(asymp_raw))
+      }
+      data.table::setalloccol(asymp_raw)
+      data.table::set(asymp_raw, j = "se_ratio_bhhh", value = bhhh_col)
       data.table::fwrite(asymp_raw, file.path(out_dir, sprintf("asymptotics_%s_raw.csv", id)))
+    }
     if (!is.null(asymp_nat))
       data.table::fwrite(asymp_nat, file.path(out_dir, sprintf("asymptotics_%s_natural.csv", id)))
+    # Surface per-scenario Hessian-agreement diagnostics as CSV (mirrors
+    # aux_<id>.rds$hess for grep-ability alongside the asymptotics tables).
+    if (nrow(hess_all)) {
+      hess_csv <- data.table::data.table(
+        scenario = id,
+        N = hess_all$N,
+        max_rel_err = hess_all$max_rel_err,
+        note = hess_all$note,
+        rep_id = hess_all$rep_id
+      )
+      data.table::fwrite(hess_csv,
+                         file.path(out_dir, sprintf("hessian_agreement_%s.csv", id)))
+    }
 
     # QQ plot on the largest-N arm.
     if (!is.null(mc_list_raw[[biggest]])) {
@@ -573,10 +594,29 @@ for (id in scenario_ids) {
     failures_all <- rbindlist(fail_list, use.names = TRUE, fill = TRUE)
     saveRDS(list(hess = hess_all, failures = failures_all),
             file.path(out_dir, sprintf("aux_%s.rds", id)))
-    if (!is.null(asymp_raw))
+    if (!is.null(asymp_raw)) {
+      bhhh_col <- if (!is.null(asymp_raw_bhhh) && nrow(asymp_raw_bhhh)) {
+        asymp_raw_bhhh$se_ratio[match(asymp_raw$parameter, asymp_raw_bhhh$parameter)]
+      } else {
+        rep(NA_real_, nrow(asymp_raw))
+      }
+      data.table::setalloccol(asymp_raw)
+      data.table::set(asymp_raw, j = "se_ratio_bhhh", value = bhhh_col)
       data.table::fwrite(asymp_raw, file.path(out_dir, sprintf("asymptotics_%s_raw.csv", id)))
+    }
     if (!is.null(asymp_nat))
       data.table::fwrite(asymp_nat, file.path(out_dir, sprintf("asymptotics_%s_natural.csv", id)))
+    if (nrow(hess_all)) {
+      hess_csv <- data.table::data.table(
+        scenario = id,
+        S = hess_all$S,
+        max_rel_err = hess_all$max_rel_err,
+        note = hess_all$note,
+        rep_id = hess_all$rep_id
+      )
+      data.table::fwrite(hess_csv,
+                         file.path(out_dir, sprintf("hessian_agreement_%s.csv", id)))
+    }
 
     if (!is.null(mc_list_raw[[biggest]])) {
       plot_qq(mc_list_raw[[biggest]]$replications,
@@ -646,12 +686,30 @@ for (id in scenario_ids) {
                    error = character(0), error_class = character(0))
       saveRDS(aux_payload, file.path(out_dir, sprintf("aux_%s.rds", id)))
     }
-    if (!is.null(asymp_raw))
+    if (!is.null(asymp_raw)) {
+      bhhh_col <- if (!is.null(asymp_raw_bhhh) && nrow(asymp_raw_bhhh)) {
+        asymp_raw_bhhh$se_ratio[match(asymp_raw$parameter, asymp_raw_bhhh$parameter)]
+      } else {
+        rep(NA_real_, nrow(asymp_raw))
+      }
+      data.table::setalloccol(asymp_raw)
+      data.table::set(asymp_raw, j = "se_ratio_bhhh", value = bhhh_col)
       data.table::fwrite(asymp_raw,
                          file.path(out_dir, sprintf("asymptotics_%s_raw.csv", id)))
+    }
     if (!is.null(asymp_nat))
       data.table::fwrite(asymp_nat,
                          file.path(out_dir, sprintf("asymptotics_%s_natural.csv", id)))
+    if (!is.null(r$hess) && nrow(r$hess)) {
+      hess_csv <- data.table::data.table(
+        scenario = id,
+        max_rel_err = r$hess$max_rel_err,
+        note = r$hess$note,
+        rep_id = r$hess$rep_id
+      )
+      data.table::fwrite(hess_csv,
+                         file.path(out_dir, sprintf("hessian_agreement_%s.csv", id)))
+    }
 
     if (!is.null(r$mc_raw)) {
       plot_qq(r$mc_raw$replications,

@@ -107,6 +107,12 @@ Under `_validation/output/<RUN_TAG>/`:
   Hessian-agreement records for all scenarios).
 - `asymptotics_<scenario>_raw.csv`, `asymptotics_<scenario>_natural.csv`:
   `mc_asymptotics()` output.
+- `asymptotics_<scenario>_raw.csv` now includes a `se_ratio_bhhh` column
+  (the BHHH-based SE ratio per parameter; NA when BHHH failed to converge for
+  that parameter).
+- `hessian_agreement_<scenario>.csv`: per-scenario record of the analytical-
+  vs-numerical Hessian max relative error (one row per replication that ran
+  the agreement check, currently the first rep per N/S arm).
 - `plot_qq_<scenario>.png`: QQ of studentized z vs N(0, 1), faceted by
   parameter.
 - `plot_consistency.png`: log |bias| and log RMSE vs log N (Scenario A).

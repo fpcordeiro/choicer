@@ -57,7 +57,14 @@ Non-converged replications are excluded per parameter (reported in
 \code{R_excluded}). Winsorized (5 percent / 95 percent) versions of \code{bias},
 \code{sd_emp}, and \code{mean_se} are reported in parallel columns
 (\code{bias_w}, \code{sd_emp_w}, \code{mean_se_w}) so silent outlier exclusion is
-transparent to the reader.
+transparent to the reader. Two robust SE-to-SD ratios accompany the
+Hessian-mean-based \code{se_ratio}: \code{se_ratio_med} (median SE divided by
+the empirical SD) and \code{se_ratio_w} (winsorized mean SE divided by the
+winsorized empirical SD); both stay near \code{1} when 1-2 replications
+produce near-singular Hessians that inflate \code{mean_se}. The companion
+\code{se_med} column reports the median per-replication SE used by
+\code{se_ratio_med}. Neither robust ratio drives a \verb{pass_*} flag — they
+are purely informational.
 }
 \examples{
 \donttest{
