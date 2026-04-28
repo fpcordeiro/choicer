@@ -435,11 +435,14 @@ print.choicer_mc_summary <- function(x, ...) {
 #'
 #' Six logical pass / fail flags are attached to every parameter row:
 #' `pass_bias` requires `|bias_mc_se| < 3`; `pass_se_ratio` requires
-#' `se_ratio` in `[0.9, 1.1]`; `pass_cov95` requires the nominal 95 percent
-#' level to lie in the Wilson band for empirical coverage; `pass_skew`
-#' requires `|skew_z| < 0.3`; `pass_kurt` requires excess kurtosis of `z`
-#' in `[-0.5, 1.0]`; `pass_convergence` requires the per-parameter
-#' convergence rate (`R_used / R_total`) to meet `conv_threshold`.
+#' `|se_ratio - 1|` to lie within `max(se_ratio_threshold_floor,
+#' 3 * 1.4 / sqrt(R_used))` (a noise-aware band that widens at small
+#' `R_used` and tightens to the floor at large `R_used`); `pass_cov95`
+#' requires the nominal 95 percent level to lie in the Wilson band for
+#' empirical coverage; `pass_skew` requires `|skew_z| < 0.3`; `pass_kurt`
+#' requires excess kurtosis of `z` in `[-0.5, 1.0]`; `pass_convergence`
+#' requires the per-parameter convergence rate (`R_used / R_total`) to
+#' meet `conv_threshold`.
 #'
 #' Non-converged replications are excluded per parameter (reported in
 #' `R_excluded`). Winsorized (5 percent / 95 percent) versions of `bias`,
@@ -453,6 +456,17 @@ print.choicer_mc_summary <- function(x, ...) {
 #' `se_med` column reports the median per-replication SE used by
 #' `se_ratio_med`. Neither robust ratio drives a `pass_*` flag — they
 #' are purely informational.
+#'
+#' Winsorized z-moment counterparts (`mean_z_w`, `sd_z_w`, `skew_z_w`,
+#' `kurt_excess_z_w`) are reported alongside the raw z-moments and feed an
+#' additional `pass_z_w` flag (Winsorized skew within the same band as
+#' `pass_skew` AND Winsorized excess kurtosis within the same band as
+#' `pass_kurt`). A companion `pass_cov95_w` flag is `TRUE` when either
+#' `pass_cov95` is `TRUE` OR the per-rep Winsorized z-CI (the empirical
+#' 2.5 / 97.5 percentiles of the Winsorized z) covers truth-zero. These
+#' two flags are designed for boundary scenarios (e.g., near-zero variance
+#' components) where a small number of reps with vanishing SE inflate the
+#' raw z-moments without indicating an estimator defect.
 #'
 #' @param mc A `choicer_mc` object returned by [monte_carlo()].
 #' @param level Confidence level for the Wilson bands on coverage rates.
@@ -471,6 +485,12 @@ print.choicer_mc_summary <- function(x, ...) {
 #'   `pass_convergence` flag to be `TRUE`. The flag compares
 #'   `R_used / R_total` (per parameter) against this threshold. Defaults
 #'   to `0.99`.
+#' @param se_ratio_threshold_floor Numeric scalar. Minimum half-width for
+#'   the `pass_se_ratio` band. The actual band used is
+#'   `max(se_ratio_threshold_floor, 3 * 1.4 / sqrt(R_used))`, where the
+#'   `1.4 / sqrt(R)` term approximates the large-sample SD of
+#'   `mean_se / sd_emp`. The floor guarantees the band is never tighter
+#'   than the historical hard cutoff. Defaults to `0.10`.
 #' @return An object of class `choicer_mc_asymptotics` — a `data.table`
 #'   with one row per unique parameter and columns documented above — with
 #'   `meta` attached as an attribute (`attr(x, "meta")`).
@@ -488,7 +508,8 @@ print.choicer_mc_summary <- function(x, ...) {
 #' }
 #' @export
 mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
-                           conv_threshold = 0.99) {
+                           conv_threshold = 0.99,
+                           se_ratio_threshold_floor = 0.10) {
   if (!inherits(mc, "choicer_mc")) {
     stop("`mc` must be a `choicer_mc` object.")
   }
@@ -549,6 +570,16 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     skew_z <- .sample_skew(z)
     kurt_z <- .sample_excess_kurt(z)
 
+    # Winsorized z-moments: same Winsorization convention as the SE-ratio
+    # block above (.winsorize() default 5 / 95 cut). Used by pass_z_w and
+    # pass_cov95_w to insulate boundary scenarios where a small set of reps
+    # with vanishing SE blow up the raw z's tails.
+    z_w <- .winsorize(z)
+    mean_z_w <- if (length(z_w)) mean(z_w, na.rm = TRUE) else NA_real_
+    sd_z_w   <- if (length(z_w) > 1) stats::sd(z_w, na.rm = TRUE) else NA_real_
+    skew_z_w <- .sample_skew(z_w)
+    kurt_z_w <- .sample_excess_kurt(z_w)
+
     # Coverage at 90 / 95 / 99. We recompute from z against the relevant
     # quantile rather than trusting `covers` (which reflects the level used
     # at recovery_table construction time).
@@ -583,7 +614,13 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
 
     # Pass / fail flags
     pass_bias     <- isTRUE(is.finite(bias_mc_se) && abs(bias_mc_se) < 3)
-    pass_se_ratio <- isTRUE(is.finite(se_ratio) && se_ratio >= 0.9 && se_ratio <= 1.1)
+    # Noise-aware se_ratio band: widens at small R, tightens to the
+    # configured floor at large R. The 1.4 / sqrt(R) term approximates the
+    # large-sample SD of mean_se / sd_emp; the floor never lets the band be
+    # tighter than the historical hard ±0.10 cutoff.
+    se_ratio_band <- max(se_ratio_threshold_floor, 3 * 1.4 / sqrt(n))
+    pass_se_ratio <- isTRUE(is.finite(se_ratio) &&
+                              abs(se_ratio - 1) <= se_ratio_band)
     pass_cov95    <- isTRUE(is.finite(c95$lower) && is.finite(c95$upper) &&
                               0.95 >= c95$lower && 0.95 <= c95$upper)
     pass_skew     <- isTRUE(is.finite(skew_z) && abs(skew_z) < 0.3)
@@ -591,6 +628,21 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     conv_rate_p   <- if (R_total > 0) n / R_total else NA_real_
     pass_convergence <- isTRUE(is.finite(conv_rate_p) &&
                                  conv_rate_p >= conv_threshold)
+
+    # Winsorized counterparts: pass_z_w mirrors pass_skew + pass_kurt on the
+    # Winsorized z. pass_cov95_w is the union of pass_cov95 and a parameter-
+    # level Winsorized-z-CI check (does the empirical 2.5 / 97.5 quantile
+    # range of the Winsorized z's contain zero?).
+    pass_z_w <- isTRUE(is.finite(skew_z_w) && abs(skew_z_w) < 0.3 &&
+                         is.finite(kurt_z_w) &&
+                         kurt_z_w >= -0.5 && kurt_z_w <= 1.0)
+    z_w_ci <- if (length(z_w) >= 2) {
+      stats::quantile(z_w, probs = c(0.025, 0.975),
+                      names = FALSE, na.rm = TRUE)
+    } else c(NA_real_, NA_real_)
+    pass_cov95_w <- isTRUE(pass_cov95) ||
+      isTRUE(is.finite(z_w_ci[1]) && is.finite(z_w_ci[2]) &&
+               z_w_ci[1] <= 0 && 0 <= z_w_ci[2])
 
     list(
       true         = tru,
@@ -621,6 +673,10 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
       sd_z         = sd_z,
       skew_z       = skew_z,
       kurt_excess_z = kurt_z,
+      mean_z_w     = mean_z_w,
+      sd_z_w       = sd_z_w,
+      skew_z_w     = skew_z_w,
+      kurt_excess_z_w = kurt_z_w,
       shapiro_p    = shapiro_p,
       ad_p         = ad_p,
       jb_p         = jb_p,
@@ -630,7 +686,9 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
       pass_cov95   = pass_cov95,
       pass_skew    = pass_skew,
       pass_kurt    = pass_kurt,
-      pass_convergence = pass_convergence
+      pass_convergence = pass_convergence,
+      pass_z_w     = pass_z_w,
+      pass_cov95_w = pass_cov95_w
     )
   }, by = .(parameter, group)]
 
@@ -646,7 +704,12 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
       "mean_z", "sd_z", "skew_z", "kurt_excess_z",
       "shapiro_p", "ad_p", "jb_p", "ks_p",
       "pass_bias", "pass_se_ratio", "pass_cov95", "pass_skew", "pass_kurt",
-      "pass_convergence")
+      "pass_convergence",
+      # Appended (do not reorder): added with the natural-scale boundary z
+      # robustness improvement so the CSV header stays backward-compatible
+      # with downstream readers that key off existing column positions.
+      "mean_z_w", "sd_z_w", "skew_z_w", "kurt_excess_z_w",
+      "pass_z_w", "pass_cov95_w")
   )
 
   class(rows) <- c("choicer_mc_asymptotics", class(rows))
@@ -655,6 +718,7 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     level   = level,
     se_col  = se_col,
     conv_threshold = conv_threshold,
+    se_ratio_threshold_floor = se_ratio_threshold_floor,
     timestamp = Sys.time()
   )
   rows

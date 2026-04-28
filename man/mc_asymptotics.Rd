@@ -4,7 +4,13 @@
 \alias{mc_asymptotics}
 \title{Asymptotic diagnostics for a Monte Carlo study}
 \usage{
-mc_asymptotics(mc, level = 0.95, se_col = "se", conv_threshold = 0.99)
+mc_asymptotics(
+  mc,
+  level = 0.95,
+  se_col = "se",
+  conv_threshold = 0.99,
+  se_ratio_threshold_floor = 0.1
+)
 }
 \arguments{
 \item{mc}{A \code{choicer_mc} object returned by \code{\link[=monte_carlo]{monte_carlo()}}.}
@@ -27,6 +33,13 @@ replications that must converge for the per-parameter
 \code{pass_convergence} flag to be \code{TRUE}. The flag compares
 \code{R_used / R_total} (per parameter) against this threshold. Defaults
 to \code{0.99}.}
+
+\item{se_ratio_threshold_floor}{Numeric scalar. Minimum half-width for
+the \code{pass_se_ratio} band. The actual band used is
+\code{max(se_ratio_threshold_floor, 3 * 1.4 / sqrt(R_used))}, where the
+\code{1.4 / sqrt(R)} term approximates the large-sample SD of
+\code{mean_se / sd_emp}. The floor guarantees the band is never tighter
+than the historical hard cutoff. Defaults to \code{0.10}.}
 }
 \value{
 An object of class \code{choicer_mc_asymptotics} — a \code{data.table}
@@ -47,11 +60,13 @@ Jarque-Bera statistic, and a one-sample Kolmogorov-Smirnov test against
 \details{
 Six logical pass / fail flags are attached to every parameter row:
 \code{pass_bias} requires \verb{|bias_mc_se| < 3}; \code{pass_se_ratio} requires
-\code{se_ratio} in \verb{[0.9, 1.1]}; \code{pass_cov95} requires the nominal 95 percent
-level to lie in the Wilson band for empirical coverage; \code{pass_skew}
-requires \verb{|skew_z| < 0.3}; \code{pass_kurt} requires excess kurtosis of \code{z}
-in \verb{[-0.5, 1.0]}; \code{pass_convergence} requires the per-parameter
-convergence rate (\code{R_used / R_total}) to meet \code{conv_threshold}.
+\verb{|se_ratio - 1|} to lie within \code{max(se_ratio_threshold_floor, 3 * 1.4 / sqrt(R_used))} (a noise-aware band that widens at small
+\code{R_used} and tightens to the floor at large \code{R_used}); \code{pass_cov95}
+requires the nominal 95 percent level to lie in the Wilson band for
+empirical coverage; \code{pass_skew} requires \verb{|skew_z| < 0.3}; \code{pass_kurt}
+requires excess kurtosis of \code{z} in \verb{[-0.5, 1.0]}; \code{pass_convergence}
+requires the per-parameter convergence rate (\code{R_used / R_total}) to
+meet \code{conv_threshold}.
 
 Non-converged replications are excluded per parameter (reported in
 \code{R_excluded}). Winsorized (5 percent / 95 percent) versions of \code{bias},
@@ -65,6 +80,17 @@ produce near-singular Hessians that inflate \code{mean_se}. The companion
 \code{se_med} column reports the median per-replication SE used by
 \code{se_ratio_med}. Neither robust ratio drives a \verb{pass_*} flag — they
 are purely informational.
+
+Winsorized z-moment counterparts (\code{mean_z_w}, \code{sd_z_w}, \code{skew_z_w},
+\code{kurt_excess_z_w}) are reported alongside the raw z-moments and feed an
+additional \code{pass_z_w} flag (Winsorized skew within the same band as
+\code{pass_skew} AND Winsorized excess kurtosis within the same band as
+\code{pass_kurt}). A companion \code{pass_cov95_w} flag is \code{TRUE} when either
+\code{pass_cov95} is \code{TRUE} OR the per-rep Winsorized z-CI (the empirical
+2.5 / 97.5 percentiles of the Winsorized z) covers truth-zero. These
+two flags are designed for boundary scenarios (e.g., near-zero variance
+components) where a small number of reps with vanishing SE inflate the
+raw z-moments without indicating an estimator defect.
 }
 \examples{
 \donttest{
