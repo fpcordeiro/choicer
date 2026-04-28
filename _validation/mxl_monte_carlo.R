@@ -149,6 +149,27 @@ if (!is.null(scenario_filter)) {
                                          conditionMessage(e)); NULL })
 }
 
+# Summarize an LR statistic table against chi-squared(df). Used by both the
+# Scenario A driver (which collects LR statistics across an N-grid) and the
+# Scenario G1 driver (single (N, S) arm, restriction on Mu_w1). Returns the
+# Kolmogorov-Smirnov p-value, the empirical size of a nominal-5pct test,
+# and a Wilson CI on that size. Robust to all-NA / empty input.
+.summarize_lr <- function(lr_all, df = 1L) {
+  if (is.null(lr_all) || !nrow(lr_all)) {
+    return(list(ks_p = NA_real_, size = NA_real_,
+                lower = NA_real_, upper = NA_real_))
+  }
+  lr_clean <- lr_all$lr_stat[is.finite(lr_all$lr_stat) & lr_all$lr_stat >= 0]
+  ks_p <- if (length(lr_clean) >= 4) {
+    suppressWarnings(stats::ks.test(lr_clean, "pchisq", df = df)$p.value)
+  } else NA_real_
+  hits <- sum(lr_clean > stats::qchisq(0.95, df))
+  size <- if (length(lr_clean)) hits / length(lr_clean) else NA_real_
+  wilson <- choicer:::.wilson_ci(p = size, n = length(lr_clean), level = 0.95)
+  list(ks_p = ks_p, size = size,
+       lower = wilson$lower, upper = wilson$upper)
+}
+
 # Checkpointing: a scenario is "done" if its primary RDS output already
 # exists in out_dir. We use mc_<id>_raw.rds as the completion sentinel
 # because every scenario writes it last (after the per-rep loop completes).
@@ -367,7 +388,7 @@ run_scenario <- function(scn, tag = scn$id, base_seed = 20260423L,
 # Main loop
 # ---------------------------------------------------------------------------
 
-scenario_ids <- c("A", "B", "B2", "C", "D", "F")
+scenario_ids <- c("A", "B", "B2", "C", "D", "F", "G1")
 scenario_results <- list()
 
 for (id in scenario_ids) {
@@ -519,15 +540,10 @@ for (id in scenario_ids) {
                   df = 1L)
     }
 
-    lr_clean <- lr_all$lr_stat[is.finite(lr_all$lr_stat) & lr_all$lr_stat >= 0]
-    lr_ks_p <- if (length(lr_clean) >= 4) {
-      suppressWarnings(ks.test(lr_clean, "pchisq", df = 1)$p.value)
-    } else NA_real_
-    lr_hits <- sum(lr_clean > qchisq(0.95, 1))
-    lr_size <- if (length(lr_clean)) lr_hits / length(lr_clean) else NA_real_
-    lr_wilson <- choicer:::.wilson_ci(
-      p = lr_size, n = length(lr_clean), level = 0.95
-    )
+    lr_summary <- .summarize_lr(lr_all, df = 1L)
+    lr_ks_p <- lr_summary$ks_p
+    lr_size <- lr_summary$size
+    lr_wilson <- list(lower = lr_summary$lower, upper = lr_summary$upper)
 
     hess_err <- if (nrow(hess_all)) median(hess_all$max_rel_err, na.rm = TRUE) else NA_real_
 
@@ -665,8 +681,13 @@ for (id in scenario_ids) {
     )
 
   } else {
-    # Single-(N, S) scenarios.
-    r <- run_scenario(scn, tag = id, with_lr = FALSE,
+    # Single-(N, S) scenarios. G1 also runs an LR test against a single
+    # restriction on Mu_w1 (mirrors Scenario A's LR plumbing but with one
+    # arm); other scenarios in this branch do not.
+    g1_with_lr <- identical(id, "G1") && !is.null(scn$meta$lr_restriction)
+    r <- run_scenario(scn, tag = id,
+                      with_lr = g1_with_lr,
+                      lr_restriction = if (g1_with_lr) scn$meta$lr_restriction else NULL,
                       hessian_first_rep = TRUE)
     asymp_raw <- if (!is.null(r$mc_raw)) mc_asymptotics(r$mc_raw) else NULL
     asymp_nat <- if (!is.null(r$mc_natural)) mc_asymptotics(r$mc_natural) else NULL
@@ -678,9 +699,11 @@ for (id in scenario_ids) {
       saveRDS(r$mc_natural, file.path(out_dir, sprintf("mc_%s_natural.rds", id)))
     has_hess <- !is.null(r$hess) && nrow(r$hess)
     has_fail <- !is.null(r$failures) && nrow(r$failures)
-    if (has_hess || has_fail) {
+    has_lr <- g1_with_lr && !is.null(r$lr) && nrow(r$lr)
+    if (has_hess || has_fail || has_lr) {
       aux_payload <- list()
       if (has_hess) aux_payload$hess <- r$hess
+      if (has_lr)   aux_payload$lr   <- r$lr
       aux_payload$failures <- if (has_fail) r$failures else
         data.table(rep_id = integer(0), seed = integer(0),
                    error = character(0), error_class = character(0))
@@ -717,6 +740,21 @@ for (id in scenario_ids) {
               outfile = file.path(out_dir, sprintf("plot_qq_%s.png", id)))
     }
 
+    # G1: LR-CDF plot + KS / size summary, mirroring the Scenario A path.
+    lr_extras <- list()
+    if (has_lr) {
+      plot_lr_cdf(r$lr$lr_stat,
+                  outfile = file.path(out_dir, sprintf("plot_lr_cdf_%s.png", id)),
+                  df = 1L)
+      lr_summary <- .summarize_lr(r$lr, df = 1L)
+      lr_extras <- list(
+        lr_ks_p       = lr_summary$ks_p,
+        lr_size       = lr_summary$size,
+        lr_size_lower = lr_summary$lower,
+        lr_size_upper = lr_summary$upper
+      )
+    }
+
     hess_err <- if (!is.null(r$hess) && nrow(r$hess)) {
       median(r$hess$max_rel_err, na.rm = TRUE)
     } else NA_real_
@@ -726,7 +764,8 @@ for (id in scenario_ids) {
       asymptotics_raw_bhhh = asymp_raw_bhhh,
       asymptotics_natural = asymp_nat,
       meta = list(purpose = scn$purpose),
-      extras = list(hessian_err = hess_err, conv_rate = r$conv_rate)
+      extras = c(list(hessian_err = hess_err, conv_rate = r$conv_rate),
+                 lr_extras)
     )
   }
 

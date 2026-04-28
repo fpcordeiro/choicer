@@ -129,8 +129,8 @@ scenario_spec <- function(id, quick = FALSE) {
     }
   }
 
-  mk_sim_fun <- function(N, Sigma, mu = NULL, rc_dist) {
-    force(N); force(Sigma); force(mu); force(rc_dist)
+  mk_sim_fun <- function(N, Sigma, mu = NULL, rc_dist, price_cols = NULL) {
+    force(N); force(Sigma); force(mu); force(rc_dist); force(price_cols)
     function(seed) {
       K_w <- ncol(Sigma)
       simulate_mxl_data(
@@ -138,6 +138,7 @@ scenario_spec <- function(id, quick = FALSE) {
         beta = beta_true,
         Sigma = Sigma,
         mu = mu, rc_dist = rc_dist,
+        price_cols = price_cols,
         seed = seed,
         outside_option = TRUE,
         vary_choice_set = TRUE
@@ -259,6 +260,29 @@ scenario_spec <- function(id, quick = FALSE) {
                     beta = beta_true)
       )
     },
+    G1 = {
+      N <- 20000L
+      R <- if (quick) 50L else 5000L
+      mu_true <- c(-0.2, 0.4)
+      .assert_chol_roundtrip(.sigma_correlated_2, 2L, label = "G1")
+      list(
+        id = "G1",
+        purpose = "Correlated Sigma + log-normal price (sign-restricted)",
+        N = N, R = R,
+        sim_fun = mk_sim_fun(N, .sigma_correlated_2,
+                             mu = mu_true, rc_dist = c(1L, 0L),
+                             price_cols = "w1"),
+        fit_fun = mk_mxl_fit_fun(
+          K_w = 2L, rc_dist = c(1L, 0L),
+          rc_correlation = TRUE, rc_mean = TRUE,
+          random_var_cols = c("w1", "w2")
+        ),
+        meta = list(K_w = 2L, rc_dist = c(1L, 0L), rc_correlation = TRUE,
+                    rc_mean = TRUE, Sigma = .sigma_correlated_2,
+                    mu = mu_true, beta = beta_true,
+                    lr_restriction = list(idx_name = "Mu_w1", value = -0.2))
+      )
+    },
     stop("Unknown scenario id: '", id, "'")
   )
 }
@@ -301,8 +325,20 @@ scenario_spec <- function(id, quick = FALSE) {
 
 # ---- Restricted fit (LR test, Scenario A) ----------------------------------
 
-# Impose a single equality restriction beta[idx] = value via nloptr bounds
+# Impose a single equality restriction theta[idx] = value via nloptr bounds
 # (lower = upper = value). Returns fitted value + restricted loglik.
+#
+# `restriction` may be either:
+#   list(idx = <integer>, value = <numeric>)         positional
+#   list(idx_name = <character>, value = <numeric>)  by parameter name
+#
+# When `idx_name` is supplied, the position is resolved against the
+# parameter-name vector that `run_mxlogit()` would build for the same
+# specification (mirrors R/mxlogit_utils.R: beta -> mu -> sigma -> asc, in
+# that order, with names like "Mu_w1", "L_21", "ASC_3"). Reusing the
+# helper would have required exporting an internal naming function from
+# choicer; for the validation suite the lightweight reproduction below is
+# safer.
 restricted_fit <- function(sim, scenario, restriction) {
   K_w <- scenario$meta$K_w
   rc_dist <- scenario$meta$rc_dist
@@ -326,11 +362,65 @@ restricted_fit <- function(sim, scenario, restriction) {
   n_asc <- J - 1
   n_params <- K_x + mu_size + L_size + n_asc
 
+  # Resolve `restriction[["idx"]]` from `idx_name` when needed by mirroring
+  # the parameter-name layout from R/mxlogit_utils.R. Order is beta -> mu ->
+  # sigma -> asc with names taken from the prepared input matrices.
+  # Note: must use `[[ ]]` (not `$`) so partial-name matching does not
+  # silently bind `idx` to `idx_name`'s value when only `idx_name` is set.
+  idx <- restriction[["idx"]]
+  idx_name <- restriction[["idx_name"]]
+  if (is.null(idx) && !is.null(idx_name)) {
+    beta_names <- colnames(input$X)
+    mu_names <- if (rc_mean) paste0("Mu_", colnames(input$W)) else character(0)
+    if (rc_correlation) {
+      sigma_names <- character(L_size)
+      pos <- 1L
+      for (i in seq_len(K_w)) {
+        for (j in seq_len(i)) {
+          sigma_names[pos] <- sprintf("L_%d%d", i, j)
+          pos <- pos + 1L
+        }
+      }
+    } else {
+      sigma_names <- paste0("L_", seq_len(K_w), seq_len(K_w))
+    }
+    alt_col <- names(input$alt_mapping)[2]
+    asc_names <- paste0("ASC_", input$alt_mapping[2:J][[alt_col]])
+    param_names <- c(beta_names, mu_names, sigma_names, asc_names)
+    if (length(param_names) != n_params) {
+      stop(sprintf(
+        "restricted_fit(): internal name vector has %d entries but n_params = %d.",
+        length(param_names), n_params
+      ))
+    }
+    idx <- match(idx_name, param_names)
+    if (is.na(idx)) {
+      stop(sprintf(
+        "restricted_fit(): idx_name '%s' not found in parameter names: [%s]",
+        idx_name, paste(param_names, collapse = ", ")
+      ))
+    }
+  }
+  if (is.null(idx)) {
+    stop("restricted_fit(): restriction must specify either `idx` or `idx_name`.")
+  }
+  if (!is.numeric(idx) || length(idx) != 1L || idx < 1L || idx > n_params) {
+    stop(sprintf(
+      "restricted_fit(): resolved idx must be a single integer in [1, %d]; got '%s'.",
+      n_params, paste(idx, collapse = ", ")
+    ))
+  }
+  idx <- as.integer(idx)
+  value <- restriction[["value"]]
+  if (is.null(value) || !is.numeric(value) || length(value) != 1L) {
+    stop("restricted_fit(): restriction must specify a single numeric `value`.")
+  }
+
   theta_init <- rep(0, n_params)
-  theta_init[restriction$idx] <- restriction$value
+  theta_init[idx] <- value
   lower <- rep(-Inf, n_params); upper <- rep(Inf, n_params)
-  lower[restriction$idx] <- restriction$value
-  upper[restriction$idx] <- restriction$value
+  lower[idx] <- value
+  upper[idx] <- value
 
   eval_f <- function(theta) {
     mxl_loglik_gradient_parallel(

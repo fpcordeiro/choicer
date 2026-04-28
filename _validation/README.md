@@ -35,6 +35,7 @@ Seven claims operationalized as pass / fail checks on every scenario:
 | C  | log-normal RC with mu | 5000 | 100 | 2 | log-n, normal | FALSE | TRUE | 1000 |
 | D  | simulation bias O(1/S) | 5000 | 25 / 50 / 100 / 250 / 500 | 2 | normal, normal | FALSE | FALSE | 300 |
 | F  | weak identification | 5000 | 100 | 2 | normal, normal | FALSE | FALSE | 1000 |
+| G1 | correlated Sigma + log-normal price | 20000 | 250 | 2 | log-n, normal | TRUE | TRUE | 5000 |
 
 All scenarios use J = 8 inside alternatives, `outside_option = TRUE`,
 `vary_choice_set = TRUE`, `use_asc = TRUE`. See
@@ -64,6 +65,15 @@ The driver wires `future::plan(multisession, workers = floor(cores/2))` so
 parallel R-level replications combine with 2-thread OpenMP per fit without
 oversubscribing the machine. Set `OMP_NUM_THREADS=1` if you plan to use
 more parallel workers; set higher if your cores are hyper-threaded.
+
+Scenario G1 (N = 20000, R = 5000, S = 250, correlated K_w = 2 with a
+log-normal price RC) is by far the heaviest single scenario in the suite
+and benefits from running in a dedicated batch:
+
+```bash
+OMP_NUM_THREADS=2 SCENARIOS=G1 RUN_TAG=$(date +%Y%m%d-%H%M%S)-g1 \
+  Rscript _validation/mxl_monte_carlo.R
+```
 
 ### Run tagging and checkpointing
 
