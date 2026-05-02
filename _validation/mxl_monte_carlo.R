@@ -21,8 +21,15 @@
 #   recent run.
 #
 # Parallelism:
-#   OMP_NUM_THREADS=2 externally; future::plan(multisession) over floor(cores/2)
-#   workers to avoid oversubscription. Each run_mxlogit() uses OpenMP internally.
+#   OMP_NUM_THREADS controls C++ threads per fit; MC_WORKERS controls the
+#   future::plan(multisession) worker count (default floor(cores/2)).
+#   Set both in the shell, NOT via Sys.setenv() inside R -- libgomp caches
+#   OMP_NUM_THREADS at first .so load and ignores later changes.
+#
+#   On SMT-doubled boxes (e.g. Hetzner CCX33: 4 physical cores * 2 SMT
+#   threads = 8 logical CPUs), the default 4-worker x 2-OMP layout
+#   oversubscribes physical cores. Run sequentially instead:
+#       MC_WORKERS=1 OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=1
 #
 # Output artifacts (written under _validation/output/<RUN_TAG>/):
 #   mc_<scenario>.rds
@@ -64,7 +71,12 @@ QUICK <- isTRUE(tolower(args_env("QUICK", "false")) %in% c("true", "1", "t"))
 if (Sys.getenv("OMP_NUM_THREADS") == "") Sys.setenv(OMP_NUM_THREADS = "2")
 try(choicer:::set_num_threads(as.integer(Sys.getenv("OMP_NUM_THREADS"))),
     silent = TRUE)
-n_workers <- max(1L, floor(parallel::detectCores() / 2))
+mc_workers_env <- Sys.getenv("MC_WORKERS")
+n_workers <- if (nzchar(mc_workers_env)) {
+  max(1L, as.integer(mc_workers_env))
+} else {
+  max(1L, floor(parallel::detectCores() / 2))
+}
 
 PARALLEL <- requireNamespace("future.apply", quietly = TRUE) &&
   requireNamespace("future", quietly = TRUE)
