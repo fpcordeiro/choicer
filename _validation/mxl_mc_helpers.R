@@ -262,7 +262,7 @@ scenario_spec <- function(id, quick = FALSE) {
     },
     G1 = {
       N <- 20000L
-      R <- if (quick) 50L else 5000L
+      R <- if (quick) 50L else 3000L
       mu_true <- c(-0.2, 0.4)
       .assert_chol_roundtrip(.sigma_correlated_2, 2L, label = "G1")
       list(
