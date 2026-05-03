@@ -81,7 +81,14 @@ n_workers <- if (nzchar(mc_workers_env)) {
 PARALLEL <- requireNamespace("future.apply", quietly = TRUE) &&
   requireNamespace("future", quietly = TRUE)
 if (PARALLEL) {
-  future::plan(future::multisession, workers = n_workers)
+  # Use sequential plan when single-worker so per-rep messages from run_one()
+  # reach the main process in real time (multisession captures worker stdio
+  # until the future resolves, even with workers=1).
+  if (n_workers <= 1L) {
+    future::plan(future::sequential)
+  } else {
+    future::plan(future::multisession, workers = n_workers)
+  }
 } else {
   message("future.apply / future not available; running serially.")
 }
@@ -237,6 +244,10 @@ run_scenario <- function(scn, tag = scn$id, base_seed = 20260423L,
     fit <- tryCatch(fit_fun(sim), error = function(e) e)
     toc <- Sys.time()
     elapsed <- as.numeric(difftime(toc, tic, units = "secs"))
+    status <- if (inherits(fit, "error")) "ERR" else "ok"
+    message(sprintf("[%s] rep %d/%d %s t=%.1fs",
+                    tag, r, R, status, elapsed))
+    flush.console()
 
     if (inherits(fit, "error")) {
       return(list(
