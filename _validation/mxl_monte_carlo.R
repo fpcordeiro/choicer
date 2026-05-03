@@ -326,7 +326,13 @@ run_scenario <- function(scn, tag = scn$id, base_seed = 20260423L,
                   if (!is.null(N_override)) paste0(" N=", N_override) else "",
                   if (!is.null(S_override)) paste0(" S=", S_override) else ""))
 
-  if (PARALLEL) {
+  # future_lapply captures per-future stdout/stderr and only replays it once
+  # all elements resolve -- which means per-rep message() output would not
+  # appear until rep R/R completed. With a single worker we want live
+  # progress, so fall through to plain lapply(). run_one() is deterministic
+  # in r (sim_fun seeds explicitly from base_seed + r - 1), so we don't need
+  # future.seed for reproducibility on the sequential path.
+  if (PARALLEL && n_workers > 1L) {
     results <- future.apply::future_lapply(
       seq_len(R), run_one, future.seed = TRUE
     )
