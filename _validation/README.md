@@ -105,6 +105,108 @@ SCENARIOS=B,B2,F Rscript _validation/mxl_monte_carlo.R
 symlink support, a `LATEST` pointer file) to the most recent run so
 ad-hoc tooling can find outputs without knowing the tag.
 
+### Live per-rep progress and parallelism
+
+The driver emits a `[<id>] rep <r>/<R> <ok|ERR> t=<sec>s` line on stderr
+at the end of each replication (see `run_one()` in
+`_validation/mxl_monte_carlo.R`). Whether those lines stream live or
+arrive in a single burst at the end depends on the iteration backend:
+
+- `MC_WORKERS=1` (sequential): the driver bypasses
+  `future.apply::future_lapply` and uses plain `lapply()`. Messages
+  stream live. This is the path used by `_validation/run_g1.sh`. When
+  the wrapper pipes through `tee`, prefix `Rscript` with
+  `stdbuf -oL -eL` to defeat libc block-buffering on the pipe (already
+  done in `run_g1.sh`).
+- `MC_WORKERS>1` (multisession): the driver uses `future_lapply`, which
+  captures every per-future stdout/stderr via `sink()`-style redirection
+  and **only replays it once all elements have resolved**. `message()`
+  emitted from inside workers therefore will NOT appear live -- a
+  multi-hour run would print nothing until completion. The escape
+  hatches `future.stdout = FALSE` and `future.conditions = "message"`
+  either drop output or relay only on assembly, so they do not solve the
+  live-progress problem.
+
+To get live progress under multiple workers, wire the loop with
+`progressr`. It signals a custom `progression` condition that `future`
+relays immediately, bypassing the buffer-and-replay path:
+
+```r
+# Top of script, alongside future::plan():
+if (PARALLEL && requireNamespace("progressr", quietly = TRUE)) {
+  progressr::handlers(global = TRUE)
+  progressr::handlers("cli")  # or "progress" / "txtprogressbar"
+}
+
+# Inside run_scenario(), replacing the future_lapply branch:
+if (PARALLEL && n_workers > 1L) {
+  results <- progressr::with_progress({
+    p <- progressr::progressor(steps = R)
+    future.apply::future_lapply(
+      seq_len(R),
+      function(r) {
+        res <- run_one(r)
+        p(sprintf("[%s] rep %d/%d %s t=%.1fs",
+                  tag, r, R,
+                  if (is.na(res$error)) "ok" else "ERR",
+                  res$time_sec))
+        res
+      },
+      future.seed = TRUE
+    )
+  })
+} else {
+  results <- lapply(seq_len(R), run_one)
+}
+```
+
+Caveats under multi-worker:
+
+- Update order is not guaranteed -- rep 5 may print before rep 3. Only
+  the running total from `progressor` is meaningful.
+- Add `progressr` to `Suggests:` in `DESCRIPTION` if you enable this
+  branch.
+- Do not mix raw `message()` from worker code with `progressr`; per-worker
+  `message()` is still buffered.
+
+### Planned: rep-level checkpointing
+
+Scenario-level resume (skip a scenario whose `mc_<id>_raw.rds` exists)
+protects against losing whole scenarios but not against losing a single
+long scenario in flight. A 12-22h G1 run that dies at rep 2999/3000
+currently discards every prior rep. Rep-level checkpointing closes that
+gap. Not yet implemented; sketch:
+
+1. Every `MC_CHECKPOINT_EVERY` reps (env var, default 100; 0 disables),
+   serialize the accumulated `results` list to
+   `_validation/output/<tag>/checkpoint_<id>_<NNNN>.rds`, where `<NNNN>`
+   is the rep count at write time. Atomic write via `saveRDS()` to a
+   `tempfile()` then `file.rename()` so a crash mid-write can't leave a
+   half-flushed file.
+2. On startup, `run_scenario()` globs `checkpoint_<id>_*.rds`, loads the
+   highest, and rewrites the iteration to skip already-completed `r`.
+   Merge loaded reps into `results` before continuing the loop.
+3. On clean completion, delete `checkpoint_<id>_*.rds`; the durable
+   artifact remains the final `mc_<id>_raw.rds`.
+
+This works without seed bookkeeping because `run_one(r)` is deterministic
+in `r`: the per-rep seed is `base_seed + r - 1L` and the fit uses Halton
+draws (no global RNG dependence). Resumed reps produce byte-identical
+output to a never-interrupted run.
+
+**Integration point:** the `lapply()` branch in
+`_validation/mxl_monte_carlo.R` -- replace with a `for` loop that
+checkpoints periodically. The `future_lapply` branch cannot checkpoint
+naturally (workers don't return until all reps complete); the cleanest
+multi-worker extension is to chunk `seq_len(R)` by
+`MC_CHECKPOINT_EVERY` and run one `future_lapply` per chunk, saving
+between chunks. Sequential is the easy win and covers the G1 use case.
+
+**Open question:** whether to also persist a per-rep timing log so an
+interrupted run's wall-clock estimate survives the restart. Probably
+worth it -- write `checkpoint_<id>_<NNNN>.times.rds` alongside each
+checkpoint.
+
 ## Output artifacts
 
 Under `_validation/output/<RUN_TAG>/`:
