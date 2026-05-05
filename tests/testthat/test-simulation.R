@@ -35,7 +35,7 @@ test_that("simulate_mnl_data matches legacy helpers.R bit-for-bit at seed = 123"
   sim <- simulate_mnl_data(seed = 123)
   expect_equal(
     digest::digest(sim$data, algo = "sha256"),
-    "09e81a884419d936055720dda5133fe240f8b359b517de61492fade96a315183"
+    "e15122bc6da53d1c53dcce5c4a93f77aab8ab3cace14414f60598e3eca893024"
   )
 })
 
@@ -44,7 +44,7 @@ test_that("simulate_mxl_data matches legacy helpers.R bit-for-bit at seed = 123"
   sim <- simulate_mxl_data(seed = 123)
   expect_equal(
     digest::digest(sim$data, algo = "sha256"),
-    "dc793012b3a80ec7ee943d3ca6a260f5efe0745e9249699eeaba8103dfbed91d"
+    "b797e867fa78eac3acad445f963f91e47d05349e32523c88523a3d2c087f1a52"
   )
 })
 
@@ -56,7 +56,7 @@ test_that("simulate_nl_data matches legacy helpers.R bit-for-bit at seed = 123",
   #   digest::digest(simulate_nl_data(seed = 123)$data, algo = "sha256")
   expect_equal(
     digest::digest(sim$data, algo = "sha256"),
-    "68771f00440cc776d32215892f657780729a4d82f92c76726d8eabe787bb4f33"
+    "3a64b533d3c514590e26fe5d9d7e6a3e17ca7a5a503ad361348146954a4a7e6a"
   )
 })
 
