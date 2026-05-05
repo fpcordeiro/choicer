@@ -2,6 +2,7 @@
 ^\.Rproj\.user$
 ^LICENSE\.md$
 ^_benchmarks$
+^_validation$
 ^CLAUDE\.md$
 ^\.claude$
 ^docs$

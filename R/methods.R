@@ -309,8 +309,8 @@ summary.choicer_mxl <- function(object, ...) {
     if (object$rc_correlation) {
       sigma_display <- character(length(idx_sigma))
       k <- 1
-      for (j in seq_len(K_w)) {
-        for (i in j:K_w) {
+      for (i in seq_len(K_w)) {
+        for (j in seq_len(i)) {
           sigma_display[k] <- sprintf("Sigma_%d%d", i, j)
           k <- k + 1
         }
@@ -592,7 +592,7 @@ predict.choicer_mxl <- function(object, ...) {
          "Refit with keep_data = TRUE.")
   }
   stop("predict() for mixed logit is not yet implemented. ",
-       "Use mxl_elasticities() for post-estimation analysis.")
+       "Use elasticities() for post-estimation analysis.")
 }
 
 # --- Delta method for MXL summary -------------------------------------------
@@ -640,7 +640,7 @@ apply_mxl_delta_method <- function(est_theta, se, vcov_mat,
     Sigma_hat <- build_var_mat(L_params_hat, K_w, rc_correlation)
 
     if (rc_correlation) {
-      est[idx_sigma] <- vech(Sigma_hat)
+      est[idx_sigma] <- vech_row(Sigma_hat)
     } else {
       est[idx_sigma] <- diag(Sigma_hat)
     }

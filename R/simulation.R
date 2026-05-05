@@ -249,14 +249,14 @@ simulate_mxl_data <- function(N = 5000,
   }
 
   # Packed Cholesky parameters matching build_var_mat() in C++:
-  #   rc_correlation = TRUE  -> log-diag and free off-diag elements (column-major lower)
+  #   rc_correlation = TRUE  -> log-diag and free off-diag elements (row-major lower)
   #   rc_correlation = FALSE -> log-diag only
   L_params <- if (rc_correlation) {
     L_size <- K_w * (K_w + 1) / 2
     vals <- numeric(L_size)
     pos <- 1L
-    for (col in seq_len(K_w)) {
-      for (row in col:K_w) {
+    for (row in seq_len(K_w)) {
+      for (col in seq_len(row)) {
         vals[pos] <- if (row == col) log(L_true[row, col]) else L_true[row, col]
         pos <- pos + 1L
       }

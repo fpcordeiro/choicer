@@ -38,7 +38,7 @@ test_that("vech extracts lower triangle correctly for 2x2 matrix", {
   # M = [1 2]
   #     [3 4]
   # Lower triangle (column-major): 1, 3, 4
-  result <- vech(M)
+  result <- vech_col(M)
   expect_equal(result, c(1, 3, 4))
 })
 
@@ -48,20 +48,20 @@ test_that("vech extracts lower triangle correctly for 3x3 matrix", {
   #     [4 5 6]
   #     [7 8 9]
   # Lower triangle (column-major): 1, 4, 7, 5, 8, 9
-  result <- vech(M)
+  result <- vech_col(M)
   expect_equal(result, c(1, 4, 7, 5, 8, 9))
 })
 
 test_that("vech handles 1x1 matrix", {
   M <- matrix(5, nrow = 1, ncol = 1)
-  result <- vech(M)
+  result <- vech_col(M)
   expect_equal(result, 5)
 })
 
 test_that("vech returns correct length", {
   for (n in 1:5) {
     M <- matrix(runif(n * n), nrow = n)
-    result <- vech(M)
+    result <- vech_col(M)
     expected_length <- n * (n + 1) / 2
     expect_length(result, expected_length)
   }

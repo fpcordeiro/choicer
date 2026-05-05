@@ -1,0 +1,266 @@
+# MXL Monte Carlo Validation Suite
+
+Developer infrastructure for the `choicer` package. This suite exercises every
+supported feature of the Mixed Logit estimator against the classical
+asymptotic claims from MLE / MSL theory, at enough replications to separate
+signal from MC noise.
+
+**Not shipped with the package.** `_validation/` is listed in
+`.Rbuildignore` and only exists in the development tree.
+
+## What this validates
+
+Seven claims operationalized as pass / fail checks on every scenario:
+
+1. Consistency: `|bias / MC-SE| < 3` at the largest N in Scenario A.
+2. Asymptotic normality: moments of `z = (theta_hat - theta_0) / se`
+   (skew, excess kurt) plus four normality tests (Shapiro, AD, JB, KS).
+3. Wald coverage: Wilson CI on empirical coverage contains the nominal
+   level at 90 / 95 / 99 pct.
+4. Information-matrix equality: `mean(SE) / sd_emp` near 1 (both Hessian
+   and BHHH).
+5. Simulation bias: `|bias|` approximately linear in `1 / S` (Scenario D).
+6. LR statistic distribution: empirical CDF matches chi-squared via KS;
+   size of nominal-5 pct test near 0.05 (Scenario A).
+7. Analytical Hessian correctness: max relative error vs `numDeriv` under
+   1e-4 (one rep per scenario).
+
+## Scenario grid
+
+| id | purpose | N | S | K_w | rc_dist | rc_corr | rc_mean | R |
+|----|---------|---|---|-----|---------|---------|---------|---|
+| A  | consistency across N | 1k / 2.5k / 5k / 10k | ceil(1.5 sqrt N) rounded up to 50 | 2 | normal, normal | FALSE | FALSE | 1000 (2000 at 10k) |
+| B  | correlated Sigma, K_w=2 | 5000 | 100 | 2 | normal, normal | TRUE | FALSE | 1000 |
+| B2 | correlated Sigma, K_w=3 | 5000 | 100 | 3 | normal x 3 | TRUE | FALSE | 1000 |
+| C  | log-normal RC with mu | 5000 | 100 | 2 | log-n, normal | FALSE | TRUE | 1000 |
+| D  | simulation bias O(1/S) | 5000 | 25 / 50 / 100 / 250 / 500 | 2 | normal, normal | FALSE | FALSE | 300 |
+| F  | weak identification | 5000 | 100 | 2 | normal, normal | FALSE | FALSE | 1000 |
+| G1 | correlated Sigma + log-normal price | 20000 | 250 | 2 | log-n, normal | TRUE | TRUE | 5000 |
+
+All scenarios use J = 8 inside alternatives, `outside_option = TRUE`,
+`vary_choice_set = TRUE`, `use_asc = TRUE`. See
+`.claude/plans/MXL_MC_VALIDATION_PLAN.md` (in the main worktree) for the
+theoretical motivation and the justification of the fixed-J, `outside_option = TRUE` conventions.
+
+## How to run
+
+### Pre-flight (QUICK mode, < 90 minutes)
+
+```bash
+OMP_NUM_THREADS=2 QUICK=TRUE Rscript _validation/mxl_monte_carlo.R
+```
+
+QUICK mode reduces every R to 50 and trims Scenario A's N-grid to {1k, 5k}
+and Scenario D's S-grid. The output artifacts are written but the study's
+headline claims cannot be fully adjudicated at R = 50 alone; inspect the
+per-rep RDS files for debugging only.
+
+### Full overnight run (~75 hours on an 8-worker, 2-thread setup)
+
+```bash
+OMP_NUM_THREADS=2 Rscript _validation/mxl_monte_carlo.R
+```
+
+The driver wires `future::plan(multisession, workers = floor(cores/2))` so
+parallel R-level replications combine with 2-thread OpenMP per fit without
+oversubscribing the machine. Set `OMP_NUM_THREADS=1` if you plan to use
+more parallel workers; set higher if your cores are hyper-threaded.
+
+Scenario G1 (N = 20000, R = 5000, S = 250, correlated K_w = 2 with a
+log-normal price RC) is by far the heaviest single scenario in the suite
+and benefits from running in a dedicated batch:
+
+```bash
+OMP_NUM_THREADS=2 SCENARIOS=G1 RUN_TAG=$(date +%Y%m%d-%H%M%S)-g1 \
+  Rscript _validation/mxl_monte_carlo.R
+```
+
+### Run tagging and checkpointing
+
+Every run writes its artifacts under a tagged subfolder
+`_validation/output/<RUN_TAG>/`. Default: `RUN_TAG=YYYYMMDD-HHMMSS`, so
+each run is isolated by timestamp.
+
+```bash
+# Fresh run, timestamped folder
+Rscript _validation/mxl_monte_carlo.R
+
+# Named run (e.g., before/after a code change)
+RUN_TAG=post-batch-cholesky Rscript _validation/mxl_monte_carlo.R
+
+# Resume a preempted run: the driver skips any scenario whose
+# mc_<id>_raw.rds already exists in <tag>/, and rehydrates those for the
+# cross-scenario summary and REPORT.md
+RUN_TAG=20260423-120000 Rscript _validation/mxl_monte_carlo.R
+
+# Re-run a subset of scenarios into an existing folder (e.g., after a
+# spot-instance preemption killed Scenario F midway)
+RUN_TAG=20260423-120000 SCENARIOS=F Rscript _validation/mxl_monte_carlo.R
+
+# Comma-separated list is supported
+SCENARIOS=B,B2,F Rscript _validation/mxl_monte_carlo.R
+```
+
+`_validation/output/latest` is a symlink (or, on filesystems without
+symlink support, a `LATEST` pointer file) to the most recent run so
+ad-hoc tooling can find outputs without knowing the tag.
+
+### Live per-rep progress and parallelism
+
+The driver emits a `[<id>] rep <r>/<R> <ok|ERR> t=<sec>s` line on stderr
+at the end of each replication (see `run_one()` in
+`_validation/mxl_monte_carlo.R`). Whether those lines stream live or
+arrive in a single burst at the end depends on the iteration backend:
+
+- `MC_WORKERS=1` (sequential): the driver bypasses
+  `future.apply::future_lapply` and uses plain `lapply()`. Messages
+  stream live. This is the path used by `_validation/run_g1.sh`. When
+  the wrapper pipes through `tee`, prefix `Rscript` with
+  `stdbuf -oL -eL` to defeat libc block-buffering on the pipe (already
+  done in `run_g1.sh`).
+- `MC_WORKERS>1` (multisession): the driver uses `future_lapply`, which
+  captures every per-future stdout/stderr via `sink()`-style redirection
+  and **only replays it once all elements have resolved**. `message()`
+  emitted from inside workers therefore will NOT appear live -- a
+  multi-hour run would print nothing until completion. The escape
+  hatches `future.stdout = FALSE` and `future.conditions = "message"`
+  either drop output or relay only on assembly, so they do not solve the
+  live-progress problem.
+
+To get live progress under multiple workers, wire the loop with
+`progressr`. It signals a custom `progression` condition that `future`
+relays immediately, bypassing the buffer-and-replay path:
+
+```r
+# Top of script, alongside future::plan():
+if (PARALLEL && requireNamespace("progressr", quietly = TRUE)) {
+  progressr::handlers(global = TRUE)
+  progressr::handlers("cli")  # or "progress" / "txtprogressbar"
+}
+
+# Inside run_scenario(), replacing the future_lapply branch:
+if (PARALLEL && n_workers > 1L) {
+  results <- progressr::with_progress({
+    p <- progressr::progressor(steps = R)
+    future.apply::future_lapply(
+      seq_len(R),
+      function(r) {
+        res <- run_one(r)
+        p(sprintf("[%s] rep %d/%d %s t=%.1fs",
+                  tag, r, R,
+                  if (is.na(res$error)) "ok" else "ERR",
+                  res$time_sec))
+        res
+      },
+      future.seed = TRUE
+    )
+  })
+} else {
+  results <- lapply(seq_len(R), run_one)
+}
+```
+
+Caveats under multi-worker:
+
+- Update order is not guaranteed -- rep 5 may print before rep 3. Only
+  the running total from `progressor` is meaningful.
+- Add `progressr` to `Suggests:` in `DESCRIPTION` if you enable this
+  branch.
+- Do not mix raw `message()` from worker code with `progressr`; per-worker
+  `message()` is still buffered.
+
+### Planned: rep-level checkpointing
+
+Scenario-level resume (skip a scenario whose `mc_<id>_raw.rds` exists)
+protects against losing whole scenarios but not against losing a single
+long scenario in flight. A 12-22h G1 run that dies at rep 2999/3000
+currently discards every prior rep. Rep-level checkpointing closes that
+gap. Not yet implemented; sketch:
+
+1. Every `MC_CHECKPOINT_EVERY` reps (env var, default 100; 0 disables),
+   serialize the accumulated `results` list to
+   `_validation/output/<tag>/checkpoint_<id>_<NNNN>.rds`, where `<NNNN>`
+   is the rep count at write time. Atomic write via `saveRDS()` to a
+   `tempfile()` then `file.rename()` so a crash mid-write can't leave a
+   half-flushed file.
+2. On startup, `run_scenario()` globs `checkpoint_<id>_*.rds`, loads the
+   highest, and rewrites the iteration to skip already-completed `r`.
+   Merge loaded reps into `results` before continuing the loop.
+3. On clean completion, delete `checkpoint_<id>_*.rds`; the durable
+   artifact remains the final `mc_<id>_raw.rds`.
+
+This works without seed bookkeeping because `run_one(r)` is deterministic
+in `r`: the per-rep seed is `base_seed + r - 1L` and the fit uses Halton
+draws (no global RNG dependence). Resumed reps produce byte-identical
+output to a never-interrupted run.
+
+**Integration point:** the `lapply()` branch in
+`_validation/mxl_monte_carlo.R` -- replace with a `for` loop that
+checkpoints periodically. The `future_lapply` branch cannot checkpoint
+naturally (workers don't return until all reps complete); the cleanest
+multi-worker extension is to chunk `seq_len(R)` by
+`MC_CHECKPOINT_EVERY` and run one `future_lapply` per chunk, saving
+between chunks. Sequential is the easy win and covers the G1 use case.
+
+**Open question:** whether to also persist a per-rep timing log so an
+interrupted run's wall-clock estimate survives the restart. Probably
+worth it -- write `checkpoint_<id>_<NNNN>.times.rds` alongside each
+checkpoint.
+
+## Output artifacts
+
+Under `_validation/output/<RUN_TAG>/`:
+
+- `mc_<scenario>_raw.rds`, `mc_<scenario>_natural.rds`: long per-rep
+  `choicer_mc` objects on the raw (Cholesky / log-mu) and natural
+  (vech Sigma / exp mu) scales. For Scenario A / D, a named list keyed by
+  N or S.
+- `aux_<scenario>.rds`: auxiliary tables (LR statistics for A; first-rep
+  Hessian-agreement records for all scenarios).
+- `asymptotics_<scenario>_raw.csv`, `asymptotics_<scenario>_natural.csv`:
+  `mc_asymptotics()` output.
+- `asymptotics_<scenario>_raw.csv` now includes a `se_ratio_bhhh` column
+  (the BHHH-based SE ratio per parameter; NA when BHHH failed to converge for
+  that parameter).
+- `hessian_agreement_<scenario>.csv`: per-scenario record of the analytical-
+  vs-numerical Hessian max relative error (one row per replication that ran
+  the agreement check, currently the first rep per N/S arm).
+- `plot_qq_<scenario>.png`: QQ of studentized z vs N(0, 1), faceted by
+  parameter.
+- `plot_consistency.png`: log |bias| and log RMSE vs log N (Scenario A).
+- `plot_coverage.png`: empirical 95 pct coverage with Wilson bands vs N
+  (Scenario A).
+- `plot_sim_bias.png`: |bias| vs 1 / S (Scenario D).
+- `plot_se_ratios.png`: `mean_se / sd_emp` ratios across scenarios
+  (Hessian only in v1; BHHH slot reserved).
+- `plot_lr_cdf.png`: empirical LR CDF vs chi-squared 1 (Scenario A).
+- `REPORT.md`: per-scenario pass / fail matrix and one-paragraph narratives.
+
+## What this suite does NOT validate
+
+**Cross-package validation**: comparing `choicer` point estimates and SEs
+against `mlogit`, `gmnl`, and Apollo on a canonical dataset is a
+complementary artifact and a high-leverage sanity check, but it is
+orthogonal to Monte Carlo parameter recovery. Add a separate
+`_validation/cross_package.R` when desired.
+
+**Incidental ASCs (J -> infinity) asymptotics**: Scenario A fixes J = 8
+across the N-grid on purpose — standard MSL theory is a fixed-J, N -> inf
+regime. A companion scenario that scales J with N would turn each ASC
+`delta_j` into an incidental parameter (Neyman-Scott) whose information
+scales with per-alternative frequency rather than total N, so the
+sqrt(N)-rate claim would not apply. That study is out of scope here.
+
+**No-outside-option identification**: every scenario uses
+`outside_option = TRUE`. A separate no-OO scenario would exercise the
+first-ASC-normalization branch of `run_mxlogit()` but is deliberately
+excluded here to keep dimensionality down.
+
+## Conventions
+
+**Cholesky packing:** All MXL functions in `choicer` pack `L_params` row-major
+lower-triangular: `[L_11, L_21, L_22, L_31, L_32, L_33, ...]`, with diagonals on
+the log scale (`L_kk` is `log(chol(Sigma)[k, k])`). The simulator
+`simulate_mxl_data()` and the fitted-object names follow the same convention.
+Custom `vech` extractors should match `build_var_mat()` / `build_L_mat()` in
+`src/mxlogit.cpp`.
