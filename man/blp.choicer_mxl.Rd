@@ -16,7 +16,10 @@
 \arguments{
 \item{object}{A \code{choicer_mxl} object fitted with \code{keep_data = TRUE}.}
 
-\item{target_shares}{Numeric vector of target market shares (length J).}
+\item{target_shares}{Numeric vector of target market shares.
+Length \code{J_inside} when no outside option, or \code{J_inside + 1}
+(with the outside option's share at index 1) when
+\code{include_outside_option = TRUE}.}
 
 \item{delta_init}{Initial guess for delta (ASC) values. If \code{NULL},
 uses the estimated ASCs from the fitted model.}

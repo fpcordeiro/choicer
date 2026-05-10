@@ -4,22 +4,39 @@
 \alias{predict.choicer_mxl}
 \title{Predict from a mixed logit model}
 \usage{
-\method{predict}{choicer_mxl}(object, ...)
+\method{predict}{choicer_mxl}(object, type = c("probabilities", "shares"), ...)
 }
 \arguments{
 \item{object}{A choicer_mxl object.}
 
+\item{type}{Either "probabilities" (per-observation simulated choice
+probabilities) or "shares" (aggregate simulated market shares).}
+
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-A list with simulated choice probabilities.
+For "probabilities": a list with \code{choice_prob} and \code{utility}
+vectors averaged across simulation draws. For "shares": a named numeric
+vector of simulated market shares per alternative.
 }
 \description{
-Computes simulated choice probabilities using stored Halton draws.
+Computes simulated choice probabilities or aggregate market shares using
+stored Halton draws.
 }
 \examples{
 \donttest{
-# predict() for mixed logit is not yet implemented.
-# Use elasticities() for post-estimation analysis.
+library(data.table)
+set.seed(42)
+N <- 50; J <- 3
+dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+dt[, choice := 0L]
+dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+fit <- run_mxlogit(
+  data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+  covariate_cols = "x1", random_var_cols = "w1", S = 50L
+)
+predict(fit, type = "shares")
+predict(fit, type = "probabilities")
 }
 }
