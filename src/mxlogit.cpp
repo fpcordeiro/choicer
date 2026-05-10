@@ -1307,6 +1307,537 @@ arma::vec mxl_predict_shares_internal(
   return global_shares / weight_sum;
 }
 
+//' Per-observation simulated choice probabilities for Mixed Logit
+//'
+//' Returns the simulated choice probability for each (individual, alternative)
+//' row of `X`, averaged over the supplied Halton draws. Mirrors `mnl_predict`.
+//'
+//' @param theta parameter vector (beta, \[mu\], L, delta)
+//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param eta_draws Array with draws; K_w x S x N
+//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param rc_correlation whether random coefficients are correlated
+//' @param rc_mean whether mu parameters are estimated
+//' @param use_asc whether ASCs are included
+//' @param include_outside_option whether the outside option is present
+//' @return List with `choice_prob` (length sum(M)), `utility` (length sum(M),
+//'   simulated mean of the deterministic + W*gamma component), and, when
+//'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
+//' @export
+// [[Rcpp::export]]
+Rcpp::List mxl_predict(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::mat& W,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::cube& eta_draws,
+    const arma::uvec& rc_dist,
+    const bool rc_correlation = true,
+    const bool rc_mean = false,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  // Basic dimensions
+  const int N = M.size();
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = eta_draws.n_cols;
+  const int n_params = theta.n_elem;
+  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
+
+  // Parameter block indices (mirror mxl_loglik_gradient_parallel / elasticities)
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Extract beta
+  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+
+  // Extract and transform mu
+  arma::vec mu_final = arma::zeros(K_w);
+  if (rc_mean) {
+    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
+    mu_final = mu;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        mu_final(k) = std::exp(mu(k));
+      }
+    }
+  }
+
+  // Extract L parameters and build L matrix
+  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
+
+  // Extract delta (mirror lines 175-192)
+  arma::vec delta;
+  if (use_asc) {
+    const int delta_free_len = n_params - idx_delta_start;
+    if (delta_free_len <= 0) {
+      Rcpp::stop("Theta vector too short: missing delta parameters.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(idx_delta_start, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_free_len + 1);
+      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
+    }
+  } else {
+    delta.set_size(0);
+  }
+
+  // 0-based alt indices and prefix sums
+  arma::uvec alt_idx0 = alt_idx - 1;
+  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util += W * mu_final;
+  } else {
+    arma::vec W_mu = W * mu_final;
+    base_util += W_mu.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util += delta.elem(alt_idx0);
+  }
+
+  // Output accumulators (each individual writes to a disjoint subvec)
+  arma::vec choice_prob = arma::zeros(X.n_rows);
+  arma::vec utility = arma::zeros(X.n_rows);
+  arma::vec choice_prob_outside;
+  if (include_outside_option) {
+    choice_prob_outside = arma::zeros(N);
+  }
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic)
+#endif
+  for (int i = 0; i < N; ++i) {
+    const int m_i = M[i];
+    const int num_choices = include_outside_option ? m_i + 1 : m_i;
+    const int start_idx = S_prefix[i];
+    const int end_idx = start_idx + m_i - 1;
+    const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+
+    arma::mat W_i;
+    if (W.n_rows == X.n_rows)
+      W_i = W.rows(start_idx, end_idx);
+    else
+      W_i = W.rows(alt_idx0_i);
+
+    // Pre-computed base utility for this individual
+    const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
+
+    // Per-individual accumulators (averaged over draws)
+    arma::vec P_inside_avg = arma::zeros(m_i);
+    arma::vec util_inside_avg = arma::zeros(m_i);
+    double P_outside_avg = 0.0;
+
+    // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+    const auto eta_i = eta_draws.slice(i);
+    arma::mat Gamma_final = L * eta_i;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+      }
+    }
+
+    for (int s = 0; s < Sdraw; ++s) {
+      const auto gamma_i_s_final = Gamma_final.col(s);
+
+      // Inside utilities (length m_i): includes X*beta + W*mu_final + delta
+      // plus the draw-specific W*gamma term.
+      arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+
+      // Build full V_s for softmax
+      arma::vec V_s = arma::zeros(num_choices);
+      if (include_outside_option) {
+        V_s.subvec(1, num_choices - 1) = inside_utils;
+      } else {
+        V_s = inside_utils;
+      }
+
+      // Stable softmax
+      V_s -= V_s.max();
+      double log_denom = std::log(arma::accu(arma::exp(V_s)));
+      arma::vec P_s = arma::exp(V_s - log_denom);
+
+      // Accumulate inside probabilities and utilities
+      if (include_outside_option) {
+        P_outside_avg += P_s(0);
+        P_inside_avg += P_s.subvec(1, num_choices - 1);
+      } else {
+        P_inside_avg += P_s;
+      }
+      util_inside_avg += inside_utils;
+    }
+
+    // Average over draws
+    const double S_d = static_cast<double>(Sdraw);
+    P_inside_avg /= S_d;
+    util_inside_avg /= S_d;
+    if (include_outside_option) {
+      P_outside_avg /= S_d;
+      choice_prob_outside(i) = P_outside_avg;
+    }
+
+    // Disjoint writes by individual — no race
+    choice_prob.subvec(start_idx, end_idx) = P_inside_avg;
+    utility.subvec(start_idx, end_idx) = util_inside_avg;
+  }
+
+  Rcpp::List out;
+  out["choice_prob"] = choice_prob;
+  out["utility"] = utility;
+  if (include_outside_option) {
+    out["choice_prob_outside"] = choice_prob_outside;
+  }
+  return out;
+}
+
+//' Predicted aggregate market shares for Mixed Logit
+//'
+//' Exported wrapper around the internal `mxl_predict_shares_internal`. Parses
+//' `theta` using the standard parameter ordering and returns the simulated
+//' weighted-average market shares.
+//'
+//' @param theta parameter vector (beta, \[mu\], L, delta)
+//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param eta_draws Array with draws; K_w x S x N
+//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param rc_correlation whether random coefficients are correlated
+//' @param rc_mean whether mu parameters are estimated
+//' @param use_asc whether ASCs are included
+//' @param include_outside_option whether outside option is included
+//' @return Vector of length J (or J+1 with outside option) of predicted shares.
+//' @export
+// [[Rcpp::export]]
+arma::vec mxl_predict_shares(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::mat& W,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const arma::cube& eta_draws,
+    const arma::uvec& rc_dist,
+    const bool rc_correlation = true,
+    const bool rc_mean = false,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  // Basic dimensions
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int n_params = theta.n_elem;
+  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
+
+  // Parameter block indices
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Extract beta
+  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+
+  // Extract and transform mu
+  arma::vec mu_final = arma::zeros(K_w);
+  if (rc_mean) {
+    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
+    mu_final = mu;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        mu_final(k) = std::exp(mu(k));
+      }
+    }
+  }
+
+  // Extract L parameters and build L matrix
+  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
+
+  // Extract delta (mirror lines 175-192)
+  arma::vec delta;
+  if (use_asc) {
+    const int delta_free_len = n_params - idx_delta_start;
+    if (delta_free_len <= 0) {
+      Rcpp::stop("Theta vector too short: missing delta parameters.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(idx_delta_start, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_free_len + 1);
+      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
+    }
+  } else {
+    delta.set_size(0);
+  }
+
+  // 0-based indexing and prefix sums
+  arma::uvec alt_idx0 = alt_idx - 1;
+  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // Number of alternatives for the output
+  const int J_inside = use_asc ? static_cast<int>(delta.n_elem)
+                                : (static_cast<int>(arma::max(alt_idx0)) + 1);
+  const int num_alts = include_outside_option ? J_inside + 1 : J_inside;
+
+  return mxl_predict_shares_internal(
+    X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
+    delta, eta_draws, rc_dist, num_alts, use_asc, include_outside_option
+  );
+}
+
+//' Diversion ratios for Mixed Logit (simulated)
+//'
+//' Computes the matrix of diversion ratios for a fitted Mixed Logit model.
+//' DR(k, j) is the (weighted) share of consumers who switch from alternative
+//' `j` to alternative `k` when `j` is removed (or its utility deteriorates
+//' marginally), averaged over individuals and Halton draws.
+//'
+//' @param theta parameter vector (beta, \[mu\], L, delta)
+//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param eta_draws Array with draws; K_w x S x N
+//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param rc_correlation whether random coefficients are correlated
+//' @param rc_mean whether mu parameters are estimated
+//' @param use_asc whether ASCs are included
+//' @param include_outside_option whether outside option is included
+//' @return J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
+//' @export
+// [[Rcpp::export]]
+arma::mat mxl_diversion_ratios_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::mat& W,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const arma::cube& eta_draws,
+    const arma::uvec& rc_dist,
+    const bool rc_correlation = true,
+    const bool rc_mean = false,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  // Diversion ratio (simulated): DR(k, j) = E_i[w_i * (1/S) sum_s P_ij(s) * P_ik(s)] /
+  //                                          E_i[w_i * (1/S) sum_s P_ij(s) * (1 - P_ij(s))]
+  // Cross-products MUST be averaged inside the draw loop. Computing
+  // (mean_s P_ij) * (mean_s P_ik) is biased. See docs/mixed_logit_math.md.
+
+  // Basic dimensions
+  const int N = M.size();
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = eta_draws.n_cols;
+  const int n_params = theta.n_elem;
+  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
+
+  // Parameter block indices
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Extract beta
+  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+
+  // Extract and transform mu
+  arma::vec mu_final = arma::zeros(K_w);
+  if (rc_mean) {
+    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
+    mu_final = mu;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        mu_final(k) = std::exp(mu(k));
+      }
+    }
+  }
+
+  // Extract L parameters and build L matrix
+  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
+
+  // Extract delta (mirror lines 175-192)
+  arma::vec delta;
+  if (use_asc) {
+    const int delta_free_len = n_params - idx_delta_start;
+    if (delta_free_len <= 0) {
+      Rcpp::stop("Theta vector too short: missing delta parameters.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(idx_delta_start, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_free_len + 1);
+      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
+    }
+  } else {
+    delta.set_size(0);
+  }
+
+  // 0-based alt indices
+  arma::uvec alt_idx0 = alt_idx - 1;
+
+  // Total alternatives for output matrix
+  const int J_inside = use_asc ? static_cast<int>(delta.n_elem)
+                                : (static_cast<int>(arma::max(alt_idx0)) + 1);
+  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+
+  // Prefix sums
+  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util += W * mu_final;
+  } else {
+    arma::vec W_mu = W * mu_final;
+    base_util += W_mu.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util += delta.elem(alt_idx0);
+  }
+
+  // Global accumulators
+  arma::mat global_numerator = arma::zeros(J_total, J_total);
+  arma::vec global_denominator = arma::zeros(J_total);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulators
+    arma::mat local_numerator = arma::zeros(J_total, J_total);
+    arma::vec local_denominator = arma::zeros(J_total);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx = S_prefix[i];
+      const int end_idx = start_idx + m_i - 1;
+      const double w_i = weights[i];
+      const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+
+      arma::mat W_i;
+      if (W.n_rows == X.n_rows)
+        W_i = W.rows(start_idx, end_idx);
+      else
+        W_i = W.rows(alt_idx0_i);
+
+      // Pre-computed base utility for this individual
+      const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
+
+      // Map local indices to global alternative indices
+      arma::uvec global_j_map(num_choices);
+      if (include_outside_option) {
+        global_j_map(0) = 0;  // Outside option is global index 0
+        global_j_map.subvec(1, m_i) = alt_idx0_i + 1;
+      } else {
+        global_j_map = alt_idx0_i;
+      }
+
+      // Per-individual accumulators (sum across draws, divided by S below)
+      arma::mat ind_num = arma::zeros(num_choices, num_choices);
+      arma::vec ind_den = arma::zeros(num_choices);
+
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const auto eta_i = eta_draws.slice(i);
+      arma::mat Gamma_final = L * eta_i;
+      for (int k = 0; k < K_w; ++k) {
+        if (rc_dist(k) == 1) {  // log-normal
+          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+        }
+      }
+
+      // Loop over draws — cross-products MUST be accumulated INSIDE this loop
+      for (int s = 0; s < Sdraw; ++s) {
+        const auto gamma_i_s_final = Gamma_final.col(s);
+
+        // Build utility vector
+        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+
+        if (include_outside_option) {
+          V_s.subvec(1, num_choices - 1) = inside_utils;
+        } else {
+          V_s = inside_utils;
+        }
+
+        // Stable softmax
+        V_s -= V_s.max();
+        double log_denom = std::log(arma::accu(arma::exp(V_s)));
+        arma::vec P_s = arma::exp(V_s - log_denom);
+
+        // Accumulate cross-products inside the draw loop
+        for (int j_local = 0; j_local < num_choices; ++j_local) {
+          const double P_j = P_s(j_local);
+          ind_den(j_local) += P_j * (1.0 - P_j);
+          for (int k_local = 0; k_local < num_choices; ++k_local) {
+            if (k_local == j_local) continue;
+            ind_num(k_local, j_local) += P_j * P_s(k_local);
+          }
+        }
+      }  // end s loop
+
+      // Average over draws
+      const double S_d = static_cast<double>(Sdraw);
+      ind_num /= S_d;
+      ind_den /= S_d;
+
+      // Scatter individual contribution into thread-local globals
+      for (int j_local = 0; j_local < num_choices; ++j_local) {
+        const int global_j = global_j_map(j_local);
+        local_denominator(global_j) += w_i * ind_den(j_local);
+        for (int k_local = 0; k_local < num_choices; ++k_local) {
+          if (k_local == j_local) continue;
+          const int global_k = global_j_map(k_local);
+          local_numerator(global_k, global_j) += w_i * ind_num(k_local, j_local);
+        }
+      }
+    }  // end i loop
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_numerator += local_numerator;
+      global_denominator += local_denominator;
+    }
+  }  // end parallel region
+
+  // Final ratios with numerical guard
+  arma::mat DR = arma::zeros(J_total, J_total);
+  for (int j = 0; j < J_total; ++j) {
+    if (global_denominator(j) > 1e-15) {
+      for (int k = 0; k < J_total; ++k) {
+        if (k != j) {
+          DR(k, j) = global_numerator(k, j) / global_denominator(j);
+        }
+      }
+    }
+  }
+
+  return DR;
+}
+
 //' BLP contraction mapping for mixed logit
 //'
 //' Finds the ASC (delta) parameters such that predicted market shares
