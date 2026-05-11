@@ -287,3 +287,143 @@ test_that("blp.choicer_mxl errors without data", {
     "keep_data"
   )
 })
+
+# =============================================================================
+# MXL predict
+# =============================================================================
+
+test_that("predict.choicer_mxl(type='probabilities') returns list with choice_prob and utility", {
+  fit <- fit_small_mxl()
+  M <- fit$data$M
+
+  preds <- predict(fit, type = "probabilities")
+
+  expect_type(preds, "list")
+  expect_true("choice_prob" %in% names(preds))
+  expect_true("utility" %in% names(preds))
+  expect_length(preds$choice_prob, sum(M))
+  expect_true(all(preds$choice_prob >= 0))
+  expect_true(all(preds$choice_prob <= 1))
+})
+
+test_that("predict.choicer_mxl(type='shares') returns shares summing to 1", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  shares <- predict(fit, type = "shares")
+
+  # Fitted without outside option, so length should be J inside alts
+  expect_length(shares, J)
+  expect_equal(sum(shares), 1, tolerance = 1e-6)
+})
+
+test_that("predict.choicer_mxl(type='probabilities') sums to 1 within each individual", {
+  fit <- fit_small_mxl()
+  preds <- predict(fit, type = "probabilities")
+
+  M <- fit$data$M
+  # For each individual, the per-individual probabilities sum to 1
+  ends <- cumsum(M)
+  starts <- c(1L, head(ends, -1) + 1L)
+
+  per_id_sums <- vapply(
+    seq_along(M),
+    function(i) sum(preds$choice_prob[starts[i]:ends[i]]),
+    numeric(1)
+  )
+
+  expect_equal(per_id_sums, rep(1, length(M)), tolerance = 1e-6)
+})
+
+test_that("predict.choicer_mxl errors without keep_data", {
+  dt <- create_small_mxl_data()
+  fit <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 10L, control = list(maxeval = 50L),
+    keep_data = FALSE
+  )
+
+  expect_error(
+    predict(fit, type = "probabilities"),
+    "Refit with keep_data"
+  )
+})
+
+test_that("predict.choicer_mxl rejects unknown type", {
+  fit <- fit_small_mxl()
+
+  expect_error(predict(fit, type = "garbage"))
+})
+
+# =============================================================================
+# MXL diversion_ratios
+# =============================================================================
+
+test_that("diversion_ratios.choicer_mxl returns labeled J x J matrix", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit)
+
+  expect_true(is.matrix(dr))
+  expect_equal(dim(dr), c(J, J))
+  expect_true(all(is.finite(dr)))
+  expect_equal(rownames(dr), as.character(fit$alt_mapping[[2]]))
+  expect_equal(colnames(dr), as.character(fit$alt_mapping[[2]]))
+})
+
+test_that("diversion_ratios.choicer_mxl has zero diagonal", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit)
+
+  expect_equal(unname(diag(dr)), rep(0, J))
+})
+
+test_that("diversion_ratios.choicer_mxl column sums equal 1", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit)
+
+  col_sums <- unname(colSums(dr))
+  expect_equal(col_sums, rep(1, J), tolerance = 1e-6)
+})
+
+test_that("diversion_ratios.choicer_mxl entries are non-negative", {
+  fit <- fit_small_mxl()
+
+  dr <- diversion_ratios(fit)
+
+  expect_true(all(dr >= 0))
+})
+
+test_that("diversion_ratios.choicer_mxl errors without keep_data", {
+  dt <- create_small_mxl_data()
+  fit <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 10L, control = list(maxeval = 50L),
+    keep_data = FALSE
+  )
+
+  expect_error(
+    diversion_ratios(fit),
+    "keep_data"
+  )
+})
+
+test_that("diversion_ratios.choicer_mxl is deterministic", {
+  fit <- fit_small_mxl()
+
+  dr1 <- diversion_ratios(fit)
+  dr2 <- diversion_ratios(fit)
+
+  expect_equal(dr1, dr2)
+})
+
+test_that("MXL diversion_ratios approximates MNL when variance is near zero", {
+  skip("MXL->MNL collapse sanity check requires deeper integration")
+})
