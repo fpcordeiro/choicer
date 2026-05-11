@@ -364,7 +364,7 @@ test_that("diversion_ratios.choicer_mxl returns labeled J x J matrix", {
   fit <- fit_small_mxl()
   J <- nrow(fit$alt_mapping)
 
-  dr <- diversion_ratios(fit)
+  dr <- diversion_ratios(fit, wrt_var = "x1")
 
   expect_true(is.matrix(dr))
   expect_equal(dim(dr), c(J, J))
@@ -377,7 +377,7 @@ test_that("diversion_ratios.choicer_mxl has zero diagonal", {
   fit <- fit_small_mxl()
   J <- nrow(fit$alt_mapping)
 
-  dr <- diversion_ratios(fit)
+  dr <- diversion_ratios(fit, wrt_var = "x1")
 
   expect_equal(unname(diag(dr)), rep(0, J))
 })
@@ -386,16 +386,17 @@ test_that("diversion_ratios.choicer_mxl column sums equal 1", {
   fit <- fit_small_mxl()
   J <- nrow(fit$alt_mapping)
 
-  dr <- diversion_ratios(fit)
+  dr <- diversion_ratios(fit, wrt_var = "x1")
 
   col_sums <- unname(colSums(dr))
   expect_equal(col_sums, rep(1, J), tolerance = 1e-6)
 })
 
-test_that("diversion_ratios.choicer_mxl entries are non-negative", {
+test_that("diversion_ratios.choicer_mxl entries are non-negative (fixed-coef variable)", {
+  # For a fixed-coef variable, beta cancels in the ratio, so DR >= 0 always
   fit <- fit_small_mxl()
 
-  dr <- diversion_ratios(fit)
+  dr <- diversion_ratios(fit, wrt_var = "x1")
 
   expect_true(all(dr >= 0))
 })
@@ -410,7 +411,7 @@ test_that("diversion_ratios.choicer_mxl errors without keep_data", {
   )
 
   expect_error(
-    diversion_ratios(fit),
+    diversion_ratios(fit, wrt_var = "x1"),
     "keep_data"
   )
 })
@@ -418,10 +419,26 @@ test_that("diversion_ratios.choicer_mxl errors without keep_data", {
 test_that("diversion_ratios.choicer_mxl is deterministic", {
   fit <- fit_small_mxl()
 
-  dr1 <- diversion_ratios(fit)
-  dr2 <- diversion_ratios(fit)
+  dr1 <- diversion_ratios(fit, wrt_var = "x1")
+  dr2 <- diversion_ratios(fit, wrt_var = "x1")
 
   expect_equal(dr1, dr2)
+})
+
+test_that("diversion_ratios.choicer_mxl depends on which random-coef variable is perturbed", {
+  # With random coefficients beta_{ik}^s varies across draws and does not
+  # cancel in the ratio. The diversion matrix should differ between w1 and w2.
+  fit <- fit_small_mxl()
+
+  dr_w1 <- diversion_ratios(fit, wrt_var = "w1", is_random_coef = TRUE)
+  dr_w2 <- diversion_ratios(fit, wrt_var = "w2", is_random_coef = TRUE)
+
+  # Both still satisfy the column-sum identity
+  expect_equal(unname(colSums(dr_w1)), rep(1, nrow(dr_w1)), tolerance = 1e-6)
+  expect_equal(unname(colSums(dr_w2)), rep(1, nrow(dr_w2)), tolerance = 1e-6)
+
+  # But the matrices themselves should differ (not equal up to numerical noise)
+  expect_false(isTRUE(all.equal(dr_w1, dr_w2, tolerance = 1e-3)))
 })
 
 test_that("MXL diversion_ratios approximates MNL when variance is near zero", {

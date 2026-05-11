@@ -4,10 +4,18 @@
 \alias{diversion_ratios.choicer_mxl}
 \title{Diversion ratios for mixed logit model}
 \usage{
-\method{diversion_ratios}{choicer_mxl}(object, ...)
+\method{diversion_ratios}{choicer_mxl}(object, wrt_var, is_random_coef = FALSE, ...)
 }
 \arguments{
 \item{object}{A \code{choicer_mxl} object fitted with \code{keep_data = TRUE}.}
+
+\item{wrt_var}{Variable used to perturb alternative j's utility: a column
+name (character) or 1-based index. Indexes into X columns for fixed
+coefficients, or W columns for random coefficients (when
+\code{is_random_coef = TRUE}).}
+
+\item{is_random_coef}{Logical. \code{TRUE} if the variable has a random
+coefficient (is in W), \code{FALSE} if fixed (in X). Default \code{FALSE}.}
 
 \item{...}{Additional arguments (ignored).}
 }
@@ -17,7 +25,17 @@ Cross-products are averaged across simulation draws inside the
 integration to avoid Jensen-style bias.
 }
 \description{
-Diversion ratios for mixed logit model
+Computes the attribute-based diversion ratio matrix. Entry (k, j) is the
+fraction of demand lost by alternative j that is captured by alternative k
+when a marginal change in alternative j's \code{wrt_var} attribute reduces
+s_j.
+}
+\details{
+Unlike MNL, the MXL diversion ratio depends on which variable is perturbed:
+the realised coefficient \eqn{\beta_{ik}^s} varies across individuals and
+draws and does not cancel in the ratio. For a variable with a fixed
+coefficient the result is independent of the variable (\eqn{\beta} cancels);
+for a random-coefficient variable it is not.
 }
 \examples{
 \donttest{
@@ -32,6 +50,7 @@ fit <- run_mxlogit(
   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
   covariate_cols = "x1", random_var_cols = "w1", S = 50L
 )
-diversion_ratios(fit)
+diversion_ratios(fit, "x1")
+diversion_ratios(fit, "w1", is_random_coef = TRUE)
 }
 }

@@ -511,6 +511,70 @@ $$
 
 ---
 
+## 6.5 Diversion Ratios
+
+### 6.5.1 Definition
+
+The *attribute-based* diversion ratio from alternative $j$ to alternative $m$ with respect to attribute $k$ is
+
+$$
+\mathrm{DR}_{j \to m}(x_k) \;=\; -\,\frac{\partial s_m / \partial x_{j,k}}{\partial s_j / \partial x_{j,k}},
+$$
+
+where $s_j = \frac{1}{\sum_i w_i}\sum_i w_i \bar{P}_{ij}$ is the aggregate share. It is the fraction of demand lost by $j$ that is captured by $m$ when a marginal change in $j$'s attribute $k$ reduces $s_j$.
+
+### 6.5.2 MNL Special Case (β cancels)
+
+For multinomial logit, the per-individual derivatives are
+
+$$
+\frac{\partial P_{ij}}{\partial x_{j,k}} = \beta_k\, P_{ij}(1 - P_{ij}), \qquad
+\frac{\partial P_{im}}{\partial x_{j,k}} = -\beta_k\, P_{ij}P_{im} \quad (m \neq j).
+$$
+
+Aggregating with weights $w_i$, the constant $\beta_k$ factors out of both numerator and denominator and cancels:
+
+$$
+\mathrm{DR}_{j \to m}^{\text{MNL}} \;=\; \frac{\sum_i w_i\, P_{ij} P_{im}}{\sum_i w_i\, P_{ij}(1 - P_{ij})}.
+$$
+
+The result is therefore independent of which attribute is perturbed — this is a special property of MNL.
+
+### 6.5.3 MXL: β Does Not Cancel
+
+For mixed logit the realized coefficient on a random variable for individual $i$ at draw $s$ is
+
+$$
+\beta_{ik}^s = \mu_k^* + \gamma_{ik}^{s*},
+$$
+
+with the same distribution transforms as in §6.3. The derivatives evaluated at draw $s$ are
+
+$$
+\frac{\partial P_{ij}^s}{\partial x_{j,k}} = \beta_{ik}^s\, P_{ij}^s\,(1 - P_{ij}^s), \qquad
+\frac{\partial P_{im}^s}{\partial x_{j,k}} = -\beta_{ik}^s\, P_{ij}^s P_{im}^s.
+$$
+
+Integrating over draws gives $\partial \bar{P}_{ij}/\partial x_{j,k} = \frac{1}{S}\sum_s \beta_{ik}^s P_{ij}^s(1-P_{ij}^s)$ and similarly for the cross term. Aggregating over individuals, the diversion ratio is
+
+$$
+\mathrm{DR}_{j \to m}^{\text{MXL}}(x_k) \;=\; \frac{\sum_i w_i \cdot \tfrac{1}{S}\sum_s \beta_{ik}^s\, P_{ij}^s P_{im}^s}{\sum_i w_i \cdot \tfrac{1}{S}\sum_s \beta_{ik}^s\, P_{ij}^s (1 - P_{ij}^s)}.
+$$
+
+Because $\beta_{ik}^s$ varies across $(i, s)$, it cannot be pulled out of the sums and does not cancel. The MXL diversion ratio therefore *depends on the perturbed variable*. For a variable with a fixed coefficient the dependence again vanishes ($\beta_{ik}^s$ is a constant scalar); for a random-coefficient variable it does not.
+
+### 6.5.4 Properties
+
+**Column-sum identity.** For each $j$, $\sum_{m \neq j} \mathrm{DR}_{j \to m} = 1$. This follows from $\sum_{m \neq j} P_{ij}^s P_{im}^s = P_{ij}^s(1 - P_{ij}^s)$, which holds inside the draw sum and is preserved through the same $\beta_{ik}^s$ weight on both sides.
+
+**Sign of $\beta_{ik}^s$.** If $\beta_{ik}^s$ is constant negative (e.g. a fixed price coefficient), both numerator and denominator change sign together and the ratio is unchanged — DR is non-negative. With a random coefficient of mixed sign across $(i, s)$, terms can partially cancel; the aggregate ratio is still well-defined but can be numerically sensitive. The implementation guards against this with an `abs(denominator) > 1e-15` check.
+
+**Implementation.** Cross-products $P_{ij}^s P_{im}^s$ and $P_{ij}^s(1 - P_{ij}^s)$ must be accumulated *inside* the per-draw loop, multiplied by $\beta_{ik}^s$ at that point, and only then averaged across draws and weighted by $w_i$. Computing $(\overline{P}_{ij})(\overline{P}_{im})$ or $\beta_{ik}^s$-weighted averages computed outside the draw loop is biased.
+
+*Code reference: [mxlogit.cpp:mxl_diversion_ratios_parallel](../src/mxlogit.cpp)*
+
+---
+
 ## 7. BLP Contraction Mapping
 
 ### 7.1 Problem Statement

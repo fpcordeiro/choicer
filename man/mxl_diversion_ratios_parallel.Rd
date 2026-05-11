@@ -2,7 +2,7 @@
 % Please edit documentation in R/RcppExports.R
 \name{mxl_diversion_ratios_parallel}
 \alias{mxl_diversion_ratios_parallel}
-\title{Diversion ratios for Mixed Logit (simulated)}
+\title{Diversion ratios for Mixed Logit (simulated, derivative-based)}
 \usage{
 mxl_diversion_ratios_parallel(
   theta,
@@ -13,6 +13,8 @@ mxl_diversion_ratios_parallel(
   weights,
   eta_draws,
   rc_dist,
+  elast_var_idx,
+  is_random_coef,
   rc_correlation = TRUE,
   rc_mean = FALSE,
   use_asc = TRUE,
@@ -36,6 +38,10 @@ mxl_diversion_ratios_parallel(
 
 \item{rc_dist}{K_w vector indicating distribution (0=normal, 1=log-normal)}
 
+\item{elast_var_idx}{1-based index of the perturbed variable}
+
+\item{is_random_coef}{TRUE if the variable is in W (random coef), FALSE if in X (fixed)}
+
 \item{rc_correlation}{whether random coefficients are correlated}
 
 \item{rc_mean}{whether mu parameters are estimated}
@@ -48,8 +54,16 @@ mxl_diversion_ratios_parallel(
 J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 }
 \description{
-Computes the matrix of diversion ratios for a fitted Mixed Logit model.
-DR(k, j) is the (weighted) share of consumers who switch from alternative
-\code{j} to alternative \code{k} when \code{j} is removed (or its utility deteriorates
-marginally), averaged over individuals and Halton draws.
+Computes the matrix of attribute-based diversion ratios for a fitted
+Mixed Logit model. DR(k, j) is the fraction of demand lost by alternative
+\code{j} that is captured by alternative \code{k} when a marginal change in
+alternative j's \code{elast_var} attribute reduces s_j.
+}
+\details{
+In MNL the per-draw realized coefficient is a constant, so it cancels in
+the ratio and the result is independent of the variable chosen. In MXL,
+the realized coefficient \eqn{\beta_{ik}^s} varies across individuals
+and draws, so the diversion ratio depends on which attribute is perturbed.
+For a variable with a fixed coefficient the dependence again vanishes
+(the constant cancels); for a random-coefficient variable it does not.
 }

@@ -989,7 +989,24 @@ elasticities.choicer_mxl <- function(object, elast_var,
 
 #' Diversion ratios for mixed logit model
 #'
+#' Computes the attribute-based diversion ratio matrix. Entry (k, j) is the
+#' fraction of demand lost by alternative j that is captured by alternative k
+#' when a marginal change in alternative j's \code{wrt_var} attribute reduces
+#' s_j.
+#'
+#' Unlike MNL, the MXL diversion ratio depends on which variable is perturbed:
+#' the realised coefficient \eqn{\beta_{ik}^s} varies across individuals and
+#' draws and does not cancel in the ratio. For a variable with a fixed
+#' coefficient the result is independent of the variable (\eqn{\beta} cancels);
+#' for a random-coefficient variable it is not.
+#'
 #' @param object A \code{choicer_mxl} object fitted with \code{keep_data = TRUE}.
+#' @param wrt_var Variable used to perturb alternative j's utility: a column
+#'   name (character) or 1-based index. Indexes into X columns for fixed
+#'   coefficients, or W columns for random coefficients (when
+#'   \code{is_random_coef = TRUE}).
+#' @param is_random_coef Logical. \code{TRUE} if the variable has a random
+#'   coefficient (is in W), \code{FALSE} if fixed (in X). Default \code{FALSE}.
 #' @param ... Additional arguments (ignored).
 #' @returns A J x J diversion ratio matrix with alternative labels.
 #'   Cross-products are averaged across simulation draws inside the
@@ -1007,10 +1024,12 @@ elasticities.choicer_mxl <- function(object, elast_var,
 #'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
 #'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
 #' )
-#' diversion_ratios(fit)
+#' diversion_ratios(fit, "x1")
+#' diversion_ratios(fit, "w1", is_random_coef = TRUE)
 #' }
 #' @export
-diversion_ratios.choicer_mxl <- function(object, ...) {
+diversion_ratios.choicer_mxl <- function(object, wrt_var,
+                                         is_random_coef = FALSE, ...) {
   if (is.null(object$data)) {
     stop("diversion_ratios() requires stored data. Refit with keep_data = TRUE.")
   }
@@ -1018,6 +1037,9 @@ diversion_ratios.choicer_mxl <- function(object, ...) {
     stop("diversion_ratios() requires draws_info from a fitted MXL model.")
   }
   d <- object$data
+
+  col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
+  idx <- resolve_var_index(wrt_var, col_names)
 
   eta_draws <- get_halton_normals(
     S   = object$draws_info$S,
@@ -1034,6 +1056,8 @@ diversion_ratios.choicer_mxl <- function(object, ...) {
     weights                = d$weights,
     eta_draws              = eta_draws,
     rc_dist                = object$rc_dist,
+    elast_var_idx          = idx,
+    is_random_coef         = is_random_coef,
     rc_correlation         = object$rc_correlation,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,

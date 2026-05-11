@@ -1599,12 +1599,19 @@ arma::vec mxl_predict_shares(
   );
 }
 
-//' Diversion ratios for Mixed Logit (simulated)
+//' Diversion ratios for Mixed Logit (simulated, derivative-based)
 //'
-//' Computes the matrix of diversion ratios for a fitted Mixed Logit model.
-//' DR(k, j) is the (weighted) share of consumers who switch from alternative
-//' `j` to alternative `k` when `j` is removed (or its utility deteriorates
-//' marginally), averaged over individuals and Halton draws.
+//' Computes the matrix of attribute-based diversion ratios for a fitted
+//' Mixed Logit model. DR(k, j) is the fraction of demand lost by alternative
+//' `j` that is captured by alternative `k` when a marginal change in
+//' alternative j's `elast_var` attribute reduces s_j.
+//'
+//' In MNL the per-draw realized coefficient is a constant, so it cancels in
+//' the ratio and the result is independent of the variable chosen. In MXL,
+//' the realized coefficient \eqn{\beta_{ik}^s} varies across individuals
+//' and draws, so the diversion ratio depends on which attribute is perturbed.
+//' For a variable with a fixed coefficient the dependence again vanishes
+//' (the constant cancels); for a random-coefficient variable it does not.
 //'
 //' @param theta parameter vector (beta, \[mu\], L, delta)
 //' @param X design matrix for fixed coefficients; sum(M_i) x K_x
@@ -1614,6 +1621,8 @@ arma::vec mxl_predict_shares(
 //' @param weights N x 1 vector with weights for each observation
 //' @param eta_draws Array with draws; K_w x S x N
 //' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param elast_var_idx 1-based index of the perturbed variable
+//' @param is_random_coef TRUE if the variable is in W (random coef), FALSE if in X (fixed)
 //' @param rc_correlation whether random coefficients are correlated
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
@@ -1630,15 +1639,22 @@ arma::mat mxl_diversion_ratios_parallel(
     const arma::vec& weights,
     const arma::cube& eta_draws,
     const arma::uvec& rc_dist,
+    const int elast_var_idx,
+    const bool is_random_coef,
     const bool rc_correlation = true,
     const bool rc_mean = false,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  // Diversion ratio (simulated): DR(k, j) = E_i[w_i * (1/S) sum_s P_ij(s) * P_ik(s)] /
-  //                                          E_i[w_i * (1/S) sum_s P_ij(s) * (1 - P_ij(s))]
-  // Cross-products MUST be averaged inside the draw loop. Computing
-  // (mean_s P_ij) * (mean_s P_ik) is biased. See docs/mixed_logit_math.md.
+  // Attribute-based diversion ratio (simulated):
+  //   DR(k, j) = E_i[ w_i * (1/S) sum_s beta_{ik}^s * P_ij(s) * P_ik(s) ]
+  //           /  E_i[ w_i * (1/S) sum_s beta_{ik}^s * P_ij(s) * (1 - P_ij(s)) ]
+  // where beta_{ik}^s is the realized coefficient on the perturbed variable
+  // for individual i and draw s. For a fixed coefficient beta_{ik}^s is a
+  // constant scalar and cancels (MNL property). For a random coefficient it
+  // varies and does not cancel. Cross-products P_ij(s)*P_ik(s) must be
+  // accumulated INSIDE the draw loop; averaging across draws first and
+  // multiplying later is biased. See docs/mixed_logit_math.md.
 
   // Basic dimensions
   const int N = M.size();
@@ -1648,6 +1664,20 @@ arma::mat mxl_diversion_ratios_parallel(
   const int n_params = theta.n_elem;
   const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
+  // Validate the perturbed variable index
+  const int var_idx = elast_var_idx - 1;
+  if (is_random_coef) {
+    if (var_idx < 0 || var_idx >= K_w) {
+      Rcpp::stop("elast_var_idx (%d) is out of bounds for W matrix (K_w=%d).",
+                 elast_var_idx, K_w);
+    }
+  } else {
+    if (var_idx < 0 || var_idx >= K_x) {
+      Rcpp::stop("elast_var_idx (%d) is out of bounds for X matrix (K_x=%d).",
+                 elast_var_idx, K_x);
+    }
+  }
+
   // Parameter block indices
   const int idx_beta_start = 0;
   const int idx_mu_start = K_x;
@@ -1656,6 +1686,7 @@ arma::mat mxl_diversion_ratios_parallel(
 
   // Extract beta
   arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+  const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
 
   // Extract and transform mu
   arma::vec mu_final = arma::zeros(K_w);
@@ -1771,6 +1802,14 @@ arma::mat mxl_diversion_ratios_parallel(
       for (int s = 0; s < Sdraw; ++s) {
         const auto gamma_i_s_final = Gamma_final.col(s);
 
+        // Realized coefficient on the perturbed variable for this (i, s).
+        // For a fixed coef this is the constant beta_k; for a random coef
+        // it is mu_final(var_idx) + gamma_i_s_final(var_idx), already
+        // transformed (exp(.) applied upstream when rc_dist == 1).
+        const double beta_k_eff = is_random_coef
+            ? (mu_final(var_idx) + gamma_i_s_final(var_idx))
+            : beta_k;
+
         // Build utility vector
         arma::vec V_s = arma::zeros(num_choices);
         arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
@@ -1786,13 +1825,13 @@ arma::mat mxl_diversion_ratios_parallel(
         double log_denom = std::log(arma::accu(arma::exp(V_s)));
         arma::vec P_s = arma::exp(V_s - log_denom);
 
-        // Accumulate cross-products inside the draw loop
+        // Accumulate cross-products weighted by beta_k_eff inside the draw loop
         for (int j_local = 0; j_local < num_choices; ++j_local) {
           const double P_j = P_s(j_local);
-          ind_den(j_local) += P_j * (1.0 - P_j);
+          ind_den(j_local) += beta_k_eff * P_j * (1.0 - P_j);
           for (int k_local = 0; k_local < num_choices; ++k_local) {
             if (k_local == j_local) continue;
-            ind_num(k_local, j_local) += P_j * P_s(k_local);
+            ind_num(k_local, j_local) += beta_k_eff * P_j * P_s(k_local);
           }
         }
       }  // end s loop
@@ -1823,10 +1862,11 @@ arma::mat mxl_diversion_ratios_parallel(
     }
   }  // end parallel region
 
-  // Final ratios with numerical guard
+  // Final ratios with numerical guard (denominator can be negative when
+  // beta_k_eff is negative, e.g. price; check magnitude, not sign)
   arma::mat DR = arma::zeros(J_total, J_total);
   for (int j = 0; j < J_total; ++j) {
-    if (global_denominator(j) > 1e-15) {
+    if (std::abs(global_denominator(j)) > 1e-15) {
       for (int k = 0; k < J_total; ++k) {
         if (k != j) {
           DR(k, j) = global_numerator(k, j) / global_denominator(j);

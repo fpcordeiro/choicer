@@ -449,12 +449,19 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
     .Call(`_choicer_mxl_predict_shares`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
-#' Diversion ratios for Mixed Logit (simulated)
+#' Diversion ratios for Mixed Logit (simulated, derivative-based)
 #'
-#' Computes the matrix of diversion ratios for a fitted Mixed Logit model.
-#' DR(k, j) is the (weighted) share of consumers who switch from alternative
-#' `j` to alternative `k` when `j` is removed (or its utility deteriorates
-#' marginally), averaged over individuals and Halton draws.
+#' Computes the matrix of attribute-based diversion ratios for a fitted
+#' Mixed Logit model. DR(k, j) is the fraction of demand lost by alternative
+#' `j` that is captured by alternative `k` when a marginal change in
+#' alternative j's `elast_var` attribute reduces s_j.
+#'
+#' In MNL the per-draw realized coefficient is a constant, so it cancels in
+#' the ratio and the result is independent of the variable chosen. In MXL,
+#' the realized coefficient \eqn{\beta_{ik}^s} varies across individuals
+#' and draws, so the diversion ratio depends on which attribute is perturbed.
+#' For a variable with a fixed coefficient the dependence again vanishes
+#' (the constant cancels); for a random-coefficient variable it does not.
 #'
 #' @param theta parameter vector (beta, \[mu\], L, delta)
 #' @param X design matrix for fixed coefficients; sum(M_i) x K_x
@@ -464,14 +471,16 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
 #' @param weights N x 1 vector with weights for each observation
 #' @param eta_draws Array with draws; K_w x S x N
 #' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param elast_var_idx 1-based index of the perturbed variable
+#' @param is_random_coef TRUE if the variable is in W (random coef), FALSE if in X (fixed)
 #' @param rc_correlation whether random coefficients are correlated
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
 #' @return J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 #' @export
-mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
+mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
 #' BLP contraction mapping for mixed logit
