@@ -401,6 +401,88 @@ mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_
     .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
+#' Per-observation simulated choice probabilities for Mixed Logit
+#'
+#' Returns the simulated choice probability for each (individual, alternative)
+#' row of `X`, averaged over the supplied Halton draws. Mirrors `mnl_predict`.
+#'
+#' @param theta parameter vector (beta, \[mu\], L, delta)
+#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param eta_draws Array with draws; K_w x S x N
+#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param rc_correlation whether random coefficients are correlated
+#' @param rc_mean whether mu parameters are estimated
+#' @param use_asc whether ASCs are included
+#' @param include_outside_option whether the outside option is present
+#' @return List with `choice_prob` (length sum(M)), `utility` (length sum(M),
+#'   simulated mean of the deterministic + W*gamma component), and, when
+#'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
+#' @export
+mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_predict`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
+}
+
+#' Predicted aggregate market shares for Mixed Logit
+#'
+#' Exported wrapper around the internal `mxl_predict_shares_internal`. Parses
+#' `theta` using the standard parameter ordering and returns the simulated
+#' weighted-average market shares.
+#'
+#' @param theta parameter vector (beta, \[mu\], L, delta)
+#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param eta_draws Array with draws; K_w x S x N
+#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param rc_correlation whether random coefficients are correlated
+#' @param rc_mean whether mu parameters are estimated
+#' @param use_asc whether ASCs are included
+#' @param include_outside_option whether outside option is included
+#' @return Vector of length J (or J+1 with outside option) of predicted shares.
+#' @export
+mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_predict_shares`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
+}
+
+#' Diversion ratios for Mixed Logit (simulated, derivative-based)
+#'
+#' Computes the matrix of attribute-based diversion ratios for a fitted
+#' Mixed Logit model. DR(k, j) is the fraction of demand lost by alternative
+#' `j` that is captured by alternative `k` when a marginal change in
+#' alternative j's `elast_var` attribute reduces s_j.
+#'
+#' In MNL the per-draw realized coefficient is a constant, so it cancels in
+#' the ratio and the result is independent of the variable chosen. In MXL,
+#' the realized coefficient \eqn{\beta_{ik}^s} varies across individuals
+#' and draws, so the diversion ratio depends on which attribute is perturbed.
+#' For a variable with a fixed coefficient the dependence again vanishes
+#' (the constant cancels); for a random-coefficient variable it does not.
+#'
+#' @param theta parameter vector (beta, \[mu\], L, delta)
+#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param eta_draws Array with draws; K_w x S x N
+#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param elast_var_idx 1-based index of the perturbed variable
+#' @param is_random_coef TRUE if the variable is in W (random coef), FALSE if in X (fixed)
+#' @param rc_correlation whether random coefficients are correlated
+#' @param rc_mean whether mu parameters are estimated
+#' @param use_asc whether ASCs are included
+#' @param include_outside_option whether outside option is included
+#' @return J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
+#' @export
+mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option)
+}
+
 #' BLP contraction mapping for mixed logit
 #'
 #' Finds the ASC (delta) parameters such that predicted market shares

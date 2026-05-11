@@ -287,3 +287,205 @@ test_that("blp.choicer_mxl errors without data", {
     "keep_data"
   )
 })
+
+# =============================================================================
+# MXL predict
+# =============================================================================
+
+test_that("predict.choicer_mxl(type='probabilities') returns list with choice_prob and utility", {
+  fit <- fit_small_mxl()
+  M <- fit$data$M
+
+  preds <- predict(fit, type = "probabilities")
+
+  expect_type(preds, "list")
+  expect_true("choice_prob" %in% names(preds))
+  expect_true("utility" %in% names(preds))
+  expect_length(preds$choice_prob, sum(M))
+  expect_true(all(preds$choice_prob >= 0))
+  expect_true(all(preds$choice_prob <= 1))
+})
+
+test_that("predict.choicer_mxl(type='shares') returns shares summing to 1", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  shares <- predict(fit, type = "shares")
+
+  # Fitted without outside option, so length should be J inside alts
+  expect_length(shares, J)
+  expect_equal(sum(shares), 1, tolerance = 1e-6)
+})
+
+test_that("predict.choicer_mxl(type='probabilities') sums to 1 within each individual", {
+  fit <- fit_small_mxl()
+  preds <- predict(fit, type = "probabilities")
+
+  M <- fit$data$M
+  # For each individual, the per-individual probabilities sum to 1
+  ends <- cumsum(M)
+  starts <- c(1L, head(ends, -1) + 1L)
+
+  per_id_sums <- vapply(
+    seq_along(M),
+    function(i) sum(preds$choice_prob[starts[i]:ends[i]]),
+    numeric(1)
+  )
+
+  expect_equal(per_id_sums, rep(1, length(M)), tolerance = 1e-6)
+})
+
+test_that("predict.choicer_mxl errors without keep_data", {
+  dt <- create_small_mxl_data()
+  fit <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 10L, control = list(maxeval = 50L),
+    keep_data = FALSE
+  )
+
+  expect_error(
+    predict(fit, type = "probabilities"),
+    "Refit with keep_data"
+  )
+})
+
+test_that("predict.choicer_mxl rejects unknown type", {
+  fit <- fit_small_mxl()
+
+  expect_error(predict(fit, type = "garbage"))
+})
+
+# =============================================================================
+# MXL diversion_ratios
+# =============================================================================
+
+test_that("diversion_ratios.choicer_mxl returns labeled J x J matrix", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit, wrt_var = "x1")
+
+  expect_true(is.matrix(dr))
+  expect_equal(dim(dr), c(J, J))
+  expect_true(all(is.finite(dr)))
+  expect_equal(rownames(dr), as.character(fit$alt_mapping[[2]]))
+  expect_equal(colnames(dr), as.character(fit$alt_mapping[[2]]))
+})
+
+test_that("diversion_ratios.choicer_mxl has zero diagonal", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit, wrt_var = "x1")
+
+  expect_equal(unname(diag(dr)), rep(0, J))
+})
+
+test_that("diversion_ratios.choicer_mxl column sums equal 1", {
+  fit <- fit_small_mxl()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit, wrt_var = "x1")
+
+  col_sums <- unname(colSums(dr))
+  expect_equal(col_sums, rep(1, J), tolerance = 1e-6)
+})
+
+test_that("diversion_ratios.choicer_mxl entries are non-negative (fixed-coef variable)", {
+  # For a fixed-coef variable, beta cancels in the ratio, so DR >= 0 always
+  fit <- fit_small_mxl()
+
+  dr <- diversion_ratios(fit, wrt_var = "x1")
+
+  expect_true(all(dr >= 0))
+})
+
+test_that("diversion_ratios.choicer_mxl errors without keep_data", {
+  dt <- create_small_mxl_data()
+  fit <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 10L, control = list(maxeval = 50L),
+    keep_data = FALSE
+  )
+
+  expect_error(
+    diversion_ratios(fit, wrt_var = "x1"),
+    "keep_data"
+  )
+})
+
+test_that("diversion_ratios.choicer_mxl is deterministic", {
+  fit <- fit_small_mxl()
+
+  dr1 <- diversion_ratios(fit, wrt_var = "x1")
+  dr2 <- diversion_ratios(fit, wrt_var = "x1")
+
+  expect_equal(dr1, dr2)
+})
+
+test_that("diversion_ratios.choicer_mxl depends on which random-coef variable is perturbed", {
+  # With random coefficients beta_{ik}^s varies across draws and does not
+  # cancel in the ratio. The diversion matrix should differ between w1 and w2.
+  fit <- fit_small_mxl()
+
+  dr_w1 <- diversion_ratios(fit, wrt_var = "w1", is_random_coef = TRUE)
+  dr_w2 <- diversion_ratios(fit, wrt_var = "w2", is_random_coef = TRUE)
+
+  # Both still satisfy the column-sum identity
+  expect_equal(unname(colSums(dr_w1)), rep(1, nrow(dr_w1)), tolerance = 1e-6)
+  expect_equal(unname(colSums(dr_w2)), rep(1, nrow(dr_w2)), tolerance = 1e-6)
+
+  # But the matrices themselves should differ (not equal up to numerical noise)
+  expect_false(isTRUE(all.equal(dr_w1, dr_w2, tolerance = 1e-3)))
+})
+
+test_that("MXL diversion_ratios collapses to MNL when sigma is near zero", {
+  # When Sigma -> 0, beta_{ik}^s = mu_k* + gamma_{ik}^{s*} -> mu_k* (a constant
+  # across draws and individuals), so beta cancels in the ratio and the MXL
+  # diversion matrix should match the MNL diversion matrix computed on the
+  # same dataset with the same effective coefficients.
+  dt <- create_small_mxl_data()
+
+  fit_mnl <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "w1"),
+    control = list(maxeval = 50L)
+  )
+
+  fit_mxl <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = "w1",
+    rc_correlation = FALSE, rc_mean = TRUE,
+    S = 20L, control = list(maxeval = 20L)
+  )
+
+  # Force MXL parameters to match MNL with near-zero variance.
+  # MXL layout (rc_mean=TRUE, rc_correlation=FALSE, 1 random coef):
+  #   theta = [beta_x1, mu_w1, L_11_param, ASC_2, ASC_3]
+  # MNL layout: [x1, w1, ASC_2, ASC_3].
+  pm <- fit_mxl$param_map
+  mnl_coef <- coef(fit_mnl)
+  fit_mxl$coefficients[pm$beta] <- mnl_coef["x1"]
+  fit_mxl$coefficients[pm$mu] <- mnl_coef["w1"]
+  fit_mxl$coefficients[pm$sigma] <- log(1e-8)  # L_diag = 1e-8 -> Sigma ~= 1e-16
+  fit_mxl$coefficients[pm$asc] <- mnl_coef[c("ASC_2", "ASC_3")]
+
+  dr_mnl <- diversion_ratios(fit_mnl)
+  dr_mxl_x1 <- diversion_ratios(fit_mxl, wrt_var = "x1")
+  dr_mxl_w1 <- diversion_ratios(fit_mxl, wrt_var = "w1", is_random_coef = TRUE)
+
+  # Strip dimnames for the numeric comparison (both have the same labels but
+  # all.equal is sensitive to attributes)
+  strip <- function(m) {
+    out <- unclass(m)
+    dimnames(out) <- NULL
+    out
+  }
+
+  # Fixed-coef wrt_var: beta cancels exactly, so should match to machine eps
+  expect_equal(strip(dr_mxl_x1), strip(dr_mnl), tolerance = 1e-6)
+  # Random-coef wrt_var with Sigma ~ 0: beta_{ik}^s ~ mu_w1, also cancels
+  expect_equal(strip(dr_mxl_w1), strip(dr_mnl), tolerance = 1e-6)
+})

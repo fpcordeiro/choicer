@@ -49,7 +49,7 @@ diversion_ratios(fit)                # diversion ratio matrix
 | Model | Function | Post-estimation |
 |-------|----------|-----------------|
 | Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
-| Mixed Logit | `run_mxlogit()` | `elasticities()`, `blp()` |
+| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
 | Nested Logit | `run_nestlogit()` | — |
 
 All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`.

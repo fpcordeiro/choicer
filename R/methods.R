@@ -575,24 +575,67 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"), ...
 
 #' Predict from a mixed logit model
 #'
-#' Computes simulated choice probabilities using stored Halton draws.
+#' Computes simulated choice probabilities or aggregate market shares using
+#' stored Halton draws.
 #'
 #' @param object A choicer_mxl object.
+#' @param type Either "probabilities" (per-observation simulated choice
+#'   probabilities) or "shares" (aggregate simulated market shares).
 #' @param ... Additional arguments (ignored).
-#' @returns A list with simulated choice probabilities.
+#' @returns For "probabilities": a list with `choice_prob` and `utility`
+#'   vectors averaged across simulation draws. For "shares": a named numeric
+#'   vector of simulated market shares per alternative.
 #' @examples
 #' \donttest{
-#' # predict() for mixed logit is not yet implemented.
-#' # Use elasticities() for post-estimation analysis.
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
+#' )
+#' predict(fit, type = "shares")
+#' predict(fit, type = "probabilities")
 #' }
 #' @export
-predict.choicer_mxl <- function(object, ...) {
+predict.choicer_mxl <- function(object, type = c("probabilities", "shares"), ...) {
+  type <- match.arg(type)
+
   if (is.null(object$data) || is.null(object$draws_info)) {
     stop("Prediction requires stored data and draws. ",
          "Refit with keep_data = TRUE.")
   }
-  stop("predict() for mixed logit is not yet implemented. ",
-       "Use elasticities() for post-estimation analysis.")
+
+  d <- object$data
+  eta_draws <- get_halton_normals(
+    S   = object$draws_info$S,
+    N   = object$draws_info$N,
+    K_w = object$draws_info$K_w
+  )
+
+  args <- list(
+    theta                  = object$coefficients,
+    X                      = d$X,
+    W                      = d$W,
+    alt_idx                = d$alt_idx,
+    M                      = d$M,
+    eta_draws              = eta_draws,
+    rc_dist                = object$rc_dist,
+    rc_correlation         = object$rc_correlation,
+    rc_mean                = object$rc_mean,
+    use_asc                = object$use_asc,
+    include_outside_option = object$include_outside_option
+  )
+
+  if (type == "probabilities") {
+    do.call(mxl_predict, args)
+  } else {
+    do.call(mxl_predict_shares, c(args, list(weights = d$weights)))
+  }
 }
 
 # --- Delta method for MXL summary -------------------------------------------
@@ -817,7 +860,10 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' BLP contraction mapping for multinomial logit model
 #'
 #' @param object A \code{choicer_mnl} object fitted with \code{keep_data = TRUE}.
-#' @param target_shares Numeric vector of target market shares (length J).
+#' @param target_shares Numeric vector of target market shares.
+#'   Length \code{J_inside} when no outside option, or \code{J_inside + 1}
+#'   (with the outside option's share at index 1) when
+#'   \code{include_outside_option = TRUE}.
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
 #'   uses the estimated ASCs from the fitted model.
 #' @param tol Convergence tolerance (default 1e-8).
@@ -849,8 +895,11 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
   J <- nrow(object$alt_mapping)
   if (is.null(delta_init)) {
     if (!is.null(pm$asc)) {
-      # ASCs exclude the reference alternative (fixed to 0); prepend 0 for full J-vector
-      delta_init <- c(0, object$coefficients[pm$asc])
+      delta_init <- if (object$include_outside_option) {
+        object$coefficients[pm$asc]            # length J_inside (all ASCs free)
+      } else {
+        c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
+      }
     } else {
       delta_init <- rep(0, J)
     }
@@ -936,12 +985,97 @@ elasticities.choicer_mxl <- function(object, elast_var,
   label_matrix(mat, object$alt_mapping)
 }
 
+# --- diversion_ratios: MXL ---------------------------------------------------
+
+#' Diversion ratios for mixed logit model
+#'
+#' Computes the attribute-based diversion ratio matrix. Entry (k, j) is the
+#' fraction of demand lost by alternative j that is captured by alternative k
+#' when a marginal change in alternative j's \code{wrt_var} attribute reduces
+#' s_j.
+#'
+#' Unlike MNL, the MXL diversion ratio depends on which variable is perturbed:
+#' the realised coefficient \eqn{\beta_{ik}^s} varies across individuals and
+#' draws and does not cancel in the ratio. For a variable with a fixed
+#' coefficient the result is independent of the variable (\eqn{\beta} cancels);
+#' for a random-coefficient variable it is not.
+#'
+#' @param object A \code{choicer_mxl} object fitted with \code{keep_data = TRUE}.
+#' @param wrt_var Variable used to perturb alternative j's utility: a column
+#'   name (character) or 1-based index. Indexes into X columns for fixed
+#'   coefficients, or W columns for random coefficients (when
+#'   \code{is_random_coef = TRUE}).
+#' @param is_random_coef Logical. \code{TRUE} if the variable has a random
+#'   coefficient (is in W), \code{FALSE} if fixed (in X). Default \code{FALSE}.
+#' @param ... Additional arguments (ignored).
+#' @returns A J x J diversion ratio matrix with alternative labels.
+#'   Cross-products are averaged across simulation draws inside the
+#'   integration to avoid Jensen-style bias.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mxlogit(
+#'   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+#'   covariate_cols = "x1", random_var_cols = "w1", S = 50L
+#' )
+#' diversion_ratios(fit, "x1")
+#' diversion_ratios(fit, "w1", is_random_coef = TRUE)
+#' }
+#' @export
+diversion_ratios.choicer_mxl <- function(object, wrt_var,
+                                         is_random_coef = FALSE, ...) {
+  if (is.null(object$data)) {
+    stop("diversion_ratios() requires stored data. Refit with keep_data = TRUE.")
+  }
+  if (is.null(object$draws_info)) {
+    stop("diversion_ratios() requires draws_info from a fitted MXL model.")
+  }
+  d <- object$data
+
+  col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
+  idx <- resolve_var_index(wrt_var, col_names)
+
+  eta_draws <- get_halton_normals(
+    S   = object$draws_info$S,
+    N   = object$draws_info$N,
+    K_w = object$draws_info$K_w
+  )
+
+  mat <- mxl_diversion_ratios_parallel(
+    theta                  = object$coefficients,
+    X                      = d$X,
+    W                      = d$W,
+    alt_idx                = d$alt_idx,
+    M                      = d$M,
+    weights                = d$weights,
+    eta_draws              = eta_draws,
+    rc_dist                = object$rc_dist,
+    elast_var_idx          = idx,
+    is_random_coef         = is_random_coef,
+    rc_correlation         = object$rc_correlation,
+    rc_mean                = object$rc_mean,
+    use_asc                = object$use_asc,
+    include_outside_option = object$include_outside_option
+  )
+
+  label_matrix(mat, object$alt_mapping)
+}
+
 # --- blp: MXL ----------------------------------------------------------------
 
 #' BLP contraction mapping for mixed logit model
 #'
 #' @param object A \code{choicer_mxl} object fitted with \code{keep_data = TRUE}.
-#' @param target_shares Numeric vector of target market shares (length J).
+#' @param target_shares Numeric vector of target market shares.
+#'   Length \code{J_inside} when no outside option, or \code{J_inside + 1}
+#'   (with the outside option's share at index 1) when
+#'   \code{include_outside_option = TRUE}.
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
 #'   uses the estimated ASCs from the fitted model.
 #' @param tol Convergence tolerance (default 1e-8).
@@ -979,7 +1113,11 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
   J <- nrow(object$alt_mapping)
   if (is.null(delta_init)) {
     if (!is.null(pm$asc)) {
-      delta_init <- c(0, object$coefficients[pm$asc])
+      delta_init <- if (object$include_outside_option) {
+        object$coefficients[pm$asc]            # length J_inside (all ASCs free)
+      } else {
+        c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
+      }
     } else {
       delta_init <- rep(0, J)
     }
