@@ -421,7 +421,17 @@ invert_hessian <- function(hess) {
   })
 
   if (!singular_flag && !is.null(vcov_mat)) {
-    se <- sqrt(diag(vcov_mat))
+    diag_vcov <- diag(vcov_mat)
+    neg <- !is.na(diag_vcov) & diag_vcov < 0
+    if (any(neg)) {
+      message(
+        "Information matrix is not positive definite; ",
+        sum(neg), " variance(s) negative. Standard errors set to NA for ",
+        "those parameters (optimum may not have been reached)."
+      )
+      diag_vcov[neg] <- NA_real_
+    }
+    se <- sqrt(diag_vcov)
   } else {
     message("Standard errors set to NA due to information matrix inversion failure.")
   }
