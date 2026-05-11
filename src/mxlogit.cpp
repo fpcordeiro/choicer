@@ -1664,7 +1664,18 @@ arma::mat mxl_diversion_ratios_parallel(
   const int n_params = theta.n_elem;
   const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
-  // Validate the perturbed variable index
+  // Validate the perturbed variable index. Catch the empty-block cases
+  // first (K_x=0 with is_random_coef=FALSE, or K_w=0 with is_random_coef=TRUE)
+  // with an actionable message before the index-range check.
+  if (!is_random_coef && K_x == 0) {
+    Rcpp::stop("Cannot compute diversion ratios w.r.t. a fixed-coefficient "
+               "variable: the model has no fixed coefficients (K_x = 0). "
+               "Did you mean is_random_coef = TRUE?");
+  }
+  if (is_random_coef && K_w == 0) {
+    Rcpp::stop("Cannot compute diversion ratios w.r.t. a random-coefficient "
+               "variable: the model has no random coefficients (K_w = 0).");
+  }
   const int var_idx = elast_var_idx - 1;
   if (is_random_coef) {
     if (var_idx < 0 || var_idx >= K_w) {

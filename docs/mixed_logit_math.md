@@ -4,14 +4,15 @@ This document provides a detailed mathematical description of the mixed logit (r
 
 ## Table of Contents
 
-1. [Notation](#notation)
-2. [Model Definition](#1-model-definition)
-3. [Log-Likelihood Function](#2-log-likelihood-function)
-4. [Gradient Computation](#3-gradient-computation)
-5. [Hessian Computation](#4-hessian-computation)
-6. [Implementation Details](#5-implementation-details)
-7. [Elasticity Computation](#6-elasticity-computation)
-8. [BLP Contraction Mapping](#7-blp-contraction-mapping)
+0. [Notation](#notation)
+1. [Model Definition](#1-model-definition)
+2. [Log-Likelihood Function](#2-log-likelihood-function)
+3. [Gradient Computation](#3-gradient-computation)
+4. [Hessian Computation](#4-hessian-computation)
+5. [Implementation Details](#5-implementation-details)
+6. [Elasticity Computation](#6-elasticity-computation)
+7. [Diversion Ratios](#7-diversion-ratios)
+8. [BLP Contraction Mapping](#8-blp-contraction-mapping)
 
 ---
 
@@ -511,9 +512,9 @@ $$
 
 ---
 
-## 6.5 Diversion Ratios
+## 7. Diversion Ratios
 
-### 6.5.1 Definition
+### 7.1 Definition
 
 The *attribute-based* diversion ratio from alternative $j$ to alternative $m$ with respect to attribute $k$ is
 
@@ -523,24 +524,37 @@ $$
 
 where $s_j = \frac{1}{\sum_i w_i}\sum_i w_i \bar{P}_{ij}$ is the aggregate share. It is the fraction of demand lost by $j$ that is captured by $m$ when a marginal change in $j$'s attribute $k$ reduces $s_j$.
 
-### 6.5.2 MNL Special Case (β cancels)
+### 7.2 MNL Special Case (β cancels)
 
-For multinomial logit, the per-individual derivatives are
+For multinomial logit, the per-individual derivatives of the choice probability are
 
 $$
 \frac{\partial P_{ij}}{\partial x_{j,k}} = \beta_k\, P_{ij}(1 - P_{ij}), \qquad
 \frac{\partial P_{im}}{\partial x_{j,k}} = -\beta_k\, P_{ij}P_{im} \quad (m \neq j).
 $$
 
-Aggregating with weights $w_i$, the constant $\beta_k$ factors out of both numerator and denominator and cancels:
+Letting $\bar{w} = \sum_i w_i$, the aggregate share derivatives are
 
 $$
-\mathrm{DR}_{j \to m}^{\text{MNL}} \;=\; \frac{\sum_i w_i\, P_{ij} P_{im}}{\sum_i w_i\, P_{ij}(1 - P_{ij})}.
+\frac{\partial s_j}{\partial x_{j,k}} \;=\; \frac{1}{\bar{w}}\sum_i w_i \frac{\partial P_{ij}}{\partial x_{j,k}} \;=\; \beta_k \cdot \frac{1}{\bar{w}}\sum_i w_i\, P_{ij}(1 - P_{ij}),
 $$
 
-The result is therefore independent of which attribute is perturbed — this is a special property of MNL.
+$$
+\frac{\partial s_m}{\partial x_{j,k}} \;=\; -\,\beta_k \cdot \frac{1}{\bar{w}}\sum_i w_i\, P_{ij} P_{im}.
+$$
 
-### 6.5.3 MXL: β Does Not Cancel
+Because $\beta_k$ is a scalar constant, it pulls out of both weighted sums. Forming the ratio,
+
+$$
+\mathrm{DR}_{j \to m}^{\text{MNL}}
+\;=\; -\,\frac{\partial s_m / \partial x_{j,k}}{\partial s_j / \partial x_{j,k}}
+\;=\; \frac{\beta_k \cdot \tfrac{1}{\bar{w}}\sum_i w_i\, P_{ij} P_{im}}{\beta_k \cdot \tfrac{1}{\bar{w}}\sum_i w_i\, P_{ij}(1 - P_{ij})}
+\;=\; \frac{\sum_i w_i\, P_{ij} P_{im}}{\sum_i w_i\, P_{ij}(1 - P_{ij})},
+$$
+
+with $\beta_k$ and $1/\bar{w}$ cancelling. The result is independent of which attribute is perturbed — this is a special property of MNL.
+
+### 7.3 MXL: β Does Not Cancel
 
 For mixed logit the realized coefficient on a random variable for individual $i$ at draw $s$ is
 
@@ -563,7 +577,7 @@ $$
 
 Because $\beta_{ik}^s$ varies across $(i, s)$, it cannot be pulled out of the sums and does not cancel. The MXL diversion ratio therefore *depends on the perturbed variable*. For a variable with a fixed coefficient the dependence again vanishes ($\beta_{ik}^s$ is a constant scalar); for a random-coefficient variable it does not.
 
-### 6.5.4 Properties
+### 7.4 Properties
 
 **Column-sum identity.** For each $j$, $\sum_{m \neq j} \mathrm{DR}_{j \to m} = 1$. This follows from $\sum_{m \neq j} P_{ij}^s P_{im}^s = P_{ij}^s(1 - P_{ij}^s)$, which holds inside the draw sum and is preserved through the same $\beta_{ik}^s$ weight on both sides.
 
@@ -575,9 +589,9 @@ Because $\beta_{ik}^s$ varies across $(i, s)$, it cannot be pulled out of the su
 
 ---
 
-## 7. BLP Contraction Mapping
+## 8. BLP Contraction Mapping
 
-### 7.1 Problem Statement
+### 8.1 Problem Statement
 
 Given observed market shares $s_j$, find the ASC parameters $\delta_j$ such that the model-predicted shares match the observed shares:
 
@@ -587,7 +601,7 @@ $$
 
 where $\hat{s}_j(\delta)$ is the predicted market share for alternative $j$ computed using simulated probabilities.
 
-### 7.2 Simulated Market Shares
+### 8.2 Simulated Market Shares
 
 The predicted market share for alternative $j$ is:
 
@@ -603,7 +617,7 @@ $$
 
 and $P_{ij}^s(\delta)$ is the probability for individual $i$, alternative $j$, and draw $s$, which depends on $\delta$ through the utility specification.
 
-### 7.3 Contraction Mapping Algorithm
+### 8.3 Contraction Mapping Algorithm
 
 Berry, Levinsohn, and Pakes (1995) show that the following iteration converges to the solution:
 
@@ -617,7 +631,7 @@ $$
 \delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
 $$
 
-### 7.4 Implementation Details
+### 8.4 Implementation Details
 
 1. **Initialization**: Start with initial guess $\delta^{(0)}$
 2. **Prediction**: Compute predicted shares $\hat{s}(\delta^{(t)})$ using `mxl_predict_shares_internal`

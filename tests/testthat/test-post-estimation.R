@@ -441,6 +441,51 @@ test_that("diversion_ratios.choicer_mxl depends on which random-coef variable is
   expect_false(isTRUE(all.equal(dr_w1, dr_w2, tolerance = 1e-3)))
 })
 
-test_that("MXL diversion_ratios approximates MNL when variance is near zero", {
-  skip("MXL->MNL collapse sanity check requires deeper integration")
+test_that("MXL diversion_ratios collapses to MNL when sigma is near zero", {
+  # When Sigma -> 0, beta_{ik}^s = mu_k* + gamma_{ik}^{s*} -> mu_k* (a constant
+  # across draws and individuals), so beta cancels in the ratio and the MXL
+  # diversion matrix should match the MNL diversion matrix computed on the
+  # same dataset with the same effective coefficients.
+  dt <- create_small_mxl_data()
+
+  fit_mnl <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "w1"),
+    control = list(maxeval = 50L)
+  )
+
+  fit_mxl <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = "w1",
+    rc_correlation = FALSE, rc_mean = TRUE,
+    S = 20L, control = list(maxeval = 20L)
+  )
+
+  # Force MXL parameters to match MNL with near-zero variance.
+  # MXL layout (rc_mean=TRUE, rc_correlation=FALSE, 1 random coef):
+  #   theta = [beta_x1, mu_w1, L_11_param, ASC_2, ASC_3]
+  # MNL layout: [x1, w1, ASC_2, ASC_3].
+  pm <- fit_mxl$param_map
+  mnl_coef <- coef(fit_mnl)
+  fit_mxl$coefficients[pm$beta] <- mnl_coef["x1"]
+  fit_mxl$coefficients[pm$mu] <- mnl_coef["w1"]
+  fit_mxl$coefficients[pm$sigma] <- log(1e-8)  # L_diag = 1e-8 -> Sigma ~= 1e-16
+  fit_mxl$coefficients[pm$asc] <- mnl_coef[c("ASC_2", "ASC_3")]
+
+  dr_mnl <- diversion_ratios(fit_mnl)
+  dr_mxl_x1 <- diversion_ratios(fit_mxl, wrt_var = "x1")
+  dr_mxl_w1 <- diversion_ratios(fit_mxl, wrt_var = "w1", is_random_coef = TRUE)
+
+  # Strip dimnames for the numeric comparison (both have the same labels but
+  # all.equal is sensitive to attributes)
+  strip <- function(m) {
+    out <- unclass(m)
+    dimnames(out) <- NULL
+    out
+  }
+
+  # Fixed-coef wrt_var: beta cancels exactly, so should match to machine eps
+  expect_equal(strip(dr_mxl_x1), strip(dr_mnl), tolerance = 1e-6)
+  # Random-coef wrt_var with Sigma ~ 0: beta_{ik}^s ~ mu_w1, also cancels
+  expect_equal(strip(dr_mxl_w1), strip(dr_mnl), tolerance = 1e-6)
 })
