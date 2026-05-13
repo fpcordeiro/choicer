@@ -144,6 +144,8 @@ where $J$ is the diagonal Jacobian of the natural-from-scaled map: entries are $
 
 **Log-normal random coefficients.** The shifted log-normal parameterization $\beta_k = \exp(\mu_k) + \exp((L\eta)_k)$ does not admit a closed-form back-transform under multiplicative column scaling: dividing the full distribution of $\beta_k$ by $s_k^W$ cannot be re-expressed as a single shifted log-normal with shifted $(\mu_k, L_{k,\cdot})$, because the two $\exp$ terms cannot share a common scale factor. The implementation therefore passes log-normal $W$ columns through unscaled: $s_k^W := 1$ whenever `rc_dist[k] == 1`. The user retains responsibility for choosing reasonable units for log-normal RC variables.
 
+**Alternative scale denominators.** The `scale_vars` option also accepts `"mad"` (`stats::mad`, equal to $1.4826 \times \text{median}|X_{\cdot k} - \text{median}(X_{\cdot k})|$) and `"iqr"` (`stats::IQR(x) / 1.349`); both are SD-equivalent under normality and yield the same Jacobian construction as `"sd"` — only the per-column denominator $s_k^X$ (or $s_k^W$) differs. The robust denominators are preferable when heavy-tailed columns cause the sample SD to be dominated by outliers.
+
 ---
 
 ## 2. Log-Likelihood Function
