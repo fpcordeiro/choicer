@@ -120,7 +120,7 @@
 #' @param level Confidence level for the Wald CI and coverage indicator.
 #'   Default `0.95`.
 #' @param ... Unused.
-#' @return See class-specific methods.
+#' @returns See class-specific methods.
 #' @examples
 #' \donttest{
 #' sim <- simulate_mnl_data(N = 2000, J = 4, seed = 123)
@@ -214,7 +214,7 @@ print.choicer_recovery <- function(x, ...) {
 #' @param progress Logical; print a one-line progress update per iteration in
 #'   serial mode. Ignored when `parallel = TRUE`.
 #' @param ... Unused.
-#' @return A `choicer_mc` object: a list with elements `replications` (a long
+#' @returns A `choicer_mc` object: a list with elements `replications` (a long
 #'   `data.table` with one row per estimated parameter per replication) and
 #'   `meta` (run metadata).
 #' @examples
@@ -491,7 +491,7 @@ print.choicer_mc_summary <- function(x, ...) {
 #'   `1.4 / sqrt(R)` term approximates the large-sample SD of
 #'   `mean_se / sd_emp`. The floor guarantees the band is never tighter
 #'   than the historical hard cutoff. Defaults to `0.10`.
-#' @return An object of class `choicer_mc_asymptotics` — a `data.table`
+#' @returns An object of class `choicer_mc_asymptotics` — a `data.table`
 #'   with one row per unique parameter and columns documented above — with
 #'   `meta` attached as an attribute (`attr(x, "meta")`).
 #' @examples

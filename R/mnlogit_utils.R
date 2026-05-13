@@ -264,7 +264,7 @@ prepare_mnl_data <- function(
     include_outside_option = FALSE
 ) {
   ## Preliminary housekeeping --------------------------------------------------
-  dt <- as.data.table(data)[]
+  dt <- data.table::as.data.table(data)[]
 
   # Check if all relevant variables are available
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
@@ -333,7 +333,7 @@ prepare_mnl_data <- function(
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id
   ##   between ids   : ascending id
-  setorderv(dt, c(id_col, "alt_int"))
+  data.table::setorderv(dt, c(id_col, "alt_int"))
 
   ## index of each row within its choice set
   dt[, idx_in_group := seq_len(.N), by = id_col]
@@ -364,7 +364,7 @@ prepare_mnl_data <- function(
     chosen_dt <- dt[get(choice_col) == 1, .(pos = idx_in_group), by = id_col]
 
     # match chosen ids back to the master index vector
-    setkeyv(chosen_dt, id_col)
+    data.table::setkeyv(chosen_dt, id_col)
     choice_idx[match(chosen_dt[[id_col]], ids)] <- chosen_dt$pos
   } else {
     # exactly one explicit choice per id
@@ -380,11 +380,11 @@ prepare_mnl_data <- function(
       , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
       keyby = c("alt_int", alt_col)
     ]
-    outside_alt_mapping <- data.table(alt_int=0L, N_OBS = N, N_CHOICES = sum(choice_idx == 0L))
+    outside_alt_mapping <- data.table::data.table(alt_int=0L, N_OBS = N, N_CHOICES = sum(choice_idx == 0L))
     outside_alt_mapping[[alt_col]] <- outside_opt_label
     alt_mapping <- list(outside_alt_mapping, inside_alt_mapping) |>
-      rbindlist(use.names = TRUE, fill = TRUE)
-    setcolorder(alt_mapping, c("alt_int", alt_col, "N_OBS", "N_CHOICES"))
+      data.table::rbindlist(use.names = TRUE, fill = TRUE)
+    data.table::setcolorder(alt_mapping, c("alt_int", alt_col, "N_OBS", "N_CHOICES"))
   } else {
     alt_mapping <- dt[
       , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),

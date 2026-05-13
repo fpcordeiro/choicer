@@ -17,7 +17,7 @@
 //' @param weights N x 1 vector with weights for each observation.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-//' @return List with loglikelihood and gradient evaluated at input arguments
+//' @returns List with loglikelihood and gradient evaluated at input arguments
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -373,7 +373,7 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
 //' @param eps finite difference step size
-//' @return Hessian evaluated at input arguments
+//' @returns Hessian evaluated at input arguments
 //' @examples
 //' \donttest{
 //' library(data.table)

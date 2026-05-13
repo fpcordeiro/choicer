@@ -36,7 +36,7 @@
 #'   (e.g. `beta`, `delta`, `Sigma`, `mu`, `lambdas`).
 #' @param settings Named list of DGP settings (e.g. `N`, `J`, `K_x`).
 #' @param model Character scalar: `"mnl"`, `"mxl"`, or `"nl"`.
-#' @return A list of class `choicer_sim`.
+#' @returns A list of class `choicer_sim`.
 #' @export
 new_choicer_sim <- function(data, true_params, settings, model) {
   if (!(is.data.frame(data) || data.table::is.data.table(data))) {
@@ -96,7 +96,7 @@ print.choicer_sim <- function(x, ...) {
 #' @param vary_choice_set Logical; if `TRUE` (default) choice set size is
 #'   sampled uniformly from `2:J`; if `FALSE` every individual faces all `J`
 #'   inside alternatives.
-#' @return A `choicer_sim` object.
+#' @returns A `choicer_sim` object.
 #' @examples
 #' \donttest{
 #' sim <- simulate_mnl_data(N = 1000, J = 5, seed = 123)
@@ -181,7 +181,7 @@ simulate_mnl_data <- function(N = 5000,
 #' @param outside_option Logical; include outside option with `alt = 0`.
 #' @param vary_choice_set Logical; if `TRUE` (default) choice set size is
 #'   sampled uniformly from `2:J`.
-#' @return A `choicer_sim` object. `true_params` includes `beta`, `delta`,
+#' @returns A `choicer_sim` object. `true_params` includes `beta`, `delta`,
 #'   `Sigma`, `L_params` (packed Cholesky parameters), `mu`, `rc_dist`,
 #'   `rc_correlation`.
 #' @details Random coefficients are constructed to match the estimator's
@@ -336,7 +336,7 @@ simulate_mxl_data <- function(N = 5000,
 #'   alternatives.
 #' @param lambdas Numeric vector of dissimilarity parameters, one per nest.
 #' @param seed Random seed (`NULL` skips `set.seed()`).
-#' @return A `choicer_sim` object. `true_params` includes `beta`, `delta`,
+#' @returns A `choicer_sim` object. `true_params` includes `beta`, `delta`,
 #'   `lambdas`; `settings` includes the `nest_structure`. The returned
 #'   `data` retains a `nest` column (integer, with `0L` for the outside
 #'   option) for convenient use with [run_nestlogit()].

@@ -295,7 +295,7 @@ prepare_nl_data <- function(
     outside_opt_label = NULL,
     include_outside_option = FALSE
 ) {
-  dt <- as.data.table(data)[]
+  dt <- data.table::as.data.table(data)[]
 
   # Validate nest_col exists
   if (!nest_col %in% names(dt)) {

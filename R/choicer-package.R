@@ -3,7 +3,7 @@
 
 # Suppress R CMD check NOTEs for data.table NSE variables
 utils::globalVariables(c(
-  ".", "..covariate_cols", "..random_var_cols",
+  ".", "..covariate_cols", "..random_var_cols", "..show_cols",
   "HAS_NA", "N_CHOICES", "N_OBS", "alt_int", "idx_in_group",
   # DGP / simulation NSE variables (R/simulation.R)
   "alt", "choice", "delta_val", "epsilon", "utility", "id",

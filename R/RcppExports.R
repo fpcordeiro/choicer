@@ -14,7 +14,7 @@
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return List with loglikelihood and gradient evaluated at input arguments
+#' @returns List with loglikelihood and gradient evaluated at input arguments
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -43,7 +43,7 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return List with choice probability and utility for each choice situation evaluated at input arguments
+#' @returns List with choice probability and utility for each choice situation evaluated at input arguments
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -72,7 +72,7 @@ mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_op
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return vector with predicted market shares for each alternative
+#' @returns vector with predicted market shares for each alternative
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -104,7 +104,7 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 #' @param tol convergence tolerance
 #' @param max_iter maximum number of iterations
-#' @return vector with contraction's delta (ASCs) output
+#' @returns vector with contraction's delta (ASCs) output
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -135,7 +135,7 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return Hessian matrix of the negative log-likelihood
+#' @returns Hessian matrix of the negative log-likelihood
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -169,7 +169,7 @@ mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weight
 #' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option
-#' @return J x J matrix of aggregate elasticities
+#' @returns J x J matrix of aggregate elasticities
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -202,7 +202,7 @@ mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option
-#' @return J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+#' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -231,7 +231,7 @@ build_L_mat <- function(L_params, K_w, rc_correlation) {
 #' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 #' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 #' @param rc_correlation whether random coefficients are correlated
-#' @return matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
+#' @returns matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
 #' @examples
 #' L_params <- c(log(1.0), 0.3, log(0.5))
 #' Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
@@ -260,7 +260,7 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
 #' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return List with loglikelihood and gradient evaluated at input arguments
+#' @returns List with loglikelihood and gradient evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 #'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
@@ -293,7 +293,7 @@ mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, we
 #' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 #' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 #' @param rc_correlation whether random coefficients are correlated
-#' @return Jacobian (dVech(Sigma) / dTheta)
+#' @returns Jacobian (dVech(Sigma) / dTheta)
 #' @examples
 #' L_params <- c(log(0.8), 0.2, log(0.6))
 #' J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
@@ -321,7 +321,7 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' @param rc_mean whether to estimate means for random coefficients.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return Hessian evaluated at input arguments
+#' @returns Hessian evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 #'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
@@ -371,7 +371,7 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' @param rc_mean whether to estimate means for random coefficients.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @return n_params x n_params PSD matrix representing the observed information
+#' @returns n_params x n_params PSD matrix representing the observed information
 #'   matrix estimated by the outer product of gradients (same sign convention
 #'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
 #'   be inverted directly to obtain vcov).
@@ -417,7 +417,7 @@ mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether the outside option is present
-#' @return List with `choice_prob` (length sum(M)), `utility` (length sum(M),
+#' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 #'   simulated mean of the deterministic + W*gamma component), and, when
 #'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
 #' @export
@@ -443,7 +443,7 @@ mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlat
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
-#' @return Vector of length J (or J+1 with outside option) of predicted shares.
+#' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 #' @export
 mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mxl_predict_shares`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
@@ -477,7 +477,7 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
-#' @return J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
+#' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 #' @export
 mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option)
@@ -506,7 +506,7 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' @param include_outside_option whether outside option is included
 #' @param tol convergence tolerance (default 1e-8)
 #' @param max_iter maximum iterations (default 1000)
-#' @return vector with converged delta (ASC) values
+#' @returns vector with converged delta (ASC) values
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -553,7 +553,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, 
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
-#' @return J x J matrix of aggregate elasticities
+#' @returns J x J matrix of aggregate elasticities
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -593,7 +593,7 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #' @param weights N x 1 vector with weights for each observation.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-#' @return List with loglikelihood and gradient evaluated at input arguments
+#' @returns List with loglikelihood and gradient evaluated at input arguments
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -630,7 +630,7 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
 #' @param eps finite difference step size
-#' @return Hessian evaluated at input arguments
+#' @returns Hessian evaluated at input arguments
 #' @examples
 #' \donttest{
 #' library(data.table)

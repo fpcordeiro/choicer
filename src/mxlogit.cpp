@@ -41,7 +41,7 @@ arma::mat build_L_mat(const arma::vec &L_params, const int K_w,
 //' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
-//' @return matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
+//' @returns matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
 //' @examples
 //' L_params <- c(log(1.0), 0.3, log(0.5))
 //' Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
@@ -74,7 +74,7 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 //' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
 //' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return List with loglikelihood and gradient evaluated at input arguments
+//' @returns List with loglikelihood and gradient evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 //'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
@@ -441,7 +441,7 @@ inline arma::vec vech(const arma::mat &M) {
 //' @param L_params flattened choleski decomposition version of the random coefficient parameters matrix
 //' @param K_w dimension of the random coefficient parameter (symmetric) matrix
 //' @param rc_correlation whether random coefficients are correlated
-//' @return Jacobian (dVech(Sigma) / dTheta)
+//' @returns Jacobian (dVech(Sigma) / dTheta)
 //' @examples
 //' L_params <- c(log(0.8), 0.2, log(0.6))
 //' J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
@@ -506,7 +506,7 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //' @param rc_mean whether to estimate means for random coefficients.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return Hessian evaluated at input arguments
+//' @returns Hessian evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 //'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
@@ -858,7 +858,7 @@ arma::mat mxl_hessian_parallel(
 //' @param rc_mean whether to estimate means for random coefficients.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return n_params x n_params PSD matrix representing the observed information
+//' @returns n_params x n_params PSD matrix representing the observed information
 //'   matrix estimated by the outer product of gradients (same sign convention
 //'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
 //'   be inverted directly to obtain vcov).
@@ -1323,7 +1323,7 @@ arma::vec mxl_predict_shares_internal(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether the outside option is present
-//' @return List with `choice_prob` (length sum(M)), `utility` (length sum(M),
+//' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 //'   simulated mean of the deterministic + W*gamma component), and, when
 //'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
 //' @export
@@ -1519,7 +1519,7 @@ Rcpp::List mxl_predict(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
-//' @return Vector of length J (or J+1 with outside option) of predicted shares.
+//' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 //' @export
 // [[Rcpp::export]]
 arma::vec mxl_predict_shares(
@@ -1627,7 +1627,7 @@ arma::vec mxl_predict_shares(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
-//' @return J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
+//' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 //' @export
 // [[Rcpp::export]]
 arma::mat mxl_diversion_ratios_parallel(
@@ -1912,7 +1912,7 @@ arma::mat mxl_diversion_ratios_parallel(
 //' @param include_outside_option whether outside option is included
 //' @param tol convergence tolerance (default 1e-8)
 //' @param max_iter maximum iterations (default 1000)
-//' @return vector with converged delta (ASC) values
+//' @returns vector with converged delta (ASC) values
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -2100,7 +2100,7 @@ arma::vec mxl_blp_contraction(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
-//' @return J x J matrix of aggregate elasticities
+//' @returns J x J matrix of aggregate elasticities
 //' @examples
 //' \donttest{
 //' library(data.table)

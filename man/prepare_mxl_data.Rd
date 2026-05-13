@@ -39,7 +39,21 @@ prepare_mxl_data(
 \item{rc_correlation}{Logical indicating whether random coefficients are correlated. Default is FALSE.}
 }
 \value{
-A list containing prepared inputs for mixed logit estimation, including rc_correlation.
+A \code{choicer_data_mxl} object (list) containing:
+\itemize{
+\item \code{X}: Fixed-coefficient design matrix (sum(M) x K_x).
+\item \code{W}: Random-coefficient design matrix (sum(M) x K_w).
+\item \code{alt_idx}: Integer vector of alternative indices.
+\item \code{choice_idx}: Integer vector of chosen alternative indices.
+\item \code{M}: Integer vector with number of alternatives per choice situation.
+\item \code{N}: Number of choice situations.
+\item \code{weights}: Vector of weights.
+\item \code{include_outside_option}: Logical flag.
+\item \code{rc_correlation}: Logical flag.
+\item \code{alt_mapping}: data.table mapping alternatives to summary statistics.
+\item \code{dropped_cols}: Names of columns dropped due to collinearity, if any.
+\item \code{data_spec}: List with column-name metadata.
+}
 }
 \description{
 Prepares and validates inputs for mixed logit estimation routine.

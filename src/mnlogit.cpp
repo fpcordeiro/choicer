@@ -14,7 +14,7 @@
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return List with loglikelihood and gradient evaluated at input arguments
+//' @returns List with loglikelihood and gradient evaluated at input arguments
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -197,7 +197,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' @param M N x 1 vector with number of alternatives for each individual
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return List with choice probability and utility for each choice situation evaluated at input arguments
+//' @returns List with choice probability and utility for each choice situation evaluated at input arguments
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -400,7 +400,7 @@ arma::vec mnl_predict_shares_internal(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return vector with predicted market shares for each alternative
+//' @returns vector with predicted market shares for each alternative
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -479,7 +479,7 @@ arma::vec mnl_predict_shares(
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
 //' @param tol convergence tolerance
 //' @param max_iter maximum number of iterations
-//' @return vector with contraction's delta (ASCs) output
+//' @returns vector with contraction's delta (ASCs) output
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -587,7 +587,7 @@ arma::vec blp_contraction(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @return Hessian matrix of the negative log-likelihood
+//' @returns Hessian matrix of the negative log-likelihood
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -767,7 +767,7 @@ arma::mat mnl_loglik_hessian_parallel(
 //' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option
-//' @return J x J matrix of aggregate elasticities
+//' @returns J x J matrix of aggregate elasticities
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -967,7 +967,7 @@ arma::mat mnl_elasticities_parallel(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option
-//' @return J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+//' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
 //' @examples
 //' \donttest{
 //' library(data.table)
