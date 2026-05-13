@@ -22,6 +22,7 @@ run_mxlogit(
   optimizer = NULL,
   control = list(),
   se_method = c("hessian", "bhhh"),
+  scale_vars = c("none", "sd"),
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
@@ -79,6 +80,17 @@ log-likelihood, or \code{"bhhh"} for the BHHH/outer-product-of-gradients
 (OPG) estimator. BHHH scales better to large problems (many alternatives
 or simulation draws) but may underestimate standard errors in finite
 samples or away from the optimum.}
+
+\item{scale_vars}{Pre-estimation column scaling for design matrices.
+Either \code{"none"} (default) for no scaling, or \code{"sd"} to divide
+every column of \code{X} and \code{W} by its sample standard deviation
+before optimization. Improves Hessian conditioning when covariates span
+different orders of magnitude. Coefficients and standard errors are
+back-transformed to the user's natural units via the delta method, so
+reported quantities are invariant to this choice. Columns of \code{W}
+associated with log-normal random coefficients (\code{rc_dist == 1}) are
+passed through unchanged, since the shifted log-normal parameterization
+does not admit a closed-form back-transform under multiplicative scaling.}
 
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
 equal weights are used.}
