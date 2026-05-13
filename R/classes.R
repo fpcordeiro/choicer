@@ -66,6 +66,17 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #' @param sigma Reconstructed covariance matrix of random coefficients (or NULL)
 #' @param se_method Character. Method used for standard errors: "hessian"
 #'   (analytical Hessian, default) or "bhhh" (outer product of gradients).
+#' @param scale_vars Character. Pre-estimation scaling applied to the design
+#'   matrices: \code{"none"} (default) or \code{"sd"}.
+#' @param sX Named numeric vector of column scales used to standardize \code{X}
+#'   during optimization. Defaults to a vector of 1s (no scaling applied) when
+#'   \code{scale_vars = "none"}; equals \code{apply(X, 2, sd)} when
+#'   \code{scale_vars = "sd"}.
+#' @param sW Named numeric vector of column scales used to standardize \code{W}
+#'   during optimization. Defaults to a vector of 1s when
+#'   \code{scale_vars = "none"}; equals \code{apply(W, 2, sd)} for normal
+#'   random-coefficient columns when \code{scale_vars = "sd"}, with entries for
+#'   log-normal columns (\code{rc_dist[k] == 1}) carved out to 1.
 #' @returns A choicer_mxl object (S3 class)
 #' @noRd
 new_choicer_mxl <- function(call, coefficients, loglik,
@@ -77,7 +88,9 @@ new_choicer_mxl <- function(call, coefficients, loglik,
                             draws_info = NULL,
                             rc_dist = NULL, rc_correlation = FALSE,
                             rc_mean = FALSE, sigma = NULL,
-                            se_method = "hessian") {
+                            se_method = "hessian",
+                            scale_vars = "none",
+                            sX = NULL, sW = NULL) {
   structure(
     list(
       call = call,
@@ -102,7 +115,10 @@ new_choicer_mxl <- function(call, coefficients, loglik,
       rc_correlation = rc_correlation,
       rc_mean = rc_mean,
       sigma = sigma,
-      se_method = se_method
+      se_method = se_method,
+      scale_vars = scale_vars,
+      sX = sX,
+      sW = sW
     ),
     class = c("choicer_mxl", "choicer_fit")
   )

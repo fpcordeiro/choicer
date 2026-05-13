@@ -112,6 +112,38 @@ The parameter vector for $L$ has length:
 - Full: $K_w(K_w + 1)/2$
 - Diagonal: $K_w$
 
+### 1.5 Variable Scaling
+
+**Motivation.** When columns of $X$ and $W$ span very different magnitudes — e.g., a price variable in thousands alongside a binary dummy — the Hessian becomes ill-conditioned, L-BFGS step sizes mismatch across parameter blocks, and $\exp(X\beta)$ can overflow before the log-sum-exp normalization kicks in. Dividing each column by its sample standard deviation removes data-unit dependence from the Hessian condition number and can substantially accelerate convergence.
+
+**Why centering is omitted.** Subtracting a column mean from $X$ shifts every utility by the same global constant $-\beta_k \cdot \overline{X_{\cdot k}}$, which cancels in the soft-max within each choice situation; the analogous argument carries through for $W$ at every draw of $\eta$. The likelihood, gradient, and Hessian are therefore invariant under global column centering, and the Z-transformation reduces to scale-by-SD as far as the optimizer is concerned. We skip centering on practical grounds: it destroys the 0/1 structure of dummy columns in the stored design matrices (complicating inspection and downstream tooling) and adds bookkeeping for column means with no estimation benefit.
+
+**The transformation.** Let $s_k^X = \widehat{\text{sd}}(X_{\cdot k})$ and $s_k^W = \widehat{\text{sd}}(W_{\cdot k})$. Define scaled matrices
+
+$$\tilde X_{ijk} = X_{ijk} / s_k^X, \qquad \tilde W_{ijk} = W_{ijk} / s_k^W.$$
+
+Estimation runs on $(\tilde X, \tilde W)$. Let $\tilde\beta, \tilde\mu, \tilde\ell$ denote the parameter estimates in the scaled space.
+
+**Back-transformation.** After optimization, parameters are mapped back to natural units:
+
+| Parameter | Natural-scale value |
+|---|---|
+| $\beta_k$ | $\tilde\beta_k / s_k^X$ |
+| $\mu_k$ (normal RC) | $\tilde\mu_k / s_k^W$ |
+| $\ell_{pp}$ (Cholesky diagonal, stored as $\log L_{pp}$) | $\tilde\ell_{pp} - \log(s_p^W)$ |
+| $\ell_{pq}$ (Cholesky off-diagonal, $p > q$) | $\tilde\ell_{pq} / s_p^W$ |
+| $\text{ASC}_j$ | $\widetilde{\text{ASC}}_j$ (unchanged) |
+
+For the Cholesky rows: scaling column $p$ of $\tilde W$ by $1/s_p^W$ means row $p$ of $L$ must be scaled by $s_p^W$ to keep utilities $\tilde W_{ijk} \cdot (L\eta)_k$ invariant. On the diagonal — where $L_{pp}$ is stored as $\ell_{pp} = \log L_{pp}$ — this multiplicative scaling becomes an additive shift ($\ell_{pp} = \tilde\ell_{pp} - \log s_p^W$); for off-diagonal entries it is a direct multiplicative rescaling ($\ell_{pq} = \tilde\ell_{pq} / s_p^W$). Note that the scale factor is keyed on the *row* index $p$ in both cases — i.e., on the random-coefficient associated with the chosen-row $W$ column — not on the column index $q$.
+
+**Variance-covariance.** The back-transform is linear in the stored parameters, so the delta method gives
+
+$$V_{\text{natural}} = J \cdot V_{\text{scaled}} \cdot J^\top,$$
+
+where $J$ is the diagonal Jacobian of the natural-from-scaled map: entries are $1/s_k^X$ for $\beta_k$, $1/s_k^W$ for $\mu_k$, $1$ for $\ell_{pp}$ (additive shift carries no scale factor on variance), $1/s_p^W$ for $\ell_{pq}$, and $1$ for ASCs.
+
+**Log-normal random coefficients.** The shifted log-normal parameterization $\beta_k = \exp(\mu_k) + \exp((L\eta)_k)$ does not admit a closed-form back-transform under multiplicative column scaling: dividing the full distribution of $\beta_k$ by $s_k^W$ cannot be re-expressed as a single shifted log-normal with shifted $(\mu_k, L_{k,\cdot})$, because the two $\exp$ terms cannot share a common scale factor. The implementation therefore passes log-normal $W$ columns through unscaled: $s_k^W := 1$ whenever `rc_dist[k] == 1`. The user retains responsibility for choosing reasonable units for log-normal RC variables.
+
 ---
 
 ## 2. Log-Likelihood Function

@@ -46,6 +46,16 @@
 #'   (OPG) estimator. BHHH scales better to large problems (many alternatives
 #'   or simulation draws) but may underestimate standard errors in finite
 #'   samples or away from the optimum.
+#' @param scale_vars Pre-estimation column scaling for design matrices.
+#'   Either \code{"none"} (default) for no scaling, or \code{"sd"} to divide
+#'   every column of \code{X} and \code{W} by its sample standard deviation
+#'   before optimization. Improves Hessian conditioning when covariates span
+#'   different orders of magnitude. Coefficients and standard errors are
+#'   back-transformed to the user's natural units via the delta method, so
+#'   reported quantities are invariant to this choice. Columns of \code{W}
+#'   associated with log-normal random coefficients (\code{rc_dist == 1}) are
+#'   passed through unchanged, since the shifted log-normal parameterization
+#'   does not admit a closed-form back-transform under multiplicative scaling.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
 #'   equal weights are used.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
@@ -95,6 +105,7 @@ run_mxlogit <- function(
     optimizer = NULL,
     control = list(),
     se_method = c("hessian", "bhhh"),
+    scale_vars = c("none", "sd"),
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
@@ -104,6 +115,7 @@ run_mxlogit <- function(
   cl <- match.call()
 
   se_method <- match.arg(se_method)
+  scale_vars <- match.arg(scale_vars)
 
   # Backward compatibility: nloptr_opts -> optimizer + control
   if (!is.null(nloptr_opts)) {
@@ -161,8 +173,127 @@ run_mxlogit <- function(
   n_asc <- J - 1
   n_params <- K_x + mu_size + L_size + n_asc
 
-  if (is.null(theta_init)) theta_init <- rep(0, n_params)
   if (is.null(rc_dist)) rc_dist <- rep(0L, K_w)
+
+  # Parameter index map (built early so the scaling layer can address blocks)
+  pos <- 0
+  param_map <- list(beta = seq_len(K_x))
+  pos <- K_x
+  if (mu_size > 0) {
+    param_map$mu <- pos + seq_len(mu_size)
+    pos <- pos + mu_size
+  }
+  param_map$sigma <- pos + seq_len(L_size)
+  pos <- pos + L_size
+  param_map$asc <- pos + seq_len(n_asc)
+
+  # Parameter names (built early; reused for theta_hat, vcov, se downstream)
+  beta_names <- colnames(input_data$X)
+  mu_names <- if (rc_mean) paste0("Mu_", colnames(input_data$W)) else character(0)
+  if (rc_correlation) {
+    sigma_names <- character(L_size)
+    nm_idx <- 1L
+    for (i in seq_len(K_w)) {
+      for (j in seq_len(i)) {
+        sigma_names[nm_idx] <- sprintf("L_%d%d", i, j)
+        nm_idx <- nm_idx + 1L
+      }
+    }
+  } else {
+    sigma_names <- paste0("L_", seq_len(K_w), seq_len(K_w))
+  }
+  alt_col <- names(input_data$alt_mapping)[2]
+  asc_names <- paste0("ASC_", input_data$alt_mapping[2:J][[alt_col]])
+  param_names <- c(beta_names, mu_names, sigma_names, asc_names)
+
+  # --- Variable scaling (optional) --------------------------------------------
+  # Scale columns of X and W by their sample SD to improve Hessian conditioning.
+  # Keep the natural-scale matrices for storage; theta_init is interpreted in
+  # natural units and forward-transformed below; theta_hat and vcov are
+  # back-transformed after optimization so reported quantities are in the
+  # user's natural units. sX and sW are returned as 1s when scale_vars="none".
+  natural_X <- input_data$X
+  natural_W <- input_data$W
+  sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
+  sW <- rep(1, K_w); names(sW) <- colnames(input_data$W)
+  if (scale_vars == "sd") {
+    eps <- 1e-8
+    if (K_x > 0) {
+      sX_raw <- apply(input_data$X, 2, stats::sd)
+      bad <- sX_raw < eps
+      if (any(bad)) {
+        stop("scale_vars='sd': fixed-coefficient column(s) with sd < ", eps,
+             ": ",
+             paste0(names(sX_raw)[bad], "=", signif(sX_raw[bad], 3),
+                    collapse = ", "))
+      }
+      sX <- sX_raw
+      input_data$X <- sweep(input_data$X, 2, sX, "/")
+    }
+    if (K_w > 0) {
+      sW_raw <- apply(input_data$W, 2, stats::sd)
+      normal_cols <- which(rc_dist == 0L)
+      if (length(normal_cols) > 0L) {
+        bad <- sW_raw[normal_cols] < eps
+        if (any(bad)) {
+          off <- normal_cols[bad]
+          stop("scale_vars='sd': normal random-coefficient column(s) with sd < ",
+               eps, ": ",
+               paste0(colnames(input_data$W)[off], "=",
+                      signif(sW_raw[off], 3), collapse = ", "))
+        }
+      }
+      # Preserve names from sW_raw; carve out log-normal columns (pass-through).
+      sW <- sW_raw
+      sW[rc_dist == 1L] <- 1
+      input_data$W <- sweep(input_data$W, 2, sW, "/")
+      n_lognormal <- sum(rc_dist == 1L)
+      if (K_w > 0L && n_lognormal == K_w) {
+        message("scale_vars='sd': all random-coefficient column(s) are ",
+                "log-normal; W not scaled.")
+      } else if (n_lognormal > 0L) {
+        message("scale_vars='sd': passing through log-normal random-coefficient ",
+                "column(s) unchanged (no closed-form back-transform).")
+      }
+    }
+  }
+
+  # --- Natural <-> scaled Jacobian --------------------------------------------
+  # Maps scaled-space parameters back to natural-scale units:
+  #   theta_natural = bt_mult * theta_scaled + bt_shift
+  # Inverse forward-transforms theta_init from natural to scaled space.
+  # ASCs and any unset entries default to identity (mult=1, shift=0).
+  bt_mult <- rep(1, n_params)
+  bt_shift <- rep(0, n_params)
+  if (scale_vars == "sd") {
+    if (K_x > 0) bt_mult[param_map$beta] <- 1 / sX
+    if (mu_size > 0) bt_mult[param_map$mu] <- 1 / sW
+    if (rc_correlation) {
+      idx <- 1L
+      for (i in seq_len(K_w)) {
+        for (j in seq_len(i)) {
+          pos <- param_map$sigma[idx]
+          if (i == j) {
+            bt_shift[pos] <- -log(sW[i])
+          } else {
+            bt_mult[pos] <- 1 / sW[i]
+          }
+          idx <- idx + 1L
+        }
+      }
+    } else {
+      for (i in seq_len(K_w)) {
+        pos <- param_map$sigma[i]
+        bt_shift[pos] <- -log(sW[i])
+      }
+    }
+  }
+
+  # Resolve theta_init (natural units); forward-transform to scaled space.
+  if (is.null(theta_init)) theta_init <- rep(0, n_params)
+  if (scale_vars == "sd") {
+    theta_init <- (theta_init - bt_shift) / bt_mult
+  }
 
   # Build eval_f closure
   eval_f <- function(theta) {
@@ -195,44 +326,9 @@ run_mxlogit <- function(
 
   message("Optimization run time ", convertTime(elapsed))
 
-  # Parameter names and index map
+  # Estimate at the optimum (in scaled space if scale_vars='sd')
   theta_hat <- opt$par
-
-  # Build parameter names
-  beta_names <- colnames(input_data$X)
-  mu_names <- if (rc_mean) paste0("Mu_", colnames(input_data$W)) else character(0)
-
-  # Cholesky parameter names (lower triangular order, row-major)
-  if (rc_correlation) {
-    sigma_names <- character(L_size)
-    idx <- 1
-    for (i in seq_len(K_w)) {
-      for (j in seq_len(i)) {
-        sigma_names[idx] <- sprintf("L_%d%d", i, j)
-        idx <- idx + 1
-      }
-    }
-  } else {
-    sigma_names <- paste0("L_", seq_len(K_w), seq_len(K_w))
-  }
-
-  alt_col <- names(input_data$alt_mapping)[2]
-  asc_names <- paste0("ASC_", input_data$alt_mapping[2:J][[alt_col]])
-
-  param_names <- c(beta_names, mu_names, sigma_names, asc_names)
   names(theta_hat) <- param_names
-
-  # Parameter index map
-  pos <- 0
-  param_map <- list(beta = seq_len(K_x))
-  pos <- K_x
-  if (mu_size > 0) {
-    param_map$mu <- pos + seq_len(mu_size)
-    pos <- pos + mu_size
-  }
-  param_map$sigma <- pos + seq_len(L_size)
-  pos <- pos + L_size
-  param_map$asc <- pos + seq_len(n_asc)
 
   # Compute vcov eagerly using the selected SE method
   hess <- switch(
@@ -275,7 +371,30 @@ run_mxlogit <- function(
     names(vcov_result$se) <- param_names
   }
 
-  # Reconstruct Sigma for display
+  # --- Back-transform to natural scale ----------------------------------------
+  # Uses the bt_mult / bt_shift map built before optimization:
+  #   theta_natural = bt_mult * theta_scaled + bt_shift
+  #   vcov_natural  = (bt_mult bt_mult') o vcov_scaled  (shifts don't enter)
+  if (scale_vars == "sd") {
+    theta_hat <- theta_hat * bt_mult + bt_shift
+    names(theta_hat) <- param_names
+    if (!is.null(vcov_result$vcov)) {
+      vcov_result$vcov <- vcov_result$vcov * tcrossprod(bt_mult)
+      rownames(vcov_result$vcov) <- param_names
+      colnames(vcov_result$vcov) <- param_names
+      diag_v <- diag(vcov_result$vcov)
+      se <- rep(NA_real_, n_params)
+      ok <- !is.na(diag_v) & diag_v >= 0
+      se[ok] <- sqrt(diag_v[ok])
+      names(se) <- param_names
+      vcov_result$se <- se
+    }
+    # Restore natural-scale design matrices for storage and post-estimation use
+    input_data$X <- natural_X
+    input_data$W <- natural_W
+  }
+
+  # Reconstruct Sigma for display (from back-transformed L params if scaled)
   L_params <- theta_hat[param_map$sigma]
   sigma_mat <- build_var_mat(L_params, K_w, rc_correlation)
   w_names <- colnames(input_data$W)
@@ -328,7 +447,10 @@ run_mxlogit <- function(
     rc_correlation = rc_correlation,
     rc_mean = rc_mean,
     sigma = sigma_mat,
-    se_method = se_method
+    se_method = se_method,
+    scale_vars = scale_vars,
+    sX = sX,
+    sW = sW
   )
 }
 
