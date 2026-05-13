@@ -18,7 +18,7 @@
 #                                   (the diagonal-only branch is the FALSE arm)
 # =============================================================================
 
-fit_pair <- function(dt, rc_correlation, rc_mean) {
+fit_pair <- function(dt, rc_correlation, rc_mean, scale_choice) {
   ctrl <- list(xtol_rel = 1e-12, maxeval = 5000L)
   common <- list(
     data = dt,
@@ -32,37 +32,51 @@ fit_pair <- function(dt, rc_correlation, rc_mean) {
     control = ctrl
   )
   list(
-    none = suppressMessages(do.call(run_mxlogit, c(common, list(scale_vars = "none")))),
-    sd   = suppressMessages(do.call(run_mxlogit, c(common, list(scale_vars = "sd"))))
+    none   = suppressMessages(do.call(run_mxlogit, c(common, list(scale_vars = "none")))),
+    scaled = suppressMessages(do.call(run_mxlogit, c(common, list(scale_vars = scale_choice))))
   )
 }
 
-for (rc_correlation in c(TRUE, FALSE)) {
-  for (rc_mean in c(TRUE, FALSE)) {
-    label <- sprintf("rc_correlation=%s, rc_mean=%s", rc_correlation, rc_mean)
-    test_that(paste("scale_vars='sd' is invariant:", label), {
-      sim <- simulate_mxl_data(N = 1200L, J = 4L, seed = 2026)
-      dt <- data.table::as.data.table(sim$data)
+# The Jacobian back-transform is identical across sd / mad / iqr — only the
+# per-column denominator differs. Looping over all three exercises the scale
+# selection switch and confirms each robust SD-equivalent scale yields the same
+# natural-scale coefficients, vcov, and log-likelihood as the unscaled fit.
+for (scale_choice in c("sd", "mad", "iqr")) {
+  for (rc_correlation in c(TRUE, FALSE)) {
+    for (rc_mean in c(TRUE, FALSE)) {
+      label <- sprintf(
+        "scale_vars='%s', rc_correlation=%s, rc_mean=%s",
+        scale_choice, rc_correlation, rc_mean
+      )
+      test_that(paste("scale_vars is invariant:", label), {
+        sim <- simulate_mxl_data(N = 1200L, J = 4L, seed = 2026)
+        dt <- data.table::as.data.table(sim$data)
 
-      fits <- fit_pair(dt, rc_correlation = rc_correlation, rc_mean = rc_mean)
-      f1 <- fits$none; f2 <- fits$sd
+        fits <- fit_pair(
+          dt,
+          rc_correlation = rc_correlation,
+          rc_mean = rc_mean,
+          scale_choice = scale_choice
+        )
+        f1 <- fits$none; f2 <- fits$scaled
 
-      # Both fits must converge for the comparison to be meaningful
-      expect_true(f1$convergence > 0)
-      expect_true(f2$convergence > 0)
+        # Both fits must converge for the comparison to be meaningful
+        expect_true(f1$convergence > 0)
+        expect_true(f2$convergence > 0)
 
-      # Coefficients in natural scale agree across pathways
-      expect_lt(max(abs(coef(f1) - coef(f2))), 1e-5)
+        # Coefficients in natural scale agree across pathways
+        expect_lt(max(abs(coef(f1) - coef(f2))), 1e-5)
 
-      # Standard errors back-transformed via delta method agree
-      expect_lt(max(abs(f1$se - f2$se), na.rm = TRUE), 1e-5)
+        # Standard errors back-transformed via delta method agree
+        expect_lt(max(abs(f1$se - f2$se), na.rm = TRUE), 1e-5)
 
-      # Log-likelihood is scale-invariant
-      expect_lt(abs(f1$loglik - f2$loglik), 1e-8)
+        # Log-likelihood is scale-invariant
+        expect_lt(abs(f1$loglik - f2$loglik), 1e-8)
 
-      # Full vcov matrix agrees
-      expect_lt(max(abs(f1$vcov - f2$vcov), na.rm = TRUE), 1e-5)
-    })
+        # Full vcov matrix agrees
+        expect_lt(max(abs(f1$vcov - f2$vcov), na.rm = TRUE), 1e-5)
+      })
+    }
   }
 }
 
