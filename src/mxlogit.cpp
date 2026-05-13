@@ -418,9 +418,19 @@ Rcpp::List mxl_loglik_gradient_parallel(
     }
   } // end parallel region
 
-  // Return negative log-likelihood and gradient
-  return Rcpp::List::create(Rcpp::Named("objective") = -global_loglik,
-                            Rcpp::Named("gradient") = -global_grad);
+  // Sanitize NaN/Inf so the optimizer's line-search can backtrack instead
+  // of stalling at an undefined objective. The minimizer expects a finite
+  // reference value; a "very bad" sentinel lets it shrink the step.
+  double obj = -global_loglik;
+  arma::vec grad = -global_grad;
+  if (!std::isfinite(obj)) {
+    obj = 1e10;
+    grad.zeros();
+  } else {
+    grad.elem(arma::find_nonfinite(grad)).zeros();
+  }
+  return Rcpp::List::create(Rcpp::Named("objective") = obj,
+                            Rcpp::Named("gradient") = grad);
 }
 
 // vech(): lower-triangular vectorisation (including the diagonal), row-major

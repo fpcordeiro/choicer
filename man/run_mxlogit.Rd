@@ -19,10 +19,12 @@ run_mxlogit(
   rc_correlation = FALSE,
   use_asc = TRUE,
   theta_init = NULL,
+  lower = NULL,
+  upper = NULL,
   optimizer = NULL,
   control = list(),
   se_method = c("hessian", "bhhh"),
-  scale_vars = c("none", "sd"),
+  scale_vars = c("none", "sd", "mad", "iqr"),
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
@@ -67,7 +69,29 @@ correlated (convenience workflow). Ignored when \code{input_data} is used
 \item{use_asc}{Logical indicating whether to include alternative-specific
 constants.}
 
-\item{theta_init}{Initial parameter vector. If \code{NULL}, zeros are used.}
+\item{theta_init}{Initial parameter vector in natural-scale units. If
+\code{NULL}, defaults to zeros for the \eqn{\beta}, \eqn{\mu}, and ASC
+blocks, and \code{log(0.5)} on the Cholesky diagonal (so each diagonal
+factor \eqn{L_{pp} = 0.5}, i.e. a moderate random-coefficient variance of
+\code{0.25}). The zero-on-diagonal alternative corresponds to
+\eqn{L_{pp} = 1} (unit RC variance), which often lets the first L-BFGS
+step overshoot.}
+
+\item{lower, upper}{Optional parameter bounds for the optimizer, in
+natural-scale units (forward-transformed internally to scaled space when
+\code{scale_vars != "none"}). Each accepts three forms:
+\describe{
+\item{\code{NULL}}{(default) Unbounded (\code{-Inf}/\code{Inf}).}
+\item{Unnamed numeric vector of length \code{n_params}}{Full-length
+vector ordered exactly like \code{theta_init} (the nloptr-native form).}
+\item{Named numeric vector}{Names must be a subset of the parameter
+names (\eqn{\beta} block: column names of \code{X};
+\eqn{\mu} block: \code{Mu_<col>} (if \code{rc_mean = TRUE});
+Cholesky block: \code{L_<i><j>} for \eqn{i \ge j}; ASC block:
+\code{ASC_<level>}). Unlisted parameters default to \eqn{\pm\infty}.
+This is the recommended form for typical use, e.g.
+\code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.}
+}}
 
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 or a custom function. See \code{\link{run_mnlogit}} for details.}
@@ -81,16 +105,24 @@ log-likelihood, or \code{"bhhh"} for the BHHH/outer-product-of-gradients
 or simulation draws) but may underestimate standard errors in finite
 samples or away from the optimum.}
 
-\item{scale_vars}{Pre-estimation column scaling for design matrices.
-Either \code{"none"} (default) for no scaling, or \code{"sd"} to divide
-every column of \code{X} and \code{W} by its sample standard deviation
-before optimization. Improves Hessian conditioning when covariates span
-different orders of magnitude. Coefficients and standard errors are
-back-transformed to the user's natural units via the delta method, so
-reported quantities are invariant to this choice. Columns of \code{W}
-associated with log-normal random coefficients (\code{rc_dist == 1}) are
-passed through unchanged, since the shifted log-normal parameterization
-does not admit a closed-form back-transform under multiplicative scaling.}
+\item{scale_vars}{Pre-estimation column scaling for design matrices. One of
+\code{"none"} (default), \code{"sd"} (sample standard deviation),
+\code{"mad"} (\code{stats::mad}, i.e. 1.4826 \eqn{\times}
+median absolute deviation; SD-equivalent under normality), or
+\code{"iqr"} (\code{stats::IQR(x) / 1.349}; also SD-equivalent under
+normality). When not \code{"none"}, every column of \code{X} and \code{W}
+is divided by the chosen scale before optimization to improve Hessian
+conditioning. Robust scales (\code{"mad"}/\code{"iqr"}) better capture
+the bulk for heavy-tailed columns where SD is dominated by outliers, but
+\code{stats::mad} can return zero when more than half of a column's
+entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
+the same near-constant-column error as \code{"sd"}. Coefficients and
+standard errors are back-transformed to the user's natural units via the
+delta method, so reported quantities are invariant to this choice.
+Columns of \code{W} associated with log-normal random coefficients
+(\code{rc_dist == 1}) are passed through unchanged, since the shifted
+log-normal parameterization does not admit a closed-form back-transform
+under multiplicative scaling.}
 
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
 equal weights are used.}
