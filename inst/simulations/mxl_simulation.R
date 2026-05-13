@@ -4,7 +4,7 @@
 library(choicer)
 
 # DGP =========================================================================
-sim <- simulate_mxl_data(N = 1e4, J = 8, seed = 123)
+sim <- simulate_mxl_data(N = 2e4, J = 8, seed = 123)
 print(sim)
 
 # Data preparation ============================================================
@@ -31,7 +31,8 @@ fit <- run_mxlogit(
   eta_draws  = eta_draws,
   use_asc    = TRUE,
   control    = list(print_level = 1L, check_derivatives = TRUE),
-  se_method = "bhhh"
+  se_method = "bhhh",
+  scale_vars = "sd"
 )
 
 cat("\n")
