@@ -1,4 +1,38 @@
 
+# Normalize a bounds vector to nloptr's full-length representation. Accepts
+# NULL (returns the default), a full-length unnamed numeric (returned as-is
+# after a length check), or a named partial numeric whose names must be a
+# subset of `param_names`. Used by run_mxlogit() for both `lower` and `upper`.
+.normalize_bound <- function(b, param_names, default, which) {
+  if (is.null(b) || length(b) == 0L) {
+    return(rep(default, length(param_names)))
+  }
+  if (!is.numeric(b)) stop("`", which, "` must be numeric or NULL.")
+  if (anyNA(b)) stop("`", which, "` must not contain NA/NaN.")
+  if (is.null(names(b))) {
+    if (length(b) != length(param_names)) {
+      stop("Unnamed `", which, "` must have length n_params (",
+           length(param_names), "); got ", length(b), ".")
+    }
+    return(b)
+  }
+  dups <- unique(names(b)[duplicated(names(b))])
+  if (length(dups)) {
+    stop("Duplicate name(s) in `", which, "`: ",
+         paste(dups, collapse = ", "), ".")
+  }
+  bad <- setdiff(names(b), param_names)
+  if (length(bad)) {
+    stop("Unknown parameter name(s) in `", which, "`: ",
+         paste(bad, collapse = ", "),
+         ". Valid names: ", paste(param_names, collapse = ", "), ".")
+  }
+  out <- rep(default, length(param_names))
+  names(out) <- param_names
+  out[names(b)] <- b
+  unname(out)
+}
+
 #' Runs mixed logit estimation
 #'
 #' Estimates a mixed logit model via simulated maximum likelihood.
@@ -36,7 +70,28 @@
 #'   (taken from the prepared data).
 #' @param use_asc Logical indicating whether to include alternative-specific
 #'   constants.
-#' @param theta_init Initial parameter vector. If \code{NULL}, zeros are used.
+#' @param theta_init Initial parameter vector in natural-scale units. If
+#'   \code{NULL}, defaults to zeros for the \eqn{\beta}, \eqn{\mu}, and ASC
+#'   blocks, and \code{log(0.5)} on the Cholesky diagonal (so each diagonal
+#'   factor \eqn{L_{pp} = 0.5}, i.e. a moderate random-coefficient variance of
+#'   \code{0.25}). The zero-on-diagonal alternative corresponds to
+#'   \eqn{L_{pp} = 1} (unit RC variance), which often lets the first L-BFGS
+#'   step overshoot.
+#' @param lower,upper Optional parameter bounds for the optimizer, in
+#'   natural-scale units (forward-transformed internally to scaled space when
+#'   \code{scale_vars != "none"}). Each accepts three forms:
+#'   \describe{
+#'     \item{\code{NULL}}{(default) Unbounded (\code{-Inf}/\code{Inf}).}
+#'     \item{Unnamed numeric vector of length \code{n_params}}{Full-length
+#'       vector ordered exactly like \code{theta_init} (the nloptr-native form).}
+#'     \item{Named numeric vector}{Names must be a subset of the parameter
+#'       names (\eqn{\beta} block: column names of \code{X};
+#'       \eqn{\mu} block: \code{Mu_<col>} (if \code{rc_mean = TRUE});
+#'       Cholesky block: \code{L_<i><j>} for \eqn{i \ge j}; ASC block:
+#'       \code{ASC_<level>}). Unlisted parameters default to \eqn{\pm\infty}.
+#'       This is the recommended form for typical use, e.g.
+#'       \code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.}
+#'   }
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 #'   or a custom function. See \code{\link{run_mnlogit}} for details.
 #' @param control List of optimizer-specific control parameters.
@@ -46,16 +101,24 @@
 #'   (OPG) estimator. BHHH scales better to large problems (many alternatives
 #'   or simulation draws) but may underestimate standard errors in finite
 #'   samples or away from the optimum.
-#' @param scale_vars Pre-estimation column scaling for design matrices.
-#'   Either \code{"none"} (default) for no scaling, or \code{"sd"} to divide
-#'   every column of \code{X} and \code{W} by its sample standard deviation
-#'   before optimization. Improves Hessian conditioning when covariates span
-#'   different orders of magnitude. Coefficients and standard errors are
-#'   back-transformed to the user's natural units via the delta method, so
-#'   reported quantities are invariant to this choice. Columns of \code{W}
-#'   associated with log-normal random coefficients (\code{rc_dist == 1}) are
-#'   passed through unchanged, since the shifted log-normal parameterization
-#'   does not admit a closed-form back-transform under multiplicative scaling.
+#' @param scale_vars Pre-estimation column scaling for design matrices. One of
+#'   \code{"none"} (default), \code{"sd"} (sample standard deviation),
+#'   \code{"mad"} (\code{stats::mad}, i.e. 1.4826 \eqn{\times}
+#'   median absolute deviation; SD-equivalent under normality), or
+#'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}; also SD-equivalent under
+#'   normality). When not \code{"none"}, every column of \code{X} and \code{W}
+#'   is divided by the chosen scale before optimization to improve Hessian
+#'   conditioning. Robust scales (\code{"mad"}/\code{"iqr"}) better capture
+#'   the bulk for heavy-tailed columns where SD is dominated by outliers, but
+#'   \code{stats::mad} can return zero when more than half of a column's
+#'   entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
+#'   the same near-constant-column error as \code{"sd"}. Coefficients and
+#'   standard errors are back-transformed to the user's natural units via the
+#'   delta method, so reported quantities are invariant to this choice.
+#'   Columns of \code{W} associated with log-normal random coefficients
+#'   (\code{rc_dist == 1}) are passed through unchanged, since the shifted
+#'   log-normal parameterization does not admit a closed-form back-transform
+#'   under multiplicative scaling.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
 #'   equal weights are used.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
@@ -102,10 +165,12 @@ run_mxlogit <- function(
     rc_correlation = FALSE,
     use_asc = TRUE,
     theta_init = NULL,
+    lower = NULL,
+    upper = NULL,
     optimizer = NULL,
     control = list(),
     se_method = c("hessian", "bhhh"),
-    scale_vars = c("none", "sd"),
+    scale_vars = c("none", "sd", "mad", "iqr"),
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
@@ -216,14 +281,20 @@ run_mxlogit <- function(
   natural_W <- input_data$W
   sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
   sW <- rep(1, K_w); names(sW) <- colnames(input_data$W)
-  if (scale_vars == "sd") {
+  if (scale_vars != "none") {
+    scale_fn <- switch(
+      scale_vars,
+      sd  = stats::sd,
+      mad = stats::mad,                          # 1.4826 * median|x - med(x)|
+      iqr = function(x) stats::IQR(x) / 1.349    # SD-equivalent under normality
+    )
     eps <- 1e-8
     if (K_x > 0) {
-      sX_raw <- apply(input_data$X, 2, stats::sd)
+      sX_raw <- apply(input_data$X, 2, scale_fn)
       bad <- sX_raw < eps
       if (any(bad)) {
-        stop("scale_vars='sd': fixed-coefficient column(s) with sd < ", eps,
-             ": ",
+        stop("scale_vars='", scale_vars,
+             "': fixed-coefficient column(s) with scale < ", eps, ": ",
              paste0(names(sX_raw)[bad], "=", signif(sX_raw[bad], 3),
                     collapse = ", "))
       }
@@ -231,14 +302,15 @@ run_mxlogit <- function(
       input_data$X <- sweep(input_data$X, 2, sX, "/")
     }
     if (K_w > 0) {
-      sW_raw <- apply(input_data$W, 2, stats::sd)
+      sW_raw <- apply(input_data$W, 2, scale_fn)
       normal_cols <- which(rc_dist == 0L)
       if (length(normal_cols) > 0L) {
         bad <- sW_raw[normal_cols] < eps
         if (any(bad)) {
           off <- normal_cols[bad]
-          stop("scale_vars='sd': normal random-coefficient column(s) with sd < ",
-               eps, ": ",
+          stop("scale_vars='", scale_vars,
+               "': normal random-coefficient column(s) with scale < ", eps,
+               ": ",
                paste0(colnames(input_data$W)[off], "=",
                       signif(sW_raw[off], 3), collapse = ", "))
         }
@@ -249,11 +321,12 @@ run_mxlogit <- function(
       input_data$W <- sweep(input_data$W, 2, sW, "/")
       n_lognormal <- sum(rc_dist == 1L)
       if (K_w > 0L && n_lognormal == K_w) {
-        message("scale_vars='sd': all random-coefficient column(s) are ",
-                "log-normal; W not scaled.")
+        message("scale_vars='", scale_vars,
+                "': all random-coefficient column(s) are log-normal; W not scaled.")
       } else if (n_lognormal > 0L) {
-        message("scale_vars='sd': passing through log-normal random-coefficient ",
-                "column(s) unchanged (no closed-form back-transform).")
+        message("scale_vars='", scale_vars,
+                "': passing through log-normal random-coefficient column(s) ",
+                "unchanged (no closed-form back-transform).")
       }
     }
   }
@@ -265,7 +338,7 @@ run_mxlogit <- function(
   # ASCs and any unset entries default to identity (mult=1, shift=0).
   bt_mult <- rep(1, n_params)
   bt_shift <- rep(0, n_params)
-  if (scale_vars == "sd") {
+  if (scale_vars != "none") {
     if (K_x > 0) bt_mult[param_map$beta] <- 1 / sX
     if (mu_size > 0) bt_mult[param_map$mu] <- 1 / sW
     if (rc_correlation) {
@@ -290,9 +363,32 @@ run_mxlogit <- function(
   }
 
   # Resolve theta_init (natural units); forward-transform to scaled space.
-  if (is.null(theta_init)) theta_init <- rep(0, n_params)
-  if (scale_vars == "sd") {
+  # Default cold-start: zero on every block except the Cholesky diagonal,
+  # which sits at log(0.5) so each diagonal factor L_pp = 0.5 (RC variance
+  # 0.25). Starting at log(1) = 0 corresponds to L_pp = 1 (unit RC variance),
+  # which is often too large for typical specs and lets the first L-BFGS step
+  # push ell_pp far enough that L_pp underflows / overflows.
+  if (is.null(theta_init)) {
+    theta_init <- rep(0, n_params)
+    if (K_w > 0L) {
+      if (rc_correlation) {
+        diag_idx <- param_map$sigma[cumsum(seq_len(K_w))]
+      } else {
+        diag_idx <- param_map$sigma
+      }
+      theta_init[diag_idx] <- log(0.5)
+    }
+  }
+  if (scale_vars != "none") {
     theta_init <- (theta_init - bt_shift) / bt_mult
+  }
+
+  # Normalize lower/upper bounds (natural units in, scaled units out).
+  lower <- .normalize_bound(lower, param_names, -Inf, "lower")
+  upper <- .normalize_bound(upper, param_names,  Inf, "upper")
+  if (scale_vars != "none") {
+    lower <- (lower - bt_shift) / bt_mult
+    upper <- (upper - bt_shift) / bt_mult
   }
 
   # Build eval_f closure
@@ -320,6 +416,8 @@ run_mxlogit <- function(
       optimizer = optimizer,
       theta_init = theta_init,
       eval_f = eval_f,
+      lower = lower,
+      upper = upper,
       control = control
     )
   })
@@ -375,7 +473,7 @@ run_mxlogit <- function(
   # Uses the bt_mult / bt_shift map built before optimization:
   #   theta_natural = bt_mult * theta_scaled + bt_shift
   #   vcov_natural  = (bt_mult bt_mult') o vcov_scaled  (shifts don't enter)
-  if (scale_vars == "sd") {
+  if (scale_vars != "none") {
     theta_hat <- theta_hat * bt_mult + bt_shift
     names(theta_hat) <- param_names
     if (!is.null(vcov_result$vcov)) {
