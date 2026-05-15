@@ -2,20 +2,16 @@
 # choicer: fast discrete-choice models with a focus on economic applications
 
 <!-- badges: start -->
-[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
+[![Lifecycle: stable](https://img.shields.io/badge/lifecycle-stable-brightgreen.svg)](https://lifecycle.r-lib.org/articles/stages.html#stable)
 <!-- badges: end -->
 
-`choicer` provides implementations of discrete-choice models with a focus on economic applications. Computationally intensive likelihoods are written in C++ and exposed for use with generic optimizers. Special care is taken to handle high-dimensional alternative-specific constants efficiently. Post-estimation routines compute elasticities, diversion ratios, and BLP contraction. Currently supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL); more models will be added.
+`choicer` provides fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with OpenMP parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, diversion ratios, and the BLP contraction. Supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL); more models will be added.
 
 ## Installation
 
 You can install the development version of `choicer` with:
 
 ``` r
-# Using remotes
-remotes::install_github("fpcordeiro/choicer")
-
-# Or using pak
 pak::pkg_install("fpcordeiro/choicer")
 ```
 
@@ -62,3 +58,4 @@ There are multiple R packages that offer similar functionalities:
 - [logitr](https://CRAN.R-project.org/package=logitr)
 - [gmnl](https://CRAN.R-project.org/package=gmnl)
 - [apollo](https://CRAN.R-project.org/package=apollo)
+- [mixl](https://cran.r-project.org/package=mixl)
