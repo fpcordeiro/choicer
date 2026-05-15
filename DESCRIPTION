@@ -28,7 +28,6 @@ Imports:
 Suggests:
     testthat (>= 3.0.0),
     numDeriv,
-    digest,
     future.apply,
     goftest
 Config/testthat/edition: 3

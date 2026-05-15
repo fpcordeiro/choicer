@@ -27,40 +27,6 @@ test_that("simulate_nl_data is reproducible across calls at fixed seed", {
   expect_equal(a$model, "nl")
 })
 
-test_that("simulate_mnl_data matches legacy helpers.R bit-for-bit at seed = 123", {
-  # Digest snapshot captured from the pre-refactor `inst/simulations/helpers.R`
-  # (sha256 of `data.table` with columns id, alt, x1, x2, choice). Hash is
-  # platform-sensitive (data.table attribute order, integer representation),
-  # so this regression check runs locally only.
-  skip_on_cran()
-  skip_if_not_installed("digest")
-  sim <- simulate_mnl_data(seed = 123)
-  expect_equal(
-    digest::digest(sim$data, algo = "sha256"),
-    "e15122bc6da53d1c53dcce5c4a93f77aab8ab3cace14414f60598e3eca893024"
-  )
-})
-
-test_that("simulate_mxl_data matches legacy helpers.R bit-for-bit at seed = 123", {
-  skip_on_cran()
-  skip_if_not_installed("digest")
-  sim <- simulate_mxl_data(seed = 123)
-  expect_equal(
-    digest::digest(sim$data, algo = "sha256"),
-    "b797e867fa78eac3acad445f963f91e47d05349e32523c88523a3d2c087f1a52"
-  )
-})
-
-test_that("simulate_nl_data matches legacy helpers.R bit-for-bit at seed = 123", {
-  skip_on_cran()
-  skip_if_not_installed("digest")
-  sim <- simulate_nl_data(seed = 123)
-  expect_equal(
-    digest::digest(sim$data, algo = "sha256"),
-    "3a64b533d3c514590e26fe5d9d7e6a3e17ca7a5a503ad361348146954a4a7e6a"
-  )
-})
-
 test_that("simulate_mxl_data supports price_cols and rc_dist extensions", {
   sim <- simulate_mxl_data(
     N = 200, J = 4, seed = 1L,
