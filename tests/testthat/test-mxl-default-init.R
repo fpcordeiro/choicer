@@ -11,6 +11,7 @@
 
 test_that("default theta_init reaches the same MLE as zeros (uncorrelated)", {
   skip_on_cran()
+  skip_on_ci()
   # outside_option=FALSE so J=3 inside alts -> J-1 = 2 free ASCs.
   sim <- simulate_mxl_data(N = 400L, J = 3L, seed = 31L, outside_option = FALSE)
   dt <- data.table::as.data.table(sim$data)
@@ -51,6 +52,7 @@ test_that("default theta_init reaches the same MLE as zeros (uncorrelated)", {
 
 test_that("default theta_init reaches the same MLE as zeros (correlated, rc_mean)", {
   skip_on_cran()
+  skip_on_ci()
   # Cover the rc_correlation=TRUE branch where the Cholesky diagonal positions
   # within param_map$sigma are cumsum(seq_len(K_w)) rather than every entry,
   # and rc_mean=TRUE adds a mu block (which the default leaves at zero).

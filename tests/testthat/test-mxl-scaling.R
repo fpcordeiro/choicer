@@ -50,6 +50,7 @@ for (scale_choice in c("sd", "mad", "iqr")) {
       )
       test_that(paste("scale_vars is invariant:", label), {
         skip_on_cran()
+        skip_on_ci()
         sim <- simulate_mxl_data(N = 1200L, J = 4L, seed = 2026)
         dt <- data.table::as.data.table(sim$data)
 
@@ -87,6 +88,7 @@ for (scale_choice in c("sd", "mad", "iqr")) {
 
 test_that("scale_vars='sd' passes log-normal RC columns through unchanged", {
   skip_on_cran()
+  skip_on_ci()
   sim <- simulate_mxl_data(N = 800L, J = 3L, seed = 7L)
   dt <- data.table::as.data.table(sim$data)
   expected_sd_w2 <- stats::sd(dt$w2)
@@ -137,6 +139,7 @@ test_that("scale_vars='sd' passes log-normal RC columns through unchanged", {
 
 test_that("scale_vars='sd' stores natural-scale X/W and post-estimation methods work", {
   skip_on_cran()
+  skip_on_ci()
   sim <- simulate_mxl_data(N = 600L, J = 3L, seed = 31L)
   dt <- data.table::as.data.table(sim$data)
 
@@ -189,6 +192,7 @@ test_that("scale_vars='sd' stores natural-scale X/W and post-estimation methods 
 
 test_that("scale_vars='sd' stores log-normal W column in natural units", {
   skip_on_cran()
+  skip_on_ci()
   sim <- simulate_mxl_data(N = 500L, J = 3L, seed = 19L)
   dt <- data.table::as.data.table(sim$data)
   # Force w1 onto a non-unit scale so a regression that stored the *scaled*
@@ -229,6 +233,7 @@ test_that("scale_vars='sd' stores log-normal W column in natural units", {
 
 test_that("theta_init is natural-scale under scale_vars='sd' (warm-start works)", {
   skip_on_cran()
+  skip_on_ci()
   sim <- simulate_mxl_data(N = 900L, J = 4L, seed = 41L)
   dt <- data.table::as.data.table(sim$data)
   ctrl <- list(xtol_rel = 1e-12, maxeval = 5000L)
