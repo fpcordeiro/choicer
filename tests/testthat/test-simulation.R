@@ -29,8 +29,10 @@ test_that("simulate_nl_data is reproducible across calls at fixed seed", {
 
 test_that("simulate_mnl_data matches legacy helpers.R bit-for-bit at seed = 123", {
   # Digest snapshot captured from the pre-refactor `inst/simulations/helpers.R`
-  # (sha256 of `data.table` with columns id, alt, x1, x2, choice). Any change
-  # to the default DGP output will invalidate this snapshot.
+  # (sha256 of `data.table` with columns id, alt, x1, x2, choice). Hash is
+  # platform-sensitive (data.table attribute order, integer representation),
+  # so this regression check runs locally only.
+  skip_on_cran()
   skip_if_not_installed("digest")
   sim <- simulate_mnl_data(seed = 123)
   expect_equal(
@@ -40,6 +42,7 @@ test_that("simulate_mnl_data matches legacy helpers.R bit-for-bit at seed = 123"
 })
 
 test_that("simulate_mxl_data matches legacy helpers.R bit-for-bit at seed = 123", {
+  skip_on_cran()
   skip_if_not_installed("digest")
   sim <- simulate_mxl_data(seed = 123)
   expect_equal(
@@ -49,11 +52,9 @@ test_that("simulate_mxl_data matches legacy helpers.R bit-for-bit at seed = 123"
 })
 
 test_that("simulate_nl_data matches legacy helpers.R bit-for-bit at seed = 123", {
+  skip_on_cran()
   skip_if_not_installed("digest")
   sim <- simulate_nl_data(seed = 123)
-  # NOTE: updated after L4 fix (nest column is now retained in the returned
-  # data). If the DGP changes again, recompute with:
-  #   digest::digest(simulate_nl_data(seed = 123)$data, algo = "sha256")
   expect_equal(
     digest::digest(sim$data, algo = "sha256"),
     "3a64b533d3c514590e26fe5d9d7e6a3e17ca7a5a503ad361348146954a4a7e6a"
