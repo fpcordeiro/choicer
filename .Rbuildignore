@@ -10,3 +10,5 @@
 ^\.DS_Store$
 ^cran-comments\.md$
 ^\.github$
+^CRAN-SUBMISSION$
+^data_room$
