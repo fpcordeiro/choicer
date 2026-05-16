@@ -6,7 +6,7 @@
 \alias{choicer-package}
 \title{choicer: Discrete Choice Models for Economic Applications}
 \description{
-Tools for estimating discrete-choice models used in applied economics. Likelihoods are implemented in C++ and exposed to R for use with generic optimizers (e.g., optim(), nloptr). The package emphasizes efficient handling of high-dimensional alternative-specific constants and currently supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL).
+Fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with 'OpenMP' parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, and diversion ratios. Supports multinomial logit ('MNL'), mixed logit ('MXL'), and nested logit ('NL').
 }
 \seealso{
 Useful links:
@@ -17,11 +17,11 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Fernando Cordeiro \email{fernandolpcordeiro@gmail.com}
+\strong{Maintainer}: Fernando Cordeiro \email{fernandolpcordeiro@gmail.com} [copyright holder]
 
 Authors:
 \itemize{
-  \item Fernando Cordeiro \email{fernandolpcordeiro@gmail.com}
+  \item Fernando Cordeiro \email{fernandolpcordeiro@gmail.com} [copyright holder]
 }
 
 }

@@ -751,7 +751,7 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #'
 #' Finds the ASC (delta) parameters such that predicted market shares match
 #' target shares, using the contraction mapping of Berry, Levinsohn, and
-#' Pakes (1995).
+#' Pakes (1995) \doi{10.2307/2171802}.
 #'
 #' @param object A fitted model object.
 #' @param target_shares Numeric vector of target market shares (length J).

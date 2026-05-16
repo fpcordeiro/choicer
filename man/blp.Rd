@@ -19,7 +19,7 @@ Converged delta (ASC) vector.
 \description{
 Finds the ASC (delta) parameters such that predicted market shares match
 target shares, using the contraction mapping of Berry, Levinsohn, and
-Pakes (1995).
+Pakes (1995) \doi{10.2307/2171802}.
 }
 \examples{
 \donttest{
