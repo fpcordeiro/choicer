@@ -1,6 +1,6 @@
 Package: choicer
 Title: Discrete Choice Models for Economic Applications
-Version: 0.1.0
+Version: 0.1.0.9000
 Authors@R: 
     person("Fernando", "Cordeiro", , "fernandolpcordeiro@gmail.com", role = c("aut", "cre", "cph"))
 Description: Fast estimation of discrete-choice models for applied economics.
