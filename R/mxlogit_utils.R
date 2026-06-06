@@ -300,38 +300,18 @@ run_mxlogit <- function(
   sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
   sW <- rep(1, K_w); names(sW) <- colnames(input_data$W)
   if (scale_vars != "none") {
-    scale_fn <- switch(
-      scale_vars,
-      sd  = stats::sd,
-      mad = stats::mad,                          # 1.4826 * median|x - med(x)|
-      iqr = function(x) stats::IQR(x) / 1.349    # SD-equivalent under normality
-    )
-    eps <- 1e-8
     if (K_x > 0) {
-      sX_raw <- apply(input_data$X, 2, scale_fn)
-      bad <- sX_raw < eps
-      if (any(bad)) {
-        stop("scale_vars='", scale_vars,
-             "': fixed-coefficient column(s) with scale < ", eps, ": ",
-             paste0(names(sX_raw)[bad], "=", signif(sX_raw[bad], 3),
-                    collapse = ", "))
-      }
+      sX_raw <- .column_scales(input_data$X, scale_vars)
+      .assert_scales_ok(sX_raw, scale_vars, "fixed-coefficient")
       sX <- sX_raw
       input_data$X <- sweep(input_data$X, 2, sX, "/")
     }
     if (K_w > 0) {
-      sW_raw <- apply(input_data$W, 2, scale_fn)
+      sW_raw <- .column_scales(input_data$W, scale_vars)
       normal_cols <- which(rc_dist == 0L)
       if (length(normal_cols) > 0L) {
-        bad <- sW_raw[normal_cols] < eps
-        if (any(bad)) {
-          off <- normal_cols[bad]
-          stop("scale_vars='", scale_vars,
-               "': normal random-coefficient column(s) with scale < ", eps,
-               ": ",
-               paste0(colnames(input_data$W)[off], "=",
-                      signif(sW_raw[off], 3), collapse = ", "))
-        }
+        .assert_scales_ok(sW_raw, scale_vars, "normal random-coefficient",
+                          idx = normal_cols)
       }
       # Preserve names from sW_raw; carve out log-normal columns (pass-through).
       sW <- sW_raw
@@ -531,20 +511,9 @@ run_mxlogit <- function(
   #   theta_natural = bt_mult * theta_scaled + bt_shift
   #   vcov_natural  = (bt_mult bt_mult') o vcov_scaled  (shifts don't enter)
   if (scale_vars != "none") {
-    theta_hat <- theta_hat * bt_mult + bt_shift
-    names(theta_hat) <- param_names
-    if (!is.null(vcov_result$vcov)) {
-      vcov_result$vcov <- vcov_result$vcov * tcrossprod(bt_mult)
-      rownames(vcov_result$vcov) <- param_names
-      colnames(vcov_result$vcov) <- param_names
-      diag_v <- diag(vcov_result$vcov)
-      se <- rep(NA_real_, n_params)
-      ok <- !is.na(diag_v) & diag_v >= 0
-      se[ok] <- sqrt(diag_v[ok])
-      names(se) <- param_names
-      vcov_result$se <- se
-    }
-    # Restore natural-scale design matrices for storage and post-estimation use
+    bt <- .backtransform_estimates(theta_hat, vcov_result, bt_mult, bt_shift, param_names)
+    theta_hat <- bt$theta
+    vcov_result <- bt$vcov_result
     input_data$X <- natural_X
     input_data$W <- natural_W
   }
