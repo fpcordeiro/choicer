@@ -95,6 +95,61 @@ vcov.choicer_fit <- function(object, ...) {
   object$vcov
 }
 
+# --- wesml_vcov (robust / sandwich) -----------------------------------------
+
+#' Robust (sandwich) variance for a weighted / choice-based mixed logit fit
+#'
+#' Recomputes the robust Huber-White sandwich variance
+#' \eqn{V = A^{-1} B A^{-1}} for a fitted mixed logit, where the bread
+#' \eqn{A = \sum_i w_i (-H_i)} is the weighted negated Hessian and the meat
+#' \eqn{B = \sum_i w_i^2 s_i s_i'} is the weight-squared outer product of the
+#' per-individual scores. This is the appropriate variance under choice-based
+#' (endogenous stratified) / WESML weighting, where the inverse-Hessian and the
+#' ordinary BHHH variance are invalid. It can be called on any fitted model
+#' (e.g. one estimated with \code{se_method = "hessian"}) to obtain robust
+#' standard errors post hoc, without refitting.
+#'
+#' @param object A fitted \code{choicer_mxl} object (requires
+#'   \code{keep_data = TRUE}).
+#' @param type Either \code{"vcov"} (default) to return the variance-covariance
+#'   matrix or \code{"se"} to return the standard-error vector.
+#' @param ... Unused.
+#' @returns A variance-covariance matrix (\code{type = "vcov"}) or a named
+#'   numeric vector of standard errors (\code{type = "se"}), in the raw
+#'   parameter space.
+#' @seealso \code{\link{wesml_weights}}, \code{\link{sample_by_choice}},
+#'   \code{\link{run_mxlogit}}
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(1)
+#' N <- 200L; J <- 3L
+#' dt <- data.table(id = rep(seq_len(N), each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+#' fit <- run_mxlogit(dt, "id", "alt", "choice", "x1", "w1", S = 50L)
+#' wesml_vcov(fit, "se")
+#' }
+#' @export
+wesml_vcov <- function(object, ...) UseMethod("wesml_vcov")
+
+#' @rdname wesml_vcov
+#' @export
+wesml_vcov.choicer_mxl <- function(object, type = c("vcov", "se"), ...) {
+  type <- match.arg(type)
+  if (is.null(object$data)) {
+    stop("wesml_vcov() needs the stored data; refit with keep_data = TRUE.")
+  }
+  res <- compute_sandwich_vcov(object)
+  nms <- names(object$coefficients)
+  if (!is.null(res$vcov)) {
+    rownames(res$vcov) <- nms
+    colnames(res$vcov) <- nms
+  }
+  if (!is.null(res$se)) names(res$se) <- nms
+  if (type == "se") res$se else res$vcov
+}
+
 # --- logLik ------------------------------------------------------------------
 
 #' Extract log-likelihood from a choicer_fit object
@@ -347,7 +402,8 @@ summary.choicer_mxl <- function(object, ...) {
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
       sigma = object$sigma,
-      se_method = object$se_method %||% "hessian"
+      se_method = object$se_method %||% "hessian",
+      weighting = object$choice_sampling$scheme
     ),
     class = "summary.choicer_mxl"
   )
@@ -382,9 +438,21 @@ print.summary.choicer_mxl <- function(x, ...) {
     print(x$sigma)
     cat("\n")
   }
-  cat("Std. Errors:",
-      if (isTRUE(x$se_method == "bhhh")) "BHHH (OPG)" else "Analytical Hessian",
-      "\n")
+  cat("Std. Errors:", switch(
+    x$se_method %||% "hessian",
+    bhhh = "BHHH (OPG)",
+    sandwich = "Sandwich (robust)",
+    "Analytical Hessian"
+  ), "\n")
+  if (!is.null(x$weighting)) {
+    cat("Weighting:",
+        if (identical(x$weighting, "wesml")) {
+          "WESML choice-based"
+        } else {
+          "user-supplied"
+        },
+        "\n")
+  }
   print_footer(x)
   invisible(x)
 }
