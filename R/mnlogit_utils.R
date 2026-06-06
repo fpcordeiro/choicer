@@ -27,6 +27,14 @@
 #'   argument is forwarded; otherwise it is silently ignored.
 #' @param control List of optimizer-specific control parameters passed to the
 #'   chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).
+#' @param scale_vars Pre-estimation column scaling for the design matrix. One of
+#'   \code{"none"} (default), \code{"sd"} (sample standard deviation),
+#'   \code{"mad"} (\code{stats::mad}), or \code{"iqr"}
+#'   (\code{stats::IQR(x) / 1.349}). When not \code{"none"}, every column of
+#'   \code{X} is divided by the chosen scale before optimization to improve
+#'   Hessian conditioning. Coefficients and standard errors are back-transformed
+#'   to the user's natural units via the delta method, so reported quantities
+#'   are invariant to this choice.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.
 #' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
@@ -70,6 +78,7 @@ run_mnlogit <- function(
     include_outside_option = FALSE,
     use_asc = TRUE,
     keep_data = TRUE,
+    scale_vars = c("none", "sd", "mad", "iqr"),
     nloptr_opts = NULL
 ) {
   cl <- match.call()
@@ -80,6 +89,8 @@ run_mnlogit <- function(
     optimizer <- optimizer %||% "nloptr"
     control <- nloptr_opts
   }
+
+  scale_vars <- match.arg(scale_vars)
 
   # --- Resolve input pathway --------------------------------------------------
   has_data <- !is.null(data)
@@ -120,6 +131,33 @@ run_mnlogit <- function(
   n_params <- K_x + n_asc
   theta_init <- rep(0, n_params)
 
+  # Parameter names and index map (built early so the scaling layer can address
+  # blocks and so theta_hat/vcov/se can be named downstream).
+  asc_names <- if (use_asc) {
+    paste0("ASC_", input_list$alt_mapping[2:J][[alt_col]])
+  } else {
+    character(0)
+  }
+  param_names <- c(colnames(input_list$X), asc_names)
+  param_map <- list(beta = seq_len(K_x))
+  if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
+
+  # --- Variable scaling (optional) --------------------------------------------
+  # Scale columns of X by their sample SD (or robust SD-equivalent) to improve
+  # Hessian conditioning. Keep the natural-scale matrix for storage; theta_hat
+  # and vcov are back-transformed after optimization. The back-transform is
+  # purely multiplicative (1/sX on the beta block, identity on ASCs).
+  natural_X <- input_list$X
+  sX <- rep(1, K_x); names(sX) <- colnames(input_list$X)
+  bt_mult <- rep(1, n_params)
+  bt_shift <- rep(0, n_params)
+  if (scale_vars != "none" && K_x > 0) {
+    sX <- .column_scales(input_list$X, scale_vars)
+    .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
+    input_list$X <- sweep(input_list$X, 2, sX, "/")
+    bt_mult[param_map$beta] <- 1 / sX
+  }
+
   # Build eval_f closure (captures data in environment)
   eval_f <- function(theta) {
     mnl_loglik_gradient_parallel(
@@ -146,18 +184,8 @@ run_mnlogit <- function(
 
   message("Optimization run time ", convertTime(elapsed))
 
-  # Parameter names and index map
   theta_hat <- opt$par
-  asc_names <- if (use_asc) {
-    paste0("ASC_", input_list$alt_mapping[2:J][[alt_col]])
-  } else {
-    character(0)
-  }
-  param_names <- c(colnames(input_list$X), asc_names)
   names(theta_hat) <- param_names
-
-  param_map <- list(beta = seq_len(K_x))
-  if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
 
   # Compute vcov eagerly
   hess <- mnl_loglik_hessian_parallel(
@@ -175,6 +203,14 @@ run_mnlogit <- function(
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
     names(vcov_result$se) <- param_names
+  }
+
+  # --- Back-transform to natural scale ----------------------------------------
+  if (scale_vars != "none") {
+    bt <- .backtransform_estimates(theta_hat, vcov_result, bt_mult, bt_shift, param_names)
+    theta_hat <- bt$theta
+    vcov_result <- bt$vcov_result
+    input_list$X <- natural_X
   }
 
   # Build S3 object
@@ -213,7 +249,9 @@ run_mnlogit <- function(
         M = input_list$M,
         weights = input_list$weights
       )
-    }
+    },
+    scale_vars = scale_vars,
+    sX = sX
   )
 }
 

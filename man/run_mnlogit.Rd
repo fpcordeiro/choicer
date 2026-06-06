@@ -18,6 +18,7 @@ run_mnlogit(
   include_outside_option = FALSE,
   use_asc = TRUE,
   keep_data = TRUE,
+  scale_vars = c("none", "sd", "mad", "iqr"),
   nloptr_opts = NULL
 )
 }
@@ -56,6 +57,15 @@ chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).}
 
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in the
 returned object for \code{predict()} and post-estimation functions.}
+
+\item{scale_vars}{Pre-estimation column scaling for the design matrix. One of
+\code{"none"} (default), \code{"sd"} (sample standard deviation),
+\code{"mad"} (\code{stats::mad}), or \code{"iqr"}
+(\code{stats::IQR(x) / 1.349}). When not \code{"none"}, every column of
+\code{X} is divided by the chosen scale before optimization to improve
+Hessian conditioning. Coefficients and standard errors are back-transformed
+to the user's natural units via the delta method, so reported quantities
+are invariant to this choice.}
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control} instead.}
 }

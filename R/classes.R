@@ -25,6 +25,10 @@
 #' @param vcov Named variance-covariance matrix (or NULL for lazy computation)
 #' @param se Named numeric vector of standard errors (or NULL for lazy computation)
 #' @param data List of prepared inputs (X, alt_idx, choice_idx, M, weights) or NULL
+#' @param scale_vars Character. Pre-estimation scaling applied to the design
+#'   matrix: \code{"none"} (default), \code{"sd"}, \code{"mad"}, or \code{"iqr"}.
+#' @param sX Named numeric vector of column scales used to standardize X during
+#'   optimization. Defaults to a vector of 1s when scale_vars = 'none'.
 #' @returns A choicer_mnl object (S3 class)
 #' @noRd
 new_choicer_mnl <- function(call, coefficients, loglik,
@@ -32,7 +36,8 @@ new_choicer_mnl <- function(call, coefficients, loglik,
                             data_spec, alt_mapping, param_map,
                             use_asc, include_outside_option,
                             optimizer,
-                            vcov = NULL, se = NULL, data = NULL) {
+                            vcov = NULL, se = NULL, data = NULL,
+                            scale_vars = "none", sX = NULL) {
   structure(
     list(
       call = call,
@@ -51,7 +56,9 @@ new_choicer_mnl <- function(call, coefficients, loglik,
       use_asc = use_asc,
       include_outside_option = include_outside_option,
       optimizer = optimizer,
-      data = data
+      data = data,
+      scale_vars = scale_vars,
+      sX = sX
     ),
     class = c("choicer_mnl", "choicer_fit")
   )
