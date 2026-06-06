@@ -42,6 +42,8 @@ for (scale_choice in c("sd", "mad", "iqr")) {
     expect_true(f2$convergence > 0)
 
     expect_lt(max(abs(coef(f1) - coef(f2))), 1e-5)
+    expect_false(anyNA(f1$se))
+    expect_false(anyNA(f2$se))
     expect_lt(max(abs(f1$se - f2$se), na.rm = TRUE), 1e-5)
     expect_lt(abs(f1$loglik - f2$loglik), 1e-8)
     expect_lt(max(abs(f1$vcov - f2$vcov), na.rm = TRUE), 1e-5)
@@ -135,4 +137,63 @@ test_that("scale_vars='sd' errors on a near-constant covariate", {
     )),
     "scale <"
   )
+})
+
+# =============================================================================
+# Test 5: Lazy-recompute vcov parity — the eagerly-stored (scaled-then-back-
+# transformed) vcov matches a fresh lazy recompute from the stored natural-scale
+# data via compute_hessian()/invert_hessian().
+# =============================================================================
+
+test_that("scale_vars='sd' eager vcov matches lazy recompute from stored data", {
+  skip_on_cran()
+  skip_on_ci()
+  sim <- simulate_mnl_data(N = 1500L, J = 4L, seed = 2026L,
+                           outside_option = FALSE)
+  dt <- data.table::as.data.table(sim$data)
+
+  fit_sd <- suppressMessages(run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), use_asc = TRUE, scale_vars = "sd",
+    keep_data = TRUE,
+    control = list(xtol_rel = 1e-12, maxeval = 5000L)
+  ))
+
+  recomputed <- choicer:::invert_hessian(
+    choicer:::compute_hessian(fit_sd)
+  )$vcov
+
+  expect_equal(unname(fit_sd$vcov), unname(recomputed), tolerance = 1e-6)
+})
+
+# =============================================================================
+# Test 6: Advanced pathway — pre-built input_data + scale_vars is invariant
+# (coef / se / loglik) against the unscaled fit on the same prepared data.
+# =============================================================================
+
+test_that("scale_vars is invariant via the advanced input_data pathway", {
+  skip_on_cran()
+  skip_on_ci()
+  sim <- simulate_mnl_data(N = 1500L, J = 4L, seed = 2026L,
+                           outside_option = FALSE)
+  dt <- data.table::as.data.table(sim$data)
+  ctrl <- list(xtol_rel = 1e-12, maxeval = 5000L)
+
+  prep <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+
+  f_none <- suppressMessages(run_mnlogit(
+    input_data = prep, use_asc = TRUE, scale_vars = "none", control = ctrl
+  ))
+  f_sd <- suppressMessages(run_mnlogit(
+    input_data = prep, use_asc = TRUE, scale_vars = "sd", control = ctrl
+  ))
+
+  expect_true(f_none$convergence > 0)
+  expect_true(f_sd$convergence > 0)
+
+  expect_lt(max(abs(coef(f_none) - coef(f_sd))), 1e-5)
+  expect_false(anyNA(f_none$se))
+  expect_false(anyNA(f_sd$se))
+  expect_lt(max(abs(f_none$se - f_sd$se)), 1e-5)
+  expect_lt(abs(f_none$loglik - f_sd$loglik), 1e-8)
 })

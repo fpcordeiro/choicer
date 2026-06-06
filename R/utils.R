@@ -148,7 +148,7 @@ resolve_var_index <- function(var, col_names) {
 #' @returns Invisibly, `s`.
 #' @noRd
 .assert_scales_ok <- function(s, method, label, idx = seq_along(s), eps = 1e-8) {
-  bad <- s[idx] < eps
+  bad <- !is.finite(s[idx]) | s[idx] < eps
   if (any(bad)) {
     off <- idx[bad]
     stop("scale_vars='", method, "': ", label,
