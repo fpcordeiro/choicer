@@ -13,6 +13,7 @@ This document provides a detailed mathematical description of the mixed logit (r
 6. [Elasticity Computation](#6-elasticity-computation)
 7. [Diversion Ratios](#7-diversion-ratios)
 8. [BLP Contraction Mapping](#8-blp-contraction-mapping)
+9. [Choice-Based Sampling and WESML Weighting](#9-choice-based-sampling-and-wesml-weighting)
 
 ---
 
@@ -677,8 +678,114 @@ $$
 
 ---
 
+## 9. Choice-Based Sampling and WESML Weighting
+
+### 9.1 Endogenous Stratified (Choice-Based) Sampling
+
+In *random* (exogenous) sampling each choice situation is drawn independently of its
+outcome. Under **choice-based** (endogenous stratified) sampling the strata are defined
+by the **chosen alternative** $j_i$, and situations are drawn with stratum-specific
+frequencies -- for example, deliberately oversampling the few individuals who chose a
+rare alternative. Let
+
+$$
+Q(j) = \text{population share of alternative } j, \qquad
+H(j) = \text{sample share of choosers of } j .
+$$
+
+Maximum simulated likelihood applied naively to such a sample is **generally
+inconsistent for the population parameters**. (A known special case: in a pure
+multinomial logit with a full set of alternative-specific constants, choice-based
+sampling biases only the constants; in general -- and for the mixed logit -- both the
+slopes and the constants are affected.)
+
+### 9.2 The WESML Weighted Log-Likelihood
+
+Manski and Lerman (1977) restore consistency by weighting each situation's contribution
+by the ratio of population to sample share of its chosen alternative,
+
+$$
+w_i = \frac{Q(j_i)}{H(j_i)},
+$$
+
+which yields the weighted simulated log-likelihood already defined in $\S$2.3,
+
+$$
+\ell^{W}(\theta) = \sum_{i=1}^{N} w_i \log \bar{P}_{i j_i}(\theta).
+$$
+
+The maximizer $\hat{\theta}$ is invariant to multiplying every $w_i$ by a common positive
+constant (the objective is merely rescaled), so the weights may be normalized to mean 1
+without changing the estimates.
+
+### 9.3 Robust (Sandwich) Variance: the $w^2$ Meat
+
+WESML is a weighted M-estimator solving $\sum_i w_i\, s_i(\hat{\theta}) = 0$, where
+$s_i = \partial \log \bar{P}_{i j_i} / \partial\theta$ is the per-situation score
+($\S$3) and $H_i = \partial^2 \log\bar{P}_{i j_i}/\partial\theta\,\partial\theta^\top$
+its Hessian ($\S$4). Its robust (Huber--White) asymptotic variance is the **sandwich**
+
+$$
+V = A^{-1} B A^{-1}, \qquad
+A = \sum_{i} w_i\,(-H_i), \qquad
+B = \sum_{i} w_i^{2}\, s_i s_i^{\top}.
+$$
+
+The weight enters the **bread** $A$ linearly, but the **meat** $B$ carries the weight
+**squared**: the contribution of situation $i$ to the estimating equation is $w_i s_i$,
+so the variance of that contribution involves
+$(w_i s_i)(w_i s_i)^{\top} = w_i^{2}\, s_i s_i^{\top}$.
+
+This is exactly why the two naive variances are wrong under weighting:
+
+- the inverse-Hessian $A^{-1}$ assumes the information-matrix equality $A = B$, which
+  **fails** once the $w_i$ are non-degenerate;
+- the ordinary BHHH/OPG $\big(\sum_i w_i\, s_i s_i^{\top}\big)^{-1}$ uses the weight to
+  the *first* power, not the second.
+
+A consistency check: rescaling all weights by a constant $c$ sends $A \to cA$ and
+$B \to c^{2} B$, so $V \to (cA)^{-1}(c^{2}B)(cA)^{-1} = A^{-1}BA^{-1}$ -- the sandwich is
+**invariant** to the weight scale, whereas $A^{-1} \to c^{-1} A^{-1}$ is not.
+
+### 9.4 Scope: Robust vs. Design-Based Variance
+
+The estimator implemented here is the **robust weighted-M-estimator (Huber--White)
+variance**, whose meat $B = \sum_i w_i^{2}\, s_i s_i^{\top}$ is uncentered. This is the
+asymptotic variance under **variable-probability sampling** (each population unit sampled
+independently with a stratum-dependent probability). Under a **fixed-quota** design -- a
+prescribed number drawn from each choice stratum, i.e. *standard stratified sampling* --
+the design-based variance centers the scores within strata and **may be smaller**; that
+stratum-centered (design-based) estimator is **out of scope** here. See Manski & McFadden
+(1981) for the design-based treatment and Cosslett (1981) for the asymptotically efficient
+conditional-maximum-likelihood alternative.
+
+### 9.5 Implementation
+
+No new C++ is required. The per-individual score accumulated inside `mxl_bhhh_parallel`
+is weight-free, so the two summed matrices are obtained from the existing exports
+evaluated at $\hat{\theta}$:
+
+| Matrix | Call |
+|--------|------|
+| Bread $A = \sum_i w_i(-H_i)$ | `mxl_hessian_parallel(..., weights = w)` |
+| Meat $B = \sum_i w_i^{2} s_i s_i^{\top}$ | `mxl_bhhh_parallel(..., weights = w^2)` |
+
+and combined in R as $V = A^{-1} B A^{-1}$. The variable-scaling back-transform
+($\S$1.5) and the Cholesky-to-$\Sigma$ delta method ($\S$5.2) apply on top, exactly as
+for any stored `vcov`. User-facing entry points: `wesml_weights()` and
+`sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
+estimates with the robust variance; `wesml_vcov()` returns it post hoc.
+
+*Code reference: `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](../R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](../R/sampling.R).*
+
+---
+
 ## References
 
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation*. Cambridge University Press.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
+- Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
+- Manski, C. F., & McFadden, D. (1981). Alternative estimators and sample designs for discrete choice analysis. In *Structural Analysis of Discrete Data with Econometric Applications*. MIT Press.
+- Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based samples. *Econometrica*, 49(5), 1289-1316.
+- Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data* (2nd ed.), Section 13.8. MIT Press.

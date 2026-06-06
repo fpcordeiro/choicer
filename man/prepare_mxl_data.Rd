@@ -14,7 +14,8 @@ prepare_mxl_data(
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
-  rc_correlation = FALSE
+  rc_correlation = FALSE,
+  weights_col = NULL
 )
 }
 \arguments{
@@ -37,6 +38,8 @@ prepare_mxl_data(
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
 
 \item{rc_correlation}{Logical indicating whether random coefficients are correlated. Default is FALSE.}
+
+\item{weights_col}{Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation). Mutually exclusive with \code{weights}.}
 }
 \value{
 A \code{choicer_data_mxl} object (list) containing:

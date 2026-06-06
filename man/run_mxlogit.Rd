@@ -23,13 +23,14 @@ run_mxlogit(
   upper = NULL,
   optimizer = NULL,
   control = list(),
-  se_method = c("hessian", "bhhh"),
+  se_method = c("hessian", "bhhh", "sandwich"),
   scale_vars = c("none", "sd", "mad", "iqr"),
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   keep_data = TRUE,
-  nloptr_opts = NULL
+  nloptr_opts = NULL,
+  weights_col = NULL
 )
 }
 \arguments{
@@ -98,12 +99,17 @@ or a custom function. See \code{\link{run_mnlogit}} for details.}
 
 \item{control}{List of optimizer-specific control parameters.}
 
-\item{se_method}{Method for computing standard errors. Either
+\item{se_method}{Method for computing standard errors. One of
 \code{"hessian"} (default) for the analytical Hessian of the simulated
-log-likelihood, or \code{"bhhh"} for the BHHH/outer-product-of-gradients
-(OPG) estimator. BHHH scales better to large problems (many alternatives
-or simulation draws) but may underestimate standard errors in finite
-samples or away from the optimum.}
+log-likelihood, \code{"bhhh"} for the BHHH/outer-product-of-gradients
+(OPG) estimator, or \code{"sandwich"} for the robust (Huber-White)
+variance \eqn{V = A^{-1} B A^{-1}} (bread \eqn{A} = weighted negated
+Hessian, meat \eqn{B} = weight-squared OPG). Use \code{"sandwich"} for
+valid inference under choice-based / WESML weighting, where the
+inverse-Hessian and ordinary BHHH are invalid; it reduces to the usual
+robust variance under uniform weights. BHHH scales better to large
+problems (many alternatives or simulation draws) but may underestimate
+standard errors in finite samples or away from the optimum.}
 
 \item{scale_vars}{Pre-estimation column scaling for design matrices. One of
 \code{"none"} (default), \code{"sd"} (sample standard deviation),
@@ -137,6 +143,12 @@ the returned object for post-estimation functions.}
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control}
 instead.}
+
+\item{weights_col}{Optional name of a column in \code{data} holding a per-row
+weight (constant within each choice situation). Mutually exclusive with
+\code{weights}; the recommended way to pass WESML weights from
+\code{\link{sample_by_choice}} / \code{\link{wesml_weights}}, since
+alignment is by id rather than by position. Convenience workflow only.}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).

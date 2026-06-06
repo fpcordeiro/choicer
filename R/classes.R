@@ -77,6 +77,8 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #'   \code{scale_vars = "none"}; equals \code{apply(W, 2, sd)} for normal
 #'   random-coefficient columns when \code{scale_vars = "sd"}, with entries for
 #'   log-normal columns (\code{rc_dist[k] == 1}) carved out to 1.
+#' @param choice_sampling Optional list recording choice-based-sampling
+#'   provenance (scheme, population/sample shares, meat type), or NULL.
 #' @returns A choicer_mxl object (S3 class)
 #' @noRd
 new_choicer_mxl <- function(call, coefficients, loglik,
@@ -90,7 +92,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
                             rc_mean = FALSE, sigma = NULL,
                             se_method = "hessian",
                             scale_vars = "none",
-                            sX = NULL, sW = NULL) {
+                            sX = NULL, sW = NULL,
+                            choice_sampling = NULL) {
   structure(
     list(
       call = call,
@@ -118,7 +121,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
       se_method = se_method,
       scale_vars = scale_vars,
       sX = sX,
-      sW = sW
+      sW = sW,
+      choice_sampling = choice_sampling
     ),
     class = c("choicer_mxl", "choicer_fit")
   )
@@ -180,8 +184,12 @@ ensure_vcov <- function(object) {
     return(object)
   }
 
-  hess <- compute_hessian(object)
-  result <- invert_hessian(hess)
+  se_method <- object$se_method %||% "hessian"
+  result <- if (identical(se_method, "sandwich")) {
+    compute_sandwich_vcov(object)
+  } else {
+    invert_hessian(compute_hessian(object))
+  }
 
   object$vcov <- result$vcov
   object$se <- result$se
@@ -453,4 +461,100 @@ invert_hessian <- function(hess) {
   }
 
   list(vcov = vcov_mat, se = se)
+}
+
+#' Combine bread and meat into a robust sandwich variance
+#'
+#' Forms \code{V = A^{-1} B A^{-1}} from the (weighted) negated Hessian
+#' \code{A} (bread) and the (weight-squared) outer-product-of-gradients
+#' \code{B} (meat), with the same singular / not-positive-definite guards as
+#' \code{invert_hessian()}.
+#'
+#' @param A Bread matrix (observed information; weighted negated Hessian).
+#' @param B Meat matrix (weighted outer product of per-individual scores).
+#' @returns List with \code{vcov} (matrix or NULL) and \code{se} (numeric).
+#' @noRd
+.sandwich_combine <- function(A, B) {
+  p_len <- nrow(A)
+  vcov_mat <- NULL
+  se <- rep(NA_real_, p_len)
+
+  singular_flag <- FALSE
+  tryCatch({
+    Ainv <- solve(A)
+    vcov_mat <- Ainv %*% B %*% Ainv
+  }, error = function(e) {
+    singular_flag <<- TRUE
+    message("Error inverting information (bread) matrix (likely singular): ",
+            e$message)
+  })
+
+  if (!singular_flag && !is.null(vcov_mat)) {
+    vcov_mat <- (vcov_mat + t(vcov_mat)) / 2   # symmetrize away FP asymmetry
+    diag_vcov <- diag(vcov_mat)
+    neg <- !is.na(diag_vcov) & diag_vcov < 0
+    if (any(neg)) {
+      message(
+        "Sandwich covariance is not positive definite; ",
+        sum(neg), " variance(s) negative. Standard errors set to NA for ",
+        "those parameters."
+      )
+      diag_vcov[neg] <- NA_real_
+    }
+    se <- sqrt(diag_vcov)
+  } else {
+    message("Standard errors set to NA due to sandwich inversion failure.")
+  }
+
+  list(vcov = vcov_mat, se = se)
+}
+
+#' Robust (Huber-White) sandwich vcov for a fitted mixed logit
+#'
+#' Computes \code{V = A^{-1} B A^{-1}} from stored (natural-scale) data, where
+#' \code{A = sum_i w_i (-H_i)} is the weighted negated Hessian and
+#' \code{B = sum_i w_i^2 s_i s_i'} is the weight-squared outer product of
+#' per-individual scores. \code{B} is obtained with zero extra C++ by calling
+#' the BHHH routine with squared weights (its per-individual score is
+#' weight-free). Valid under choice-based / WESML weighting, where the plain
+#' inverse-Hessian is not.
+#'
+#' @param object A fitted \code{choicer_mxl} object with \code{keep_data = TRUE}.
+#' @returns List with \code{vcov} and \code{se}.
+#' @noRd
+compute_sandwich_vcov <- function(object) {
+  if (is.null(object$data)) {
+    stop("Cannot compute sandwich vcov: no data stored. ",
+         "Refit with keep_data = TRUE.")
+  }
+  if (!identical(object$model, "mxl")) {
+    stop("Sandwich standard errors are currently implemented for ",
+         "mixed logit (MXL) only.")
+  }
+
+  theta <- object$coefficients
+  eta_draws <- get_halton_normals(
+    S = object$draws_info$S,
+    N = object$draws_info$N,
+    K_w = object$draws_info$K_w
+  )
+  w <- object$data$weights
+
+  A <- mxl_hessian_parallel(
+    theta = theta, X = object$data$X, W = object$data$W,
+    alt_idx = object$data$alt_idx, choice_idx = object$data$choice_idx,
+    M = object$data$M, weights = w, eta_draws = eta_draws,
+    rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+    rc_mean = object$rc_mean, use_asc = object$use_asc,
+    include_outside_option = object$include_outside_option
+  )
+  B <- mxl_bhhh_parallel(
+    theta = theta, X = object$data$X, W = object$data$W,
+    alt_idx = object$data$alt_idx, choice_idx = object$data$choice_idx,
+    M = object$data$M, weights = w^2, eta_draws = eta_draws,
+    rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+    rc_mean = object$rc_mean, use_asc = object$use_asc,
+    include_outside_option = object$include_outside_option
+  )
+  .sandwich_combine(A, B)
 }
