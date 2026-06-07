@@ -109,6 +109,11 @@ vcov.choicer_fit <- function(object, ...) {
 #' (e.g. one estimated with \code{se_method = "hessian"}) to obtain robust
 #' standard errors post hoc, without refitting.
 #'
+#' If the stored weights are uniform (all equal), a warning is emitted: the
+#' returned variance is then the ordinary robust (Huber-White) variance, not a
+#' WESML-weighted variance. Refit with WESML weights for a choice-based-sampling
+#' correction.
+#'
 #' @param object A fitted \code{choicer_mxl} object (requires
 #'   \code{keep_data = TRUE}).
 #' @param type Either \code{"vcov"} (default) to return the variance-covariance
@@ -139,6 +144,12 @@ wesml_vcov.choicer_mxl <- function(object, type = c("vcov", "se"), ...) {
   type <- match.arg(type)
   if (is.null(object$data)) {
     stop("wesml_vcov() needs the stored data; refit with keep_data = TRUE.")
+  }
+  w <- object$data$weights
+  if (!is.null(w) && length(unique(w)) == 1L) {
+    warning("Stored weights are uniform; wesml_vcov() returns the ordinary robust ",
+            "(Huber-White) variance, not a WESML-weighted variance. Refit with WESML ",
+            "weights for a choice-based-sampling correction.", call. = FALSE)
   }
   res <- compute_sandwich_vcov(object)
   nms <- names(object$coefficients)
@@ -403,7 +414,8 @@ summary.choicer_mxl <- function(object, ...) {
       elapsed_time = object$optimizer$elapsed_time,
       sigma = object$sigma,
       se_method = object$se_method %||% "hessian",
-      weighting = object$choice_sampling$scheme
+      weighting = object$choice_sampling$scheme,
+      weights_applied = object$choice_sampling$weights_applied
     ),
     class = "summary.choicer_mxl"
   )
@@ -445,9 +457,15 @@ print.summary.choicer_mxl <- function(x, ...) {
     "Analytical Hessian"
   ), "\n")
   if (!is.null(x$weighting)) {
+    # Backward-compat: when weights_applied is absent (older fits) treat as applied.
+    applied <- !isFALSE(x$weights_applied)
     cat("Weighting:",
         if (identical(x$weighting, "wesml")) {
-          "WESML choice-based"
+          if (applied) {
+            "WESML choice-based"
+          } else {
+            "WESML provenance present but NOT applied (fit is unweighted)"
+          }
         } else {
           "user-supplied"
         },

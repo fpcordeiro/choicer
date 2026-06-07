@@ -148,7 +148,14 @@ instead.}
 weight (constant within each choice situation). Mutually exclusive with
 \code{weights}; the recommended way to pass WESML weights from
 \code{\link{sample_by_choice}} / \code{\link{wesml_weights}}, since
-alignment is by id rather than by position. Convenience workflow only.}
+alignment is by id rather than by position. Convenience workflow only. If
+\code{data} carries choice-based-sampling provenance (a
+\code{"choice_sampling"} attribute, as attached by
+\code{\link{sample_by_choice}} / \code{\link{wesml_weights}}) and neither
+\code{weights} nor \code{weights_col} is supplied, the recorded weight
+column is auto-detected and applied (with a message); if that column is
+absent the call errors rather than silently fitting an unweighted model
+under a WESML label.}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).

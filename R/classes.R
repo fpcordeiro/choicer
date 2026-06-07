@@ -539,6 +539,10 @@ compute_sandwich_vcov <- function(object) {
          "mixed logit (MXL) only.")
   }
 
+  # Recomputes A (bread) and B (meat) from the stored NATURAL-scale data and
+  # natural-scale coefficients, so it needs no back-transform: by design it
+  # operates entirely in natural space (unlike the eager run_mxlogit() path,
+  # which works in scaled space and then back-transforms the result).
   theta <- object$coefficients
   eta_draws <- get_halton_normals(
     S = object$draws_info$S,
