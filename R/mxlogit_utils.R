@@ -130,7 +130,14 @@
 #'   weight (constant within each choice situation). Mutually exclusive with
 #'   \code{weights}; the recommended way to pass WESML weights from
 #'   \code{\link{sample_by_choice}} / \code{\link{wesml_weights}}, since
-#'   alignment is by id rather than by position. Convenience workflow only.
+#'   alignment is by id rather than by position. Convenience workflow only. If
+#'   \code{data} carries choice-based-sampling provenance (a
+#'   \code{"choice_sampling"} attribute, as attached by
+#'   \code{\link{sample_by_choice}} / \code{\link{wesml_weights}}) and neither
+#'   \code{weights} nor \code{weights_col} is supplied, the recorded weight
+#'   column is auto-detected and applied (with a message); if that column is
+#'   absent the call errors rather than silently fitting an unweighted model
+#'   under a WESML label.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
@@ -203,7 +210,7 @@ run_mxlogit <- function(
   # --- Resolve input pathway --------------------------------------------------
   has_data <- !is.null(data)
   has_input <- !is.null(input_data)
-  cs_meta <- if (has_data) attr(data, "choice_sampling") else NULL
+  cs_meta <- if (has_data) attr(data, "choice_sampling") else attr(input_data, "choice_sampling")
 
   if (has_data && has_input) {
     stop("Supply either 'data' (convenience) or 'input_data' (advanced), not both.")
@@ -223,6 +230,22 @@ run_mxlogit <- function(
         is.null(covariate_cols) || is.null(random_var_cols)) {
       stop("Convenience workflow requires: id_col, alt_col, choice_col, ",
            "covariate_cols, and random_var_cols.")
+    }
+    # WESML provenance present but no weights supplied: auto-adopt the recorded
+    # weight column, or error -- never silently fit unweighted under a WESML label.
+    if (has_data && !is.null(cs_meta) && is.null(weights) && is.null(weights_col)) {
+      wn <- cs_meta$weight_name
+      if (!is.null(wn) && wn %in% names(data)) {
+        weights_col <- wn
+        message("Detected WESML choice-based-sampling provenance; applying attached ",
+                "weights from column '", wn, "'.")
+      } else {
+        stop("Data carries WESML choice-based-sampling provenance but no weights were ",
+             "supplied, and the recorded weight column (",
+             if (is.null(wn)) "unknown" else paste0("'", wn, "'"),
+             ") is not present in `data`. Pass `weights_col=` or `weights=` explicitly.",
+             call. = FALSE)
+      }
     }
     input_data <- prepare_mxl_data(
       data = data,
@@ -434,11 +457,17 @@ run_mxlogit <- function(
             call. = FALSE)
   }
   choice_sampling <- if (!is.null(cs_meta)) {
-    utils::modifyList(as.list(cs_meta), list(se_method = se_method))
+    utils::modifyList(as.list(cs_meta),
+                      list(se_method = se_method, weights_applied = weights_nonuniform))
   } else if (weights_nonuniform) {
-    list(scheme = "user", se_method = se_method)
+    list(scheme = "user", se_method = se_method, weights_applied = TRUE)
   } else {
     NULL
+  }
+  if (!is.null(cs_meta) && !weights_nonuniform) {
+    warning("WESML provenance is present but the applied weights are uniform; the fit ",
+            "is effectively unweighted and is NOT a WESML-corrected estimator.",
+            call. = FALSE)
   }
 
   # Compute vcov eagerly using the selected SE method.
@@ -637,6 +666,9 @@ prepare_mxl_data <- function(
 ) {
 
   ## Preliminary housekeeping --------------------------------------------------
+  # Capture any choice-based-sampling provenance before column drops / coercion,
+  # so it can be carried onto the returned object for the advanced pathway.
+  cs_provenance <- attr(data, "choice_sampling")
   dt <- data.table::as.data.table(data)[]
 
   # Check if all relevant variables are available
@@ -810,7 +842,7 @@ prepare_mxl_data <- function(
   )
 
   ## Return output -------------------------------------------------------------
-  structure(
+  out <- structure(
     list(
       X           = X,
       W           = W,
@@ -834,6 +866,10 @@ prepare_mxl_data <- function(
     ),
     class = "choicer_data_mxl"
   )
+  if (!is.null(cs_provenance)) {
+    attr(out, "choice_sampling") <- cs_provenance
+  }
+  out
 }
 
 #' Halton draws for mixed logit

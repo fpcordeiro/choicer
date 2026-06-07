@@ -243,6 +243,126 @@ test_that("non-uniform weights warn under hessian but not under sandwich/uniform
   )
 })
 
+# --- 11. provenance auto-use, error fallback, uniform downgrade --------------
+
+test_that("WESML provenance auto-uses recorded weight column without weights_col", {
+  skip_on_cran()
+  skip_on_ci()
+  s <- make_cb_sample(seed = 71)
+
+  expect_message(
+    fit <- suppressWarnings(
+      run_mxlogit(s, "id", "alt", "choice", "x1", "w1", S = 25L,
+                  se_method = "sandwich")
+    ),
+    "WESML"
+  )
+  expect_true(length(unique(fit$data$weights)) > 1L)
+  expect_equal(fit$choice_sampling$scheme, "wesml")
+  expect_true(isTRUE(fit$choice_sampling$weights_applied))
+
+  # Identical to an explicit weights_col fit.
+  fit_explicit <- fit_sandwich(s, S = 25L)
+  expect_equal(unname(fit$coefficients), unname(fit_explicit$coefficients),
+               tolerance = 1e-10)
+})
+
+test_that("WESML provenance without the weight column errors", {
+  skip_on_cran()
+  skip_on_ci()
+  s <- make_cb_sample(seed = 72)
+
+  dt2 <- data.table::copy(s)
+  cs  <- attr(s, "choice_sampling")
+  dt2[, (".wesml_weight") := NULL]
+  # [, := NULL] keeps attributes, but re-set defensively.
+  data.table::setattr(dt2, "choice_sampling", cs)
+
+  expect_error(
+    run_mxlogit(dt2, "id", "alt", "choice", "x1", "w1", S = 20L,
+                se_method = "sandwich"),
+    "provenance"
+  )
+})
+
+test_that("uniform weights under WESML provenance downgrade the fit", {
+  skip_on_cran()
+  skip_on_ci()
+  s <- make_cb_sample(seed = 73)
+  N <- length(unique(s$id))
+
+  expect_warning(
+    fit <- suppressMessages(
+      run_mxlogit(s, "id", "alt", "choice", "x1", "w1", S = 20L,
+                  weights = rep(1, N), se_method = "sandwich")
+    ),
+    "NOT a WESML"
+  )
+  expect_equal(fit$choice_sampling$scheme, "wesml")
+  expect_false(isTRUE(fit$choice_sampling$weights_applied))
+
+  out <- capture.output(print(summary(fit)))
+  expect_true(any(grepl("NOT applied", out)))
+})
+
+test_that("wesml_vcov warns under uniform weights", {
+  skip_on_cran()
+  skip_on_ci()
+  uni <- create_identified_mxl_data(seed = 74, N = 200L, J = 3L)
+  fit <- suppressMessages(
+    run_mxlogit(uni, "id", "alt", "choice", "x1", "w1", S = 25L,
+                se_method = "hessian")
+  )
+  expect_warning(wesml_vcov(fit), "uniform")
+})
+
+test_that("provenance survives the advanced input_data pathway", {
+  skip_on_cran()
+  skip_on_ci()
+  s <- make_cb_sample(seed = 75)
+
+  prep <- suppressWarnings(
+    prepare_mxl_data(s, "id", "alt", "choice", "x1", "w1",
+                     weights_col = ".wesml_weight")
+  )
+  expect_false(is.null(attr(prep, "choice_sampling")))
+  expect_equal(attr(prep, "choice_sampling")$scheme, "wesml")
+
+  ed  <- get_halton_normals(25L, prep$N, ncol(prep$W))
+  fit <- suppressWarnings(suppressMessages(
+    run_mxlogit(input_data = prep, eta_draws = ed, se_method = "sandwich")
+  ))
+  expect_equal(fit$choice_sampling$scheme, "wesml")
+  expect_true(isTRUE(fit$choice_sampling$weights_applied))
+})
+
+test_that("scale_vars='sd' sandwich vcov matches recompute and is scale-invariant", {
+  skip_on_cran()
+  skip_on_ci()
+  s <- make_cb_sample(seed = 76)
+  ctrl <- list(xtol_rel = 1e-8, maxeval = 500L)
+
+  fit_sd <- suppressWarnings(suppressMessages(
+    run_mxlogit(s, "id", "alt", "choice", "x1", "w1", S = 30L,
+                weights_col = ".wesml_weight", se_method = "sandwich",
+                scale_vars = "sd", keep_data = TRUE, control = ctrl)
+  ))
+  # Eager (back-transformed) vcov matches the natural-space recompute.
+  recomputed <- choicer:::compute_sandwich_vcov(fit_sd)
+  expect_equal(unname(fit_sd$vcov), unname(recomputed$vcov), tolerance = 1e-6)
+
+  # Invariance vs scale_vars = "none".
+  fit_none <- suppressWarnings(suppressMessages(
+    run_mxlogit(s, "id", "alt", "choice", "x1", "w1", S = 30L,
+                weights_col = ".wesml_weight", se_method = "sandwich",
+                scale_vars = "none", keep_data = TRUE, control = ctrl)
+  ))
+  expect_equal(unname(fit_sd$coefficients), unname(fit_none$coefficients),
+               tolerance = 1e-5)
+  expect_equal(unname(fit_sd$se), unname(fit_none$se), tolerance = 1e-5)
+  expect_equal(unname(fit_sd$vcov), unname(fit_none$vcov), tolerance = 1e-5)
+})
+
 # --- input validation: zero targets, collisions, duplicate/bad names ---------
 
 test_that("sample_by_choice rejects zero-target strata (preserves WESML target)", {

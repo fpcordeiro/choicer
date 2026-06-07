@@ -216,7 +216,8 @@ wesml_weights <- function(data, id_col, alt_col, choice_col, Q,
   if (normalize) w <- w / mean(w)
 
   cs <- list(scheme = "wesml", Q = Qn, H = Hn[realized],
-             meat = "robust", source = "wesml_weights")
+             meat = "robust", source = "wesml_weights",
+             weight_name = weight_name)
 
   wt <- data.table::data.table(.id = per_id[[id_col]], .w = w)
   data.table::setnames(wt, c(".id", ".w"), c(id_col, weight_name))
@@ -364,7 +365,8 @@ sample_by_choice <- function(data, id_col, alt_col, choice_col,
   out <- merge(sub, wt, by = id_col, all.x = TRUE, sort = FALSE)
 
   cs <- list(scheme = "wesml", Q = Q_pop, H = H_sub, meat = "robust",
-             source = "sample_by_choice", quotas = target)
+             source = "sample_by_choice", quotas = target,
+             weight_name = weight_name)
   data.table::setattr(out, "Q", Q_pop)
   data.table::setattr(out, "H", H_sub)
   data.table::setattr(out, "choice_sampling", cs)

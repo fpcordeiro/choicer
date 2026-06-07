@@ -34,6 +34,12 @@ ordinary BHHH variance are invalid. It can be called on any fitted model
 (e.g. one estimated with \code{se_method = "hessian"}) to obtain robust
 standard errors post hoc, without refitting.
 }
+\details{
+If the stored weights are uniform (all equal), a warning is emitted: the
+returned variance is then the ordinary robust (Huber-White) variance, not a
+WESML-weighted variance. Refit with WESML weights for a choice-based-sampling
+correction.
+}
 \examples{
 \donttest{
 library(data.table)
