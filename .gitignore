@@ -27,6 +27,7 @@
 # R Environment Variables
 .Renviron
 CLAUDE.md
-.claude/
 AGENTS.md
+.claude/*
+!.claude/settings.json
 data_room/
