@@ -34,6 +34,23 @@ fit_small_mxl <- function() {
   )
 }
 
+# Fit a small NL model (N=30, J=6, 2 nests of size 3) via the convenience
+# pathway. create_small_nl_data() returns a raw data.table with columns
+# id, alt, nest, x1, x2, choice.
+fit_small_nl <- function(seed = 123, keep_data = TRUE) {
+  dt <- create_small_nl_data(seed = seed)
+  run_nestlogit(
+    data = dt,
+    id_col = "id",
+    alt_col = "alt",
+    choice_col = "choice",
+    covariate_cols = c("x1", "x2"),
+    nest_col = "nest",
+    control = list(maxeval = 50L),
+    keep_data = keep_data
+  )
+}
+
 # =============================================================================
 # MNL elasticities
 # =============================================================================
@@ -488,4 +505,93 @@ test_that("MXL diversion_ratios collapses to MNL when sigma is near zero", {
   expect_equal(strip(dr_mxl_x1), strip(dr_mnl), tolerance = 1e-6)
   # Random-coef wrt_var with Sigma ~ 0: beta_{ik}^s ~ mu_w1, also cancels
   expect_equal(strip(dr_mxl_w1), strip(dr_mnl), tolerance = 1e-6)
+})
+
+# =============================================================================
+# NL S3 dispatch
+# =============================================================================
+# The four post-estimation generics must dispatch on class choicer_nl and
+# return objects shaped like their MNL counterparts. Detailed numeric checks
+# live in test-predictions.R, test-elasticities.R, and test-blp.R; here we
+# confirm dispatch, the keep_data = FALSE guard, and bad-variable handling.
+
+test_that("post-estimation generics dispatch on a fitted choicer_nl", {
+  fit <- fit_small_nl()
+  expect_s3_class(fit, "choicer_nl")
+
+  J <- nrow(fit$alt_mapping)
+
+  preds <- predict(fit, type = "probabilities")
+  expect_type(preds, "list")
+  expect_true("choice_prob" %in% names(preds))
+
+  elast <- elasticities(fit, elast_var = "x1")
+  expect_true(is.matrix(elast))
+  expect_equal(dim(elast), c(J, J))
+
+  dr <- diversion_ratios(fit)
+  expect_true(is.matrix(dr))
+  expect_equal(dim(dr), c(J, J))
+
+  delta <- blp(fit, target_shares = rep(1 / J, J))
+  expect_true(is.numeric(delta))
+})
+
+# --- keep_data = FALSE guards ------------------------------------------------
+
+test_that("predict.choicer_nl errors without data", {
+  fit <- fit_small_nl(keep_data = FALSE)
+
+  expect_error(
+    predict(fit, type = "probabilities"),
+    "keep_data"
+  )
+})
+
+test_that("elasticities.choicer_nl errors without data", {
+  fit <- fit_small_nl(keep_data = FALSE)
+
+  expect_error(
+    elasticities(fit, elast_var = "x1"),
+    "keep_data"
+  )
+})
+
+test_that("diversion_ratios.choicer_nl errors without data", {
+  fit <- fit_small_nl(keep_data = FALSE)
+
+  expect_error(
+    diversion_ratios(fit),
+    "keep_data"
+  )
+})
+
+test_that("blp.choicer_nl errors without data", {
+  fit <- fit_small_nl(keep_data = FALSE)
+  J <- nrow(fit$alt_mapping)
+
+  expect_error(
+    blp(fit, target_shares = rep(1 / J, J)),
+    "keep_data"
+  )
+})
+
+# --- bad-variable handling ---------------------------------------------------
+
+test_that("elasticities.choicer_nl errors with invalid variable name", {
+  fit <- fit_small_nl()
+
+  expect_error(
+    elasticities(fit, elast_var = "nonexistent"),
+    "not found"
+  )
+})
+
+test_that("diversion_ratios.choicer_nl takes no variable argument (MNL-style)", {
+  # diversion_ratios.choicer_nl mirrors the MNL signature: diversion_ratios(fit).
+  # It must not require a wrt_var/elast_var argument.
+  fit <- fit_small_nl()
+
+  dr <- diversion_ratios(fit)
+  expect_true(is.matrix(dr))
 })

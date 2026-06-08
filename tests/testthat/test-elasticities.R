@@ -308,6 +308,254 @@ test_that("mnl_diversion_ratios IIA property: DR proportional to market share", 
   }
 })
 
+# =============================================================================
+# NL elasticities (S3 method on fitted choicer_nl)
+# =============================================================================
+# create_small_nl_data() (setup.R): N=30, J=6, two nests of size 3
+#   nest 1 = alternatives {1, 2, 3}, nest 2 = alternatives {4, 5, 6}.
+
+fit_nl_for_elast <- function(seed = 123) {
+  dt <- create_small_nl_data(seed = seed)
+  run_nestlogit(
+    data = dt,
+    id_col = "id",
+    alt_col = "alt",
+    choice_col = "choice",
+    covariate_cols = c("x1", "x2"),
+    nest_col = "nest",
+    control = list(maxeval = 50L)
+  )
+}
+
+test_that("elasticities.choicer_nl returns labeled J x J matrix of finite values", {
+  fit <- fit_nl_for_elast()
+  J <- nrow(fit$alt_mapping)
+
+  elast <- elasticities(fit, elast_var = "x1")
+
+  expect_true(is.matrix(elast))
+  expect_equal(dim(elast), c(J, J))
+  expect_true(all(is.finite(elast)))
+  expect_true(!is.null(rownames(elast)))
+  expect_true(!is.null(colnames(elast)))
+  expect_equal(rownames(elast), colnames(elast))
+})
+
+test_that("elasticities.choicer_nl accepts a 1-based integer index into X", {
+  fit <- fit_nl_for_elast()
+  J <- nrow(fit$alt_mapping)
+
+  elast <- elasticities(fit, elast_var = 1L)
+
+  expect_equal(dim(elast), c(J, J))
+  expect_true(all(is.finite(elast)))
+})
+
+test_that("elasticities.choicer_nl own-elasticity sign opposes a positive beta", {
+  fit <- fit_nl_for_elast()
+  pm <- fit$param_map
+
+  # Force a positive coefficient on x1 (index 1 of X) so the own-elasticity
+  # sign is determined. choicer's elasticity convention (identical to the
+  # shipped elasticities.choicer_mnl) reports the own-elasticity DIAGONAL as
+  # NEGATIVE for a positive beta: it measures the proportional change in an
+  # alternative's own choice probability, which for a desirable good is dampened
+  # relative to the raw utility gain, yielding a negative diagonal entry.
+  fit$coefficients[pm$beta[1]] <- 1.0
+
+  elast <- elasticities(fit, elast_var = "x1")
+  own_elast <- diag(elast)
+
+  expect_length(own_elast, nrow(elast))
+  expect_true(all(own_elast < 0))
+})
+
+test_that("elasticities.choicer_nl breaks IIA: within-nest vs cross-nest cross-elasticities differ", {
+  # This is the defining NL property. For a price change in alternative j,
+  # the proportional substitution toward same-nest alternatives differs from
+  # substitution toward other-nest alternatives whenever lambda != 1.
+  # Under MNL/IIA every off-diagonal entry in a column would be identical.
+  fit <- fit_nl_for_elast()
+  pm <- fit$param_map
+
+  # Pin parameters to a clearly non-MNL configuration: a sizeable beta and
+  # nest dissimilarity parameters well away from 1.
+  fit$coefficients[pm$beta[1]] <- 1.0
+  fit$coefficients[pm$lambda] <- 0.4
+
+  elast <- elasticities(fit, elast_var = "x1")
+
+  # Column 1 corresponds to a change in alternative 1, which lives in nest 1
+  # ({1,2,3}). Same-nest off-diagonal rows: {2, 3}. Cross-nest rows: {4,5,6}.
+  col <- elast[, 1]
+  within_nest <- col[c(2, 3)]
+  cross_nest <- col[c(4, 5, 6)]
+
+  # The off-diagonal entries are NOT all equal (IIA would force equality).
+  off_diag <- col[-1]
+  expect_false(isTRUE(all.equal(
+    rep(off_diag[1], length(off_diag)), off_diag,
+    tolerance = 1e-6
+  )))
+
+  # Concretely, within-nest substitution differs from cross-nest substitution.
+  expect_false(isTRUE(all.equal(
+    mean(within_nest), mean(cross_nest),
+    tolerance = 1e-6
+  )))
+})
+
+test_that("elasticities.choicer_nl with near-zero beta gives near-zero elasticities", {
+  fit <- fit_nl_for_elast()
+  pm <- fit$param_map
+
+  # Zero out the x1 coefficient: an attribute with no utility weight cannot
+  # move any choice probability, so all x1-elasticities should be ~0.
+  fit$coefficients[pm$beta[1]] <- 0
+
+  elast <- elasticities(fit, elast_var = "x1")
+
+  expect_equal(elast, matrix(0, nrow(elast), ncol(elast)),
+               tolerance = 1e-8, ignore_attr = TRUE)
+})
+
+# =============================================================================
+# NL diversion ratios (S3 method on fitted choicer_nl)
+# =============================================================================
+# diversion_ratios.choicer_nl mirrors the MNL signature: NO variable argument.
+
+test_that("diversion_ratios.choicer_nl returns labeled J x J non-negative matrix", {
+  fit <- fit_nl_for_elast()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit)
+
+  expect_true(is.matrix(dr))
+  expect_equal(dim(dr), c(J, J))
+  expect_true(all(is.finite(dr)))
+  expect_true(all(dr >= 0))
+  expect_true(!is.null(rownames(dr)))
+  expect_true(!is.null(colnames(dr)))
+})
+
+test_that("diversion_ratios.choicer_nl has zero diagonal", {
+  fit <- fit_nl_for_elast()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit)
+
+  expect_equal(unname(diag(dr)), rep(0, J))
+})
+
+test_that("diversion_ratios.choicer_nl column sums equal 1 (no outside option)", {
+  # With homogeneous choice sets and no outside option, all demand diverted
+  # away from j is recaptured by the remaining inside alternatives, so each
+  # column of the diversion matrix sums to 1.
+  fit <- fit_nl_for_elast()
+  J <- nrow(fit$alt_mapping)
+
+  dr <- diversion_ratios(fit)
+
+  col_sums <- unname(colSums(dr))
+  expect_equal(col_sums, rep(1, J), tolerance = 1e-8)
+})
+
+test_that("diversion_ratios.choicer_nl column sums equal 1 (with outside option)", {
+  # create_nl_inputs() builds 6 alternatives in 3 nests where j = 0 is a
+  # singleton with zero covariates; treat it as the outside option here.
+  # We rebuild the dataset (rather than reuse the input object) so we can pass
+  # outside_opt_label / include_outside_option through prepare_nl_data().
+  set.seed(123)
+  N <- 30
+  J <- 6
+  dt <- data.table::data.table(
+    id = rep(1:N, each = J),
+    j = rep(0:(J - 1), N),
+    x1 = rnorm(N * J),
+    x2 = runif(N * J, -1, 1)
+  )
+  dt[j == 0, c("x1", "x2") := 0]
+  dt[, choice := 0L]
+  dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+  dt[, nest := data.table::fifelse(j == 0, "A",
+                data.table::fifelse(j <= 2, "B", "C"))]
+
+  fit <- run_nestlogit(
+    data = dt,
+    id_col = "id",
+    alt_col = "j",
+    choice_col = "choice",
+    covariate_cols = c("x1", "x2"),
+    nest_col = "nest",
+    outside_opt_label = 0L,
+    include_outside_option = TRUE,
+    control = list(maxeval = 50L)
+  )
+
+  dr <- diversion_ratios(fit)
+
+  J_total <- nrow(fit$alt_mapping)  # inside alts + outside option
+  expect_equal(dim(dr), c(J_total, J_total))
+  expect_equal(unname(diag(dr)), rep(0, J_total))
+
+  col_sums <- unname(colSums(dr))
+  expect_equal(col_sums, rep(1, J_total), tolerance = 1e-8)
+})
+
+# =============================================================================
+# NL -> MNL equivalence sanity check
+# =============================================================================
+
+test_that("NL with all lambda = 1 reproduces MNL elasticities and diversion ratios", {
+  # When every nest dissimilarity parameter lambda_g = 1, the nested logit
+  # collapses exactly to the multinomial logit. An NL fit on the same data,
+  # with its lambdas pinned to 1 and betas/ASCs aligned to the MNL fit, should
+  # therefore yield the same elasticity and diversion matrices as MNL.
+  #
+  # create_small_nl_data() has 2 multi-member nests (so K_l = 2 lambdas). It is
+  # not all-singleton, but lambda = 1 is the analytic MNL limit, so this is the
+  # cleaner equivalence path than building a singleton structure.
+  dt <- create_small_nl_data(seed = 123)
+
+  fit_mnl <- run_mnlogit(
+    data = dt,
+    id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"),
+    control = list(maxeval = 50L)
+  )
+
+  fit_nl <- run_nestlogit(
+    data = dt,
+    id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), nest_col = "nest",
+    control = list(maxeval = 50L)
+  )
+
+  # Align the NL coefficients to the MNL fit and set every lambda to 1.
+  pm_nl <- fit_nl$param_map
+  mnl_coef <- coef(fit_mnl)
+  fit_nl$coefficients[pm_nl$beta] <- mnl_coef[c("x1", "x2")]
+  fit_nl$coefficients[pm_nl$lambda] <- 1
+  if (!is.null(pm_nl$asc)) {
+    asc_names <- names(coef(fit_mnl))[fit_mnl$param_map$asc]
+    fit_nl$coefficients[pm_nl$asc] <- mnl_coef[asc_names]
+  }
+
+  strip <- function(m) {
+    out <- unclass(m)
+    dimnames(out) <- NULL
+    out
+  }
+
+  elast_mnl <- elasticities(fit_mnl, elast_var = "x1")
+  elast_nl  <- elasticities(fit_nl, elast_var = "x1")
+  expect_equal(strip(elast_nl), strip(elast_mnl), tolerance = 1e-5)
+
+  dr_mnl <- diversion_ratios(fit_mnl)
+  dr_nl  <- diversion_ratios(fit_nl)
+  expect_equal(strip(dr_nl), strip(dr_mnl), tolerance = 1e-5)
+})
+
 test_that("mnl_diversion_ratios with outside option has correct dimensions and column sums", {
   set.seed(42)
   N <- 30

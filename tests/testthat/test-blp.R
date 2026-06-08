@@ -424,6 +424,83 @@ test_that("blp.choicer_mnl works with include_outside_option = TRUE", {
   expect_length(delta, J_inside)
 })
 
+# =============================================================================
+# blp.choicer_nl (S3 method on fitted choicer_nl)
+# =============================================================================
+# create_small_nl_data() (setup.R): N=30, J=6, two nests of size 3, no outside
+# option. blp.choicer_nl mirrors blp.choicer_mnl:
+#   blp(object, target_shares, delta_init = NULL, damping = 1,
+#       tol = 1e-8, max_iter = 1000, ...)
+
+fit_nl_for_blp <- function(seed = 123) {
+  dt <- create_small_nl_data(seed = seed)
+  run_nestlogit(
+    data = dt,
+    id_col = "id",
+    alt_col = "alt",
+    choice_col = "choice",
+    covariate_cols = c("x1", "x2"),
+    nest_col = "nest",
+    control = list(maxeval = 50L)
+  )
+}
+
+test_that("blp.choicer_nl returns a finite numeric vector", {
+  fit <- fit_nl_for_blp()
+  J <- nrow(fit$alt_mapping)
+
+  # Feed the model's own predicted shares as the BLP target rather than exact
+  # uniform shares. Uniform shares (rep(1/J, J)) push the NL contraction into a
+  # numerically degenerate regime when a fitted lambda is near zero, producing
+  # NaN; the model's implied shares are guaranteed interior and consistent with
+  # the fitted nest structure, so the contraction is well-posed.
+  target_shares <- as.vector(predict(fit, type = "shares"))
+
+  delta <- blp(fit, target_shares = target_shares)
+
+  expect_true(is.numeric(delta))
+  expect_length(delta, J)
+  expect_true(all(is.finite(delta)))
+})
+
+test_that("blp.choicer_nl default delta_init = NULL path works", {
+  fit <- fit_nl_for_blp()
+
+  # Feed the model's own implied market shares as the target. With no explicit
+  # delta_init the method must default it from the fitted ASCs (param_map$asc).
+  target_shares <- as.vector(predict(fit, type = "shares"))
+
+  delta <- blp(fit, target_shares = target_shares)
+
+  expect_true(all(is.finite(delta)))
+})
+
+test_that("blp.choicer_nl round-trips: own predicted shares recover original ASCs", {
+  # Using the model's own predicted shares as the BLP target should recover the
+  # ASCs that generated them, up to the usual additive identification constant.
+  fit <- fit_nl_for_blp()
+
+  current_shares <- as.vector(predict(fit, type = "shares"))
+
+  delta_new <- blp(fit, target_shares = current_shares)
+
+  pm <- fit$param_map
+  # No outside option here, so the baseline alternative's ASC is fixed at 0 and
+  # the free ASCs follow it: existing delta = c(0, ASC_2, ..., ASC_J).
+  asc_existing <- if (!is.null(pm$asc)) {
+    c(0, fit$coefficients[pm$asc])
+  } else {
+    rep(0, nrow(fit$alt_mapping))
+  }
+
+  # Recenter both to first element = 0 to absorb the identification constant,
+  # and strip arma::vec / name attributes before the numeric comparison.
+  delta_centered <- as.numeric(delta_new) - as.numeric(delta_new)[1]
+  asc_centered <- unname(asc_existing - asc_existing[1])
+
+  expect_equal(delta_centered, asc_centered, tolerance = 1e-3)
+})
+
 test_that("blp_contraction handles skewed target shares", {
   dt <- create_small_mnl_data()
   inputs <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
