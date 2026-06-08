@@ -180,95 +180,40 @@ Rcpp::List nl_loglik_gradient_parallel(
       // V_ij = X_ij * beta + delta_j (pre-computed)
       arma::vec V_inside = base_util.subvec(start_idx, end_idx);
 
-      // V_ij / lambda_k
-      // This now correctly uses lambda_k=1 for singleton nests
-      arma::vec V_over_lambda = V_inside / lambda.elem(nest_idx0_i);
-
-      // --- 2a. Calculate log_I_k (Inclusive Value) ---
-      // log_I_k = log( sum_{j in B_k} exp(V_ij / lambda_k) )
-      // Use log-sum-exp trick for numerical stability
-      arma::vec max_V_k = arma::vec(n_nests).fill(-arma::datum::inf);
-      for(int j = 0; j < m_i; ++j) {
-        const int k = nest_idx0_i[j];
-        if (V_over_lambda[j] > max_V_k[k]) {
-          max_V_k[k] = V_over_lambda[j];
-        }
-      }
-
-      arma::vec I_k_unscaled = arma::zeros(n_nests);
-      for(int j = 0; j < m_i; ++j) {
-        const int k = nest_idx0_i[j];
-        if (std::isfinite(max_V_k[k])) { // Avoid exp(-inf - (-inf)) -> NaN
-            I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
-        }
-      }
-      
-      arma::vec log_I_k = arma::vec(n_nests).fill(-arma::datum::inf);
-      for(int k = 0; k < n_nests; ++k) {
-          if (I_k_unscaled[k] > 0) {
-              log_I_k[k] = max_V_k[k] + std::log(I_k_unscaled[k]);
-          }
-      }
-
-      // --- 2b. Calculate log(P_k) (Nest Probability) ---
-      // log_P_k = lambda_k * log_I_k - log( sum_l(exp(lambda_l * log_I_l)) )
-      arma::vec nest_terms = lambda % log_I_k;
-      
-      double max_nest_term = nest_terms.max();
-      if (!std::isfinite(max_nest_term)) {
-        max_nest_term = 0;
-      }
-
-      double sum_exp_nest_terms = arma::accu(arma::exp(nest_terms - max_nest_term));
-      double log_denom_P_nest;
-
-      if (include_outside_option) {
-        // Add outside option: V=0, lambda=1 -> term = 1*log(exp(0/1)) = 0
-        sum_exp_nest_terms += std::exp(0.0 - max_nest_term);
-      }
-      
-      log_denom_P_nest = max_nest_term + std::log(sum_exp_nest_terms);
-      
-      arma::vec log_P_k = nest_terms - log_denom_P_nest;
-      double log_P_outside = (include_outside_option) ? (0.0 - log_denom_P_nest) : -arma::datum::inf;
-
-      // --- 2c. Calculate log(P_j|k) and log(P_ij) ---
-      // log_P_j_given_k = (V_ij / lambda_k) - log_I_k
-      arma::vec log_P_j_given_k = V_over_lambda - log_I_k.elem(nest_idx0_i);
-      
-      // log_P_i = log_P_j_given_k + log_P_k
-      arma::vec log_P_i = log_P_j_given_k + log_P_k.elem(nest_idx0_i);
+      // Per-individual probability block (shared helper)
+      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
+      double log_P_outside;
+      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                          include_outside_option,
+                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
 
       // --- 3. Log-Likelihood Calculation ---
-      
+
       const int chosen_alt_idx = choice_idx[i];
       double log_P_choice;
-      
+
       int chosen_nest_k = -1;
       int chosen_inside_idx = -1;
-      
+
       if (include_outside_option && chosen_alt_idx == 0) {
         log_P_choice = log_P_outside;
       } else {
-        chosen_inside_idx = chosen_alt_idx - 1; 
+        chosen_inside_idx = chosen_alt_idx - 1;
 
         if (chosen_inside_idx < 0 || chosen_inside_idx >= m_i) {
           Rcpp::stop("Invalid chosen alternative index for individual %d", i);
         }
-        
+
         log_P_choice = log_P_i[chosen_inside_idx];
         chosen_nest_k = nest_idx0_i[chosen_inside_idx];
       }
 
       if (!std::isfinite(log_P_choice)) {
-        log_P_choice = -1e10; 
+        log_P_choice = -1e10;
       }
       local_loglik += w_i * log_P_choice;
 
       // --- 4. Gradient Calculation ---
-      arma::vec P_i = arma::exp(log_P_i);
-      arma::vec P_j_given_k = arma::exp(log_P_j_given_k);
-      arma::vec P_k = arma::exp(log_P_k);
 
       // 4.1: Pre-calculate sum_{j in B_k} P(j|B_k) * V_ij
       arma::vec sum_P_V_k = arma::zeros(n_nests);
@@ -455,4 +400,814 @@ arma::mat nl_loglik_numeric_hessian(
     }
   }
   return Hess;
+}
+
+// =============================================================================
+// Shared NL parameter parsing (file-local)
+//
+// Given theta in native layout [beta(K), lambda(non-singleton), delta], the
+// nest index of each alternative, and the ASC/outside-option flags, this
+// resolves:
+//   beta        (K)         fixed coefficients
+//   lambda      (n_nests)   full lambda vector (singletons fixed to 1)
+//   delta       (J or J-1)  alternative-specific constants (index 0 = first
+//                           inside alt, fixed to 0 when no outside option)
+//   delta_start_idx         offset of delta block in theta
+//   delta_length            number of *estimated* delta parameters
+// Mirrors the parsing logic inside nl_loglik_gradient_parallel exactly.
+static void nl_parse_theta(
+    const arma::vec& theta,
+    const arma::uvec& nest_idx,
+    const int K,
+    const bool use_asc,
+    const bool include_outside_option,
+    arma::vec& beta,
+    arma::vec& lambda,
+    arma::vec& delta,
+    int& delta_start_idx,
+    int& delta_length
+) {
+  const int n_params = theta.n_elem;
+  const int n_nests = arma::max(nest_idx); // 1-based nest_idx
+
+  beta = theta.subvec(0, K - 1);
+
+  // Identify singleton nests
+  arma::uvec nest_counts = arma::zeros<arma::uvec>(n_nests);
+  for (unsigned int j = 0; j < nest_idx.n_elem; ++j) {
+    if (nest_idx[j] > 0 && (int)nest_idx[j] <= n_nests) {
+      nest_counts[nest_idx[j] - 1]++;
+    } else {
+      Rcpp::stop("Invalid nest index found in nest_idx.");
+    }
+  }
+  arma::uvec is_singleton = (nest_counts == 1);
+  const int n_non_singleton_nests = arma::accu(is_singleton == 0);
+
+  const int lambda_start_idx = K;
+  lambda = arma::ones(n_nests);
+
+  if (n_non_singleton_nests > 0) {
+    if (theta.n_elem < (unsigned)(K + n_non_singleton_nests)) {
+      Rcpp::stop("Error: theta vector is too short for K + n_non_singleton_nests.");
+    }
+    arma::vec non_singleton_lambdas =
+      theta.subvec(lambda_start_idx, lambda_start_idx + n_non_singleton_nests - 1);
+    if (arma::any(non_singleton_lambdas <= 0)) {
+      Rcpp::stop("Error: All non-singleton lambda (nest) parameters must be > 0.");
+    }
+    int current_lambda_idx = 0;
+    for (int k = 0; k < n_nests; ++k) {
+      if (is_singleton[k] == 0) {
+        lambda[k] = non_singleton_lambdas[current_lambda_idx];
+        current_lambda_idx++;
+      }
+    }
+  } else {
+    Rcpp::stop("Error: No non-singleton nests found. At least one nest must have multiple alternatives.");
+  }
+
+  delta_start_idx = K + n_non_singleton_nests;
+
+  if (use_asc) {
+    delta_length = n_params - K - n_non_singleton_nests;
+    if (delta_length < 0) {
+      Rcpp::stop("Error: Not enough parameters for K + n_non_singleton_nests + n_delta.");
+    }
+    if (delta_length > 0) {
+      if (include_outside_option) {
+        delta = theta.subvec(delta_start_idx, delta_start_idx + delta_length - 1);
+      } else {
+        delta = arma::zeros(delta_length + 1);
+        delta.subvec(1, delta_length) = theta.subvec(delta_start_idx, delta_start_idx + delta_length - 1);
+      }
+    } else {
+      delta = arma::zeros((include_outside_option) ? 0 : 1);
+    }
+  } else {
+    delta_length = 0;
+    delta = arma::zeros(0);
+  }
+}
+
+//' Prediction of choice probabilities and utilities for the Nested Logit model
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+//'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @returns List with `choice_prob` (joint P_ij per stacked row) and `utility` (V_ij).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' pred <- nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
+//'   fit$data$nest_idx, use_asc = TRUE)
+//' head(pred$choice_prob)
+//' }
+//' @export
+// [[Rcpp::export]]
+Rcpp::List nl_predict(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::uvec& nest_idx,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_nests = arma::max(nest_idx);
+
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length);
+
+  arma::uvec alt_idx0 = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
+  arma::vec V_all = arma::zeros(X.n_rows);
+  arma::vec P_all = arma::zeros(X.n_rows);
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic)
+#endif
+  for (int i = 0; i < N; ++i) {
+    const int m_i       = M[i];
+    const int start_idx = S[i];
+    const int end_idx   = start_idx + m_i - 1;
+
+    arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+    arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
+    arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+
+    arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
+    double log_P_outside;
+    nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                        include_outside_option,
+                        P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+
+    V_all.subvec(start_idx, end_idx) = V_inside;
+    P_all.subvec(start_idx, end_idx) = P_i;
+  }
+
+  return Rcpp::List::create(
+    Rcpp::Named("choice_prob") = P_all,
+    Rcpp::Named("utility")     = V_all
+  );
+}
+
+// Predicted NL market shares (file-local internal).
+// alt_idx0/nest_idx0 are 0-based. delta is the *full* delta vector
+// (index 0 = first inside alt). Returns weighted shares of length num_alts
+// (index 0 = outside option when present, then inside alts in order).
+static arma::vec nl_predict_shares_internal(
+    const arma::mat& X,
+    const arma::vec& beta,
+    const arma::vec& lambda,
+    const arma::uvec& alt_idx0,
+    const arma::uvec& nest_idx0,
+    const Rcpp::IntegerVector& M,
+    const Rcpp::IntegerVector& S,
+    const arma::vec& weights,
+    const arma::vec& delta,
+    const int n_nests,
+    const int num_alts,
+    const bool use_asc,
+    const bool include_outside_option
+) {
+  const int N = M.size();
+  const double denominator = arma::sum(weights);
+  if (denominator <= 0) {
+    Rcpp::stop("Error: Sum of weights must be positive.");
+  }
+
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
+  arma::vec global_shares = arma::zeros(num_alts);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    arma::vec local_shares = arma::zeros(num_alts);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i       = M[i];
+      const int start_idx = S[i];
+      const int end_idx   = start_idx + m_i - 1;
+      const double w_i    = weights[i];
+
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
+      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+
+      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
+      double log_P_outside;
+      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                          include_outside_option,
+                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+
+      if (include_outside_option) {
+        local_shares(0) += w_i * std::exp(log_P_outside);
+      }
+      for (int a = 0; a < m_i; ++a) {
+        if (include_outside_option) {
+          local_shares(alt_idx0_i(a) + 1) += w_i * P_i(a);
+        } else {
+          local_shares(alt_idx0_i(a)) += w_i * P_i(a);
+        }
+      }
+    }
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_shares += local_shares;
+    }
+  }
+
+  return global_shares / denominator;
+}
+
+//' Prediction of market shares for the Nested Logit model
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+//'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @returns vector with predicted market shares (outside-option share first when present).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' shares <- nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$M, fit$data$weights, fit$data$nest_idx, use_asc = TRUE)
+//' shares
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::vec nl_predict_shares(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const arma::uvec& nest_idx,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  const int K = X.n_cols;
+  const int n_nests = arma::max(nest_idx);
+
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length);
+
+  arma::uvec alt_idx0 = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  int num_alts = include_outside_option ? (alt_idx.max() + 1) : alt_idx.max();
+
+  return nl_predict_shares_internal(
+    X, beta, lambda, alt_idx0, nest_idx0, M, S, weights, delta,
+    n_nests, num_alts, use_asc, include_outside_option
+  );
+}
+
+//' Compute aggregate elasticities for the Nested Logit model
+//'
+//' Computes the aggregate (weighted-average) elasticity matrix for the Nested
+//' Logit model. Reduces to the MNL elasticities when all lambda = 1.
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+//'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param choice_idx N x 1 vector (kept for API consistency, not used).
+//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @returns J x J matrix of aggregate elasticities (row = responding alt, col = perturbed alt).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' elas <- nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
+//'   elast_var_idx = 1L)
+//' elas
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::mat nl_elasticities_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx, // kept for consistency, not used
+    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const int elast_var_idx,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  (void)choice_idx;
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_nests = arma::max(nest_idx);
+
+  const int var_idx = elast_var_idx - 1;
+  if (var_idx < 0 || var_idx >= K) {
+    Rcpp::stop("elast_var_idx is out of bounds for design matrix X.");
+  }
+
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length);
+  const double beta_k = beta(var_idx);
+
+  arma::uvec alt_idx0 = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+
+  const int J_inside = use_asc ? delta.n_elem : (arma::max(alt_idx0) + 1);
+  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
+  arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
+  double global_total_weight = 0.0;
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
+    double local_total_weight = 0.0;
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i       = M[i];
+      const int start_idx = S[i];
+      const int end_idx   = start_idx + m_i - 1;
+      const double w_i    = weights[i];
+      const auto X_i      = X.rows(start_idx, end_idx);
+
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
+      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+
+      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
+      double log_P_outside;
+      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                          include_outside_option,
+                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+
+      // x_k for each inside alternative
+      arma::vec x_k_i = X_i.col(var_idx);
+
+      // Global alternative index for each inside alt (outside option = 0)
+      arma::uvec global_map(m_i);
+      if (include_outside_option) {
+        global_map = alt_idx0_i + 1;
+      } else {
+        global_map = alt_idx0_i;
+      }
+
+      // Elasticity of P_ij (row j) w.r.t. attribute x of alt a (col a):
+      //   E_ja = beta_k * x_{ia} * d log P_ij / d V_ia
+      // d log P_ij/dV_ia = 1{a=j}/lambda_r + (1-1/lambda_r) 1{s=r} P(a|r) - P_ia
+      for (int j = 0; j < m_i; ++j) {
+        const int global_j = global_map[j];
+        const int r = nest_idx0_i[j];   // nest of responding alt j
+        const double lam_r = lambda[r];
+        const double P_ij = P_i[j];
+
+        for (int a = 0; a < m_i; ++a) {
+          const int global_a = global_map[a];
+          const int s = nest_idx0_i[a]; // nest of perturbed alt a
+          const double x_ia = x_k_i[a];
+          const double P_ia = P_i[a];
+
+          double dlogP;
+          if (a == j) {
+            // own
+            dlogP = 1.0 / lam_r + (1.0 - 1.0 / lam_r) * P_j_given_k[a] - P_ia;
+          } else if (s == r) {
+            // cross, same nest
+            dlogP = (1.0 - 1.0 / lam_r) * P_j_given_k[a] - P_ia;
+          } else {
+            // cross, different nest
+            dlogP = -P_ia;
+          }
+
+          const double elasticity = beta_k * x_ia * dlogP;
+          local_elas_matrix(global_j, global_a) += w_i * elasticity;
+        }
+      }
+
+      // Outside-option row (responding alt = outside option, global index 0).
+      // Outside has V=0, its own singleton nest -> for any inside perturbed
+      // alt a: d log P_out / d V_ia = -P_ia (different nest, a != out).
+      // (The outside-option column is 0 because its own x_k = 0.)
+      if (include_outside_option) {
+        for (int a = 0; a < m_i; ++a) {
+          const int global_a = global_map[a];
+          const double x_ia = x_k_i[a];
+          const double P_ia = P_i[a];
+          const double elasticity = beta_k * x_ia * (-P_ia);
+          local_elas_matrix(0, global_a) += w_i * elasticity;
+        }
+      }
+
+      local_total_weight += w_i;
+    }
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_elas_matrix += local_elas_matrix;
+      global_total_weight += local_total_weight;
+    }
+  }
+
+  if (global_total_weight > 1e-10) {
+    global_elas_matrix /= global_total_weight;
+  }
+
+  return global_elas_matrix;
+}
+
+//' Compute Nested Logit diversion ratios (parallelized over individuals)
+//'
+//' Computes the diversion ratio matrix DR(j->k) for the Nested Logit model.
+//' Entry (k, j) = fraction of demand lost by alternative j captured by k.
+//' Reduces to the MNL diversion ratios when all lambda = 1.
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+//'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' dr <- nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$nest_idx, fit$data$M, fit$data$weights)
+//' dr
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::mat nl_diversion_ratios_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_nests = arma::max(nest_idx);
+
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length);
+
+  arma::uvec alt_idx0 = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+
+  const int J_inside = use_asc ? delta.n_elem : (arma::max(alt_idx0) + 1);
+  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  arma::vec base_util = X * beta;
+  if (use_asc) base_util += delta.elem(alt_idx0);
+
+  // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j
+  // denominator(j)  = sum_i w_i * (dP_ij/dV_ij)
+  arma::mat global_numerator = arma::zeros(J_total, J_total);
+  arma::vec global_denominator = arma::zeros(J_total);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    arma::mat local_numerator = arma::zeros(J_total, J_total);
+    arma::vec local_denominator = arma::zeros(J_total);
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i       = M[i];
+      const int start_idx = S[i];
+      const int end_idx   = start_idx + m_i - 1;
+      const double w_i    = weights[i];
+
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
+      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+
+      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
+      double log_P_outside;
+      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                          include_outside_option,
+                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+
+      const double P_out = include_outside_option ? std::exp(log_P_outside) : 0.0;
+
+      // Global alternative index for each inside alt (outside option = 0)
+      arma::uvec global_map(m_i);
+      if (include_outside_option) {
+        global_map = alt_idx0_i + 1;
+      } else {
+        global_map = alt_idx0_i;
+      }
+
+      // For each perturbed alt j (column), accumulate response of every alt.
+      // dP_im/dV_ij = P_im * (d log P_im/d V_ij), with r = nest of j:
+      //   own (m=j):            P_ij [ 1/lam_r + (1-1/lam_r) P(j|r) - P_ij ]
+      //   cross same nest:      P_im [ (1-1/lam_r) P(j|r) - P_ij ]
+      //   cross diff nest:      -P_im P_ij
+      for (int j = 0; j < m_i; ++j) {
+        const int global_j = global_map[j];
+        const int r = nest_idx0_i[j];
+        const double lam_r = lambda[r];
+        const double P_ij = P_i[j];
+        const double Pj_given_r = P_j_given_k[j];
+
+        // denominator (own derivative)
+        const double dP_own =
+          P_ij * (1.0 / lam_r + (1.0 - 1.0 / lam_r) * Pj_given_r - P_ij);
+        local_denominator(global_j) += w_i * dP_own;
+
+        // numerator: inside alts m != j
+        for (int m = 0; m < m_i; ++m) {
+          if (m == j) continue;
+          const int global_m = global_map[m];
+          const int s = nest_idx0_i[m];
+          const double P_im = P_i[m];
+
+          double dP_cross;
+          if (s == r) {
+            dP_cross = P_im * ((1.0 - 1.0 / lam_r) * Pj_given_r - P_ij);
+          } else {
+            dP_cross = -P_im * P_ij;
+          }
+          local_numerator(global_m, global_j) += w_i * (-dP_cross);
+        }
+
+        // outside option as a *destination* (always a different nest from j)
+        if (include_outside_option) {
+          const double dP_out_cross = -P_out * P_ij;
+          local_numerator(0, global_j) += w_i * (-dP_out_cross);
+        }
+      }
+
+      // outside option as a *source* (its own singleton nest, lambda = 1):
+      //   own:   dP_out/dV_out = P_out (1 - P_out)
+      //   cross: dP_im/dV_out  = -P_im P_out  (different nest)
+      if (include_outside_option) {
+        local_denominator(0) += w_i * P_out * (1.0 - P_out);
+        for (int m = 0; m < m_i; ++m) {
+          const int global_m = global_map[m];
+          const double P_im = P_i[m];
+          const double dP_cross = -P_im * P_out;
+          local_numerator(global_m, 0) += w_i * (-dP_cross);
+        }
+      }
+    }
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_numerator += local_numerator;
+      global_denominator += local_denominator;
+    }
+  }
+
+  arma::mat diversion_matrix = arma::zeros(J_total, J_total);
+  for (int j = 0; j < J_total; ++j) {
+    if (global_denominator(j) > 1e-15) {
+      for (int k = 0; k < J_total; ++k) {
+        if (k != j) {
+          diversion_matrix(k, j) = global_numerator(k, j) / global_denominator(j);
+        }
+      }
+    }
+  }
+
+  return diversion_matrix;
+}
+
+//' BLP95 contraction mapping for the Nested Logit model
+//'
+//' Damped iterative fixed point recovering delta given target shares, using the
+//' NL probability structure. `damping = 1` reproduces the plain BLP update.
+//'
+//' @param delta J x 1 vector with initial guess for deltas (ASCs).
+//' @param target_shares vector with target shares (outside-option share first when present).
+//' @param X sum(M) x K design matrix with covariates.
+//' @param beta K x 1 vector with fixed coefficients.
+//' @param lambda full nest dissimilarity vector of length n_nests (singletons = 1).
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @param damping damping factor for the update (default 1.0 = plain BLP).
+//' @param tol convergence tolerance.
+//' @param max_iter maximum number of iterations.
+//' @returns vector with contraction's delta (ASCs) output.
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' beta <- coef(fit)[fit$param_map$beta]
+//' lambda <- rep(1, length(unique(fit$data$nest_idx)))
+//' lambda[as.integer(names(which(table(fit$data$nest_idx) > 1)))] <-
+//'   coef(fit)[fit$param_map$lambda]
+//' delta <- nl_blp_contraction(rep(0, J), rep(1/J, J), fit$data$X, beta, lambda,
+//'   fit$data$alt_idx, fit$data$nest_idx, fit$data$M, fit$data$weights)
+//' delta
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::vec nl_blp_contraction(
+    const arma::vec& delta,
+    const arma::vec& target_shares,
+    const arma::mat& X,
+    const arma::vec& beta,
+    const arma::vec& lambda,
+    const arma::uvec& alt_idx,
+    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool include_outside_option = false,
+    const double damping  = 1.0,
+    const double tol      = 1e-8,
+    const int    max_iter = 1000
+) {
+  const bool use_asc = true;
+  const int n_nests = arma::max(nest_idx);
+
+  int num_alts = include_outside_option ? (delta.n_elem + 1) : delta.n_elem;
+  if ((int)target_shares.n_elem != num_alts) {
+    Rcpp::stop("Error: target_shares must have the same length as the total number of alternatives.");
+  }
+  if (arma::any(target_shares <= 0)) {
+    Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
+  }
+
+  arma::uvec alt_idx0 = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
+  // residual) lives in the outside-inclusive share space of length num_alts:
+  //   index 0 = outside option (when present), indices 1..J = inside alts.
+  // But nl_predict_shares_internal indexes delta by INSIDE-alt index
+  // (alt_idx0 in {0..J-1}) and expects a length-J inside-delta vector (the
+  // outside option is handled separately via include_outside_option). We
+  // therefore feed it delta_old.subvec(1, num_alts - 1) when an outside option
+  // is present, and pin the outside slot delta_old[0] = 0 throughout (the
+  // outside option's utility is the fixed normalization).
+  arma::vec delta_old = arma::zeros(num_alts);
+  if (include_outside_option) {
+    delta_old.subvec(1, num_alts - 1) = delta;
+    delta_old[0] = 0.0;
+  } else {
+    delta_old = delta;
+    delta_old -= delta_old[0];
+  }
+
+  arma::vec inside_delta_old = include_outside_option
+    ? arma::vec(delta_old.subvec(1, num_alts - 1))
+    : delta_old;
+
+  arma::vec log_shares_old = nl_predict_shares_internal(
+    X, beta, lambda, alt_idx0, nest_idx0, M, S, weights, inside_delta_old,
+    n_nests, num_alts, use_asc, include_outside_option
+  );
+  log_shares_old = arma::log(log_shares_old);
+  arma::vec log_shares_target = arma::log(target_shares);
+  arma::vec delta_new = delta_old;
+
+  arma::vec delta_diff(num_alts, arma::fill::ones);
+  double residual = 10.0;
+  int iter = 0;
+
+  while (iter < max_iter) {
+    delta_new = delta_old + damping * (log_shares_target - log_shares_old);
+    if (include_outside_option) {
+      // Outside option's delta is the fixed normalization; pin it at 0.
+      delta_new[0] = 0.0;
+    }
+    delta_diff = arma::abs(delta_new - delta_old);
+    residual = arma::max(delta_diff);
+    if (residual < tol) {
+      break;
+    }
+    delta_old = delta_new;
+    inside_delta_old = include_outside_option
+      ? arma::vec(delta_old.subvec(1, num_alts - 1))
+      : delta_old;
+    log_shares_old = nl_predict_shares_internal(
+      X, beta, lambda, alt_idx0, nest_idx0, M, S, weights, inside_delta_old,
+      n_nests, num_alts, use_asc, include_outside_option
+    );
+    log_shares_old = arma::log(log_shares_old);
+    ++iter;
+  }
+
+  if (iter >= max_iter) {
+    Rcpp::Rcout << "Warning: Maximum iterations reached without convergence." << std::endl;
+  }
+
+  delta_new -= delta_new[0];
+
+  if (include_outside_option) {
+    return delta_new.subvec(1, num_alts - 1);
+  } else {
+    return delta_new;
+  }
 }

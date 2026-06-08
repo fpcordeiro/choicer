@@ -1235,3 +1235,229 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     max_iter = max_iter
   )
 }
+
+# --- predict: NL -------------------------------------------------------------
+
+#' Predict from a nested logit model
+#'
+#' Computes choice probabilities or aggregate market shares.
+#'
+#' @param object A choicer_nl object.
+#' @param type One of "probabilities" (individual-level choice probabilities)
+#'   or "shares" (aggregate market shares).
+#' @param ... Additional arguments (ignored).
+#' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
+#'   For "shares": a named numeric vector of market shares per alternative.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, nest := rep(c(1L, 1L, 2L, 2L), N)]
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' predict(fit, type = "shares")
+#' predict(fit, type = "probabilities")
+#' }
+#' @export
+predict.choicer_nl <- function(object, type = c("probabilities", "shares"), ...) {
+  type <- match.arg(type)
+
+  if (is.null(object$data)) {
+    stop("Prediction requires stored data. Refit with keep_data = TRUE.")
+  }
+
+  d <- object$data
+  theta <- object$coefficients
+
+  if (type == "probabilities") {
+    nl_predict(
+      theta = theta,
+      X = d$X,
+      alt_idx = d$alt_idx,
+      M = d$M,
+      nest_idx = d$nest_idx,
+      use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    )
+  } else {
+    nl_predict_shares(
+      theta = theta,
+      X = d$X,
+      alt_idx = d$alt_idx,
+      M = d$M,
+      weights = d$weights,
+      nest_idx = d$nest_idx,
+      use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    )
+  }
+}
+
+# --- elasticities: NL --------------------------------------------------------
+
+#' Elasticities for nested logit model
+#'
+#' @param object A \code{choicer_nl} object fitted with \code{keep_data = TRUE}.
+#' @param elast_var Variable for elasticity computation: a column name (character)
+#'   or 1-based index into the design matrix X.
+#' @param ... Additional arguments (ignored).
+#' @returns A J x J elasticity matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, nest := rep(c(1L, 1L, 2L, 2L), N)]
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' elasticities(fit, "x1")
+#' }
+#' @export
+elasticities.choicer_nl <- function(object, elast_var, ...) {
+  if (is.null(object$data)) {
+    stop("elasticities() requires stored data. Refit with keep_data = TRUE.")
+  }
+  d <- object$data
+  idx <- resolve_var_index(elast_var, colnames(d$X))
+
+  mat <- nl_elasticities_parallel(
+    theta = object$coefficients,
+    X = d$X,
+    alt_idx = d$alt_idx,
+    choice_idx = d$choice_idx,
+    nest_idx = d$nest_idx,
+    M = d$M,
+    weights = d$weights,
+    elast_var_idx = idx,
+    use_asc = object$use_asc,
+    include_outside_option = object$include_outside_option
+  )
+
+  label_matrix(mat, object$alt_mapping)
+}
+
+# --- diversion_ratios: NL ----------------------------------------------------
+
+#' Diversion ratios for nested logit model
+#'
+#' @param object A \code{choicer_nl} object fitted with \code{keep_data = TRUE}.
+#' @param ... Additional arguments (ignored).
+#' @returns A J x J diversion ratio matrix with alternative labels.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, nest := rep(c(1L, 1L, 2L, 2L), N)]
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' diversion_ratios(fit)
+#' }
+#' @export
+diversion_ratios.choicer_nl <- function(object, ...) {
+  if (is.null(object$data)) {
+    stop("diversion_ratios() requires stored data. Refit with keep_data = TRUE.")
+  }
+  d <- object$data
+
+  mat <- nl_diversion_ratios_parallel(
+    theta = object$coefficients,
+    X = d$X,
+    alt_idx = d$alt_idx,
+    nest_idx = d$nest_idx,
+    M = d$M,
+    weights = d$weights,
+    use_asc = object$use_asc,
+    include_outside_option = object$include_outside_option
+  )
+
+  label_matrix(mat, object$alt_mapping)
+}
+
+# --- blp: NL -----------------------------------------------------------------
+
+#' BLP contraction mapping for nested logit model
+#'
+#' @param object A \code{choicer_nl} object fitted with \code{keep_data = TRUE}.
+#' @param target_shares Numeric vector of target market shares.
+#'   Length \code{J_inside} when no outside option, or \code{J_inside + 1}
+#'   (with the outside option's share at index 1) when
+#'   \code{include_outside_option = TRUE}.
+#' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
+#'   uses the estimated ASCs from the fitted model.
+#' @param damping Contraction damping factor in (0, 1] (default 1).
+#' @param tol Convergence tolerance (default 1e-8).
+#' @param max_iter Maximum iterations (default 1000).
+#' @param ... Additional arguments (ignored).
+#' @returns Converged delta (ASC) vector.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, nest := rep(c(1L, 1L, 2L, 2L), N)]
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' blp(fit, target_shares = rep(1/J, J))
+#' }
+#' @export
+blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
+                           damping = 1, tol = 1e-8, max_iter = 1000, ...) {
+  if (is.null(object$data)) {
+    stop("blp() requires stored data. Refit with keep_data = TRUE.")
+  }
+  d <- object$data
+  pm <- object$param_map
+  beta <- object$coefficients[pm$beta]
+
+  # Build the full length-n_nests lambda vector expected by the kernel.
+  # Singleton nests have lambda fixed to 1; non-singleton nests receive the
+  # estimated lambdas, scattered by ascending nest index (matching the C++).
+  n_nests <- max(d$nest_idx)
+  lambda_full <- rep(1, n_nests)
+  nest_counts <- tabulate(d$nest_idx, n_nests)
+  non_singleton <- which(nest_counts > 1)
+  lambda_full[non_singleton] <- object$coefficients[pm$lambda]
+
+  J <- nrow(object$alt_mapping)
+  if (is.null(delta_init)) {
+    if (!is.null(pm$asc)) {
+      delta_init <- if (object$include_outside_option) {
+        object$coefficients[pm$asc]            # length J_inside (all ASCs free)
+      } else {
+        c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
+      }
+    } else {
+      delta_init <- rep(0, J)
+    }
+  }
+
+  nl_blp_contraction(
+    delta = delta_init,
+    target_shares = target_shares,
+    X = d$X,
+    beta = beta,
+    lambda = lambda_full,
+    alt_idx = d$alt_idx,
+    nest_idx = d$nest_idx,
+    M = d$M,
+    weights = d$weights,
+    include_outside_option = object$include_outside_option,
+    damping = damping,
+    tol = tol,
+    max_iter = max_iter
+  )
+}
