@@ -174,3 +174,66 @@ test_that("mnl_predict without ASCs has correct parameter count", {
   expect_length(preds$choice_prob, nrow(inputs$X))
   expect_true(all(is.finite(preds$choice_prob)))
 })
+
+# =============================================================================
+# NL predict (S3 method on fitted choicer_nl)
+# =============================================================================
+# Uses create_small_nl_data() (N=30, J=6, 2 nests of size 3) from setup.R,
+# fitted through the convenience pathway with keep_data = TRUE.
+
+fit_nl_for_predict <- function(seed = 123) {
+  dt <- create_small_nl_data(seed = seed)
+  run_nestlogit(
+    data = dt,
+    id_col = "id",
+    alt_col = "alt",
+    choice_col = "choice",
+    covariate_cols = c("x1", "x2"),
+    nest_col = "nest",
+    control = list(maxeval = 50L)
+  )
+}
+
+test_that("predict.choicer_nl(type='probabilities') returns valid choice probabilities", {
+  fit <- fit_nl_for_predict()
+
+  preds <- predict(fit, type = "probabilities")
+
+  expect_type(preds, "list")
+  expect_true("choice_prob" %in% names(preds))
+  expect_true(all(preds$choice_prob >= 0))
+  expect_true(all(preds$choice_prob <= 1))
+  expect_true(all(is.finite(preds$choice_prob)))
+})
+
+test_that("predict.choicer_nl probabilities sum to 1 within each individual", {
+  fit <- fit_nl_for_predict()
+
+  preds <- predict(fit, type = "probabilities")
+
+  # Per-individual probabilities must sum to 1. M holds the per-individual
+  # choice-set sizes in the same row order as choice_prob.
+  M <- fit$data$M
+  ends <- cumsum(M)
+  starts <- c(1L, utils::head(ends, -1) + 1L)
+
+  per_id_sums <- vapply(
+    seq_along(M),
+    function(i) sum(preds$choice_prob[starts[i]:ends[i]]),
+    numeric(1)
+  )
+
+  expect_equal(per_id_sums, rep(1, length(M)), tolerance = TOL_PROB)
+})
+
+test_that("predict.choicer_nl(type='shares') returns shares summing to 1", {
+  fit <- fit_nl_for_predict()
+  J <- nrow(fit$alt_mapping)
+
+  shares <- predict(fit, type = "shares")
+
+  # Fitted without an outside option -> one share per inside alternative.
+  expect_length(as.vector(shares), J)
+  expect_true(all(as.vector(shares) >= 0))
+  expect_equal(sum(as.vector(shares)), 1, tolerance = TOL_PROB)
+})
