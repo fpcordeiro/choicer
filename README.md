@@ -48,13 +48,45 @@ elasticities(fit, elast_var = "x1")  # own- and cross-price elasticities
 diversion_ratios(fit)                # diversion ratio matrix
 ```
 
+The same post-estimation toolkit is available for nested logit. Elasticities
+respect the nest structure — within-nest and cross-nest cross-elasticities
+differ, so IIA does not hold across nests. The `blp()` contraction for NL
+accepts a `damping` argument (default 1) which can be reduced for models with
+strong nesting:
+
+``` r
+# Nested logit — simulate data and fit
+sim <- simulate_nl_data(N = 5e4, seed = 123)
+
+fit_nl <- run_nestlogit(
+    data                   = sim$data,
+    id_col                 = "id",
+    alt_col                = "j",
+    choice_col             = "choice",
+    covariate_cols         = c("X", "W"),
+    nest_col               = "nest",
+    use_asc                = TRUE,
+    include_outside_option = TRUE,
+    outside_opt_label      = 0L,
+    keep_data              = TRUE   # required for post-estimation
+)
+
+# Post-estimation
+predict(fit_nl, type = "shares")        # predicted market shares
+elasticities(fit_nl, elast_var = "X")   # J×J elasticity matrix (nest-consistent)
+diversion_ratios(fit_nl)                # J×J diversion matrix
+# BLP share inversion: recover mean utilities matching target shares
+target_shares <- predict(fit_nl, type = "shares")
+blp(fit_nl, target_shares, damping = 0.5)  # use damping < 1 for strongly-nested models
+```
+
 ## Supported models
 
 | Model | Function | Post-estimation |
 |-------|----------|-----------------|
 | Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
 | Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
-| Nested Logit | `run_nestlogit()` | — |
+| Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
 
 All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`.
 

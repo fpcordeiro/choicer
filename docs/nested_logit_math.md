@@ -10,6 +10,7 @@ This document provides a detailed mathematical description of the nested logit (
 4. [Gradient Computation](#3-gradient-computation)
 5. [Hessian Computation](#4-hessian-computation)
 6. [Implementation Details](#5-implementation-details)
+7. [Post-Estimation Quantities](#6-post-estimation-quantities)
 
 ---
 
@@ -382,8 +383,195 @@ for compatibility with minimization routines (e.g., `nloptr`) that minimize a lo
 
 ---
 
+## 6. Post-Estimation Quantities
+
+### 6.1 Choice Probabilities (predict)
+
+The joint probability is the decomposition from §2.1:
+
+$$
+P_{ij} = P(j \mid k(j)) \cdot P_{k(j)}
+$$
+
+with $P(j \mid k)$ and $P_k$ given in §§2.3–2.4. `nl_predict` returns individual-level probabilities $P_{ij}$ and systematic utilities $V_{ij}$ for every observation row. `nl_predict_shares` aggregates over individuals to obtain weighted market shares:
+
+$$
+\hat{s}_j = \frac{\sum_{i=1}^{N} w_i \, P_{ij}}{\sum_{i=1}^{N} w_i}
+$$
+
+*Code reference: [nestlogit.cpp:521-708](../src/nestlogit.cpp#L521-L708)*
+
+---
+
+### 6.2 Elasticities
+
+#### 6.2.1 Semi-elasticity with respect to utility
+
+Let $r = k(j)$ be the nest of the responding alternative $j$ and $s = k(a)$ be the nest of the perturbed alternative $a$. From §3.1, the derivative of $\log P_{ij}$ with respect to the systematic utility of any alternative $a$ is:
+
+$$
+\frac{\partial \log P_{ij}}{\partial V_{ia}}
+= \frac{\mathbf{1}_{a=j}}{\lambda_r}
++ \left(1 - \frac{1}{\lambda_r}\right)\mathbf{1}_{s=r} \, P(a \mid r)
+- P_{ia}
+$$
+
+This is the general expression; the gradient formula in §3.1 applies it only to the *chosen* alternative, whereas here we evaluate it for all pairs $(j, a)$ to construct the full elasticity matrix.
+
+#### 6.2.2 Elasticity of $P_{ij}$ with respect to covariate $k$ of alternative $a$
+
+Since $\partial V_{ia} / \partial x_{ia,k} = \beta_k$:
+
+$$
+E_{ij,ia}^{k}
+= \frac{\partial P_{ij}}{\partial x_{ia,k}} \cdot \frac{x_{ia,k}}{P_{ij}}
+= \beta_k \, x_{ia,k} \cdot \frac{\partial \log P_{ij}}{\partial V_{ia}}
+$$
+
+Substituting the three cases:
+
+| Case | Condition | Semi-elasticity $\partial \log P_{ij}/\partial V_{ia}$ |
+|------|-----------|--------------------------------------------------------|
+| Own | $a = j$ | $\dfrac{1}{\lambda_r} + \left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}$ |
+| Cross, same nest | $s = r,\; a \neq j$ | $\left(1 - \dfrac{1}{\lambda_r}\right) P(a \mid r) - P_{ia}$ |
+| Cross, different nest | $s \neq r$ | $-P_{ia}$ |
+
+**Reduction to MNL.** When $\lambda_k = 1$ for all nests the within-nest term $(1 - 1/\lambda_r)$ vanishes and the conditional probability drops out, giving $\partial \log P_{ij}/\partial V_{ia} = \mathbf{1}_{a=j} - P_{ia}$, which is exactly the MNL semi-elasticity (§3.1 of the MNL document).
+
+**Outside option.** When an outside option is present it occupies its own singleton nest with $\lambda_0 = 1$ and $x_{i0,k} = 0$. Its row (responding = outside option) has semi-elasticity $-P_{ia}$ for every inside alternative $a$ (different nest, §3.1); its column (perturbed = outside option) is identically zero because $\beta_k \cdot 0 = 0$.
+
+The implementation accumulates $w_i \cdot E_{ij,ia}^k$ across individuals and divides by $\sum_i w_i$ to produce weighted average elasticities.
+
+*Code reference: [nestlogit.cpp:749-892](../src/nestlogit.cpp#L749-L892)*
+
+---
+
+### 6.3 Diversion Ratios
+
+#### 6.3.1 Definition
+
+The diversion ratio from alternative $k$ to alternative $j$ is:
+
+$$
+DR(k \to j) = -\frac{\partial Q_k / \partial V_{ij}}{\partial Q_j / \partial V_{ij}}
+$$
+
+where $Q_m = \sum_i w_i P_{im}$ is aggregate demand and the perturbation is through the systematic utility of the *losing* alternative $j$.
+
+#### 6.3.2 Partial derivatives of demand
+
+Using $\partial P_{im}/\partial V_{ij} = P_{im} \cdot (\partial \log P_{im}/\partial V_{ij})$ and the semi-elasticity from §6.2.1, the three cases with $r = k(j)$:
+
+$$
+\frac{\partial P_{im}}{\partial V_{ij}} =
+\begin{cases}
+P_{ij}\!\left[\dfrac{1}{\lambda_r} + \left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}\right] & m = j \\[6pt]
+P_{im}\!\left[\left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}\right] & k(m) = r,\; m \neq j \\[6pt]
+-P_{im} \, P_{ij} & k(m) \neq r
+\end{cases}
+$$
+
+#### 6.3.3 Covariate-independence of diversion ratios
+
+For a concrete attribute $k$ the perturbation is $\partial V_{ij} = \beta_k \, \partial x_{ij,k}$. Both numerator and denominator of $DR(k \to j)$ are proportional to the *same* factor $\beta_k \, x_{ij,k}$ (the same attribute of the same losing alternative $j$), so it cancels:
+
+$$
+DR(k \to j)
+= -\frac{\beta_k \, x_{ij,k} \sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
+         {\beta_k \, x_{ij,k} \sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
+= -\frac{\sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
+         {\sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
+$$
+
+The NL diversion ratio is therefore independent of which covariate is perturbed — a property it shares with MNL (see §6.2 of the MNL document) but which does **not** hold for mixed logit, where $\beta_k$ is individual-specific.
+
+#### 6.3.4 Population aggregation and column-sum property
+
+Define:
+
+$$
+\text{num}(k, j) = \sum_{i=1}^{N} w_i \left(-\frac{\partial P_{ik}}{\partial V_{ij}}\right), \qquad
+\text{den}(j) = \sum_{i=1}^{N} w_i \frac{\partial P_{ij}}{\partial V_{ij}}
+$$
+
+so that $DR(k \to j) = \text{num}(k,j) \,/\, \text{den}(j)$ for $k \neq j$.
+
+**Columns sum to 1.** The fundamental identity $\sum_{m} \partial P_{im}/\partial V_{ij} = 0$ (probabilities sum to 1 for every individual and every perturbation direction, including the outside option when present) gives:
+
+$$
+\sum_{k \neq j} \frac{\partial P_{ik}}{\partial V_{ij}} = -\frac{\partial P_{ij}}{\partial V_{ij}}
+\implies
+\sum_{k \neq j} \text{num}(k, j) = \text{den}(j)
+\implies
+\sum_{k \neq j} DR(k \to j) = 1
+$$
+
+When an outside option is present it acts as both a source (it can lose demand) and a destination (it can receive diverted demand), so it appears in both the row index $k$ and the column index $j$ of the $J_{\text{total}} \times J_{\text{total}}$ diversion matrix, and the column sums still equal 1 over all alternatives including the outside option.
+
+#### 6.3.5 Reduction to MNL at $\lambda = 1$
+
+When all $\lambda_k = 1$ the cross-same-nest case collapses to the cross-different-nest case ($\partial P_{im}/\partial V_{ij} = -P_{im} P_{ij}$ for $m \neq j$) and the own case gives $\partial P_{ij}/\partial V_{ij} = P_{ij}(1 - P_{ij})$. Substituting:
+
+$$
+DR(k \to j)\big|_{\lambda=1}
+= \frac{\sum_i w_i \, P_{ij} \, P_{ik}}{\sum_i w_i \, P_{ij} (1 - P_{ij})}
+$$
+
+which is the MNL diversion ratio (§6.3 of the MNL document).
+
+*Code reference: [nestlogit.cpp:927-1073](../src/nestlogit.cpp#L927-L1073)*
+
+---
+
+### 6.4 BLP Share Inversion
+
+#### 6.4.1 Problem statement
+
+Given observed market shares $s_j^*$, find the ASC vector $\delta$ such that the NL model reproduces those shares:
+
+$$
+\hat{s}_j(\delta) = s_j^* \quad \forall j
+$$
+
+#### 6.4.2 Damped contraction mapping
+
+Berry, Levinsohn, and Pakes (1995) establish that the fixed-point iteration
+
+$$
+\delta^{(t+1)} = \delta^{(t)} + \kappa \bigl(\log s^* - \log \hat{s}(\delta^{(t)})\bigr)
+$$
+
+converges to the unique solution. Setting $\kappa = 1$ reproduces the original BLP95 update. Predicted shares $\hat{s}(\delta^{(t)})$ are computed via the NL formula: for each alternative $j$,
+
+$$
+\hat{s}_j(\delta^{(t)}) = \frac{\sum_{i=1}^{N} w_i \, P_{ij}(\delta^{(t)})}{\sum_{i=1}^{N} w_i}
+$$
+
+where $P_{ij}(\delta^{(t)}) = P(j \mid k(j)) \cdot P_{k(j)}$ is evaluated at the current $\delta^{(t)}$ with $\beta$ and $\lambda$ held fixed.
+
+#### 6.4.3 Damping for nested models
+
+For strongly nested data (small $\lambda_k$) the plain BLP update ($\kappa = 1$) can overshoot. Setting $\kappa < 1$ improves contraction. A practical heuristic is:
+
+$$
+\kappa \approx \min_k \lambda_k
+$$
+
+since the curvature of the NL log-share map is sharpest in nests with small dissimilarity parameters. The function argument is called `damping`.
+
+#### 6.4.4 Baseline re-normalization
+
+After convergence the returned $\delta$ is re-centered so that the baseline is identified: $\delta \leftarrow \delta - \delta_0$ (subtract the outside-option entry, or equivalently $\delta_1$ when there is no outside option). This matches the ASC identification convention from §1.4.
+
+**Note on the `lambda` argument.** `nl_blp_contraction` expects a *full* length-$n_{\text{nests}}$ vector where singleton nests have their entry set to 1. This differs from the estimated parameter block $\lambda$ in $\theta$, which contains only non-singleton entries. The caller is responsible for expanding the estimated lambdas into the full vector before invoking the contraction.
+
+*Code reference: [nestlogit.cpp:1115-1186](../src/nestlogit.cpp#L1115-L1186)*
+
+---
+
 ## References
 
 - McFadden, D. (1978). Modelling the choice of residential location. In A. Karlqvist et al. (Eds.), *Spatial Interaction Theory and Planning Models* (pp. 75-96). North-Holland.
 - Ben-Akiva, M., & Lerman, S. R. (1985). *Discrete Choice Analysis: Theory and Application to Travel Demand*. MIT Press.
+- Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841–890.
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.). Cambridge University Press. Chapter 4.
