@@ -517,6 +517,9 @@ arma::vec blp_contraction(
   if (target_shares.n_elem != num_alts) {
     Rcpp::stop("Error: target_shares must have the same length as the total number of alternatives.");
   }
+  if (arma::any(target_shares <= 0)) {
+    Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
+  }
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -524,18 +527,31 @@ arma::vec blp_contraction(
   // Compute prefix sums for indexing
   Rcpp::IntegerVector S = compute_prefix_sum(M);
 
-  // Initialize delta_old
+  // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
+  // residual) lives in the outside-inclusive share space of length num_alts:
+  //   index 0 = outside option (when present), indices 1..J = inside alts.
+  // But mnl_predict_shares_internal indexes delta by INSIDE-alt index
+  // (alt_idx0 in {0..J-1}) and expects a length-J inside-delta vector (the
+  // outside option is handled separately via include_outside_option). We
+  // therefore feed it delta_old.subvec(1, num_alts - 1) when an outside option
+  // is present, and pin the outside slot delta_old[0] = 0 throughout (the
+  // outside option's utility is the fixed normalization).
   arma::vec delta_old = arma::zeros(num_alts);
   if (include_outside_option) {
     delta_old.subvec(1, num_alts - 1) = delta; // outside option at index 0
+    delta_old[0] = 0.0;
   } else {
     delta_old = delta; // no outside option, delta already has J elements
     delta_old -= delta_old[0];
   }
 
+  arma::vec inside_delta_old = include_outside_option
+    ? arma::vec(delta_old.subvec(1, num_alts - 1))
+    : delta_old;
+
   // Initialize shares and delta_new
   arma::vec log_shares_old = mnl_predict_shares_internal(
-    X, beta, alt_idx0, M, S, weights, delta_old, num_alts, use_asc, include_outside_option
+    X, beta, alt_idx0, M, S, weights, inside_delta_old, num_alts, use_asc, include_outside_option
   );
   log_shares_old = arma::log(log_shares_old);
   arma::vec log_shares_target = arma::log(target_shares);
@@ -549,14 +565,21 @@ arma::vec blp_contraction(
   // iterate until convergence or until max_iter reached
   while (iter < max_iter) {
       delta_new = delta_old + (log_shares_target - log_shares_old);
+      if (include_outside_option) {
+        // Outside option's delta is the fixed normalization; pin it at 0.
+        delta_new[0] = 0.0;
+      }
       delta_diff = arma::abs(delta_new - delta_old);
       residual = arma::max(delta_diff);
       if (residual < tol) {
           break;
       }
       delta_old = delta_new;
+      inside_delta_old = include_outside_option
+        ? arma::vec(delta_old.subvec(1, num_alts - 1))
+        : delta_old;
       log_shares_old = mnl_predict_shares_internal(
-        X, beta, alt_idx0, M, S, weights, delta_old, num_alts, use_asc, include_outside_option
+        X, beta, alt_idx0, M, S, weights, inside_delta_old, num_alts, use_asc, include_outside_option
       );
       log_shares_old = arma::log(log_shares_old);
       ++iter;
