@@ -311,6 +311,40 @@ test_that("blp.choicer_mxl works with include_outside_option = TRUE", {
   expect_length(delta, J_inside)
 })
 
+test_that("blp.choicer_mxl with outside option round-trips own predicted shares", {
+  dt <- create_mxl_outside_data(seed = 7, N = 50, J_inside = 3)
+
+  fit <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 20L,
+    outside_opt_label = 0L,
+    include_outside_option = TRUE,
+    rc_correlation = FALSE,
+    control = list(maxeval = 60L)
+  )
+
+  J_total <- nrow(fit$alt_mapping)
+  J_inside <- J_total - 1L
+
+  # Feeding the model's own predicted shares must recover the inside ASCs
+  # (up to an additive constant) and stay finite. mxl_blp_contraction already
+  # operates on the length-J_inside inside-delta slice (the outside option's
+  # utility is the fixed normalization), so the contraction is well-posed.
+  target_shares <- predict(fit, type = "shares")
+
+  delta <- blp(fit, target_shares = target_shares)
+
+  expect_true(all(is.finite(delta)))
+  expect_length(delta, J_inside)
+
+  pm <- fit$param_map
+  asc_existing <- if (!is.null(pm$asc)) fit$coefficients[pm$asc] else rep(0, J_inside)
+  delta_centered <- as.numeric(delta) - as.numeric(delta)[1]
+  asc_centered <- unname(asc_existing - asc_existing[1])
+  expect_equal(delta_centered, asc_centered, tolerance = 2e-3)
+})
+
 test_that("blp.choicer_mxl works with rc_correlation = TRUE", {
   dt <- create_small_mxl_data()
 
@@ -406,22 +440,49 @@ test_that("blp.choicer_mnl works with include_outside_option = TRUE", {
   J_total <- nrow(fit$alt_mapping)        # inside + outside
   J_inside <- J_total - 1L
 
+  # Feed the fitted model's own predicted shares as the BLP target. Because the
+  # contraction inverts the same share map the model produced, it must recover
+  # the inside ASCs (up to an additive constant) and stay finite.
   target_shares <- predict(fit, type = "shares")
 
-  # The purpose of this test is to confirm the delta_init R-side bug fix:
-  # before the fix, blp.choicer_mnl unconditionally prepended a 0 to pm$asc,
-  # which made the vector one element too long when include_outside_option =
-  # TRUE, and the call errored at the C++ length check. After the fix the call
-  # completes and returns a vector of length J_inside.
-  #
-  # Note: the MNL blp_contraction C++ kernel currently returns NaN values for
-  # the include_outside_option = TRUE case (the contraction does not converge);
-  # diagnosing that is a separate task. We only assert here that the R wrapper
-  # no longer rejects the input and that the returned shape is correct.
   delta <- blp(fit, target_shares = target_shares)
 
+  # Before the C++ fix the MNL blp_contraction kernel fed the FULL length-(J+1)
+  # delta (outside slot included) to mnl_predict_shares_internal, which indexes
+  # delta by inside-alt index {0..J-1}. That shifted every ASC by one slot and
+  # left the outside delta unpinned, so the shares were corrupted each iteration
+  # and the contraction diverged to NaN. The fix feeds the length-J inside slice
+  # and pins delta[0] = 0, mirroring nl_blp_contraction.
   expect_true(is.numeric(delta))
   expect_length(delta, J_inside)
+  expect_true(all(is.finite(delta)))
+
+  # Round-trip: recovered delta matches the fitted inside ASCs up to a constant.
+  pm <- fit$param_map
+  asc_existing <- fit$coefficients[pm$asc]
+  delta_centered <- as.numeric(delta) - as.numeric(delta)[1]
+  asc_centered <- unname(asc_existing - asc_existing[1])
+  expect_equal(delta_centered, asc_centered, tolerance = 1e-4)
+})
+
+test_that("blp_contraction rejects non-positive target shares", {
+  dt <- create_small_mnl_data()
+  inputs <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+  J <- nrow(inputs$alt_mapping)
+
+  expect_error(
+    blp_contraction(
+      delta = rep(0, J),
+      target_shares = c(0.5, 0.5, 0),  # zero share -> log undefined
+      X = inputs$X,
+      beta = c(0.3, -0.2),
+      alt_idx = inputs$alt_idx,
+      M = inputs$M,
+      weights = inputs$weights,
+      include_outside_option = FALSE
+    ),
+    "strictly positive"
+  )
 })
 
 # =============================================================================
