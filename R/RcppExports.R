@@ -653,6 +653,186 @@ nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M
     .Call(`_choicer_nl_loglik_numeric_hessian`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, eps)
 }
 
+#' Prediction of choice probabilities and utilities for the Nested Logit model
+#'
+#' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+#'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @returns List with `choice_prob` (joint P_ij per stacked row) and `utility` (V_ij).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' pred <- nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
+#'   fit$data$nest_idx, use_asc = TRUE)
+#' head(pred$choice_prob)
+#' }
+#' @export
+nl_predict <- function(theta, X, alt_idx, M, nest_idx, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_predict`, theta, X, alt_idx, M, nest_idx, use_asc, include_outside_option)
+}
+
+#' Prediction of market shares for the Nested Logit model
+#'
+#' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+#'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @returns vector with predicted market shares (outside-option share first when present).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' shares <- nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$M, fit$data$weights, fit$data$nest_idx, use_asc = TRUE)
+#' shares
+#' }
+#' @export
+nl_predict_shares <- function(theta, X, alt_idx, M, weights, nest_idx, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_predict_shares`, theta, X, alt_idx, M, weights, nest_idx, use_asc, include_outside_option)
+}
+
+#' Compute aggregate elasticities for the Nested Logit model
+#'
+#' Computes the aggregate (weighted-average) elasticity matrix for the Nested
+#' Logit model. Reduces to the MNL elasticities when all lambda = 1.
+#'
+#' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+#'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param choice_idx N x 1 vector (kept for API consistency, not used).
+#' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @returns J x J matrix of aggregate elasticities (row = responding alt, col = perturbed alt).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' elas <- nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
+#'   elast_var_idx = 1L)
+#' elas
+#' }
+#' @export
+nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_elasticities_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
+}
+
+#' Compute Nested Logit diversion ratios (parallelized over individuals)
+#'
+#' Computes the diversion ratio matrix DR(j->k) for the Nested Logit model.
+#' Entry (k, j) = fraction of demand lost by alternative j captured by k.
+#' Reduces to the MNL diversion ratios when all lambda = 1.
+#'
+#' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+#'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' dr <- nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$nest_idx, fit$data$M, fit$data$weights)
+#' dr
+#' }
+#' @export
+nl_diversion_ratios_parallel <- function(theta, X, alt_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_diversion_ratios_parallel`, theta, X, alt_idx, nest_idx, M, weights, use_asc, include_outside_option)
+}
+
+#' BLP95 contraction mapping for the Nested Logit model
+#'
+#' Damped iterative fixed point recovering delta given target shares, using the
+#' NL probability structure. `damping = 1` reproduces the plain BLP update.
+#'
+#' @param delta J x 1 vector with initial guess for deltas (ASCs).
+#' @param target_shares vector with target shares (outside-option share first when present).
+#' @param X sum(M) x K design matrix with covariates.
+#' @param beta K x 1 vector with fixed coefficients.
+#' @param lambda full nest dissimilarity vector of length n_nests (singletons = 1).
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @param damping damping factor for the update (default 1.0 = plain BLP).
+#' @param tol convergence tolerance.
+#' @param max_iter maximum number of iterations.
+#' @returns vector with contraction's delta (ASCs) output.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' beta <- coef(fit)[fit$param_map$beta]
+#' lambda <- rep(1, length(unique(fit$data$nest_idx)))
+#' lambda[as.integer(names(which(table(fit$data$nest_idx) > 1)))] <-
+#'   coef(fit)[fit$param_map$lambda]
+#' delta <- nl_blp_contraction(rep(0, J), rep(1/J, J), fit$data$X, beta, lambda,
+#'   fit$data$alt_idx, fit$data$nest_idx, fit$data$M, fit$data$weights)
+#' delta
+#' }
+#' @export
+nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option = FALSE, damping = 1.0, tol = 1e-8, max_iter = 1000L) {
+    .Call(`_choicer_nl_blp_contraction`, delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, damping, tol, max_iter)
+}
+
 get_num_threads <- function() {
     invisible(.Call(`_choicer_get_num_threads`))
 }

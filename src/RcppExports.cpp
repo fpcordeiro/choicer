@@ -402,6 +402,102 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// nl_predict
+Rcpp::List nl_predict(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::uvec& nest_idx, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_nl_predict(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP nest_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_predict(theta, X, alt_idx, M, nest_idx, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
+// nl_predict_shares
+arma::vec nl_predict_shares(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::uvec& nest_idx, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_nl_predict_shares(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP nest_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_predict_shares(theta, X, alt_idx, M, weights, nest_idx, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
+// nl_elasticities_parallel
+arma::mat nl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const int elast_var_idx, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_nl_elasticities_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP elast_var_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const int >::type elast_var_idx(elast_var_idxSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_elasticities_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
+// nl_diversion_ratios_parallel
+arma::mat nl_diversion_ratios_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_nl_diversion_ratios_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_diversion_ratios_parallel(theta, X, alt_idx, nest_idx, M, weights, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
+// nl_blp_contraction
+arma::vec nl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const arma::vec& lambda, const arma::uvec& alt_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const double damping, const double tol, const int max_iter);
+RcppExport SEXP _choicer_nl_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP betaSEXP, SEXP lambdaSEXP, SEXP alt_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP include_outside_optionSEXP, SEXP dampingSEXP, SEXP tolSEXP, SEXP max_iterSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type delta(deltaSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type target_shares(target_sharesSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type beta(betaSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type lambda(lambdaSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    Rcpp::traits::input_parameter< const double >::type damping(dampingSEXP);
+    Rcpp::traits::input_parameter< const double >::type tol(tolSEXP);
+    Rcpp::traits::input_parameter< const int >::type max_iter(max_iterSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_blp_contraction(delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, damping, tol, max_iter));
+    return rcpp_result_gen;
+END_RCPP
+}
 // get_num_threads
 void get_num_threads();
 RcppExport SEXP _choicer_get_num_threads() {
@@ -443,6 +539,11 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 15},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
+    {"_choicer_nl_predict", (DL_FUNC) &_choicer_nl_predict, 7},
+    {"_choicer_nl_predict_shares", (DL_FUNC) &_choicer_nl_predict_shares, 8},
+    {"_choicer_nl_elasticities_parallel", (DL_FUNC) &_choicer_nl_elasticities_parallel, 10},
+    {"_choicer_nl_diversion_ratios_parallel", (DL_FUNC) &_choicer_nl_diversion_ratios_parallel, 8},
+    {"_choicer_nl_blp_contraction", (DL_FUNC) &_choicer_nl_blp_contraction, 13},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},
     {"_choicer_set_num_threads", (DL_FUNC) &_choicer_set_num_threads, 1},
     {NULL, NULL, 0}
