@@ -33,9 +33,12 @@ path for policy simulation (e.g., perturb a column of \code{object$data$X}).
 When \code{NULL} (default), the data stored at fit time is used (requires
 \code{keep_data = TRUE}).}
 
-\item{weights}{Optional numeric vector with one weight per choice situation
-in \code{newdata}, used for \code{type = "shares"} aggregation. Defaults to equal
-weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights apply).}
+\item{weights}{Optional numeric vector with one weight per choice situation,
+used for \code{type = "shares"} aggregation. For a data.frame \code{newdata},
+supply one weight per id in order of first appearance in \code{newdata}
+(weights are realigned internally to the sorted row order). Defaults to
+equal weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights
+apply).}
 
 \item{...}{Additional arguments (ignored).}
 }

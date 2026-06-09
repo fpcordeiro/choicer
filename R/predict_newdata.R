@@ -57,11 +57,12 @@
 #' @param newdata A data.frame in the same long format used at fit time:
 #'   one row per (id, alternative) pair with the fit-time id, alternative,
 #'   and covariate columns. A choice column is not required.
-#' @param weights Optional numeric vector with one weight per choice situation
-#'   in `newdata` (after dropping outside-option rows). Defaults to 1.
+#' @param weights Optional numeric vector with one weight per choice situation,
+#'   in order of first appearance of each id in `newdata`. Defaults to 1.
 #' @returns List with `X`, `W` (NULL unless MXL), `alt_idx` (1-based integer),
 #'   `M` (alternatives per id), `N`, and `weights` (length `N`). Rows are
-#'   ordered by id, then by fit-time alternative code.
+#'   ordered by id, then by fit-time alternative code; `weights` are realigned
+#'   to that order.
 #' @noRd
 prepare_newdata <- function(object, newdata, weights = NULL) {
   spec <- object$data_spec
@@ -91,6 +92,12 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
   # never mutated by the reordering below.
   dt <- dt[, needed, with = FALSE]
 
+  # Check the alternative column for NAs before the outside-option filter
+  # below, which would otherwise silently drop NA rows.
+  if (anyNA(dt[[alt_col]])) {
+    stop("newdata contains missing values in column(s): ", alt_col)
+  }
+
   # Remove outside-option rows when modelling the outside option implicitly
   # (mirrors prepare_mnl_data(); the outside option is handled in C++).
   if (isTRUE(object$include_outside_option) &&
@@ -117,7 +124,8 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
   }
 
   # Map alternative labels through the fit-time mapping (authoritative for
-  # ASC alignment); labels unseen at fit time are an error.
+  # ASC alignment); labels unseen at fit time are an error. An internal
+  # column name avoids clobbering a covariate that happens to share it.
   am <- object$alt_mapping
   pos <- match(dt[[alt_col]], am[[alt_col]])
   if (anyNA(pos)) {
@@ -125,22 +133,37 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
     stop("newdata contains alternatives not seen at fit time: ",
          paste(unseen, collapse = ", "))
   }
-  dt[, alt_int := am$alt_int[pos]]
+  alt_int_col <- ".choicer_alt_int"
+  if (alt_int_col %in% needed) {
+    stop("newdata must not use the reserved column name '", alt_int_col, "'.")
+  }
+  dt[, (alt_int_col) := am$alt_int[pos]]
 
   # No duplicate (id, alternative) pairs
-  if (anyDuplicated(dt, by = c(id_col, "alt_int")) > 0) {
+  if (anyDuplicated(dt, by = c(id_col, alt_int_col)) > 0) {
     stop("newdata contains duplicated (", id_col, ", ", alt_col, ") pairs.")
   }
 
   # Order rows: ascending id, ascending alternative code within id
-  # (same convention as the prepare_*_data() functions).
-  data.table::setorderv(dt, c(id_col, "alt_int"))
+  # (same convention as the prepare_*_data() functions). Per-id weights are
+  # supplied in order of first appearance, so realign them to the sorted ids.
+  ids_appearance <- unique(dt[[id_col]])
+  data.table::setorderv(dt, c(id_col, alt_int_col))
+  ids_sorted <- unique(dt[[id_col]])
 
   X <- .newdata_matrix(dt, x_cols)
   W <- if (!is.null(w_cols)) .newdata_matrix(dt, w_cols)
-  alt_idx <- as.integer(dt$alt_int)
+  if (any(!is.finite(X)) || (!is.null(W) && any(!is.finite(W)))) {
+    stop("newdata covariates must contain only finite values.")
+  }
+  alt_idx <- as.integer(dt[[alt_int_col]])
   M <- dt[, .N, by = id_col][["N"]]
   N <- length(M)
+
+  w <- .validate_pred_weights(weights, N)
+  if (!is.null(weights)) {
+    w <- w[match(ids_sorted, ids_appearance)]
+  }
 
   list(
     X = X,
@@ -148,7 +171,7 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
     alt_idx = alt_idx,
     M = M,
     N = N,
-    weights = .validate_pred_weights(weights, N)
+    weights = w
   )
 }
 
@@ -193,7 +216,7 @@ validate_newdata_list <- function(object, newdata, weights = NULL) {
   storage.mode(X) <- "double"
 
   M <- newdata$M
-  if (!is.numeric(M) || anyNA(M) || any(M < 1)) {
+  if (!is.numeric(M) || anyNA(M) || any(M < 1) || any(M != round(M))) {
     stop("newdata$M must contain positive integers ",
          "(alternatives per choice situation).")
   }
@@ -213,6 +236,10 @@ validate_newdata_list <- function(object, newdata, weights = NULL) {
   if (anyNA(alt_idx) || any(alt_idx < 1L) || any(alt_idx > J)) {
     stop("newdata$alt_idx must contain integers in 1..", J,
          " (fit-time alternative codes; see object$alt_mapping).")
+  }
+  if (anyDuplicated(cbind(rep(seq_len(N), M), alt_idx)) > 0) {
+    stop("newdata$alt_idx must not repeat an alternative code within a ",
+         "choice situation.")
   }
 
   W <- NULL

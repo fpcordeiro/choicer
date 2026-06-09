@@ -50,20 +50,26 @@ errors use the delta method with analytic gradients
 corresponding 2x2 block of \code{vcov(object)}.
 }
 \details{
-For mixed logit models fitted with \code{rc_mean = TRUE}, random
-coefficients are included via their estimated location parameters:
+For mixed logit models, random coefficients are included via their
+estimated location parameters. The package's log-normal random coefficient
+is the \emph{shifted} log-normal
+\eqn{\beta_k = \exp(\mu_k) + \exp((L\eta)_k)} (see
+\code{run_mxlogit()}), so:
 \itemize{
-\item Normal random coefficient \eqn{k}: mean WTP
-\eqn{-\mu_k / \theta_p}.
-\item Log-normal random coefficient \eqn{k}: \strong{median} WTP
-\eqn{-\exp(\mu_k) / \theta_p} (the mean of a log-normal coefficient is
-\eqn{\exp(\mu + \sigma^2/2)} and is highly sensitive to the estimated
-variance; the median is the conventional, more robust summary). These
-rows are labeled \code{exp(Mu_x)}, matching \code{summary()}, and are
-flagged as medians when printed.
+\item Normal random coefficient \eqn{k} (\code{rc_mean = TRUE}): mean WTP
+\eqn{-\mu_k / \theta_p}, labeled \code{Mu_x}.
+\item Log-normal random coefficient \eqn{k} (\code{rc_mean = TRUE}):
+\strong{median} WTP \eqn{-(\exp(\mu_k) + 1) / \theta_p}, since the
+median of \eqn{\exp((L\eta)_k)} is 1. (The mean,
+\eqn{\exp(\mu_k) + \exp(\sigma_k^2/2)}, is highly sensitive to the
+estimated variance; the median is the more robust summary.) These rows
+are labeled by the attribute name and flagged as medians when printed.
+\item Log-normal random coefficient with \code{rc_mean = FALSE}:
+\eqn{\beta_k = \exp((L\eta)_k)} has median 1, so the median WTP is
+\eqn{-1/\theta_p} with uncertainty driven solely by \eqn{\theta_p}.
 }
-When \code{rc_mean = FALSE}, random-coefficient means are 0 by construction
-and random coefficients are excluded from the table.
+Normal random coefficients with \code{rc_mean = FALSE} have mean 0 by
+construction and are excluded from the table.
 
 The price variable must have a \emph{fixed} coefficient. A random price
 coefficient is rejected: the ratio of two random coefficients generally has

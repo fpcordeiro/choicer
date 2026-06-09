@@ -621,9 +621,12 @@ print_footer <- function(x) {
 #'
 #'   When `NULL` (default), the data stored at fit time is used (requires
 #'   `keep_data = TRUE`).
-#' @param weights Optional numeric vector with one weight per choice situation
-#'   in `newdata`, used for `type = "shares"` aggregation. Defaults to equal
-#'   weights. Ignored when `newdata` is `NULL` (the stored fit weights apply).
+#' @param weights Optional numeric vector with one weight per choice situation,
+#'   used for `type = "shares"` aggregation. For a data.frame `newdata`,
+#'   supply one weight per id in order of first appearance in `newdata`
+#'   (weights are realigned internally to the sorted row order). Defaults to
+#'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
+#'   apply).
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
 #'   For "shares": a named numeric vector of market shares per alternative.
@@ -710,9 +713,12 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
 #'   `keep_data = TRUE`). Halton draws are regenerated deterministically from
 #'   `object$draws_info` with one block of draws per choice situation in
 #'   `newdata`.
-#' @param weights Optional numeric vector with one weight per choice situation
-#'   in `newdata`, used for `type = "shares"` aggregation. Defaults to equal
-#'   weights. Ignored when `newdata` is `NULL` (the stored fit weights apply).
+#' @param weights Optional numeric vector with one weight per choice situation,
+#'   used for `type = "shares"` aggregation. For a data.frame `newdata`,
+#'   supply one weight per id in order of first appearance in `newdata`
+#'   (weights are realigned internally to the sorted row order). Defaults to
+#'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
+#'   apply).
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility`
 #'   vectors averaged across simulation draws. For "shares": a named numeric
@@ -1320,9 +1326,12 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
 #'
 #'   When `NULL` (default), the data stored at fit time is used (requires
 #'   `keep_data = TRUE`).
-#' @param weights Optional numeric vector with one weight per choice situation
-#'   in `newdata`, used for `type = "shares"` aggregation. Defaults to equal
-#'   weights. Ignored when `newdata` is `NULL` (the stored fit weights apply).
+#' @param weights Optional numeric vector with one weight per choice situation,
+#'   used for `type = "shares"` aggregation. For a data.frame `newdata`,
+#'   supply one weight per id in order of first appearance in `newdata`
+#'   (weights are realigned internally to the sorted row order). Defaults to
+#'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
+#'   apply).
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
 #'   For "shares": a named numeric vector of market shares per alternative.

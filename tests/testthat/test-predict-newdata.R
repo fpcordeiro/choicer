@@ -479,3 +479,63 @@ test_that("list path validates dimensions and alternative codes", {
     "missing element"
   )
 })
+
+# =============================================================================
+# 10. Review fixes: weight realignment, finiteness, NA alt labels, list checks
+# =============================================================================
+
+test_that("prediction weights follow first-appearance id order in newdata", {
+  m <- make_mnl()
+  N <- length(m$fit$data$M)
+
+  # Reverse the id blocks: id N appears first in newdata
+  nd_rev <- m$dt[order(-id, alt)]
+  # All weight on the first id to appear in newdata (id N)
+  w <- c(1, rep(0, N - 1))
+  shares_rev <- predict(m$fit, type = "shares", newdata = nd_rev, weights = w)
+
+  # Same weighting expressed against sorted newdata: all weight on id N
+  w_sorted <- c(rep(0, N - 1), 1)
+  shares_sorted <- predict(m$fit, type = "shares", newdata = m$dt,
+                           weights = w_sorted)
+  expect_equal(shares_rev, shares_sorted, tolerance = 1e-12)
+})
+
+test_that("newdata with non-finite covariates errors (data.frame path)", {
+  m <- make_mnl()
+  nd <- data.table::copy(m$dt)
+  nd[1, x1 := Inf]
+  expect_error(predict(m$fit, newdata = nd), "finite")
+})
+
+test_that("NA alternative labels error even with an outside option", {
+  dt <- create_mnl_outside_data()
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), include_outside_option = TRUE,
+    outside_opt_label = 0L, control = list(maxeval = 50L)
+  )
+  nd <- data.table::copy(dt)
+  nd[2, alt := NA]
+  expect_error(predict(fit, newdata = nd), "missing values")
+})
+
+test_that("list path rejects non-integer M and repeated alt codes in a block", {
+  m <- make_mnl()
+  d <- m$fit$data
+
+  M_frac <- as.numeric(d$M)
+  M_frac[1] <- M_frac[1] + 0.7
+  M_frac[2] <- M_frac[2] - 0.7
+  expect_error(
+    predict(m$fit, newdata = list(X = d$X, alt_idx = d$alt_idx, M = M_frac)),
+    "positive integers"
+  )
+
+  alt_dup <- d$alt_idx
+  alt_dup[2] <- alt_dup[1]
+  expect_error(
+    predict(m$fit, newdata = list(X = d$X, alt_idx = alt_dup, M = d$M)),
+    "repeat an alternative"
+  )
+})

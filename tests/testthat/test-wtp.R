@@ -154,19 +154,52 @@ test_that("wtp log-normal median WTP and SE match numDeriv (MXL)", {
   p_idx <- which(names(th) == "x2")
 
   w <- wtp(fit, price_var = "x2")
-  lbl <- "exp(Mu_w1)"
+  lbl <- "w1"
   expect_true(lbl %in% rownames(w))
   expect_true(lbl %in% attr(w, "median_rows"))
 
-  # Median WTP point estimate: -exp(mu)/beta_p
-  expect_equal(w[lbl, "Estimate"], unname(-exp(th[mu_idx]) / th[p_idx]),
+  # Median WTP point estimate for the shifted log-normal
+  # beta = exp(mu) + exp(L eta): -(exp(mu) + 1)/beta_p
+  expect_equal(w[lbl, "Estimate"],
+               unname(-(exp(th[mu_idx]) + 1) / th[p_idx]),
                tolerance = 1e-12)
 
   # Delta-method SE vs full numerical jacobian
-  g <- function(t) -exp(t[mu_idx]) / t[p_idx]
+  g <- function(t) -(exp(t[mu_idx]) + 1) / t[p_idx]
   Jg <- numDeriv::jacobian(g, th)
   se_num <- sqrt(as.numeric(Jg %*% V %*% t(Jg)))
   expect_equal(w[lbl, "Std_Error"], se_num, tolerance = TOL_GRAD)
+})
+
+test_that("wtp log-normal RC with rc_mean = FALSE has median WTP -1/beta_p", {
+  skip_if_not_installed("numDeriv")
+  sim <- simulate_mxl_data(
+    N = 400, J = 3, beta = c(0.5, -1.0), mu = 0,
+    Sigma = matrix(0.25, 1, 1), rc_dist = 1L, seed = 11,
+    outside_option = FALSE, vary_choice_set = FALSE
+  )
+  fit <- run_mxlogit(
+    data = sim$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), random_var_cols = "w1",
+    rc_dist = 1L, rc_mean = FALSE, S = 50L
+  )
+  th <- coef(fit)
+  p_idx <- which(names(th) == "x2")
+
+  w <- wtp(fit, price_var = "x2")
+  expect_true("w1" %in% rownames(w))
+  expect_true("w1" %in% attr(w, "median_rows"))
+  # beta = exp(L eta) has median 1: median WTP = -1/beta_p
+  expect_equal(w["w1", "Estimate"], unname(-1 / th[p_idx]),
+               tolerance = 1e-12)
+
+  V <- vcov(fit)
+  if (!is.null(V) && is.finite(V[p_idx, p_idx])) {
+    g <- function(t) -1 / t[p_idx]
+    Jg <- numDeriv::jacobian(g, th)
+    se_num <- sqrt(as.numeric(Jg %*% V %*% t(Jg)))
+    expect_equal(w["w1", "Std_Error"], se_num, tolerance = TOL_GRAD)
+  }
 })
 
 # =============================================================================
@@ -196,12 +229,13 @@ test_that("wtp errors on a random price coefficient (MXL)", {
   expect_error(wtp(fit, price_var = "w1"), "WTP space")
 })
 
-test_that("wtp excludes random coefficients when rc_mean = FALSE (MXL)", {
+test_that("wtp excludes normal RCs when rc_mean = FALSE (MXL)", {
   fit <- get_fit_wtp_mxl_nomean()
 
   w <- wtp(fit, price_var = "x1")
 
-  # x1 is the only fixed coefficient, so no default attribute rows remain
+  # x1 is the only fixed coefficient and w1 is a mean-zero normal RC,
+  # so no default attribute rows remain
   expect_equal(nrow(w), 0L)
   expect_false(any(grepl("w1", rownames(w))))
   expect_match(attr(w, "rc_note"), "rc_mean = FALSE")
@@ -286,5 +320,5 @@ test_that("print.choicer_wtp flags median rows for log-normal RCs", {
   w <- wtp(fit, price_var = "x2")
 
   expect_output(print(w), "median WTP")
-  expect_output(print(w), "exp\\(Mu_w1\\)")
+  expect_output(print(w), "w1")
 })
