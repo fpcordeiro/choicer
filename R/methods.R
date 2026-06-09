@@ -256,7 +256,10 @@ build_coef_table <- function(estimates, se, param_names) {
 #'
 #' @param object A choicer_mnl object.
 #' @param ... Additional arguments (ignored).
-#' @returns A summary.choicer_mnl object (list with coefficients table and metadata).
+#' @returns A summary.choicer_mnl object (list with coefficients table and
+#'   metadata, including a `gof` element with goodness-of-fit measures from
+#'   \code{\link{gof}}; its fields are NA when the model was fitted with
+#'   \code{keep_data = FALSE}).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -288,7 +291,8 @@ summary.choicer_mnl <- function(object, ...) {
       n_params = object$n_params,
       convergence = object$convergence,
       message = object$message,
-      elapsed_time = object$optimizer$elapsed_time
+      elapsed_time = object$optimizer$elapsed_time,
+      gof = tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
     ),
     class = "summary.choicer_mnl"
   )
@@ -329,7 +333,9 @@ print.summary.choicer_mnl <- function(x, ...) {
 #'
 #' @param object A choicer_mxl object.
 #' @param ... Additional arguments (ignored).
-#' @returns A summary.choicer_mxl object.
+#' @returns A summary.choicer_mxl object (includes a `gof` element with
+#'   goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
+#'   the model was fitted with \code{keep_data = FALSE}).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -415,7 +421,8 @@ summary.choicer_mxl <- function(object, ...) {
       sigma = object$sigma,
       se_method = object$se_method %||% "hessian",
       weighting = object$choice_sampling$scheme,
-      weights_applied = object$choice_sampling$weights_applied
+      weights_applied = object$choice_sampling$weights_applied,
+      gof = tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
     ),
     class = "summary.choicer_mxl"
   )
@@ -483,7 +490,9 @@ print.summary.choicer_mxl <- function(x, ...) {
 #'
 #' @param object A choicer_nl object.
 #' @param ... Additional arguments (ignored).
-#' @returns A summary.choicer_nl object.
+#' @returns A summary.choicer_nl object (includes a `gof` element with
+#'   goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
+#'   the model was fitted with \code{keep_data = FALSE}).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -519,7 +528,8 @@ summary.choicer_nl <- function(object, ...) {
       n_params = object$n_params,
       convergence = object$convergence,
       message = object$message,
-      elapsed_time = object$optimizer$elapsed_time
+      elapsed_time = object$optimizer$elapsed_time,
+      gof = tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
     ),
     class = "summary.choicer_nl"
   )
@@ -590,6 +600,7 @@ print_footer <- function(x) {
   aic <- -2 * x$loglik + 2 * x$n_params
   bic <- -2 * x$loglik + log(x$nobs) * x$n_params
   cat("AIC:", format(aic, digits = 6), " | BIC:", format(bic, digits = 6), "\n")
+  print_gof_lines(x$gof)
   cat("N:", x$nobs, " | Parameters:", x$n_params, "\n")
   if (!is.null(x$elapsed_time)) {
     cat("Optimization time:", round(x$elapsed_time, 2), "s\n")

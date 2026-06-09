@@ -7,7 +7,7 @@
 [![R-CMD-check](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-`choicer` provides fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with OpenMP parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, diversion ratios, and the BLP contraction. Supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL); more models will be added.
+`choicer` provides fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with OpenMP parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, diversion ratios, willingness-to-pay with delta-method standard errors, goodness-of-fit measures, counterfactual predictions, and the BLP contraction. Supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL); more models will be added.
 
 ## Installation
 
@@ -46,6 +46,12 @@ summary(fit)
 predict(fit, type = "shares")        # predicted market shares
 elasticities(fit, elast_var = "x1")  # own- and cross-price elasticities
 diversion_ratios(fit)                # diversion ratio matrix
+wtp(fit, price_var = "x1")           # willingness-to-pay with delta-method SEs
+gof(fit)                             # McFadden R2 and hit rate (also in summary())
+
+# Counterfactual / policy prediction: perturb the data and predict
+dt_cf <- copy(dt)[alt == 2, x1 := x1 + 1]
+predict(fit, type = "shares", newdata = dt_cf)
 ```
 
 The same post-estimation toolkit is available for nested logit. Elasticities
@@ -84,11 +90,11 @@ blp(fit_nl, target_shares, damping = 0.5)  # use damping < 1 for strongly-nested
 
 | Model | Function | Post-estimation |
 |-------|----------|-----------------|
-| Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
-| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
-| Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()` |
+| Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()` |
+| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()` |
+| Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()` |
 
-All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`.
+All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`. `summary()` reports McFadden R2 and the hit rate alongside the usual fit statistics, and `predict()` accepts `newdata` (a long data.frame or a modified design list) for counterfactual and policy prediction, even on fits with `keep_data = FALSE`.
 
 ## Alternative packages
 

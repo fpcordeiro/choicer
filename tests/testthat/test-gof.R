@@ -329,3 +329,70 @@ test_that("print.choicer_gof and print_gof_lines print fitted measures", {
   capture.output(res <- withVisible(print(g)))
   expect_false(res$visible)
 })
+
+# =============================================================================
+# summary() integration
+# =============================================================================
+
+test_that("print(summary(fit)) shows the gof footer line for MNL", {
+  dt <- create_small_mnl_data()
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2")
+  )
+
+  expect_output(print(summary(fit)), "McFadden")
+  expect_output(print(summary(fit)), "Hit rate")
+})
+
+test_that("print(summary(fit)) shows the gof footer line for MXL", {
+  dt <- create_small_mxl_data()
+  fit <- run_mxlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 10L, control = list(maxeval = 50L)
+  )
+
+  expect_output(print(summary(fit)), "McFadden")
+})
+
+test_that("print(summary(fit)) shows the gof footer line for NL", {
+  dt <- create_small_nl_data()
+  fit <- run_nestlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), nest_col = "nest",
+    control = list(maxeval = 50L)
+  )
+
+  expect_output(print(summary(fit)), "McFadden")
+})
+
+test_that("summary with keep_data = FALSE is silent and omits the gof line", {
+  dt <- create_small_mnl_data()
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), keep_data = FALSE
+  )
+
+  # gof()'s keep_data message is suppressed inside summary()
+  expect_no_message(s <- summary(fit))
+
+  # printing runs without error and the gof line is absent
+  out <- capture.output(print(s))
+  expect_false(any(grepl("McFadden", out)))
+  expect_true(any(grepl("AIC", out)))
+})
+
+test_that("summary(fit)$gof is a choicer_gof matching gof(fit)", {
+  dt <- create_small_mnl_data()
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2")
+  )
+
+  s <- summary(fit)
+
+  expect_s3_class(s$gof, "choicer_gof")
+  expect_equal(s$gof$mcfadden_r2, gof(fit)$mcfadden_r2,
+               tolerance = TOL_LOGLIK)
+})
