@@ -8,7 +8,8 @@
 #' \eqn{LL_0 = \sum_j N\_CHOICES_j \log(MKT\_SHARE_j)} from
 #' \code{object$alt_mapping}. This is the maximized log-likelihood of an
 #' ASC-only model, which has a closed form only when every individual faces
-#' the same choice set (all \code{M} equal) and weights are uniform.
+#' the same choice set (every inside alternative present in every choice
+#' situation, not merely equal set sizes) and weights are uniform.
 #' When \code{include_outside_option = TRUE}, \code{alt_mapping} contains an
 #' outside-option row (alt_int = 0) whose term is included. Alternatives that
 #' are never chosen (\code{N_CHOICES = 0}) contribute 0 and are dropped to
@@ -19,15 +20,19 @@
 #' @noRd
 .gof_market_shares_ll0 <- function(object) {
   d <- object$data
-  balanced <- length(unique(d$M)) == 1L
+  am <- object$alt_mapping
+  # Identical composition, not just identical size: every inside alternative
+  # must appear in every choice situation (equal-size heterogeneous sets do
+  # not admit the closed form either).
+  inside_n_obs <- am$N_OBS[am$alt_int > 0L]
+  balanced <- length(unique(d$M)) == 1L && all(inside_n_obs == length(d$M))
   uniform_w <- length(unique(d$weights)) == 1L
   if (!balanced || !uniform_w) {
     stop("The 'market_shares' null log-likelihood has a closed form only for ",
-         "balanced choice sets (all individuals facing the same number of ",
-         "alternatives) and uniform weights. Refit an ASC-only model to ",
+         "balanced designs (every alternative available in every choice ",
+         "situation) and uniform weights. Refit an ASC-only model to ",
          "obtain the market-shares null log-likelihood for this design.")
   }
-  am <- object$alt_mapping
   n_choices <- am$N_CHOICES
   shares <- am$MKT_SHARE
   keep <- n_choices > 0

@@ -5,36 +5,45 @@
 
 #' Delta-method estimate and SE for a WTP ratio
 #'
-#' Computes \code{g = -num / den} (or \code{g = -exp(num) / den} when
-#' \code{num_is_log = TRUE}) together with its delta-method standard error
-#' from the 2x2 variance block \code{V2} of \code{(num, den)}.
-#'
-#' Analytic gradients:
+#' Computes the WTP ratio and its delta-method standard error from the
+#' variance block \code{V} of the parameters involved. Three numerator kinds
+#' are supported, matching the package's random-coefficient parameterization
+#' (see \code{src/mxlogit.cpp}: log-normal coefficients are the shifted
+#' log-normal \code{beta_k = exp(mu_k) + exp((L eta)_k)}):
 #' \itemize{
-#'   \item Linear numerator: \code{dg/dnum = -1/den},
-#'     \code{dg/dden = num/den^2}.
-#'   \item Log numerator (log-normal median): \code{dg/dnum = -exp(num)/den},
-#'     \code{dg/dden = exp(num)/den^2}.
+#'   \item \code{"linear"}: \code{g = -num/den}; gradients
+#'     \code{dg/dnum = -1/den}, \code{dg/dden = num/den^2}.
+#'   \item \code{"logshift"} (shifted log-normal median, numerator
+#'     \code{exp(num) + 1}): \code{g = -(exp(num) + 1)/den}; gradients
+#'     \code{dg/dnum = -exp(num)/den},
+#'     \code{dg/dden = (exp(num) + 1)/den^2}.
+#'   \item \code{"unit"} (log-normal with \code{rc_mean = FALSE}: median
+#'     numerator is exactly 1, no free parameter): \code{g = -1/den};
+#'     gradient \code{dg/dden = 1/den^2}; \code{V} is the 1x1 price block.
 #' }
 #'
 #' @param num Numerator coefficient (attribute coefficient, or mu for the
-#'   log-normal median case).
+#'   shifted log-normal median case; ignored for \code{kind = "unit"}).
 #' @param den Denominator coefficient (price coefficient).
-#' @param V2 2x2 variance-covariance block of \code{c(num, den)}.
-#' @param num_is_log Logical; \code{TRUE} when \code{num} is the log-scale
-#'   location parameter of a log-normal random coefficient.
+#' @param V Variance-covariance block: 2x2 of \code{c(num, den)} for
+#'   \code{"linear"}/\code{"logshift"}, 1x1 of \code{den} for \code{"unit"}.
+#' @param kind One of \code{"linear"}, \code{"logshift"}, \code{"unit"}.
 #' @returns List with \code{estimate} and \code{se} (NA when the variance is
 #'   unavailable or negative).
 #' @noRd
-.wtp_delta_ratio <- function(num, den, V2, num_is_log = FALSE) {
-  a <- if (num_is_log) exp(num) else num
-  estimate <- -a / den
-
-  grad <- c(
-    if (num_is_log) -a / den else -1 / den,  # dg / d num
-    a / den^2                                # dg / d den
-  )
-  var_g <- as.numeric(t(grad) %*% V2 %*% grad)
+.wtp_delta_ratio <- function(num, den, V, kind = "linear") {
+  if (kind == "unit") {
+    estimate <- -1 / den
+    grad <- 1 / den^2
+  } else if (kind == "logshift") {
+    e <- exp(num)
+    estimate <- -(e + 1) / den
+    grad <- c(-e / den, (e + 1) / den^2)
+  } else {
+    estimate <- -num / den
+    grad <- c(-1 / den, num / den^2)
+  }
+  var_g <- as.numeric(t(grad) %*% V %*% grad)
   se <- if (is.finite(var_g) && var_g >= 0) sqrt(var_g) else NA_real_
 
   list(estimate = estimate, se = se)
@@ -60,8 +69,10 @@
 #' Resolve attribute variables into WTP row specifications
 #'
 #' Each row is a list with \code{label} (display name), \code{idx} (coefficient
-#' index into \code{coef(object)}), and \code{is_log} (TRUE for log-normal
-#' random-coefficient medians, where the numerator enters as \code{exp(mu)}).
+#' index into \code{coef(object)}, or NA for \code{kind = "unit"}), and
+#' \code{kind} (\code{"linear"}, \code{"logshift"} for shifted log-normal
+#' medians with an estimated location, or \code{"unit"} for log-normal
+#' coefficients without one, whose median numerator is exactly 1).
 #'
 #' @param object A choicer_fit object.
 #' @param price_var Validated price variable name.
@@ -78,29 +89,36 @@
   mu_names <- if (!is.null(pm$mu)) cf_names[pm$mu] else character(0)
   has_mu <- isTRUE(object$rc_mean) && !is.null(pm$mu)
 
-  make_row <- function(label, idx, is_log) {
-    list(label = label, idx = idx, is_log = is_log)
+  make_row <- function(label, idx, kind) {
+    list(label = label, idx = idx, kind = kind)
   }
-  mu_row <- function(k) {
-    idx <- pm$mu[k]
+  # Random-coefficient row for W variable k. Shifted log-normal
+  # (beta_k = exp(mu_k) + exp((L eta)_k)): median numerator exp(mu_k) + 1
+  # with rc_mean = TRUE, exactly 1 without.
+  rc_row <- function(k) {
     if (object$rc_dist[k] == 1) {
-      # Log-normal: median WTP, labeled exp(Mu_x) as in summary()
-      make_row(paste0("exp(", cf_names[idx], ")"), idx, TRUE)
+      if (has_mu) {
+        make_row(w_names[k], pm$mu[k], "logshift")
+      } else {
+        make_row(w_names[k], NA_integer_, "unit")
+      }
     } else {
-      make_row(cf_names[idx], idx, FALSE)
+      if (!has_mu) return(NULL)  # normal RC mean is 0 by construction
+      make_row(cf_names[pm$mu[k]], pm$mu[k], "linear")
     }
   }
 
   rows <- list()
+  add_row <- function(row) {
+    if (!is.null(row)) rows[[length(rows) + 1L]] <<- row
+  }
+
   if (is.null(attr_vars)) {
     for (v in setdiff(beta_names, price_var)) {
-      rows[[length(rows) + 1L]] <- make_row(v, pm$beta[match(v, beta_names)],
-                                            FALSE)
+      add_row(make_row(v, pm$beta[match(v, beta_names)], "linear"))
     }
-    if (has_mu) {
-      for (k in seq_along(pm$mu)) {
-        rows[[length(rows) + 1L]] <- mu_row(k)
-      }
+    for (k in seq_along(w_names)) {
+      add_row(rc_row(k))
     }
     return(rows)
   }
@@ -113,23 +131,23 @@
       stop("'attr_vars' must not include the price variable '", price_var, "'.")
     }
     if (v %in% beta_names) {
-      rows[[length(rows) + 1L]] <- make_row(v, pm$beta[match(v, beta_names)],
-                                            FALSE)
+      add_row(make_row(v, pm$beta[match(v, beta_names)], "linear"))
     } else if (v %in% asc_names) {
-      rows[[length(rows) + 1L]] <- make_row(v, pm$asc[match(v, asc_names)],
-                                            FALSE)
+      add_row(make_row(v, pm$asc[match(v, asc_names)], "linear"))
     } else if (v %in% w_names || v %in% mu_names) {
       k <- if (v %in% w_names) match(v, w_names) else match(v, mu_names)
-      if (!has_mu) {
-        stop("Variable '", v, "' is a random coefficient but its mean was not ",
-             "estimated (rc_mean = FALSE), so its mean WTP is 0 by ",
+      row <- rc_row(k)
+      if (is.null(row)) {
+        stop("Variable '", v, "' is a normal random coefficient without an ",
+             "estimated mean (rc_mean = FALSE), so its mean WTP is 0 by ",
              "construction. Refit with rc_mean = TRUE to obtain its WTP.")
       }
-      rows[[length(rows) + 1L]] <- mu_row(k)
+      add_row(row)
     } else {
       stop("Variable '", v, "' not found. Available: ",
            paste(c(setdiff(beta_names, price_var), asc_names,
-                   if (has_mu) mu_names), collapse = ", "))
+                   if (length(w_names) > 0) w_names else mu_names),
+                 collapse = ", "))
     }
   }
   rows
@@ -151,19 +169,21 @@
 
   n <- length(rows)
   labels <- vapply(rows, function(r) r$label, character(1))
-  is_median <- vapply(rows, function(r) isTRUE(r$is_log), logical(1))
+  is_median <- vapply(rows, function(r) r$kind %in% c("logshift", "unit"),
+                      logical(1))
   est <- rep(NA_real_, n)
   se <- rep(NA_real_, n)
 
   for (i in seq_len(n)) {
     r <- rows[[i]]
-    V2 <- if (!is.null(V)) {
-      V[c(r$idx, price_idx), c(r$idx, price_idx), drop = FALSE]
+    par_idx <- if (r$kind == "unit") price_idx else c(r$idx, price_idx)
+    Vr <- if (!is.null(V)) {
+      V[par_idx, par_idx, drop = FALSE]
     } else {
-      matrix(NA_real_, 2, 2)
+      matrix(NA_real_, length(par_idx), length(par_idx))
     }
-    res <- .wtp_delta_ratio(unname(cf[r$idx]), theta_p, V2,
-                            num_is_log = r$is_log)
+    num <- if (r$kind == "unit") NA_real_ else unname(cf[r$idx])
+    res <- .wtp_delta_ratio(num, theta_p, Vr, kind = r$kind)
     est[i] <- res$estimate
     se[i] <- res$se
   }
@@ -199,20 +219,26 @@
 #' \eqn{\partial g/\partial \theta_p = \theta_k/\theta_p^2}, applied to the
 #' corresponding 2x2 block of \code{vcov(object)}.
 #'
-#' For mixed logit models fitted with \code{rc_mean = TRUE}, random
-#' coefficients are included via their estimated location parameters:
+#' For mixed logit models, random coefficients are included via their
+#' estimated location parameters. The package's log-normal random coefficient
+#' is the \emph{shifted} log-normal
+#' \eqn{\beta_k = \exp(\mu_k) + \exp((L\eta)_k)} (see
+#' \code{run_mxlogit()}), so:
 #' \itemize{
-#'   \item Normal random coefficient \eqn{k}: mean WTP
-#'     \eqn{-\mu_k / \theta_p}.
-#'   \item Log-normal random coefficient \eqn{k}: \strong{median} WTP
-#'     \eqn{-\exp(\mu_k) / \theta_p} (the mean of a log-normal coefficient is
-#'     \eqn{\exp(\mu + \sigma^2/2)} and is highly sensitive to the estimated
-#'     variance; the median is the conventional, more robust summary). These
-#'     rows are labeled \code{exp(Mu_x)}, matching \code{summary()}, and are
-#'     flagged as medians when printed.
+#'   \item Normal random coefficient \eqn{k} (\code{rc_mean = TRUE}): mean WTP
+#'     \eqn{-\mu_k / \theta_p}, labeled \code{Mu_x}.
+#'   \item Log-normal random coefficient \eqn{k} (\code{rc_mean = TRUE}):
+#'     \strong{median} WTP \eqn{-(\exp(\mu_k) + 1) / \theta_p}, since the
+#'     median of \eqn{\exp((L\eta)_k)} is 1. (The mean,
+#'     \eqn{\exp(\mu_k) + \exp(\sigma_k^2/2)}, is highly sensitive to the
+#'     estimated variance; the median is the more robust summary.) These rows
+#'     are labeled by the attribute name and flagged as medians when printed.
+#'   \item Log-normal random coefficient with \code{rc_mean = FALSE}:
+#'     \eqn{\beta_k = \exp((L\eta)_k)} has median 1, so the median WTP is
+#'     \eqn{-1/\theta_p} with uncertainty driven solely by \eqn{\theta_p}.
 #' }
-#' When \code{rc_mean = FALSE}, random-coefficient means are 0 by construction
-#' and random coefficients are excluded from the table.
+#' Normal random coefficients with \code{rc_mean = FALSE} have mean 0 by
+#' construction and are excluded from the table.
 #'
 #' The price variable must have a \emph{fixed} coefficient. A random price
 #' coefficient is rejected: the ratio of two random coefficients generally has
@@ -277,10 +303,11 @@ wtp.choicer_mxl <- function(object, price_var, attr_vars = NULL,
   .wtp_price_index(object, price_var)
   rows <- .wtp_resolve_rows(object, price_var, attr_vars, w_names = w_names)
   out <- .wtp_build_table(object, price_var, rows, level)
-  if (!isTRUE(object$rc_mean) && length(w_names) > 0 && is.null(attr_vars)) {
+  if (!isTRUE(object$rc_mean) && any(object$rc_dist == 0) &&
+      is.null(attr_vars)) {
     attr(out, "rc_note") <- paste0(
-      "Random-coefficient means are 0 by construction (rc_mean = FALSE); ",
-      "random coefficients are excluded.")
+      "Normal random-coefficient means are 0 by construction ",
+      "(rc_mean = FALSE); those coefficients are excluded.")
   }
   out
 }

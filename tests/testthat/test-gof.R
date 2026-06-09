@@ -139,6 +139,30 @@ test_that("gof market-shares null errors on varying choice sets", {
   expect_equal(g$loglik_null, -sum(log(fit$data$M)), tolerance = TOL_LOGLIK)
 })
 
+test_that("gof market-shares null errors on equal-size heterogeneous sets", {
+  # Every id faces exactly 3 of 4 alternatives, but the composition differs:
+  # equal set *sizes* must not satisfy the balanced-design requirement.
+  sim <- simulate_mnl_data(
+    N = 200, J = 4, seed = 6,
+    outside_option = FALSE, vary_choice_set = FALSE
+  )
+  dt <- data.table::as.data.table(sim$data)
+  # Drop one unchosen alternative per id, rotating which one is dropped
+  drop_alt <- dt[choice == 0, .(alt_drop = alt[1L + (.GRP %% 3L)]), by = id]
+  dt <- dt[!drop_alt, on = c("id", alt = "alt_drop")]
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2")
+  )
+
+  expect_true(length(unique(fit$data$M)) == 1L)  # sizes equal by construction
+  expect_error(gof(fit, null = "market_shares"), "balanced")
+
+  # equal_shares remains exact
+  g <- gof(fit)
+  expect_equal(g$loglik_null, -sum(log(fit$data$M)), tolerance = TOL_LOGLIK)
+})
+
 test_that("gof market-shares null errors with non-uniform weights", {
   dt <- create_small_mnl_data()
   set.seed(2)
