@@ -12,7 +12,10 @@
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-A summary.choicer_mnl object (list with coefficients table and metadata).
+A summary.choicer_mnl object (list with coefficients table and
+metadata, including a \code{gof} element with goodness-of-fit measures from
+\code{\link{gof}}; its fields are NA when the model was fitted with
+\code{keep_data = FALSE}).
 }
 \description{
 Computes and returns a coefficient summary table with standard errors,

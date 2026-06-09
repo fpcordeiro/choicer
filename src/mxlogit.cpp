@@ -1511,6 +1511,197 @@ Rcpp::List mxl_predict(
   return out;
 }
 
+//' Simulated expected logsum (inclusive value) for Mixed Logit
+//'
+//' Computes the simulated expected logsum (expected maximum utility, up to an
+//' additive constant) for each choice situation:
+//' \deqn{logsum_i = (1/S) \sum_s \log \sum_j \exp(V_{ij}^s),}
+//' where the inner sum runs over individual i's alternatives and includes the
+//' outside option's \eqn{\exp(0)} term when `include_outside_option = TRUE`.
+//' The log-sum-exp must be averaged *across draws*: applying log-sum-exp to
+//' the draw-averaged utilities returned by `mxl_predict` understates the
+//' expectation because log-sum-exp is convex (Jensen's inequality).
+//'
+//' @param theta parameter vector (beta, \[mu\], L, delta)
+//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param eta_draws Array with draws; K_w x S x N
+//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+//' @param rc_correlation whether random coefficients are correlated
+//' @param rc_mean whether mu parameters are estimated
+//' @param use_asc whether ASCs are included
+//' @param include_outside_option whether the outside option is present
+//' @returns Vector of length N with the simulated expected logsum per choice
+//'   situation.
+//' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
+//'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
+//'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
+//'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+//' eta <- get_halton_normals(50, d$N, ncol(d$W))
+//' fit <- run_mxlogit(input_data = d, eta_draws = eta)
+//' ls <- mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
+//'   rc_dist = rep(0L, ncol(d$W)), rc_correlation = FALSE, rc_mean = FALSE)
+//' head(ls)
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+                     const arma::uvec &alt_idx, const Rcpp::IntegerVector &M,
+                     const arma::cube &eta_draws, const arma::uvec &rc_dist,
+                     const bool rc_correlation = true, const bool rc_mean = false,
+                     const bool use_asc = true, const bool include_outside_option = false) {
+  // Basic dimensions
+  const int N = M.size();
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = eta_draws.n_cols;
+  const int n_params = theta.n_elem;
+  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
+
+  // Check rc_dist input (mirror mxl_loglik_gradient_parallel)
+  if (rc_dist.n_elem != K_w) {
+    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
+  }
+  if (eta_draws.n_slices != N) {
+    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
+               eta_draws.n_slices, N);
+  }
+  if (eta_draws.n_rows != K_w) {
+    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
+               eta_draws.n_rows, K_w);
+  }
+
+  // Parameter block indices (mirror mxl_loglik_gradient_parallel / mxl_predict)
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Extract beta
+  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+
+  // Extract and transform mu
+  arma::vec mu_final = arma::zeros(K_w);
+  if (rc_mean) {
+    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
+    mu_final = mu;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        mu_final(k) = std::exp(mu(k));
+      }
+    }
+  }
+
+  // Extract L parameters and build L matrix
+  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
+  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
+
+  // Extract delta (mirror lines 175-192)
+  arma::vec delta;
+  if (use_asc) {
+    const int delta_free_len = n_params - idx_delta_start;
+    if (delta_free_len <= 0) {
+      Rcpp::stop("Theta vector too short: missing delta parameters.");
+    }
+    if (include_outside_option) {
+      delta = theta.subvec(idx_delta_start, n_params - 1);
+    } else {
+      delta = arma::zeros(delta_free_len + 1);
+      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
+    }
+  } else {
+    delta.set_size(0);
+  }
+
+  // 0-based alt indices and prefix sums
+  arma::uvec alt_idx0 = alt_idx - 1;
+  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = X * beta;
+  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
+    base_util += W * mu_final;
+  } else {
+    arma::vec W_mu = W * mu_final;
+    base_util += W_mu.elem(alt_idx0);
+  }
+  if (use_asc) {
+    base_util += delta.elem(alt_idx0);
+  }
+
+  // Output accumulator (each individual writes only its own slot)
+  arma::vec logsum = arma::zeros(N);
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic)
+#endif
+  for (int i = 0; i < N; ++i) {
+    const int m_i = M[i];
+    const int num_choices = include_outside_option ? m_i + 1 : m_i;
+    const int start_idx = S_prefix[i];
+    const int end_idx = start_idx + m_i - 1;
+    const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+
+    arma::mat W_i;
+    if (W.n_rows == X.n_rows)
+      W_i = W.rows(start_idx, end_idx);
+    else
+      W_i = W.rows(alt_idx0_i);
+
+    // Pre-computed base utility for this individual
+    const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
+
+    // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+    const auto eta_i = eta_draws.slice(i);
+    arma::mat Gamma_final = L * eta_i;
+    for (int k = 0; k < K_w; ++k) {
+      if (rc_dist(k) == 1) {  // log-normal
+        Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+      }
+    }
+
+    // Accumulate the per-draw log-sum-exp (NOT the logsum of averaged
+    // utilities; see the Jensen note in the docs above).
+    double logsum_acc = 0.0;
+    for (int s = 0; s < Sdraw; ++s) {
+      const auto gamma_i_s_final = Gamma_final.col(s);
+
+      // Inside utilities (length m_i): includes X*beta + W*mu_final + delta
+      // plus the draw-specific W*gamma term.
+      arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+
+      // Build full V_s with the outside option's V = 0 slot when present
+      arma::vec V_s = arma::zeros(num_choices);
+      if (include_outside_option) {
+        V_s.subvec(1, num_choices - 1) = inside_utils;
+      } else {
+        V_s = inside_utils;
+      }
+
+      // Stable log-sum-exp (max-subtraction)
+      const double V_max = V_s.max();
+      logsum_acc += V_max + std::log(arma::accu(arma::exp(V_s - V_max)));
+    }
+
+    // Average over draws; disjoint write by individual — no race
+    logsum(i) = logsum_acc / static_cast<double>(Sdraw);
+  }
+
+  return logsum;
+}
+
 //' Predicted aggregate market shares for Mixed Logit
 //'
 //' Exported wrapper around the internal `mxl_predict_shares_internal`. Parses
