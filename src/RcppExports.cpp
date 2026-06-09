@@ -265,6 +265,27 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// mxl_logsum
+arma::vec mxl_logsum(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_mxl_logsum(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type W(WSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::cube& >::type eta_draws(eta_drawsSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type rc_dist(rc_distSEXP);
+    Rcpp::traits::input_parameter< const bool >::type rc_correlation(rc_correlationSEXP);
+    Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_logsum(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mxl_predict_shares
 arma::vec mxl_predict_shares(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mxl_predict_shares(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -533,6 +554,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 13},
     {"_choicer_mxl_bhhh_parallel", (DL_FUNC) &_choicer_mxl_bhhh_parallel, 13},
     {"_choicer_mxl_predict", (DL_FUNC) &_choicer_mxl_predict, 11},
+    {"_choicer_mxl_logsum", (DL_FUNC) &_choicer_mxl_logsum, 11},
     {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 12},
     {"_choicer_mxl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mxl_diversion_ratios_parallel, 14},
     {"_choicer_mxl_blp_contraction", (DL_FUNC) &_choicer_mxl_blp_contraction, 17},

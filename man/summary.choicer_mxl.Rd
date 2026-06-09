@@ -12,7 +12,9 @@
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-A summary.choicer_mxl object.
+A summary.choicer_mxl object (includes a \code{gof} element with
+goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
+the model was fitted with \code{keep_data = FALSE}).
 }
 \description{
 Computes coefficient summary with delta-method transformation for variance

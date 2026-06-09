@@ -425,6 +425,55 @@ mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlat
     .Call(`_choicer_mxl_predict`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
 }
 
+#' Simulated expected logsum (inclusive value) for Mixed Logit
+#'
+#' Computes the simulated expected logsum (expected maximum utility, up to an
+#' additive constant) for each choice situation:
+#' \deqn{logsum_i = (1/S) \sum_s \log \sum_j \exp(V_{ij}^s),}
+#' where the inner sum runs over individual i's alternatives and includes the
+#' outside option's \eqn{\exp(0)} term when `include_outside_option = TRUE`.
+#' The log-sum-exp must be averaged *across draws*: applying log-sum-exp to
+#' the draw-averaged utilities returned by `mxl_predict` understates the
+#' expectation because log-sum-exp is convex (Jensen's inequality).
+#'
+#' @param theta parameter vector (beta, \[mu\], L, delta)
+#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
+#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param eta_draws Array with draws; K_w x S x N
+#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
+#' @param rc_correlation whether random coefficients are correlated
+#' @param rc_mean whether mu parameters are estimated
+#' @param use_asc whether ASCs are included
+#' @param include_outside_option whether the outside option is present
+#' @returns Vector of length N with the simulated expected logsum per choice
+#'   situation.
+#' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
+#'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
+#'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
+#'   This differs from the textbook parameterization exp(mu_k + L_k * eta).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
+#' eta <- get_halton_normals(50, d$N, ncol(d$W))
+#' fit <- run_mxlogit(input_data = d, eta_draws = eta)
+#' ls <- mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
+#'   rc_dist = rep(0L, ncol(d$W)), rc_correlation = FALSE, rc_mean = FALSE)
+#' head(ls)
+#' }
+#' @export
+mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mxl_logsum`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option)
+}
+
 #' Predicted aggregate market shares for Mixed Logit
 #'
 #' Exported wrapper around the internal `mxl_predict_shares_internal`. Parses
