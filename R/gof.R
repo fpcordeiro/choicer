@@ -19,7 +19,7 @@
 #' @returns Scalar null log-likelihood.
 #' @noRd
 .gof_market_shares_ll0 <- function(object) {
-  d <- object$data
+  d <- object[["data"]]
   am <- object$alt_mapping
   # Identical composition, not just identical size: every inside alternative
   # must appear in every choice situation (equal-size heterogeneous sets do
@@ -53,7 +53,7 @@
 #' @returns Scalar weighted hit rate in \[0, 1\].
 #' @noRd
 .gof_hit_rate <- function(object) {
-  d <- object$data
+  d <- object[["data"]]
   preds <- predict(object, type = "probabilities")
   p <- preds$choice_prob
 
@@ -180,13 +180,13 @@ gof.choicer_fit <- function(object, null = c("equal_shares", "market_shares"),
     n_params = object$n_params
   )
 
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     message("gof() requires stored data for the null log-likelihood and hit ",
             "rate. Refit with keep_data = TRUE.")
     return(structure(out, class = "choicer_gof"))
   }
 
-  d <- object$data
+  d <- object[["data"]]
   ioo <- as.integer(object$include_outside_option)
 
   out$loglik_null <- if (null == "equal_shares") {

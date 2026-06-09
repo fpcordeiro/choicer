@@ -7,13 +7,41 @@
 \alias{consumer_surplus.choicer_nl}
 \title{Expected consumer surplus}
 \usage{
-consumer_surplus(object, price_var, newdata = NULL, level = 0.95, ...)
+consumer_surplus(
+  object,
+  price_var,
+  newdata = NULL,
+  level = 0.95,
+  weights = NULL,
+  ...
+)
 
-\method{consumer_surplus}{choicer_mnl}(object, price_var, newdata = NULL, level = 0.95, ...)
+\method{consumer_surplus}{choicer_mnl}(
+  object,
+  price_var,
+  newdata = NULL,
+  level = 0.95,
+  weights = NULL,
+  ...
+)
 
-\method{consumer_surplus}{choicer_mxl}(object, price_var, newdata = NULL, level = 0.95, ...)
+\method{consumer_surplus}{choicer_mxl}(
+  object,
+  price_var,
+  newdata = NULL,
+  level = 0.95,
+  weights = NULL,
+  ...
+)
 
-\method{consumer_surplus}{choicer_nl}(object, price_var, newdata = NULL, level = 0.95, ...)
+\method{consumer_surplus}{choicer_nl}(
+  object,
+  price_var,
+  newdata = NULL,
+  level = 0.95,
+  weights = NULL,
+  ...
+)
 }
 \arguments{
 \item{object}{A fitted model object (\code{choicer_mnl}, \code{choicer_mxl},
@@ -28,6 +56,12 @@ the data stored at fit time is used (requires \code{keep_data = TRUE}).}
 
 \item{level}{Confidence level for the normal-approximation interval around
 the mean CS (MNL only). Default 0.95.}
+
+\item{weights}{Optional numeric vector with one weight per choice situation,
+used for the mean CS (and its SE), as in \code{predict()}: for a data.frame
+\code{newdata}, one weight per id in order of first appearance. Defaults to
+equal weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights
+apply).}
 
 \item{...}{Additional arguments passed to methods.}
 }

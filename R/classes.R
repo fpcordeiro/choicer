@@ -189,7 +189,7 @@ new_choicer_nl <- function(call, coefficients, loglik,
 ensure_vcov <- function(object) {
   if (!is.null(object$vcov)) return(object)
 
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     message("Cannot compute standard errors: no data stored. ",
             "Refit with keep_data = TRUE.")
     return(object)
@@ -361,7 +361,7 @@ normalize_optim_result <- function(result) {
 #' @returns The Hessian matrix evaluated at \code{object$coefficients}.
 #' @noRd
 compute_hessian <- function(object) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("Cannot compute Hessian: no data stored. Refit with keep_data = TRUE.")
   }
 
@@ -370,11 +370,11 @@ compute_hessian <- function(object) {
   switch(object$model,
     mnl = mnl_loglik_hessian_parallel(
       theta = theta,
-      X = object$data$X,
-      alt_idx = object$data$alt_idx,
-      choice_idx = object$data$choice_idx,
-      M = object$data$M,
-      weights = object$data$weights,
+      X = object[["data"]]$X,
+      alt_idx = object[["data"]]$alt_idx,
+      choice_idx = object[["data"]]$choice_idx,
+      M = object[["data"]]$M,
+      weights = object[["data"]]$weights,
       use_asc = object$use_asc,
       include_outside_option = object$include_outside_option
     ),
@@ -388,12 +388,12 @@ compute_hessian <- function(object) {
       if (se_method == "bhhh") {
         mxl_bhhh_parallel(
           theta = theta,
-          X = object$data$X,
-          W = object$data$W,
-          alt_idx = object$data$alt_idx,
-          choice_idx = object$data$choice_idx,
-          M = object$data$M,
-          weights = object$data$weights,
+          X = object[["data"]]$X,
+          W = object[["data"]]$W,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
           eta_draws = eta_draws,
           rc_dist = object$rc_dist,
           rc_correlation = object$rc_correlation,
@@ -404,12 +404,12 @@ compute_hessian <- function(object) {
       } else {
         mxl_hessian_parallel(
           theta = theta,
-          X = object$data$X,
-          W = object$data$W,
-          alt_idx = object$data$alt_idx,
-          choice_idx = object$data$choice_idx,
-          M = object$data$M,
-          weights = object$data$weights,
+          X = object[["data"]]$X,
+          W = object[["data"]]$W,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
           eta_draws = eta_draws,
           rc_dist = object$rc_dist,
           rc_correlation = object$rc_correlation,
@@ -421,12 +421,12 @@ compute_hessian <- function(object) {
     },
     nl = nl_loglik_numeric_hessian(
       theta = theta,
-      X = object$data$X,
-      alt_idx = object$data$alt_idx,
-      choice_idx = object$data$choice_idx,
-      nest_idx = object$data$nest_idx,
-      M = object$data$M,
-      weights = object$data$weights,
+      X = object[["data"]]$X,
+      alt_idx = object[["data"]]$alt_idx,
+      choice_idx = object[["data"]]$choice_idx,
+      nest_idx = object[["data"]]$nest_idx,
+      M = object[["data"]]$M,
+      weights = object[["data"]]$weights,
       use_asc = object$use_asc,
       include_outside_option = object$include_outside_option
     ),
@@ -534,7 +534,7 @@ invert_hessian <- function(hess) {
 #' @returns List with \code{vcov} and \code{se}.
 #' @noRd
 compute_sandwich_vcov <- function(object) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("Cannot compute sandwich vcov: no data stored. ",
          "Refit with keep_data = TRUE.")
   }
@@ -553,20 +553,20 @@ compute_sandwich_vcov <- function(object) {
     N = object$draws_info$N,
     K_w = object$draws_info$K_w
   )
-  w <- object$data$weights
+  w <- object[["data"]]$weights
 
   A <- mxl_hessian_parallel(
-    theta = theta, X = object$data$X, W = object$data$W,
-    alt_idx = object$data$alt_idx, choice_idx = object$data$choice_idx,
-    M = object$data$M, weights = w, eta_draws = eta_draws,
+    theta = theta, X = object[["data"]]$X, W = object[["data"]]$W,
+    alt_idx = object[["data"]]$alt_idx, choice_idx = object[["data"]]$choice_idx,
+    M = object[["data"]]$M, weights = w, eta_draws = eta_draws,
     rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean, use_asc = object$use_asc,
     include_outside_option = object$include_outside_option
   )
   B <- mxl_bhhh_parallel(
-    theta = theta, X = object$data$X, W = object$data$W,
-    alt_idx = object$data$alt_idx, choice_idx = object$data$choice_idx,
-    M = object$data$M, weights = w^2, eta_draws = eta_draws,
+    theta = theta, X = object[["data"]]$X, W = object[["data"]]$W,
+    alt_idx = object[["data"]]$alt_idx, choice_idx = object[["data"]]$choice_idx,
+    M = object[["data"]]$M, weights = w^2, eta_draws = eta_draws,
     rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean, use_asc = object$use_asc,
     include_outside_option = object$include_outside_option
