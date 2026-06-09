@@ -4,7 +4,13 @@
 \alias{predict.choicer_mnl}
 \title{Predict from a multinomial logit model}
 \usage{
-\method{predict}{choicer_mnl}(object, type = c("probabilities", "shares"), ...)
+\method{predict}{choicer_mnl}(
+  object,
+  type = c("probabilities", "shares"),
+  newdata = NULL,
+  weights = NULL,
+  ...
+)
 }
 \arguments{
 \item{object}{A choicer_mnl object.}
@@ -12,14 +18,36 @@
 \item{type}{One of "probabilities" (individual-level choice probabilities)
 or "shares" (aggregate market shares).}
 
+\item{newdata}{Optional data for counterfactual prediction. Either:
+\itemize{
+\item a data.frame in the same long format used at fit time (one row per
+id-alternative pair, with the fit-time id, alternative, and covariate
+columns; a choice column is not required). Alternative labels must have
+been seen at fit time; per-id subsets of alternatives are allowed.
+\item a list with elements \code{X}, \code{alt_idx}, \code{M} (and optionally \code{weights})
+matching the layout of \code{object$data} — the "modified design matrix"
+path for policy simulation (e.g., perturb a column of \code{object$data$X}).
+\code{alt_idx} must use the fit-time integer codes from \code{object$alt_mapping}.
+}
+
+When \code{NULL} (default), the data stored at fit time is used (requires
+\code{keep_data = TRUE}).}
+
+\item{weights}{Optional numeric vector with one weight per choice situation
+in \code{newdata}, used for \code{type = "shares"} aggregation. Defaults to equal
+weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights apply).}
+
 \item{...}{Additional arguments (ignored).}
 }
 \value{
 For "probabilities": a list with \code{choice_prob} and \code{utility} vectors.
 For "shares": a named numeric vector of market shares per alternative.
+With a data.frame \code{newdata}, rows are ordered by id, then by fit-time
+alternative code (\code{alt_int} in \code{object$alt_mapping}).
 }
 \description{
-Computes choice probabilities or aggregate market shares.
+Computes choice probabilities or aggregate market shares, either for the
+data used at fit time (default) or for counterfactual \code{newdata}.
 }
 \examples{
 \donttest{
@@ -33,5 +61,9 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
 predict(fit, type = "shares")
 predict(fit, type = "probabilities")
+
+# Counterfactual: increase x1 for alternative 2
+dt_cf <- copy(dt)[alt == 2, x1 := x1 + 1]
+predict(fit, type = "shares", newdata = dt_cf)
 }
 }

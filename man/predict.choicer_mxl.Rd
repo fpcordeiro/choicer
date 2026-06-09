@@ -4,7 +4,13 @@
 \alias{predict.choicer_mxl}
 \title{Predict from a mixed logit model}
 \usage{
-\method{predict}{choicer_mxl}(object, type = c("probabilities", "shares"), ...)
+\method{predict}{choicer_mxl}(
+  object,
+  type = c("probabilities", "shares"),
+  newdata = NULL,
+  weights = NULL,
+  ...
+)
 }
 \arguments{
 \item{object}{A choicer_mxl object.}
@@ -12,16 +18,41 @@
 \item{type}{Either "probabilities" (per-observation simulated choice
 probabilities) or "shares" (aggregate simulated market shares).}
 
+\item{newdata}{Optional data for counterfactual prediction. Either:
+\itemize{
+\item a data.frame in the same long format used at fit time (one row per
+id-alternative pair, with the fit-time id, alternative, fixed-coefficient,
+and random-coefficient columns; a choice column is not required).
+Alternative labels must have been seen at fit time; per-id subsets of
+alternatives are allowed.
+\item a list with elements \code{X}, \code{W}, \code{alt_idx}, \code{M} (and optionally
+\code{weights}) matching the layout of \code{object$data} — the "modified design
+matrix" path for policy simulation. \code{alt_idx} must use the fit-time
+integer codes from \code{object$alt_mapping}.
+}
+
+When \code{NULL} (default), the data stored at fit time is used (requires
+\code{keep_data = TRUE}). Halton draws are regenerated deterministically from
+\code{object$draws_info} with one block of draws per choice situation in
+\code{newdata}.}
+
+\item{weights}{Optional numeric vector with one weight per choice situation
+in \code{newdata}, used for \code{type = "shares"} aggregation. Defaults to equal
+weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights apply).}
+
 \item{...}{Additional arguments (ignored).}
 }
 \value{
 For "probabilities": a list with \code{choice_prob} and \code{utility}
 vectors averaged across simulation draws. For "shares": a named numeric
-vector of simulated market shares per alternative.
+vector of simulated market shares per alternative. With a data.frame
+\code{newdata}, rows are ordered by id, then by fit-time alternative code
+(\code{alt_int} in \code{object$alt_mapping}).
 }
 \description{
 Computes simulated choice probabilities or aggregate market shares using
-stored Halton draws.
+deterministic Halton draws, either for the data used at fit time (default)
+or for counterfactual \code{newdata}.
 }
 \examples{
 \donttest{

@@ -4,7 +4,13 @@
 \alias{predict.choicer_nl}
 \title{Predict from a nested logit model}
 \usage{
-\method{predict}{choicer_nl}(object, type = c("probabilities", "shares"), ...)
+\method{predict}{choicer_nl}(
+  object,
+  type = c("probabilities", "shares"),
+  newdata = NULL,
+  weights = NULL,
+  ...
+)
 }
 \arguments{
 \item{object}{A choicer_nl object.}
@@ -12,14 +18,39 @@
 \item{type}{One of "probabilities" (individual-level choice probabilities)
 or "shares" (aggregate market shares).}
 
+\item{newdata}{Optional data for counterfactual prediction. Either:
+\itemize{
+\item a data.frame in the same long format used at fit time (one row per
+id-alternative pair, with the fit-time id, alternative, and covariate
+columns; a choice column is not required). Alternative labels must have
+been seen at fit time; per-id subsets of alternatives are allowed. The
+alternative-to-nest mapping always comes from the fitted object (it
+indexes the estimated \code{lambda} parameters), so a nest column in
+\code{newdata} is not required and is ignored if present.
+\item a list with elements \code{X}, \code{alt_idx}, \code{M} (and optionally \code{weights})
+matching the layout of \code{object$data} — the "modified design matrix"
+path for policy simulation. \code{alt_idx} must use the fit-time integer
+codes from \code{object$alt_mapping}.
+}
+
+When \code{NULL} (default), the data stored at fit time is used (requires
+\code{keep_data = TRUE}).}
+
+\item{weights}{Optional numeric vector with one weight per choice situation
+in \code{newdata}, used for \code{type = "shares"} aggregation. Defaults to equal
+weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights apply).}
+
 \item{...}{Additional arguments (ignored).}
 }
 \value{
 For "probabilities": a list with \code{choice_prob} and \code{utility} vectors.
 For "shares": a named numeric vector of market shares per alternative.
+With a data.frame \code{newdata}, rows are ordered by id, then by fit-time
+alternative code (\code{alt_int} in \code{object$alt_mapping}).
 }
 \description{
-Computes choice probabilities or aggregate market shares.
+Computes choice probabilities or aggregate market shares, either for the
+data used at fit time (default) or for counterfactual \code{newdata}.
 }
 \examples{
 \donttest{

@@ -241,7 +241,8 @@ run_nestlogit <- function(
         weights = input_data$weights
       )
     },
-    lambda = lambda
+    lambda = lambda,
+    nest_idx = input_data$nest_idx
   )
 }
 

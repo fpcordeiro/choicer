@@ -11,7 +11,7 @@
 #' Construct a choicer_mnl object
 #' @param call The matched call from run_mnlogit()
 #' @param coefficients Named numeric vector of point estimates
-#' @param loglik Scalar log-likelihood at optimum (positive)
+#' @param loglik Scalar log-likelihood at optimum
 #' @param nobs Integer number of choice situations
 #' @param n_params Integer number of estimated parameters
 #' @param convergence Integer convergence code from optimizer
@@ -138,6 +138,9 @@ new_choicer_mxl <- function(call, coefficients, loglik,
 #' Construct a choicer_nl object
 #' @inheritParams new_choicer_mnl
 #' @param lambda Named numeric vector of nest parameters
+#' @param nest_idx Integer vector of length J mapping each (inside) alternative,
+#'   in alt_mapping row order, to its 1-based nest index. Stored top-level so
+#'   newdata prediction works even when data = NULL (keep_data = FALSE).
 #' @returns A choicer_nl object (S3 class)
 #' @noRd
 new_choicer_nl <- function(call, coefficients, loglik,
@@ -146,7 +149,7 @@ new_choicer_nl <- function(call, coefficients, loglik,
                            use_asc, include_outside_option,
                            optimizer,
                            vcov = NULL, se = NULL, data = NULL,
-                           lambda = NULL) {
+                           lambda = NULL, nest_idx = NULL) {
   structure(
     list(
       call = call,
@@ -166,7 +169,8 @@ new_choicer_nl <- function(call, coefficients, loglik,
       include_outside_option = include_outside_option,
       optimizer = optimizer,
       data = data,
-      lambda = lambda
+      lambda = lambda,
+      nest_idx = nest_idx
     ),
     class = c("choicer_nl", "choicer_fit")
   )
