@@ -292,7 +292,7 @@ wtp.choicer_fit <- function(object, price_var, attr_vars = NULL,
 #' @export
 wtp.choicer_mxl <- function(object, price_var, attr_vars = NULL,
                             level = 0.95, ...) {
-  w_names <- names(object$sW) %||% colnames(object$data$W) %||% character(0)
+  w_names <- names(object$sW) %||% colnames(object[["data"]]$W) %||% character(0)
   if (is.character(price_var) && length(price_var) == 1L &&
       price_var %in% w_names) {
     stop("Random price coefficients are not supported: the WTP ratio of two ",

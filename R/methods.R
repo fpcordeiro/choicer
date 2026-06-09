@@ -142,10 +142,10 @@ wesml_vcov <- function(object, ...) UseMethod("wesml_vcov")
 #' @export
 wesml_vcov.choicer_mxl <- function(object, type = c("vcov", "se"), ...) {
   type <- match.arg(type)
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("wesml_vcov() needs the stored data; refit with keep_data = TRUE.")
   }
-  w <- object$data$weights
+  w <- object[["data"]]$weights
   if (!is.null(w) && length(unique(w)) == 1L) {
     warning("Stored weights are uniform; wesml_vcov() returns the ordinary robust ",
             "(Huber-White) variance, not a WESML-weighted variance. Refit with WESML ",
@@ -255,6 +255,9 @@ build_coef_table <- function(estimates, se, param_names) {
 #' computation if standard errors have not been computed yet.
 #'
 #' @param object A choicer_mnl object.
+#' @param gof Logical; compute goodness-of-fit measures (McFadden R-squared,
+#'   hit rate) for the summary footer. Involves an in-sample prediction pass
+#'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mnl object (list with coefficients table and
 #'   metadata, including a `gof` element with goodness-of-fit measures from
@@ -273,7 +276,7 @@ build_coef_table <- function(estimates, se, param_names) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_mnl <- function(object, ...) {
+summary.choicer_mnl <- function(object, gof = TRUE, ...) {
   object <- ensure_vcov(object)
 
   coef_table <- build_coef_table(
@@ -292,7 +295,11 @@ summary.choicer_mnl <- function(object, ...) {
       convergence = object$convergence,
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
-      gof = tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
+      gof = if (isTRUE(gof)) {
+        # calling gof() here is safe: R skips the logical binding when
+        # resolving a function call
+        tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
+      }
     ),
     class = "summary.choicer_mnl"
   )
@@ -332,6 +339,9 @@ print.summary.choicer_mnl <- function(x, ...) {
 #' Triggers lazy Hessian computation if standard errors have not been computed yet.
 #'
 #' @param object A choicer_mxl object.
+#' @param gof Logical; compute goodness-of-fit measures (McFadden R-squared,
+#'   hit rate) for the summary footer. Involves an in-sample prediction pass
+#'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mxl object (includes a `gof` element with
 #'   goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
@@ -352,7 +362,7 @@ print.summary.choicer_mnl <- function(x, ...) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_mxl <- function(object, ...) {
+summary.choicer_mxl <- function(object, gof = TRUE, ...) {
   object <- ensure_vcov(object)
 
   est <- object$coefficients
@@ -422,7 +432,11 @@ summary.choicer_mxl <- function(object, ...) {
       se_method = object$se_method %||% "hessian",
       weighting = object$choice_sampling$scheme,
       weights_applied = object$choice_sampling$weights_applied,
-      gof = tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
+      gof = if (isTRUE(gof)) {
+        # calling gof() here is safe: R skips the logical binding when
+        # resolving a function call
+        tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
+      }
     ),
     class = "summary.choicer_mxl"
   )
@@ -489,6 +503,9 @@ print.summary.choicer_mxl <- function(x, ...) {
 #' Triggers lazy Hessian computation if standard errors have not been computed yet.
 #'
 #' @param object A choicer_nl object.
+#' @param gof Logical; compute goodness-of-fit measures (McFadden R-squared,
+#'   hit rate) for the summary footer. Involves an in-sample prediction pass
+#'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_nl object (includes a `gof` element with
 #'   goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
@@ -510,7 +527,7 @@ print.summary.choicer_mxl <- function(x, ...) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_nl <- function(object, ...) {
+summary.choicer_nl <- function(object, gof = TRUE, ...) {
   object <- ensure_vcov(object)
 
   coef_table <- build_coef_table(
@@ -529,7 +546,11 @@ summary.choicer_nl <- function(object, ...) {
       convergence = object$convergence,
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
-      gof = tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
+      gof = if (isTRUE(gof)) {
+        # calling gof() here is safe: R skips the logical binding when
+        # resolving a function call
+        tryCatch(suppressMessages(gof(object)), error = function(e) NULL)
+      }
     ),
     class = "summary.choicer_nl"
   )
@@ -666,10 +687,10 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
   type <- match.arg(type)
 
   if (is.null(newdata)) {
-    if (is.null(object$data)) {
+    if (is.null(object[["data"]])) {
       stop("Prediction requires stored data. Refit with keep_data = TRUE.")
     }
-    d <- object$data
+    d <- object[["data"]]
   } else {
     d <- resolve_predict_newdata(object, newdata, weights = weights)
   }
@@ -758,11 +779,11 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
   type <- match.arg(type)
 
   if (is.null(newdata)) {
-    if (is.null(object$data) || is.null(object$draws_info)) {
+    if (is.null(object[["data"]]) || is.null(object$draws_info)) {
       stop("Prediction requires stored data and draws. ",
            "Refit with keep_data = TRUE.")
     }
-    d <- object$data
+    d <- object[["data"]]
     N_draws <- object$draws_info$N
   } else {
     if (is.null(object$draws_info)) {
@@ -957,10 +978,10 @@ blp <- function(object, target_shares, ...) UseMethod("blp")
 #' }
 #' @export
 elasticities.choicer_mnl <- function(object, elast_var, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("elasticities() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
   idx <- resolve_var_index(elast_var, colnames(d$X))
 
   mat <- mnl_elasticities_parallel(
@@ -999,10 +1020,10 @@ elasticities.choicer_mnl <- function(object, elast_var, ...) {
 #' }
 #' @export
 diversion_ratios.choicer_mnl <- function(object, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("diversion_ratios() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
 
   mat <- mnl_diversion_ratios_parallel(
     theta = object$coefficients,
@@ -1047,10 +1068,10 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @export
 blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
                             tol = 1e-8, max_iter = 1000, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("blp() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
   pm <- object$param_map
   beta <- object$coefficients[pm$beta]
 
@@ -1112,10 +1133,10 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
 #' @export
 elasticities.choicer_mxl <- function(object, elast_var,
                                      is_random_coef = FALSE, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("elasticities() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
 
   col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
   idx <- resolve_var_index(elast_var, col_names)
@@ -1192,13 +1213,13 @@ elasticities.choicer_mxl <- function(object, elast_var,
 #' @export
 diversion_ratios.choicer_mxl <- function(object, wrt_var,
                                          is_random_coef = FALSE, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("diversion_ratios() requires stored data. Refit with keep_data = TRUE.")
   }
   if (is.null(object$draws_info)) {
     stop("diversion_ratios() requires draws_info from a fitted MXL model.")
   }
-  d <- object$data
+  d <- object[["data"]]
 
   col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
   idx <- resolve_var_index(wrt_var, col_names)
@@ -1262,10 +1283,10 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' @export
 blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
                             tol = 1e-8, max_iter = 1000, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("blp() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
   pm <- object$param_map
 
   beta <- object$coefficients[pm$beta]
@@ -1368,16 +1389,16 @@ predict.choicer_nl <- function(object, type = c("probabilities", "shares"),
   type <- match.arg(type)
 
   if (is.null(newdata)) {
-    if (is.null(object$data)) {
+    if (is.null(object[["data"]])) {
       stop("Prediction requires stored data. Refit with keep_data = TRUE.")
     }
-    d <- object$data
+    d <- object[["data"]]
     nest_idx <- d$nest_idx
   } else {
     # The per-alternative (length J) nest mapping is authoritative from the
     # fit since it indexes the estimated lambda parameters. New fits store it
     # top-level; older fits only carry it inside $data (keep_data = TRUE).
-    nest_idx <- object$nest_idx %||% object$data$nest_idx
+    nest_idx <- object$nest_idx %||% object[["data"]]$nest_idx
     if (is.null(nest_idx)) {
       stop("Cannot resolve the alternative-to-nest mapping: this fit stores ",
            "no 'nest_idx'. Refit to enable newdata prediction.")
@@ -1435,10 +1456,10 @@ predict.choicer_nl <- function(object, type = c("probabilities", "shares"),
 #' }
 #' @export
 elasticities.choicer_nl <- function(object, elast_var, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("elasticities() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
   idx <- resolve_var_index(elast_var, colnames(d$X))
 
   mat <- nl_elasticities_parallel(
@@ -1479,10 +1500,10 @@ elasticities.choicer_nl <- function(object, elast_var, ...) {
 #' }
 #' @export
 diversion_ratios.choicer_nl <- function(object, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("diversion_ratios() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
 
   mat <- nl_diversion_ratios_parallel(
     theta = object$coefficients,
@@ -1530,10 +1551,10 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @export
 blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
                            damping = 1, tol = 1e-8, max_iter = 1000, ...) {
-  if (is.null(object$data)) {
+  if (is.null(object[["data"]])) {
     stop("blp() requires stored data. Refit with keep_data = TRUE.")
   }
-  d <- object$data
+  d <- object[["data"]]
   pm <- object$param_map
   beta <- object$coefficients[pm$beta]
 

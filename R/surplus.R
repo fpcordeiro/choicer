@@ -12,9 +12,12 @@
 #' @param object A choicer_fit object.
 #' @param newdata NULL, a long-format data.frame, or a list (X, alt_idx, M, ...).
 #' @param needs_draws Whether MXL draw metadata (`draws_info`) is required.
+#' @param weights Optional prediction weights for the newdata path (one per
+#'   choice situation, as in `predict()`); ignored when `newdata` is NULL.
 #' @returns List with `X`, `W`, `alt_idx`, `M`, `N`, `weights`.
 #' @noRd
-.surplus_resolve_data <- function(object, newdata, needs_draws = FALSE) {
+.surplus_resolve_data <- function(object, newdata, needs_draws = FALSE,
+                                  weights = NULL) {
   if (is.null(newdata)) {
     # [["data"]]: $data would partial-match data_spec if the element is absent
     d <- object[["data"]]
@@ -32,7 +35,7 @@
       stop("Prediction with newdata requires stored draw metadata ",
            "('draws_info'). Refit to enable newdata prediction.")
     }
-    resolve_predict_newdata(object, newdata)
+    resolve_predict_newdata(object, newdata, weights = weights)
   }
 }
 
@@ -128,6 +131,12 @@ logsum <- function(object, newdata = NULL, ...) {
 #' @export
 logsum.choicer_mnl <- function(object, newdata = NULL, ...) {
   d <- .surplus_resolve_data(object, newdata)
+  .logsum_mnl_core(object, d)
+}
+
+#' MNL logsum from resolved kernel inputs
+#' @noRd
+.logsum_mnl_core <- function(object, d) {
   pred <- mnl_predict(
     theta = object$coefficients,
     X = d$X,
@@ -144,11 +153,15 @@ logsum.choicer_mnl <- function(object, newdata = NULL, ...) {
 #' @export
 logsum.choicer_mxl <- function(object, newdata = NULL, ...) {
   d <- .surplus_resolve_data(object, newdata, needs_draws = TRUE)
-  N_draws <- if (is.null(newdata)) object$draws_info$N else d$N
+  .logsum_mxl_core(object, d)
+}
 
+#' MXL logsum from resolved kernel inputs (regenerates the Halton draws)
+#' @noRd
+.logsum_mxl_core <- function(object, d) {
   eta_draws <- get_halton_normals(
     S   = object$draws_info$S,
-    N   = N_draws,
+    N   = d$N,
     K_w = object$draws_info$K_w
   )
 
@@ -167,9 +180,9 @@ logsum.choicer_mxl <- function(object, newdata = NULL, ...) {
   ))
 }
 
-#' @rdname logsum
-#' @export
-logsum.choicer_nl <- function(object, newdata = NULL, ...) {
+#' Resolve the authoritative alternative-to-nest mapping for an NL fit
+#' @noRd
+.nl_resolve_nest_idx <- function(object) {
   # The per-alternative (length J) nest mapping is authoritative from the fit
   # since it indexes the estimated lambda parameters (see predict.choicer_nl).
   nest_idx <- object$nest_idx %||% object[["data"]]$nest_idx
@@ -177,8 +190,20 @@ logsum.choicer_nl <- function(object, newdata = NULL, ...) {
     stop("Cannot resolve the alternative-to-nest mapping: this fit stores ",
          "no 'nest_idx'. Refit to enable newdata prediction.")
   }
-  d <- .surplus_resolve_data(object, newdata)
+  nest_idx
+}
 
+#' @rdname logsum
+#' @export
+logsum.choicer_nl <- function(object, newdata = NULL, ...) {
+  nest_idx <- .nl_resolve_nest_idx(object)
+  d <- .surplus_resolve_data(object, newdata)
+  .logsum_nl_core(object, d, nest_idx)
+}
+
+#' NL logsum from resolved kernel inputs
+#' @noRd
+.logsum_nl_core <- function(object, d, nest_idx) {
   pred <- nl_predict(
     theta = object$coefficients,
     X = d$X,
@@ -361,6 +386,11 @@ logsum.choicer_nl <- function(object, newdata = NULL, ...) {
 #'   the data stored at fit time is used (requires \code{keep_data = TRUE}).
 #' @param level Confidence level for the normal-approximation interval around
 #'   the mean CS (MNL only). Default 0.95.
+#' @param weights Optional numeric vector with one weight per choice situation,
+#'   used for the mean CS (and its SE), as in `predict()`: for a data.frame
+#'   `newdata`, one weight per id in order of first appearance. Defaults to
+#'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
+#'   apply).
 #' @param ... Additional arguments passed to methods.
 #' @returns A \code{choicer_cs} object: a list with \code{cs} (per-choice-
 #'   situation surplus, length N), \code{mean_cs} (weighted mean),
@@ -390,19 +420,19 @@ logsum.choicer_nl <- function(object, newdata = NULL, ...) {
 #' }
 #' @export
 consumer_surplus <- function(object, price_var, newdata = NULL,
-                             level = 0.95, ...) {
+                             level = 0.95, weights = NULL, ...) {
   UseMethod("consumer_surplus")
 }
 
 #' @rdname consumer_surplus
 #' @export
 consumer_surplus.choicer_mnl <- function(object, price_var, newdata = NULL,
-                                         level = 0.95, ...) {
+                                         level = 0.95, weights = NULL, ...) {
   price_idx <- .wtp_price_index(object, price_var)
   alpha <- unname(object$coefficients[price_idx])
 
-  d <- .surplus_resolve_data(object, newdata)
-  ls <- logsum(object, newdata = newdata)
+  d <- .surplus_resolve_data(object, newdata, weights = weights)
+  ls <- .logsum_mnl_core(object, d)
   cs <- ls / (-alpha)
 
   object <- ensure_vcov(object)
@@ -414,8 +444,8 @@ consumer_surplus.choicer_mnl <- function(object, price_var, newdata = NULL,
 #' @rdname consumer_surplus
 #' @export
 consumer_surplus.choicer_mxl <- function(object, price_var, newdata = NULL,
-                                         level = 0.95, ...) {
-  w_names <- names(object$sW) %||% colnames(object$data$W) %||% character(0)
+                                         level = 0.95, weights = NULL, ...) {
+  w_names <- names(object$sW) %||% colnames(object[["data"]]$W) %||% character(0)
   if (is.character(price_var) && length(price_var) == 1L &&
       price_var %in% w_names) {
     stop("Random price coefficients are not supported: 1/(-alpha) with a ",
@@ -426,8 +456,9 @@ consumer_surplus.choicer_mxl <- function(object, price_var, newdata = NULL,
   price_idx <- .wtp_price_index(object, price_var)
   alpha <- unname(object$coefficients[price_idx])
 
-  d <- .surplus_resolve_data(object, newdata, needs_draws = TRUE)
-  cs <- logsum(object, newdata = newdata) / (-alpha)
+  d <- .surplus_resolve_data(object, newdata, needs_draws = TRUE,
+                             weights = weights)
+  cs <- .logsum_mxl_core(object, d) / (-alpha)
 
   # Delta-method SE for the simulated logsum is deferred; use Krinsky-Robb
   # resampling of the coefficients for intervals.
@@ -437,12 +468,13 @@ consumer_surplus.choicer_mxl <- function(object, price_var, newdata = NULL,
 #' @rdname consumer_surplus
 #' @export
 consumer_surplus.choicer_nl <- function(object, price_var, newdata = NULL,
-                                        level = 0.95, ...) {
+                                        level = 0.95, weights = NULL, ...) {
+  nest_idx <- .nl_resolve_nest_idx(object)
   price_idx <- .wtp_price_index(object, price_var)
   alpha <- unname(object$coefficients[price_idx])
 
-  d <- .surplus_resolve_data(object, newdata)
-  cs <- logsum(object, newdata = newdata) / (-alpha)
+  d <- .surplus_resolve_data(object, newdata, weights = weights)
+  cs <- .logsum_nl_core(object, d, nest_idx) / (-alpha)
 
   # Delta-method SE for the nested logsum is deferred; use Krinsky-Robb
   # resampling of the coefficients for intervals.

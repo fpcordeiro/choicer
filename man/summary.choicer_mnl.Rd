@@ -4,10 +4,14 @@
 \alias{summary.choicer_mnl}
 \title{Summary for multinomial logit model}
 \usage{
-\method{summary}{choicer_mnl}(object, ...)
+\method{summary}{choicer_mnl}(object, gof = TRUE, ...)
 }
 \arguments{
 \item{object}{A choicer_mnl object.}
+
+\item{gof}{Logical; compute goodness-of-fit measures (McFadden R-squared,
+hit rate) for the summary footer. Involves an in-sample prediction pass
+(for mixed logit, a full simulation over draws); set to FALSE to skip.}
 
 \item{...}{Additional arguments (ignored).}
 }

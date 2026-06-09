@@ -396,3 +396,32 @@ test_that("summary(fit)$gof is a choicer_gof matching gof(fit)", {
   expect_equal(s$gof$mcfadden_r2, gof(fit)$mcfadden_r2,
                tolerance = TOL_LOGLIK)
 })
+
+test_that("removed data element degrades gracefully (no partial matching)", {
+  # fit$data <- NULL *removes* the element; $data would then partial-match
+  # data_spec and crash the kernels. gof/summary/predict must stay safe.
+  dt <- create_small_mnl_data()
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2")
+  )
+  fit$data <- NULL
+
+  expect_message(g <- gof(fit), "keep_data = TRUE")
+  expect_true(is.na(g$mcfadden_r2))
+  expect_output(print(summary(fit)), "AIC")
+  expect_error(predict(fit), "keep_data")
+})
+
+test_that("summary(gof = FALSE) skips the goodness-of-fit pass", {
+  dt <- create_small_mnl_data()
+  fit <- run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2")
+  )
+
+  s <- summary(fit, gof = FALSE)
+  expect_null(s$gof)
+  expect_output(print(s), "AIC")
+  expect_false(any(grepl("McFadden", capture.output(print(s)))))
+})

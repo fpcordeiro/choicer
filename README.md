@@ -52,6 +52,11 @@ gof(fit)                             # McFadden R2 and hit rate (also in summary
 # Counterfactual / policy prediction: perturb the data and predict
 dt_cf <- copy(dt)[alt == 2, x1 := x1 + 1]
 predict(fit, type = "shares", newdata = dt_cf)
+
+# Welfare: change in expected consumer surplus from the counterfactual
+cs0 <- consumer_surplus(fit, price_var = "x1")
+cs1 <- consumer_surplus(fit, price_var = "x1", newdata = dt_cf)
+cs1$mean_cs - cs0$mean_cs
 ```
 
 The same post-estimation toolkit is available for nested logit. Elasticities
@@ -90,9 +95,9 @@ blp(fit_nl, target_shares, damping = 0.5)  # use damping < 1 for strongly-nested
 
 | Model | Function | Post-estimation |
 |-------|----------|-----------------|
-| Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()` |
-| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()` |
-| Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()` |
+| Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
+| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
+| Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
 
 All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`. `summary()` reports McFadden R2 and the hit rate alongside the usual fit statistics, and `predict()` accepts `newdata` (a long data.frame or a modified design list) for counterfactual and policy prediction, even on fits with `keep_data = FALSE`.
 

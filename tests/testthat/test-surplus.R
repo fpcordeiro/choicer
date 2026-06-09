@@ -12,6 +12,15 @@
 # Helpers
 # =============================================================================
 
+# Per-id probability sums for a stacked choice_prob vector
+per_id_sums <- function(choice_prob, M) {
+  ends <- cumsum(M)
+  starts <- c(1L, head(ends, -1) + 1L)
+  vapply(seq_along(M),
+         function(i) sum(choice_prob[starts[i]:ends[i]]),
+         numeric(1))
+}
+
 # Reference blockwise log-sum-exp in plain R
 manual_logsum <- function(V, M, ioo = FALSE) {
   ends <- cumsum(M)
@@ -399,4 +408,102 @@ test_that("print.choicer_cs prints the summary and returns invisibly", {
   expect_output(print(cs_na), "SE: NA")
 
   expect_invisible(print(cs))
+})
+
+# =============================================================================
+# 9. Review additions: correlated L, NL outside-option identity, weights
+# =============================================================================
+
+test_that("mxl_logsum matches brute force: correlated L, normal mu, ASCs", {
+  set.seed(2026)
+  N <- 5; J <- 3; S <- 4; K_w <- 2
+  M <- rep(J, N)
+  alt_idx <- rep(1:J, N)
+  X <- matrix(rnorm(N * J), ncol = 1)
+  W <- matrix(rnorm(N * J * K_w), ncol = K_w)
+  # theta = [beta(1), mu(2), L_params(3: l11, l21, l22), asc(2)];
+  # rc_correlation = TRUE packs the lower triangle row-major with exp() on
+  # the diagonal.
+  L_params <- c(log(0.7), 0.3, log(0.4))
+  theta <- c(0.5, 0.2, -0.1, L_params, 0.3, -0.2)
+  eta <- get_halton_normals(S, N, K_w)
+
+  L <- matrix(c(exp(L_params[1]), 0,
+                L_params[2], exp(L_params[3])),
+              nrow = 2, byrow = TRUE)
+  # Pin the manual packing convention against the C++ builder
+  expect_equal(unname(L %*% t(L)),
+               unname(build_var_mat(L_params, K_w, rc_correlation = TRUE)),
+               tolerance = 1e-12)
+
+  ls <- as.numeric(mxl_logsum(
+    theta, X, W, alt_idx, M, eta, rc_dist = rep(0L, K_w),
+    rc_correlation = TRUE, rc_mean = TRUE,
+    use_asc = TRUE, include_outside_option = FALSE
+  ))
+
+  delta <- c(0, theta[7:8])
+  mu <- theta[2:3]  # normal RCs: mu enters untransformed
+  manual <- vapply(seq_len(N), function(i) {
+    rows <- ((i - 1) * J + 1):(i * J)
+    base <- as.numeric(X[rows, , drop = FALSE] %*% theta[1]) +
+      as.numeric(W[rows, ] %*% mu) + delta[alt_idx[rows]]
+    mean(vapply(seq_len(S), function(s) {
+      v <- base + as.numeric(W[rows, ] %*% (L %*% eta[, s, i]))
+      log(sum(exp(v)))
+    }, numeric(1)))
+  }, numeric(1))
+
+  expect_equal(ls, manual, tolerance = 1e-8)
+})
+
+test_that("NL logsum equals -log(P_outside) on an outside-option fit", {
+  # Independent pin of the nested logsum against the C++ probability kernel:
+  # with the outside option normalized to V = 0, P_outside = 1 / exp(logsum).
+  set.seed(31)
+  N <- 60
+  dt <- data.table(
+    id = rep(1:N, each = 5),
+    alt = rep(0:4, N),
+    nest = rep(c(0L, 1L, 1L, 2L, 2L), N),
+    x1 = rnorm(N * 5),
+    x2 = runif(N * 5, -1, 1)
+  )
+  dt[alt == 0, c("x1", "x2") := 0]
+  dt[, choice := 0L]
+  dt[, choice := { pick <- sample.int(5, 1) - 1L; as.integer(alt == pick) },
+     by = id]
+  fit <- run_nestlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), nest_col = "nest",
+    include_outside_option = TRUE, outside_opt_label = 0L,
+    control = list(maxeval = 100L)
+  )
+
+  p <- predict(fit, type = "probabilities")$choice_prob
+  p_outside <- 1 - per_id_sums(p, fit$data$M)
+
+  expect_equal(logsum(fit), -log(p_outside), tolerance = 1e-10)
+})
+
+test_that("consumer_surplus accepts prediction weights with newdata", {
+  m <- get_fit_surplus_mnl_sim()
+  N <- length(m$fit$data$M)
+
+  # All weight on the first id: mean CS equals that id's CS
+  w <- c(1, rep(0, N - 1))
+  out <- consumer_surplus(m$fit, price_var = "x2", newdata = m$dt, weights = w)
+  expect_equal(out$mean_cs, out$cs[1], tolerance = 1e-12)
+
+  # Uniform weights match the no-weights call
+  out_u <- consumer_surplus(m$fit, price_var = "x2", newdata = m$dt,
+                            weights = rep(2, N))
+  out_0 <- consumer_surplus(m$fit, price_var = "x2", newdata = m$dt)
+  expect_equal(out_u$mean_cs, out_0$mean_cs, tolerance = 1e-12)
+  expect_equal(out_u$se_mean_cs, out_0$se_mean_cs, tolerance = 1e-12)
+
+  # Weights are ignored without newdata (stored fit weights apply)
+  out_n <- consumer_surplus(m$fit, price_var = "x2", weights = w)
+  expect_equal(out_n$mean_cs, consumer_surplus(m$fit, "x2")$mean_cs,
+               tolerance = 1e-12)
 })
