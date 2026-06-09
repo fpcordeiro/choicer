@@ -603,14 +603,32 @@ print_footer <- function(x) {
 
 #' Predict from a multinomial logit model
 #'
-#' Computes choice probabilities or aggregate market shares.
+#' Computes choice probabilities or aggregate market shares, either for the
+#' data used at fit time (default) or for counterfactual `newdata`.
 #'
 #' @param object A choicer_mnl object.
 #' @param type One of "probabilities" (individual-level choice probabilities)
 #'   or "shares" (aggregate market shares).
+#' @param newdata Optional data for counterfactual prediction. Either:
+#'   * a data.frame in the same long format used at fit time (one row per
+#'     id-alternative pair, with the fit-time id, alternative, and covariate
+#'     columns; a choice column is not required). Alternative labels must have
+#'     been seen at fit time; per-id subsets of alternatives are allowed.
+#'   * a list with elements `X`, `alt_idx`, `M` (and optionally `weights`)
+#'     matching the layout of `object$data` — the "modified design matrix"
+#'     path for policy simulation (e.g., perturb a column of `object$data$X`).
+#'     `alt_idx` must use the fit-time integer codes from `object$alt_mapping`.
+#'
+#'   When `NULL` (default), the data stored at fit time is used (requires
+#'   `keep_data = TRUE`).
+#' @param weights Optional numeric vector with one weight per choice situation
+#'   in `newdata`, used for `type = "shares"` aggregation. Defaults to equal
+#'   weights. Ignored when `newdata` is `NULL` (the stored fit weights apply).
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
 #'   For "shares": a named numeric vector of market shares per alternative.
+#'   With a data.frame `newdata`, rows are ordered by id, then by fit-time
+#'   alternative code (`alt_int` in `object$alt_mapping`).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -623,16 +641,25 @@ print_footer <- function(x) {
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
 #' predict(fit, type = "shares")
 #' predict(fit, type = "probabilities")
+#'
+#' # Counterfactual: increase x1 for alternative 2
+#' dt_cf <- copy(dt)[alt == 2, x1 := x1 + 1]
+#' predict(fit, type = "shares", newdata = dt_cf)
 #' }
 #' @export
-predict.choicer_mnl <- function(object, type = c("probabilities", "shares"), ...) {
+predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
+                                newdata = NULL, weights = NULL, ...) {
   type <- match.arg(type)
 
-  if (is.null(object$data)) {
-    stop("Prediction requires stored data. Refit with keep_data = TRUE.")
+  if (is.null(newdata)) {
+    if (is.null(object$data)) {
+      stop("Prediction requires stored data. Refit with keep_data = TRUE.")
+    }
+    d <- object$data
+  } else {
+    d <- resolve_predict_newdata(object, newdata, weights = weights)
   }
 
-  d <- object$data
   theta <- object$coefficients
 
   if (type == "probabilities") {
@@ -662,15 +689,36 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"), ...
 #' Predict from a mixed logit model
 #'
 #' Computes simulated choice probabilities or aggregate market shares using
-#' stored Halton draws.
+#' deterministic Halton draws, either for the data used at fit time (default)
+#' or for counterfactual `newdata`.
 #'
 #' @param object A choicer_mxl object.
 #' @param type Either "probabilities" (per-observation simulated choice
 #'   probabilities) or "shares" (aggregate simulated market shares).
+#' @param newdata Optional data for counterfactual prediction. Either:
+#'   * a data.frame in the same long format used at fit time (one row per
+#'     id-alternative pair, with the fit-time id, alternative, fixed-coefficient,
+#'     and random-coefficient columns; a choice column is not required).
+#'     Alternative labels must have been seen at fit time; per-id subsets of
+#'     alternatives are allowed.
+#'   * a list with elements `X`, `W`, `alt_idx`, `M` (and optionally
+#'     `weights`) matching the layout of `object$data` — the "modified design
+#'     matrix" path for policy simulation. `alt_idx` must use the fit-time
+#'     integer codes from `object$alt_mapping`.
+#'
+#'   When `NULL` (default), the data stored at fit time is used (requires
+#'   `keep_data = TRUE`). Halton draws are regenerated deterministically from
+#'   `object$draws_info` with one block of draws per choice situation in
+#'   `newdata`.
+#' @param weights Optional numeric vector with one weight per choice situation
+#'   in `newdata`, used for `type = "shares"` aggregation. Defaults to equal
+#'   weights. Ignored when `newdata` is `NULL` (the stored fit weights apply).
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility`
 #'   vectors averaged across simulation draws. For "shares": a named numeric
-#'   vector of simulated market shares per alternative.
+#'   vector of simulated market shares per alternative. With a data.frame
+#'   `newdata`, rows are ordered by id, then by fit-time alternative code
+#'   (`alt_int` in `object$alt_mapping`).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -688,18 +736,29 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"), ...
 #' predict(fit, type = "probabilities")
 #' }
 #' @export
-predict.choicer_mxl <- function(object, type = c("probabilities", "shares"), ...) {
+predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
+                                newdata = NULL, weights = NULL, ...) {
   type <- match.arg(type)
 
-  if (is.null(object$data) || is.null(object$draws_info)) {
-    stop("Prediction requires stored data and draws. ",
-         "Refit with keep_data = TRUE.")
+  if (is.null(newdata)) {
+    if (is.null(object$data) || is.null(object$draws_info)) {
+      stop("Prediction requires stored data and draws. ",
+           "Refit with keep_data = TRUE.")
+    }
+    d <- object$data
+    N_draws <- object$draws_info$N
+  } else {
+    if (is.null(object$draws_info)) {
+      stop("Prediction with newdata requires stored draw metadata ",
+           "('draws_info'). Refit to enable newdata prediction.")
+    }
+    d <- resolve_predict_newdata(object, newdata, weights = weights)
+    N_draws <- d$N
   }
 
-  d <- object$data
   eta_draws <- get_halton_normals(
     S   = object$draws_info$S,
-    N   = object$draws_info$N,
+    N   = N_draws,
     K_w = object$draws_info$K_w
   )
 
@@ -1240,14 +1299,35 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
 
 #' Predict from a nested logit model
 #'
-#' Computes choice probabilities or aggregate market shares.
+#' Computes choice probabilities or aggregate market shares, either for the
+#' data used at fit time (default) or for counterfactual `newdata`.
 #'
 #' @param object A choicer_nl object.
 #' @param type One of "probabilities" (individual-level choice probabilities)
 #'   or "shares" (aggregate market shares).
+#' @param newdata Optional data for counterfactual prediction. Either:
+#'   * a data.frame in the same long format used at fit time (one row per
+#'     id-alternative pair, with the fit-time id, alternative, and covariate
+#'     columns; a choice column is not required). Alternative labels must have
+#'     been seen at fit time; per-id subsets of alternatives are allowed. The
+#'     alternative-to-nest mapping always comes from the fitted object (it
+#'     indexes the estimated `lambda` parameters), so a nest column in
+#'     `newdata` is not required and is ignored if present.
+#'   * a list with elements `X`, `alt_idx`, `M` (and optionally `weights`)
+#'     matching the layout of `object$data` — the "modified design matrix"
+#'     path for policy simulation. `alt_idx` must use the fit-time integer
+#'     codes from `object$alt_mapping`.
+#'
+#'   When `NULL` (default), the data stored at fit time is used (requires
+#'   `keep_data = TRUE`).
+#' @param weights Optional numeric vector with one weight per choice situation
+#'   in `newdata`, used for `type = "shares"` aggregation. Defaults to equal
+#'   weights. Ignored when `newdata` is `NULL` (the stored fit weights apply).
 #' @param ... Additional arguments (ignored).
 #' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
 #'   For "shares": a named numeric vector of market shares per alternative.
+#'   With a data.frame `newdata`, rows are ordered by id, then by fit-time
+#'   alternative code (`alt_int` in `object$alt_mapping`).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1263,14 +1343,28 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
 #' predict(fit, type = "probabilities")
 #' }
 #' @export
-predict.choicer_nl <- function(object, type = c("probabilities", "shares"), ...) {
+predict.choicer_nl <- function(object, type = c("probabilities", "shares"),
+                               newdata = NULL, weights = NULL, ...) {
   type <- match.arg(type)
 
-  if (is.null(object$data)) {
-    stop("Prediction requires stored data. Refit with keep_data = TRUE.")
+  if (is.null(newdata)) {
+    if (is.null(object$data)) {
+      stop("Prediction requires stored data. Refit with keep_data = TRUE.")
+    }
+    d <- object$data
+    nest_idx <- d$nest_idx
+  } else {
+    # The per-alternative (length J) nest mapping is authoritative from the
+    # fit since it indexes the estimated lambda parameters. New fits store it
+    # top-level; older fits only carry it inside $data (keep_data = TRUE).
+    nest_idx <- object$nest_idx %||% object$data$nest_idx
+    if (is.null(nest_idx)) {
+      stop("Cannot resolve the alternative-to-nest mapping: this fit stores ",
+           "no 'nest_idx'. Refit to enable newdata prediction.")
+    }
+    d <- resolve_predict_newdata(object, newdata, weights = weights)
   }
 
-  d <- object$data
   theta <- object$coefficients
 
   if (type == "probabilities") {
@@ -1279,7 +1373,7 @@ predict.choicer_nl <- function(object, type = c("probabilities", "shares"), ...)
       X = d$X,
       alt_idx = d$alt_idx,
       M = d$M,
-      nest_idx = d$nest_idx,
+      nest_idx = nest_idx,
       use_asc = object$use_asc,
       include_outside_option = object$include_outside_option
     )
@@ -1290,7 +1384,7 @@ predict.choicer_nl <- function(object, type = c("probabilities", "shares"), ...)
       alt_idx = d$alt_idx,
       M = d$M,
       weights = d$weights,
-      nest_idx = d$nest_idx,
+      nest_idx = nest_idx,
       use_asc = object$use_asc,
       include_outside_option = object$include_outside_option
     )
