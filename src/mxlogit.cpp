@@ -1,5 +1,6 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "choicer.h"
+#include "choicer_internal.h"
 
 // Scalar logSumExp for two values to avoid vector allocation
 inline double logSumExp2(double a, double b) {
