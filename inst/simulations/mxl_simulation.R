@@ -106,3 +106,54 @@ summary(fit)
 # 7) Parameter Recovery =======================================================
 cat("\n--- Parameter Recovery ---\n")
 print(recovery_table(fit, sim$true_params))
+
+# 8) Post-estimation ==========================================================
+# x2 plays the role of price: it has a *fixed* coefficient (true beta_x2 =
+# -0.6 < 0), as wtp() and consumer_surplus() require - a random price
+# coefficient would make the WTP ratio ill-defined (no finite moments).
+
+# Goodness of fit (equal-shares null; this DGP draws varying choice sets,
+# so the closed-form market-shares null does not apply)
+cat("\n--- Goodness of fit ---\n")
+print(gof(fit))
+
+# Predicted market shares (simulated over the Halton draws)
+cat("\n--- Predicted shares ---\n")
+print(predict(fit, type = "shares"))
+
+# Elasticities and diversion ratios. Unlike MNL, MXL diversion is not
+# share-proportional and depends on the perturbed covariate (the random
+# coefficients break IIA), so wrt_var is required.
+cat("\n--- Elasticities (x2) ---\n")
+print(elasticities(fit, elast_var = "x2"))
+cat("\n--- Diversion ratios (w.r.t. x2) ---\n")
+print(diversion_ratios(fit, wrt_var = "x2"))
+
+# Willingness to pay for x1 in units of x2 with delta-method SEs.
+# True WTP_x1 = -0.8 / (-0.6) = 1.33. The random coefficients (w1, w2) were
+# fitted without estimated means (rc_mean = FALSE, normal), so their mean WTP
+# is 0 by construction and they are excluded with a note.
+cat("\n--- Willingness to pay ---\n")
+print(wtp(fit, price_var = "x2"))
+
+# Expected consumer surplus from the simulated logsum: the per-draw
+# log-sum-exp is averaged across draws (averaging utilities first would
+# understate the logsum by Jensen's inequality). Point estimate for MXL.
+cs0 <- consumer_surplus(fit, price_var = "x2")
+cat("\n--- Consumer surplus (baseline) ---\n")
+print(cs0)
+
+# Counterfactual: raise x2 ("price") by 0.5 for alternative 2 only ============
+dt_cf <- data.table::copy(sim$data)[alt == 2, x2 := x2 + 0.5]
+
+cat("\n--- Counterfactual shares (x2 + 0.5 for alt 2) ---\n")
+shares_cf  <- predict(fit, type = "shares", newdata = dt_cf)
+shares_cmp <- rbind(baseline       = drop(predict(fit, type = "shares")),
+                    counterfactual = drop(shares_cf))
+colnames(shares_cmp) <- as.character(fit$alt_mapping[[2]])
+print(shares_cmp)
+
+# Welfare change: negative, since the price of one alternative rose
+cs1 <- consumer_surplus(fit, price_var = "x2", newdata = dt_cf)
+cat("\nDelta mean consumer surplus:", round(cs1$mean_cs - cs0$mean_cs, 4),
+    "(negative: the price increase lowers expected surplus)\n")
