@@ -567,6 +567,60 @@ After convergence the returned $\delta$ is re-centered so that the baseline is i
 
 *Code reference: [nestlogit.cpp:1115-1186](../src/nestlogit.cpp#L1115-L1186)*
 
+### 6.5 Willingness to Pay
+
+Utility is linear in covariates, so willingness to pay is the same marginal rate of substitution as in the MNL model: for attribute $k$ and price coefficient $\alpha = \beta_p$,
+
+$$
+\mathrm{WTP}_k = -\frac{\beta_k}{\alpha},
+\qquad
+\widehat{\mathrm{SE}} = \sqrt{\nabla g^T \, \hat{V}_{(k,p)} \, \nabla g},
+\quad
+\nabla g = \begin{pmatrix} -1/\alpha \\ \beta_k/\alpha^2 \end{pmatrix}
+$$
+
+with $\hat{V}_{(k,p)}$ the $2 \times 2$ block of the coefficient covariance. The nest parameters $\lambda$ rescale within-nest substitution but do not enter the ratio of marginal utilities, so they affect WTP only through the estimated covariance of $(\beta_k, \alpha)$. ASCs may also be used as the numerator ($-\delta_j/\alpha$). See §8 of the MNL document for the full derivation and caveats.
+
+*Code reference: [R/wtp.R](../R/wtp.R)*
+
+### 6.6 Consumer Surplus and the Nested Logsum
+
+For the nested logit, the expected maximum utility (logsum) over individual $i$'s choice set replaces the flat MNL log-sum with the two-level structure of §2:
+
+$$
+\mathrm{logsum}_i = \log D_i = \log\left( \sum_{l} \exp\big(\lambda_l \log I_l\big) \; [+\, 1] \right),
+\qquad
+\log I_l = \log \sum_{j \in B_l \cap C_i} \exp\!\left(\frac{V_{ij}}{\lambda_l}\right)
+$$
+
+where the $+1 = \exp(0)$ term appears when an outside option is present and singleton nests have $\lambda_l = 1$ (§5.2). Both levels are computed with the max-subtraction trick (§2.7).
+
+Two useful identities:
+
+- **Reduction to MNL.** With all $\lambda_l = 1$, $\lambda_l \log I_l = \log \sum_{j \in B_l} \exp(V_{ij})$ and the nested logsum collapses to the MNL logsum $\log \sum_j \exp(V_{ij})$.
+- **Outside-option link.** Since $P_{i0} = 1 / D_i$ (§2.5), the logsum equals $-\log P_{i0}$ — a direct consistency check against the probability kernel.
+
+Expected consumer surplus follows Train (2009, Ch. 3) exactly as in the MNL case:
+
+$$
+\mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i}{-\alpha}
+$$
+
+with the same caveats: no income effects, and CS levels inherit the ASC normalization, so only differences across scenarios (counterfactual `newdata` vs. baseline) are meaningful. The implementation reports point estimates for NL (the delta-method SE of the mean CS is currently provided for MNL only; Krinsky–Robb resampling of the coefficients is the practical interval method here).
+
+*Code reference: [R/surplus.R](../R/surplus.R)*
+
+### 6.7 Goodness of Fit
+
+The measures are model-agnostic and identical to §10 of the MNL document, computed from the NL log-likelihood and predicted probabilities:
+
+- **McFadden pseudo R²**: $R^2 = 1 - \ell(\hat\theta)/\ell_0$ and $R^2_{\text{adj}} = 1 - (\ell(\hat\theta) - K)/\ell_0$, with $K$ counting all estimated parameters including the $\lambda$ block.
+- **Equal-shares null** (default, exact for unbalanced sets and weights): $\ell_0 = -\sum_i w_i \log(M_i + \mathbf{1}_{\text{outside}})$.
+- **Market-shares null** (constants-only closed form): $\ell_0 = \sum_j N_j \log(s_j)$; requires identical choice-set composition across individuals and uniform weights. The constants-only model is itself an MNL — at $\beta = 0$ and free ASCs the nest structure is undetermined — so the same closed form applies.
+- **Hit rate**: weighted share of choice situations whose observed choice has the highest predicted NL probability; with an outside option the outside good competes with $P_{i0} = 1 - \sum_j P_{ij}$.
+
+*Code reference: [R/gof.R](../R/gof.R)*
+
 ---
 
 ## References
