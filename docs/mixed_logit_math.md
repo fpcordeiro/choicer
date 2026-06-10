@@ -14,6 +14,9 @@ This document provides a detailed mathematical description of the mixed logit (r
 7. [Diversion Ratios](#7-diversion-ratios)
 8. [BLP Contraction Mapping](#8-blp-contraction-mapping)
 9. [Choice-Based Sampling and WESML Weighting](#9-choice-based-sampling-and-wesml-weighting)
+10. [Willingness to Pay](#10-willingness-to-pay)
+11. [Consumer Surplus and the Simulated Logsum](#11-consumer-surplus-and-the-simulated-logsum)
+12. [Goodness of Fit](#12-goodness-of-fit)
 
 ---
 
@@ -780,9 +783,109 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc.
 
 ---
 
+## 10. Willingness to Pay
+
+### 10.1 Fixed Coefficients
+
+When the price variable has a *fixed* coefficient $\alpha = \beta_p$ (a column of $X$), the WTP for any fixed attribute $k$ is the usual marginal rate of substitution, with the same analytic delta-method SE as in the MNL case (§8 of the MNL document):
+
+$$
+\mathrm{WTP}_k = -\frac{\beta_k}{\alpha},
+\qquad
+\nabla g = \begin{pmatrix} -1/\alpha \\ \beta_k/\alpha^2 \end{pmatrix},
+\qquad
+\widehat{\mathrm{SE}} = \sqrt{\nabla g^T \hat{V}_{(k,p)} \nabla g}
+$$
+
+### 10.2 Random Coefficients
+
+For a random attribute coefficient $\beta_k(\eta)$ the WTP is itself a random variable $-\beta_k(\eta)/\alpha$, and a scalar summary must be chosen. The summaries reported follow the package's parameterization (§1.3):
+
+**Normal RC with estimated mean** (`rc_mean = TRUE`, `rc_dist[k] = 0`): $\beta_k = \mu_k + (L\eta)_k$ has mean $\mu_k$, so the **mean WTP** is
+
+$$
+\mathrm{WTP}_k = -\frac{\mu_k}{\alpha}
+$$
+
+with the linear-ratio gradient of §10.1 applied to $(\mu_k, \alpha)$.
+
+**Shifted log-normal RC with estimated location** (`rc_mean = TRUE`, `rc_dist[k] = 1`): $\beta_k = \exp(\mu_k) + \exp((L\eta)_k)$. Since $\beta_k$ is monotone in the normal draw $(L\eta)_k$ and the median of $\exp((L\eta)_k)$ is $\exp(0) = 1$, the population **median** is $\exp(\mu_k) + 1$ and the **median WTP** is
+
+$$
+\mathrm{WTP}_k^{\text{med}} = -\frac{\exp(\mu_k) + 1}{\alpha},
+\qquad
+\frac{\partial g}{\partial \mu_k} = -\frac{\exp(\mu_k)}{\alpha},
+\qquad
+\frac{\partial g}{\partial \alpha} = \frac{\exp(\mu_k) + 1}{\alpha^2}
+$$
+
+The median is preferred to the mean, $\exp(\mu_k) + \exp(\sigma_k^2/2)$ with $\sigma_k^2 = (LL^T)_{kk}$, because the mean is highly sensitive to the estimated variance (a thin right tail dominates it).
+
+**Shifted log-normal RC without location** (`rc_mean = FALSE`, `rc_dist[k] = 1`): $\beta_k = \exp((L\eta)_k)$ has median exactly 1, so the median WTP is $-1/\alpha$ with $\partial g / \partial \alpha = 1/\alpha^2$ — uncertainty comes solely from $\hat\alpha$.
+
+**Normal RC without mean** (`rc_mean = FALSE`, `rc_dist[k] = 0`): the mean is 0 by construction; no WTP row is reported.
+
+### 10.3 Random Price Coefficients Are Rejected
+
+If the price coefficient itself is random, the WTP ratio $-\beta_k/\alpha(\eta)$ generally has **no finite moments**: a normally distributed $\alpha$ has positive density in any neighborhood of zero, so $E|{-\beta_k/\alpha}| = \infty$, and location summaries computed from the estimated parameters would be meaningless. The implementation refuses a random `price_var` and suggests either a fixed price coefficient or estimation in *WTP space* (reparameterizing utility as $\alpha(p_{ij} + \mathrm{WTP}^T x_{ij})$ so that WTPs are estimated directly; Train & Weeks 2005).
+
+*Code reference: [R/wtp.R](../R/wtp.R)*
+
+---
+
+## 11. Consumer Surplus and the Simulated Logsum
+
+### 11.1 Expected Logsum
+
+Conditional on a coefficient realization $\beta(\eta)$, the logsum is the MNL expression $\log \sum_j \exp(V_{ij}(\eta))$. The mixed logit logsum integrates over the mixing distribution:
+
+$$
+\mathrm{logsum}_i = \mathbb{E}_\eta\left[\log \sum_{j \in C_i} \exp\big(V_{ij}(\eta)\big)\right]
+\;\approx\;
+\frac{1}{S} \sum_{s=1}^{S} \log \sum_{j \in C_i} \exp\big(V_{ij}^s\big)
+$$
+
+simulated over the same deterministic Halton draws used in estimation (regenerated from the stored draw metadata), with the outside option contributing $\exp(0)$ in each draw's sum when present, and the max-subtraction trick applied per draw.
+
+**Order of operations matters.** The log-sum-exp function is convex, so by Jensen's inequality
+
+$$
+\frac{1}{S}\sum_s \mathrm{lse}(V^s) \;\geq\; \mathrm{lse}\left(\frac{1}{S}\sum_s V^s\right),
+$$
+
+with strict inequality for any nondegenerate $\Sigma$: taking the logsum of *draw-averaged* utilities (as returned by the prediction kernel) systematically understates the expected logsum. A dedicated C++ kernel (`mxl_logsum`) therefore computes the per-draw logsum and averages across draws.
+
+### 11.2 Expected Consumer Surplus
+
+With a *fixed* price coefficient $\alpha$ (the marginal utility of income $-\alpha$ is then nonrandom):
+
+$$
+\mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i}{-\alpha}
+$$
+
+A random price coefficient is rejected for the same no-finite-moments reason as in §10.3 ($1/(-\alpha(\eta))$ has no finite expectation). As in the MNL case, the formula assumes no income effects, and CS levels inherit the ASC normalization — only differences across counterfactual scenarios are meaningful. The implementation reports point estimates for MXL (the delta-method SE of the mean CS is currently provided for MNL only); Krinsky–Robb resampling of $\hat\theta$ from its asymptotic distribution is the practical interval method.
+
+*Code reference: [R/surplus.R](../R/surplus.R); kernel in [src/mxlogit.cpp](../src/mxlogit.cpp) (`mxl_logsum`)*
+
+---
+
+## 12. Goodness of Fit
+
+The measures are model-agnostic and identical to §10 of the MNL document, computed from the simulated log-likelihood and simulated choice probabilities:
+
+- **McFadden pseudo R²**: $R^2 = 1 - \ell(\hat\theta)/\ell_0$, adjusted $R^2_{\text{adj}} = 1 - (\ell(\hat\theta) - K)/\ell_0$, with $K$ counting all estimated parameters ($\beta$, $\mu$, Cholesky block, ASCs).
+- **Equal-shares null** (default; exact for unbalanced choice sets and weights): $\ell_0 = -\sum_i w_i \log(M_i + \mathbf{1}_{\text{outside}})$.
+- **Market-shares null** (constants-only closed form): $\ell_0 = \sum_j N_j \log(s_j)$, valid only for identical choice-set composition and uniform weights. The constants-only model contains no random coefficients, so the MNL closed form applies unchanged.
+- **Hit rate**: weighted share of choice situations whose observed choice has the highest *simulated* probability $\bar{P}_{ij} = \frac{1}{S}\sum_s P_{ij}^s$; with an outside option, the kernel returns the simulated outside probability directly and the outside good competes for the maximum.
+
+*Code reference: [R/gof.R](../R/gof.R)*
+
+---
+
 ## References
 
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation*. Cambridge University Press.
+- Train, K., & Weeks, M. (2005). Discrete choice models in preference space and willingness-to-pay space. In R. Scarpa & A. Alberini (Eds.), *Applications of Simulation Methods in Environmental and Resource Economics* (pp. 1-16). Springer.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.

@@ -12,7 +12,10 @@ This document provides a detailed mathematical description of the multinomial lo
 6. [Elasticity Computation](#5-elasticity-computation)
 7. [Diversion Ratio Computation](#6-diversion-ratio-computation)
 8. [BLP Contraction Mapping](#7-blp-contraction-mapping)
-9. [Implementation Details](#8-implementation-details)
+9. [Willingness to Pay](#8-willingness-to-pay)
+10. [Consumer Surplus and the Logsum](#9-consumer-surplus-and-the-logsum)
+11. [Goodness of Fit](#10-goodness-of-fit)
+12. [Implementation Details](#11-implementation-details)
 
 ---
 
@@ -396,7 +399,142 @@ $$
 
 ---
 
-## 8. Implementation Details
+## 8. Willingness to Pay
+
+### 8.1 Definition
+
+When one covariate is a price $p$ with coefficient $\alpha = \beta_p$, the willingness to pay (WTP) for attribute $k$ is the marginal rate of substitution between the attribute and price — the price change that leaves utility unchanged after a unit change in the attribute:
+
+$$
+\mathrm{WTP}_k = -\frac{\partial V / \partial x_k}{\partial V / \partial p} = -\frac{\beta_k}{\alpha}
+$$
+
+Since utility is linear, the same ratio applies to ASCs: the WTP for alternative $j$'s unobserved quality is $-\delta_j / \alpha$.
+
+### 8.2 Delta-Method Standard Errors
+
+WTP is a nonlinear function $g(\theta) = -\theta_k / \theta_p$ of the estimated coefficients. By the delta method, with $\hat{V}$ the estimated coefficient covariance matrix,
+
+$$
+\widehat{\mathrm{Var}}(g(\hat\theta)) = \nabla g^T \, \hat{V}_{(k,p)} \, \nabla g,
+\qquad
+\nabla g = \begin{pmatrix} \partial g / \partial \theta_k \\ \partial g / \partial \theta_p \end{pmatrix}
+= \begin{pmatrix} -1/\theta_p \\ \theta_k/\theta_p^2 \end{pmatrix}
+$$
+
+where $\hat{V}_{(k,p)}$ is the $2 \times 2$ block of $\hat{V}$ for $(\theta_k, \theta_p)$. The gradient is analytic (exact), so no numerical differentiation is involved. Confidence intervals use the normal approximation:
+
+$$
+\mathrm{WTP}_k \pm z_{1-(1-\text{level})/2} \cdot \widehat{\mathrm{SE}}
+$$
+
+Because the estimates and covariance are stored in natural (unscaled) units, no scaling adjustment is needed even when the model was estimated with `scale_vars`.
+
+**Caveat.** The ratio of two asymptotically normal estimators has heavy tails when the denominator is imprecisely estimated; the delta-method interval is a first-order approximation that deteriorates as $|\alpha| / \mathrm{SE}(\hat\alpha)$ falls. For a weakly identified price coefficient, simulation methods (Krinsky–Robb) or Fieller intervals are more reliable.
+
+*Code reference: [R/wtp.R](../R/wtp.R)*
+
+---
+
+## 9. Consumer Surplus and the Logsum
+
+### 9.1 The Logsum (Expected Maximum Utility)
+
+Under Type I Extreme Value errors, the expected maximum utility over individual $i$'s choice set is, up to an additive constant (Euler's constant $\gamma$):
+
+$$
+\mathbb{E}\left[\max_j U_{ij}\right] = \log\left(\sum_{j \in C_i} \exp(V_{ij})\right) + \gamma \equiv \mathrm{logsum}_i + \gamma
+$$
+
+When the model includes an outside option with normalized utility $V_{i0} = 0$, the sum includes its $\exp(0) = 1$ term. The implementation uses the same max-subtraction trick as the log-likelihood (Section 2.3).
+
+### 9.2 Expected Consumer Surplus
+
+With utility linear in price (no income effects), the marginal utility of income is $-\alpha$ (positive for a negative price coefficient), and expected consumer surplus in money units is (Train 2009, Ch. 3):
+
+$$
+\mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i}{-\alpha}
+$$
+
+**Identification caveat.** Like utility itself, the logsum is only defined up to an additive normalization (in particular the ASC normalization), so CS *levels* are not interpretable on their own. The economically meaningful quantity is the *difference* between scenarios,
+
+$$
+\Delta \mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i^{(1)} - \mathrm{logsum}_i^{(0)}}{-\alpha},
+$$
+
+computed by evaluating the logsum on counterfactual data (`newdata`) and on the baseline. The normalization constant cancels in the difference.
+
+### 9.3 Delta-Method SE for the Mean Consumer Surplus
+
+For the weighted mean $m(\theta) = \sum_i w_i CS_i / \sum_i w_i$, the implementation reports a delta-method standard error. The building block is the derivative of the logsum, which by the envelope-style identity is a probability-weighted average of utility derivatives:
+
+$$
+\frac{\partial\, \mathrm{logsum}_i}{\partial \theta_r}
+= \sum_{j \in C_i} P_{ij} \, \frac{\partial V_{ij}}{\partial \theta_r}
+$$
+
+with $\partial V_{ij}/\partial \beta_r = x_{ijr}$, $\partial V_{ij}/\partial \delta_a = \mathbf{1}_{j = a}$, and a zero contribution from the outside option row ($V_{i0} \equiv 0$). Then:
+
+- For non-price parameters: $\dfrac{\partial CS_i}{\partial \theta_r} = \dfrac{1}{-\alpha} \dfrac{\partial\, \mathrm{logsum}_i}{\partial \theta_r}$.
+- For the price coefficient, which enters both the logsum and the $1/(-\alpha)$ factor:
+
+$$
+\frac{\partial CS_i}{\partial \alpha}
+= \frac{\mathrm{logsum}_i}{\alpha^2}
++ \frac{1}{-\alpha} \sum_{j} P_{ij}\, x_{ij,p}
+$$
+
+The SE is $\sqrt{G^T \hat{V} G}$, where $G$ is the weighted average of the per-individual gradient vectors and $\hat{V}$ the full coefficient covariance. All ingredients ($P_{ij}$, $V_{ij}$, $X$) come from a single prediction pass.
+
+*Code reference: [R/surplus.R](../R/surplus.R)*
+
+---
+
+## 10. Goodness of Fit
+
+### 10.1 McFadden Pseudo R-Squared
+
+$$
+R^2 = 1 - \frac{\ell(\hat\theta)}{\ell_0},
+\qquad
+R^2_{\text{adj}} = 1 - \frac{\ell(\hat\theta) - K}{\ell_0}
+$$
+
+where $K$ is the number of estimated parameters and $\ell_0$ is a null-model log-likelihood. Two nulls are available:
+
+**Equal shares** (default). Every alternative in individual $i$'s choice set is equally likely:
+
+$$
+\ell_0 = -\sum_{i=1}^{N} w_i \log\left(M_i + \mathbf{1}_{\text{outside}}\right)
+$$
+
+where $M_i$ is the number of inside alternatives. This closed form is exact for unbalanced choice sets and arbitrary weights.
+
+**Market shares.** The maximized log-likelihood of a constants-only (ASC-only) model. When every alternative is available in every choice situation, the ASC-only model's fitted probabilities equal the observed market shares $s_j$, giving the closed form
+
+$$
+\ell_0 = \sum_{j} N_j \log(s_j)
+$$
+
+with $N_j$ the choice counts (the outside option enters as its own category when present; never-chosen alternatives contribute $0 \cdot \log 0 = 0$). This closed form requires identical choice-set *composition* across individuals — equal set sizes are not sufficient — and uniform weights; otherwise an ASC-only model must be refit explicitly.
+
+### 10.2 Hit Rate
+
+The hit rate is the weighted share of choice situations in which the observed choice has the highest predicted probability:
+
+$$
+\mathrm{HR} = \frac{\sum_i w_i \, \mathbf{1}\{\hat{j}_i = j_i\}}{\sum_i w_i},
+\qquad
+\hat{j}_i = \arg\max_{j \in C_i} P_{ij}
+$$
+
+With an outside option, the outside good competes for the maximum with probability $P_{i0} = 1 - \sum_j P_{ij}$, and a predicted outside choice is a hit when the outside good was in fact chosen ($j_i = 0$).
+
+*Code reference: [R/gof.R](../R/gof.R)*
+
+---
+
+## 11. Implementation Details
 
 ### 8.1 Parameter Vector Structure
 
