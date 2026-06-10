@@ -1,5 +1,6 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "choicer.h"
+#include "choicer_internal.h"
 
 //' Log-likelihood and gradient for multinomial logit model
 //'
