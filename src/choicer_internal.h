@@ -6,15 +6,125 @@
 // ============================================================================
 // Internal helpers shared by mnlogit.cpp, mxlogit.cpp and nestlogit.cpp.
 //
-// Every helper body is a verbatim transplant of the code it replaced, with
-// identical floating-point operation order, so single-threaded results are
-// bit-identical to the pre-refactor implementation. Helpers are header-only
-// (inline / templates) so no Makevars or linkage changes are needed.
+// Every numeric helper body is a verbatim transplant of the code it replaced,
+// with identical floating-point operation order, so single-threaded results
+// are bit-identical to the pre-refactor implementation. Helpers are
+// header-only (inline / templates) so no Makevars or linkage changes are
+// needed.
+//
+// Validation lives in two places, and is always on:
+//   * theta-block validation (lengths, K > 0, lambda > 0) inside the theta
+//     parsers, so no entry point can parse an inconsistent theta;
+//   * data-shape validation (X/W/alt_idx/M/eta/weights consistency) in the
+//     validate_*_inputs helpers below, called by every exported entry point.
+// Every check is O(1) or a single O(rows) integer scan — negligible next to
+// one likelihood evaluation — and turns what would otherwise be an obscure
+// Armadillo bounds error (or silently wrong output) into an actionable
+// message.
 // ============================================================================
 
 // Defined in mxlogit.cpp (exported via Rcpp attributes).
 arma::mat build_L_mat(const arma::vec& L_params, const int K_w,
                       const bool rc_correlation);
+
+// ----------------------------------------------------------------------------
+// Data-shape validation shared by all exported entry points.
+// `delta` is the *full padded* ASC vector returned by the theta parsers; its
+// coverage of alt_idx is only checked when use_asc. `weights` / `choice_idx`
+// are optional: pass nullptr when the entry point does not take them (or,
+// for choice_idx, does not use them).
+// ----------------------------------------------------------------------------
+inline void validate_choice_data(const arma::mat& X, const arma::uvec& alt_idx,
+                                 const Rcpp::IntegerVector& M,
+                                 const bool use_asc, const arma::vec& delta,
+                                 const arma::vec* weights = nullptr,
+                                 const arma::uvec* choice_idx = nullptr) {
+  const int N = M.size();
+  long long total_rows = 0;
+  for (int i = 0; i < N; ++i) {
+    if (M[i] <= 0) {
+      Rcpp::stop("M must be positive for every individual (M[%d] = %d).",
+                 i + 1, M[i]);
+    }
+    total_rows += M[i];
+  }
+  if (total_rows != static_cast<long long>(X.n_rows)) {
+    Rcpp::stop("X has %d rows but sum(M) is %d.",
+               static_cast<int>(X.n_rows), static_cast<int>(total_rows));
+  }
+  if (alt_idx.n_elem != X.n_rows) {
+    Rcpp::stop("alt_idx length (%d) does not match the number of rows of X (%d).",
+               static_cast<int>(alt_idx.n_elem), static_cast<int>(X.n_rows));
+  }
+  if (weights && static_cast<int>(weights->n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)",
+               weights->n_elem, N);
+  }
+  if (choice_idx && static_cast<int>(choice_idx->n_elem) != N) {
+    Rcpp::stop("choice_idx length (%d) does not match N (%d)",
+               static_cast<int>(choice_idx->n_elem), N);
+  }
+  if (alt_idx.n_elem > 0) {
+    if (alt_idx.min() < 1) {
+      Rcpp::stop("alt_idx must use 1-based alternative indices (found %d).",
+                 static_cast<int>(alt_idx.min()));
+    }
+    if (use_asc && delta.n_elem < alt_idx.max()) {
+      Rcpp::stop("Theta's delta (ASC) block implies %d alternatives but "
+                 "alt_idx references alternative %d.",
+                 static_cast<int>(delta.n_elem),
+                 static_cast<int>(alt_idx.max()));
+    }
+  }
+}
+
+inline void validate_nl_inputs(const arma::mat& X, const arma::uvec& alt_idx,
+                               const arma::uvec& nest_idx,
+                               const Rcpp::IntegerVector& M,
+                               const bool use_asc, const arma::vec& delta,
+                               const arma::vec* weights = nullptr,
+                               const arma::uvec* choice_idx = nullptr) {
+  validate_choice_data(X, alt_idx, M, use_asc, delta, weights, choice_idx);
+  if (alt_idx.n_elem > 0 && nest_idx.n_elem < alt_idx.max()) {
+    Rcpp::stop("nest_idx has %d entries but alt_idx references alternative %d "
+               "(one nest index per global alternative is required).",
+               static_cast<int>(nest_idx.n_elem),
+               static_cast<int>(alt_idx.max()));
+  }
+}
+
+inline void validate_mxl_inputs(const arma::mat& X, const arma::mat& W,
+                                const arma::uvec& alt_idx,
+                                const Rcpp::IntegerVector& M,
+                                const arma::cube& eta_draws,
+                                const bool use_asc, const arma::vec& delta,
+                                const arma::vec* weights = nullptr,
+                                const arma::uvec* choice_idx = nullptr) {
+  validate_choice_data(X, alt_idx, M, use_asc, delta, weights, choice_idx);
+  const int N = M.size();
+  const int K_w = W.n_cols;
+  if (static_cast<int>(eta_draws.n_slices) != N) {
+    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
+               eta_draws.n_slices, N);
+  }
+  if (static_cast<int>(eta_draws.n_rows) != K_w) {
+    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
+               eta_draws.n_rows, K_w);
+  }
+  if (W.n_rows != X.n_rows && alt_idx.n_elem > 0 &&
+      W.n_rows < alt_idx.max()) {
+    Rcpp::stop("W must be row-aligned with X (%d rows) or contain one row per "
+               "global alternative (at least %d rows); got %d rows.",
+               static_cast<int>(X.n_rows), static_cast<int>(alt_idx.max()),
+               static_cast<int>(W.n_rows));
+  }
+}
+
+inline void check_rc_dist_length(const arma::uvec& rc_dist, const int K_w) {
+  if (static_cast<int>(rc_dist.n_elem) != K_w) {
+    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
+  }
+}
 
 // ----------------------------------------------------------------------------
 // MNL theta parsing: theta = [beta (K), delta (J or J-1)].
@@ -30,6 +140,17 @@ inline MnlParams parse_mnl_theta(const arma::vec& theta, const int K,
                                  const bool use_asc,
                                  const bool include_outside_option) {
   const int n_params = theta.n_elem;
+  if (K <= 0) {
+    Rcpp::stop("K must be positive, got %d", K);
+  }
+  if (n_params < K) {
+    Rcpp::stop("Theta vector too short: missing beta parameters "
+               "(expected at least %d, got %d).", K, n_params);
+  }
+  if (!use_asc && n_params != K) {
+    Rcpp::stop("Theta vector too long: %d parameters given but the model "
+               "expects %d. Did you mean use_asc = TRUE?", n_params, K);
+  }
   MnlParams P;
   P.beta = theta.subvec(0, K - 1);
 
@@ -63,16 +184,10 @@ inline MnlParams parse_mnl_theta(const arma::vec& theta, const int K,
 // hessian, bhhh) sits inside an `if (rc_mean)` block, where the values below
 // match what each function computed before; when !rc_mean they are never read.
 //
-// check_block_lengths reproduces the historical split of "theta too short"
-// errors: the gradient/hessian/bhhh functions guard the mu and L blocks with
-// Rcpp::stop, while the predict family does unguarded subvec() calls and lets
-// Armadillo throw. The delta-block stop exists in all callers and is
-// unconditional here.
-//
-// NOTE for call sites: the gradient/bhhh functions additionally validate
-// K_x > 0 and the idx_mu/L/delta_start bounds with their own Rcpp::stop
-// messages BEFORE parsing. Those guards are intentionally NOT part of this
-// parser and must be kept verbatim at the call sites.
+// All theta-block validation (K_x > 0, rc_dist length, per-block theta
+// lengths, no trailing unparsed parameters) happens here unconditionally, so
+// every entry point — including the predict family — fails with the same
+// actionable message on a malformed theta.
 // ----------------------------------------------------------------------------
 struct MxlParams {
   int idx_beta_start, idx_mu_start, idx_L_start, idx_delta_start, L_size;
@@ -89,9 +204,13 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
                                  const arma::uvec& rc_dist,
                                  const bool rc_correlation, const bool rc_mean,
                                  const bool use_asc,
-                                 const bool include_outside_option,
-                                 const bool check_block_lengths) {
+                                 const bool include_outside_option) {
   const int n_params = theta.n_elem;
+  if (K_x <= 0) {
+    Rcpp::stop("K_x must be positive, got %d", K_x);
+  }
+  check_rc_dist_length(rc_dist, K_w);
+
   MxlParams P;
   P.L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
   P.idx_beta_start = 0;
@@ -100,12 +219,15 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
   P.idx_delta_start = P.idx_L_start + P.L_size;
 
   // beta: coefficients for design matrix X
+  if (n_params < P.idx_mu_start)
+    Rcpp::stop("Theta vector too short: missing beta parameters "
+               "(expected at least %d, got %d).", K_x, n_params);
   P.beta = theta.subvec(P.idx_beta_start, P.idx_mu_start - 1);
 
   // mu: means of random coefficients (zeros when not estimated)
   arma::vec mu;
   if (rc_mean) {
-    if (check_block_lengths && P.idx_L_start > n_params)
+    if (P.idx_L_start > n_params)
       Rcpp::stop("Theta vector too short: missing mu parameters.");
     mu = theta.subvec(P.idx_mu_start, P.idx_L_start - 1);
   } else {
@@ -113,8 +235,12 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
   }
 
   // L: choleski decomposition of random coefficients matrix
-  if (check_block_lengths && P.idx_delta_start > n_params)
+  if (P.idx_delta_start > n_params)
     Rcpp::stop("Theta vector too short: missing L parameters.");
+  if (!use_asc && n_params != P.idx_delta_start)
+    Rcpp::stop("Theta vector too long: %d parameters given but the model "
+               "expects %d. Did you mean use_asc = TRUE?",
+               n_params, P.idx_delta_start);
   arma::vec L_params = theta.subvec(P.idx_L_start, P.idx_delta_start - 1);
   P.L = build_L_mat(L_params, K_w, rc_correlation);
 

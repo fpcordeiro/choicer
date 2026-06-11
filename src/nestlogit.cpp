@@ -78,6 +78,8 @@ Rcpp::List nl_loglik_gradient_parallel(
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length,
                  &nest_k_to_theta_idx);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
+                     &weights, &choice_idx);
 
   // 0-based indexing for inputs
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -367,6 +369,16 @@ static void nl_parse_theta(
     arma::ivec* nest_k_to_theta_idx
 ) {
   const int n_params = theta.n_elem;
+  if (K <= 0) {
+    Rcpp::stop("K must be positive, got %d", K);
+  }
+  if (n_params < K) {
+    Rcpp::stop("Theta vector too short: missing beta parameters "
+               "(expected at least %d, got %d).", K, n_params);
+  }
+  if (nest_idx.n_elem == 0) {
+    Rcpp::stop("nest_idx must be non-empty.");
+  }
   const int n_nests = arma::max(nest_idx); // 1-based nest_idx
 
   beta = theta.subvec(0, K - 1);
@@ -434,6 +446,11 @@ static void nl_parse_theta(
       delta = arma::zeros((include_outside_option) ? 0 : 1);
     }
   } else {
+    if (n_params != delta_start_idx) {
+      Rcpp::stop("Theta vector too long: %d parameters given but the model "
+                 "expects %d. Did you mean use_asc = TRUE?",
+                 n_params, delta_start_idx);
+    }
     delta_length = 0;
     delta = arma::zeros(0);
   }
@@ -484,6 +501,7 @@ Rcpp::List nl_predict(
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta);
 
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;
@@ -645,6 +663,7 @@ arma::vec nl_predict_shares(
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
 
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;
@@ -719,6 +738,7 @@ arma::mat nl_elasticities_parallel(
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
   const double beta_k = beta(var_idx);
 
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -884,6 +904,7 @@ arma::mat nl_diversion_ratios_parallel(
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
 
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;
@@ -1074,6 +1095,7 @@ arma::vec nl_blp_contraction(
   if (arma::any(target_shares <= 0)) {
     Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
   }
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
 
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;
