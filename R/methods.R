@@ -7,6 +7,7 @@ model_display_name <- function(model) {
     mnl = "Multinomial Logit (MNL)",
     mxl = "Mixed Logit (MXL)",
     nl  = "Nested Logit (NL)",
+    mnp = "Bayesian Multinomial Probit (MNP)",
     model
   )
 }
@@ -582,6 +583,253 @@ print.summary.choicer_nl <- function(x, ...) {
   print_coef_table(x$coefficients)
   cat("\n")
   print_footer(x)
+  invisible(x)
+}
+
+# --- MNP (Bayesian) methods ----------------------------------------------------
+# choicer_mnp is a posterior-draws object and intentionally does not inherit
+# from choicer_fit: there is no log-likelihood, convergence code, or lazy
+# Hessian. All summaries are computed from the identified draws
+# (beta / sqrt(sigma_11), Sigma / sigma_11).
+
+#' Print a choicer_mnp object
+#'
+#' Prints a brief summary of the fitted Bayesian multinomial probit model.
+#'
+#' @param x A choicer_mnp object.
+#' @param ... Additional arguments (ignored).
+#' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
+#'                     mcmc = list(R = 300, burn = 100))
+#' print(fit)
+#' }
+#' @export
+print.choicer_mnp <- function(x, ...) {
+  cat(model_display_name(x$model), "model\n")
+  cat("  N obs:", x$nobs, " | Parameters:", x$n_params, "\n")
+  cat("  Posterior draws kept:", x$mcmc$R_keep,
+      sprintf("(R = %d, burn = %d, thin = %d)\n", x$mcmc$R, x$mcmc$burn, x$mcmc$thin))
+  cat("  Base alternative:", as.character(x$base_alt), "\n")
+  cat("  Estimates are posterior means of identified parameters",
+      "(beta / sqrt(sigma_11)).\n")
+  invisible(x)
+}
+
+#' Extract coefficients from a choicer_mnp object
+#'
+#' Returns the posterior means of the identified coefficients
+#' (\eqn{\beta / \sqrt{\sigma_{11}}}, computed per draw).
+#'
+#' @param object A choicer_mnp object.
+#' @param ... Additional arguments (ignored).
+#' @returns Named numeric vector of posterior means.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
+#'                     mcmc = list(R = 300, burn = 100))
+#' coef(fit)
+#' }
+#' @export
+coef.choicer_mnp <- function(object, ...) {
+  object$coefficients
+}
+
+#' Extract variance-covariance matrix from a choicer_mnp object
+#'
+#' Returns the posterior covariance matrix of the identified coefficient
+#' draws (computed eagerly at fit time; no Hessian is involved).
+#'
+#' @param object A choicer_mnp object.
+#' @param ... Additional arguments (ignored).
+#' @returns Named posterior covariance matrix.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
+#'                     mcmc = list(R = 300, burn = 100))
+#' vcov(fit)
+#' }
+#' @export
+vcov.choicer_mnp <- function(object, ...) {
+  object$vcov
+}
+
+#' Extract number of observations from a choicer_mnp object
+#'
+#' @param object A choicer_mnp object.
+#' @param ... Additional arguments (ignored).
+#' @returns Integer number of choice situations.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
+#'                     mcmc = list(R = 300, burn = 100))
+#' nobs(fit)
+#' }
+#' @export
+nobs.choicer_mnp <- function(object, ...) {
+  object$nobs
+}
+
+#' Build a Bayesian posterior summary table
+#'
+#' Posterior mean, SD, and equal-tailed credible interval bounds, one row per
+#' column of the draw matrix. No z- or p-values: those are frequentist
+#' quantities with no role in a posterior summary.
+#' @noRd
+build_bayes_coef_table <- function(draws, prob = 0.95) {
+  alpha <- (1 - prob) / 2
+  qs <- t(apply(draws, 2, stats::quantile, probs = c(alpha, 0.5, 1 - alpha)))
+  data.frame(
+    Mean   = colMeans(draws),
+    SD     = apply(draws, 2, stats::sd),
+    CI_lo  = qs[, 1],
+    Median = qs[, 2],
+    CI_hi  = qs[, 3],
+    row.names = colnames(draws),
+    stringsAsFactors = FALSE
+  )
+}
+
+#' Summary for Bayesian multinomial probit model
+#'
+#' Posterior summaries (mean, SD, equal-tailed credible interval) of the
+#' identified coefficient and covariance draws.
+#'
+#' @param object A choicer_mnp object.
+#' @param prob Probability mass of the equal-tailed credible interval
+#'   (default 0.95).
+#' @param ... Additional arguments (ignored).
+#' @returns A summary.choicer_mnp object (list with coefficient and Sigma
+#'   posterior tables plus metadata).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
+#'                     mcmc = list(R = 300, burn = 100))
+#' summary(fit)
+#' }
+#' @export
+summary.choicer_mnp <- function(object, prob = 0.95, ...) {
+  if (!is.numeric(prob) || length(prob) != 1L || prob <= 0 || prob >= 1) {
+    stop("prob must be a single number in (0, 1).")
+  }
+
+  structure(
+    list(
+      model = object$model,
+      coefficients = build_bayes_coef_table(object$draws$beta, prob),
+      sigma_table = build_bayes_coef_table(object$draws$sigma, prob),
+      sigma = object$sigma,
+      prob = prob,
+      base_alt = object$base_alt,
+      nobs = object$nobs,
+      n_params = object$n_params,
+      mcmc = object$mcmc,
+      elapsed_time = object$sampler$elapsed_time
+    ),
+    class = "summary.choicer_mnp"
+  )
+}
+
+#' Print a formatted Bayesian posterior summary table
+#' @noRd
+print_bayes_coef_table <- function(coef_table, prob) {
+  param_width <- max(nchar(rownames(coef_table)), nchar("Parameter"))
+  alpha <- (1 - prob) / 2
+  lo_lab <- sprintf("%g%%", 100 * alpha)
+  hi_lab <- sprintf("%g%%", 100 * (1 - alpha))
+
+  cat(sprintf(
+    "%-*s  %10s %10s %10s %10s %10s\n",
+    param_width, "Parameter", "Mean", "SD", lo_lab, "Median", hi_lab
+  ))
+
+  for (i in seq_len(nrow(coef_table))) {
+    cat(sprintf(
+      "%-*s  %10.6f %10.6f %10.6f %10.6f %10.6f\n",
+      param_width,
+      rownames(coef_table)[i],
+      coef_table$Mean[i],
+      coef_table$SD[i],
+      coef_table$CI_lo[i],
+      coef_table$Median[i],
+      coef_table$CI_hi[i]
+    ))
+  }
+}
+
+#' Print summary for Bayesian multinomial probit model
+#' @param x A summary.choicer_mnp object.
+#' @param ... Additional arguments (ignored).
+#' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
+#'                     mcmc = list(R = 300, burn = 100))
+#' print(summary(fit))
+#' }
+#' @export
+print.summary.choicer_mnp <- function(x, ...) {
+  cat(model_display_name(x$model), "model\n\n")
+  print_bayes_coef_table(x$coefficients, x$prob)
+  cat("\n")
+  cat("Covariance of utility differences (Sigma, identified scale):\n")
+  print_bayes_coef_table(x$sigma_table, x$prob)
+  cat("\nPosterior mean Sigma:\n")
+  print(round(x$sigma, 6))
+  cat("\n")
+  cat("Base alternative:", as.character(x$base_alt), "\n")
+  cat("Draws kept:", x$mcmc$R_keep,
+      sprintf("(R = %d, burn = %d, thin = %d, seed = %d)\n",
+              x$mcmc$R, x$mcmc$burn, x$mcmc$thin, as.integer(x$mcmc$seed)))
+  cat("N:", x$nobs, " | Parameters:", x$n_params, "\n")
+  if (!is.null(x$elapsed_time)) {
+    cat("Sampling time:", round(x$elapsed_time, 2), "s\n")
+  }
+  cat("Identification: per-draw normalization by sigma_11",
+      "(McCulloch-Rossi 1994).\n")
   invisible(x)
 }
 

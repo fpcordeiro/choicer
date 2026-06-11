@@ -222,6 +222,84 @@ mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc
     .Call(`_choicer_mnl_diversion_ratios_parallel`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
 }
 
+#' Gibbs sampler for the Bayesian multinomial probit model
+#'
+#' Runs the McCulloch-Rossi (1994) Gibbs sampler with Albert-Chib data
+#' augmentation for the multinomial probit model in utility differences
+#' against a base alternative. The chain operates on the non-identified
+#' parameterization (unrestricted \code{Sigma}); identified quantities are
+#' obtained by normalizing each draw by \code{sigma_11} (handled by
+#' \code{\link{run_mnprobit}}).
+#'
+#' The latent-utility sweep is parallelized with OpenMP across choice
+#' situations (they are conditionally independent given \code{beta} and
+#' \code{Sigma}). Each (iteration, observation) pair uses its own RNG
+#' stream, so draws are reproducible independent of the number of threads
+#' (see \code{set_num_threads()}).
+#'
+#' @param X (N*p) x K stacked design matrix of utility differences. Rows are
+#'   grouped by choice situation, with the p = J - 1 difference rows of
+#'   situation i ordered by alternative.
+#' @param y N vector of choices: 0 for the base alternative, j in 1..p for
+#'   the j-th non-base alternative.
+#' @param p Number of utility differences (J - 1).
+#' @param beta_bar K vector, prior mean of beta.
+#' @param A K x K prior precision matrix of beta.
+#' @param nu Inverse-Wishart prior degrees of freedom (>= p).
+#' @param V p x p inverse-Wishart prior scale matrix.
+#' @param R Total number of Gibbs iterations.
+#' @param burn Number of initial iterations to discard (0 <= burn < R).
+#' @param thin Keep every thin-th post-burn-in draw.
+#' @param seed Master RNG seed (non-negative; all streams derive from it).
+#' @param trace Print progress every \code{trace} iterations (0 = silent).
+#' @returns List with \code{betadraw} (R_keep x K), \code{sigmadraw}
+#'   (R_keep x p(p+1)/2, lower triangle of Sigma in row-major order), and
+#'   \code{R_keep}.
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 100; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
+#' out <- mnp_gibbs(d$X, d$y, d$p,
+#'   beta_bar = rep(0, d$K), A = 0.01 * diag(d$K),
+#'   nu = d$p + 3, V = (d$p + 3) * diag(d$p),
+#'   R = 500, burn = 100, thin = 1, seed = 42)
+#' colMeans(out$betadraw)
+#' }
+#' @export
+mnp_gibbs <- function(X, y, p, beta_bar, A, nu, V, R, burn, thin, seed, trace = 0L) {
+    .Call(`_choicer_mnp_gibbs`, X, y, p, beta_bar, A, nu, V, R, burn, thin, seed, trace)
+}
+
+rnorm_cpp <- function(n, seed) {
+    .Call(`_choicer_rnorm_cpp`, n, seed)
+}
+
+rgamma_cpp <- function(n, a, seed) {
+    .Call(`_choicer_rgamma_cpp`, n, a, seed)
+}
+
+rtruncnorm_cpp <- function(n, mu, sigma, a, b, seed) {
+    .Call(`_choicer_rtruncnorm_cpp`, n, mu, sigma, a, b, seed)
+}
+
+rmvnorm_cpp <- function(n, mu, Sigma, seed) {
+    .Call(`_choicer_rmvnorm_cpp`, n, mu, Sigma, seed)
+}
+
+rwishart_cpp <- function(df, S, seed) {
+    .Call(`_choicer_rwishart_cpp`, df, S, seed)
+}
+
+riwishart_cpp <- function(df, V, seed) {
+    .Call(`_choicer_riwishart_cpp`, df, V, seed)
+}
+
 build_L_mat <- function(L_params, K_w, rc_correlation) {
     .Call(`_choicer_build_L_mat`, L_params, K_w, rc_correlation)
 }

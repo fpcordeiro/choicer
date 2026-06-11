@@ -5,6 +5,8 @@
 #   choicer_mnl -> choicer_fit
 #   choicer_mxl -> choicer_fit
 #   choicer_nl  -> choicer_fit
+#   choicer_mnp (standalone: posterior-draws object, no loglik / convergence /
+#                lazy-Hessian contract, so it does not inherit choicer_fit)
 
 # --- Constructors -----------------------------------------------------------
 
@@ -173,6 +175,62 @@ new_choicer_nl <- function(call, coefficients, loglik,
       nest_idx = nest_idx
     ),
     class = c("choicer_nl", "choicer_fit")
+  )
+}
+
+#' Construct a choicer_mnp object
+#' @param call The matched call from run_mnprobit()
+#' @param coefficients Named numeric vector of posterior means of the
+#'   identified coefficients (beta / sqrt(sigma_11))
+#' @param se Named numeric vector of posterior standard deviations of the
+#'   identified coefficient draws
+#' @param vcov Posterior covariance matrix of the identified coefficient draws
+#' @param sigma Posterior-mean identified covariance matrix of the utility
+#'   differences (p x p)
+#' @param draws List of draw matrices: beta / sigma (identified scale) and
+#'   beta_raw / sigma_raw (unnormalized chain output)
+#' @param prior List of resolved prior settings (beta_bar, A, nu, V)
+#' @param mcmc List of resolved MCMC settings (R, burn, thin, seed, R_keep)
+#' @param nobs Integer number of choice situations
+#' @param n_params Integer number of coefficients
+#' @param data_spec List with column name metadata (id_col, alt_col, etc.)
+#' @param alt_mapping data.table mapping alternatives to summary statistics
+#' @param base_alt Label of the base (differencing) alternative
+#' @param param_map Named list of integer index vectors (beta, asc)
+#' @param use_asc Logical whether ASCs were used
+#' @param sampler List with sampler metadata (name, elapsed_time)
+#' @param data List of prepared inputs (X, y, p) or NULL
+#' @returns A choicer_mnp object (S3 class)
+#' @noRd
+new_choicer_mnp <- function(call, coefficients, se, vcov, sigma, draws,
+                            prior, mcmc, nobs, n_params,
+                            data_spec, alt_mapping, base_alt,
+                            param_map, use_asc, sampler, data = NULL) {
+  structure(
+    list(
+      call = call,
+      model = "mnp",
+      coefficients = coefficients,
+      se = se,
+      vcov = vcov,
+      sigma = sigma,
+      draws = draws,
+      prior = prior,
+      mcmc = mcmc,
+      nobs = nobs,
+      n_params = n_params,
+      data_spec = data_spec,
+      alt_mapping = alt_mapping,
+      base_alt = base_alt,
+      param_map = param_map,
+      use_asc = use_asc,
+      sampler = sampler,
+      data = data
+    ),
+    # Intentionally not a choicer_fit: this is a posterior-draws object with
+    # no loglik / convergence and an eagerly computed vcov, so none of the
+    # choicer_fit methods (logLik, AIC, ensure_vcov, predict, ...) apply.
+    class = "choicer_mnp"
   )
 }
 
