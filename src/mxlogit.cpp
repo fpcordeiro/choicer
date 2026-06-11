@@ -153,74 +153,25 @@ Rcpp::List mxl_loglik_gradient_parallel(
   if (idx_delta_start > n_params + 1) {
     Rcpp::stop("idx_delta_start (%d) exceeds n_params + 1 (%d)", idx_delta_start, n_params + 1);
   }
-  // beta: coefficients for design matrix X
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
-
-  // mu: means of random coefficients
-  arma::vec mu;
-  if (rc_mean) {
-    if (idx_L_start > n_params)
-      Rcpp::stop("Theta vector too short: missing mu parameters.");
-    mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-  } else {
-    mu = arma::zeros(K_w); // Fix means to zero if not estimated
-  }
-
-  // L: choleski decomposition of random coefficients matrix
-  if (idx_delta_start > n_params)
-    Rcpp::stop("Theta vector too short: missing L parameters.");
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation); // K_w x K_w
-
-  // delta (ASC)
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      // all inside alternatives are free
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      // first delta is fixed to 0 -> it's not in theta
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) =
-          theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0); // empty
-  }
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/true);
+  const arma::vec& beta = par.beta;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
 
   // Convenience objects shared by all threads
   arma::uvec alt_idx0 = alt_idx - 1; // 0-based
   Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
-  // mu transformations for distributions
-  arma::vec mu_final = mu;
-  arma::vec dmu_final_dmu =
-      arma::ones(K_w); // gradient without the exp transform
-  if (rc_mean) {
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) { // 1 == log-normal
-        mu_final(k) = std::exp(mu(k));
-        dmu_final_dmu(k) = mu_final(k); // d(exp(mu))/dmu = exp(mu)
-      }
-    }
-  }
-
   // Pre-compute base utility for all individuals (single BLAS call)
   // base_util = X*beta + W*mu_final + delta, computed once for all rows
-  arma::vec base_util = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util += W * mu_final;
-  } else {
-    arma::vec W_mu = W * mu_final;
-    base_util += W_mu.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util += delta.elem(alt_idx0);
-  }
+  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -256,11 +207,8 @@ Rcpp::List mxl_loglik_gradient_parallel(
       const double w_i = weights[i];
       const auto X_i = X.rows(start_idx, end_idx); // m_i x K_x
       const auto alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-      arma::mat W_i;
-      if (W.n_rows == X.n_rows)           // row-aligned with X
-        W_i = W.rows(start_idx, end_idx); // m_i x K_w
-      else                                // global alt-level W
-        W_i = W.rows(alt_idx0_i);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
       // chosen alternative index
       int chosen_alt = choice_idx[i];
@@ -282,14 +230,8 @@ Rcpp::List mxl_loglik_gradient_parallel(
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = L * eta_i;                   // single dgemm
-      arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
-      for (int k = 0; k < K_w; ++k) {
-        if (rc_dist(k) == 1) { // log-normal
-          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-          Dgamma1.row(k) = Gamma_final.row(k);
-        }
-      }
+      arma::mat Dgamma1;
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
@@ -299,18 +241,12 @@ Rcpp::List mxl_loglik_gradient_parallel(
         const auto dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector V_i_s for individual i and simulation s
-        V_s.zeros(); // Reset V_s
-
         inside_utils = base_util_i + W_i * gamma_i_s_final; // Length m_i
-        if (include_outside_option)
-          V_s.subvec(1, num_choices - 1) = inside_utils;
-        else
-          V_s = inside_utils;
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
 
         // Probabilities and log-probability for chosen alternative
-        V_s -= V_s.max(); // for numerical stability
-        const double log_denom = std::log(arma::accu(arma::exp(V_s)));
-        P_s = arma::exp(V_s - log_denom);
+        stable_softmax(V_s, P_s);
         double P_choice = P_s(chosen_alt);
         double log_P = std::log(P_choice);
 
@@ -382,18 +318,12 @@ Rcpp::List mxl_loglik_gradient_parallel(
 
         // ---- Delta block (scatter — irregular alt-index mapping) ----
         if (use_asc) {
-          for (int a = 0; a < num_choices; ++a) {
-            const double diff_a = diff_vec(a);
-            if (include_outside_option) {
-              if (a > 0) {
-                const int id = alt_idx0_i[a - 1];
-                g_s[idx_delta_start + id] += diff_a;
-              }
-            } else { // alt 0 normalised — first inside alt has no free delta
-              const int id = alt_idx0_i[a];
-              if (id > 0)
-                g_s[idx_delta_start + (id - 1)] += diff_a;
-            }
+          if (include_outside_option) {
+            scatter_delta_grad(g_s, idx_delta_start, diff_vec.subvec(1, m_i),
+                               alt_idx0_i, m_i, include_outside_option, 1.0);
+          } else {
+            scatter_delta_grad(g_s, idx_delta_start, diff_vec,
+                               alt_idx0_i, m_i, include_outside_option, 1.0);
           }
         }
 
@@ -564,74 +494,29 @@ arma::mat mxl_hessian_parallel(
                weights.n_elem, N);
   }
 
-  // === 1. Parameter Parsing ===
+  // === 1. Parameter Parsing (shared helper) ===
   const int idx_beta_start = 0;
   const int idx_mu_start = K_x;
   const int idx_L_start = rc_mean ? K_x + K_w : K_x;
   const int idx_delta_start = idx_L_start + L_size;
 
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
-  arma::vec mu;
-  if (rc_mean) {
-    if (idx_L_start > n_params)
-      Rcpp::stop("Theta vector too short: missing mu parameters.");
-    mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-  } else {
-    mu = arma::zeros(K_w);
-  }
-
-  if (idx_delta_start > n_params)
-    Rcpp::stop("Theta vector too short: missing L parameters.");
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
-
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) =
-          theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/true);
+  const arma::vec& beta = par.beta;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
+  const arma::vec& dmu2_final_dmu2 = par.dmu2_final_dmu2;
 
   arma::uvec alt_idx0 = alt_idx - 1;
   Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
-  // mu transformations for distributions
-  arma::vec mu_final = arma::zeros(K_w);
-  arma::vec dmu_final_dmu = arma::zeros(K_w);
-  arma::vec dmu2_final_dmu2 = arma::zeros(K_w);
-  if (rc_mean) {
-    mu_final = mu;
-    dmu_final_dmu = arma::ones(K_w); // gradient of transform
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) { // 1 == log-normal
-        mu_final(k) = std::exp(mu(k));
-        dmu_final_dmu(k) = mu_final(k);   // d(exp(mu))/dmu = exp(mu)
-        dmu2_final_dmu2(k) = mu_final(k); // d^2(exp(mu))/dmu^2 = exp(mu)
-      }
-    }
-  }
-
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util_h = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util_h += W * mu_final;
-  } else {
-    arma::vec W_mu_h = W * mu_final;
-    base_util_h += W_mu_h.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util_h += delta.elem(alt_idx0);
-  }
+  arma::vec base_util_h = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Global accumulator
   arma::mat global_hess = arma::zeros(n_params, n_params);
@@ -654,11 +539,8 @@ arma::mat mxl_hessian_parallel(
       const double w_i = weights[i];
       const auto X_i = X.rows(start_idx, end_idx);
       const auto alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-      arma::mat W_i;
-      if (W.n_rows == X.n_rows)
-        W_i = W.rows(start_idx, end_idx);
-      else
-        W_i = W.rows(alt_idx0_i);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
       int chosen_alt = choice_idx[i];
       if (!include_outside_option)
@@ -674,16 +556,9 @@ arma::mat mxl_hessian_parallel(
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = L * eta_i;                   // single dgemm
-      arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
-      arma::mat Dgamma2(K_w, Sdraw, arma::fill::zeros);
-      for (int k = 0; k < K_w; ++k) {
-        if (rc_dist(k) == 1) { // 1 == log-normal
-          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-          Dgamma1.row(k) = Gamma_final.row(k);
-          Dgamma2.row(k) = Gamma_final.row(k);
-        }
-      }
+      arma::mat Dgamma1, Dgamma2;
+      arma::mat Gamma_final =
+          batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1, &Dgamma2);
 
       // Loop over simulations (draws) s
       for (int s = 0; s < Sdraw; ++s) {
@@ -694,16 +569,13 @@ arma::mat mxl_hessian_parallel(
         const auto d2gamma_final_dgamma2  = Dgamma2.col(s);
 
         // === 3. Utility ===
-        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec V_s(num_choices);
         arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
 
-        if (include_outside_option)
-          V_s.subvec(1, num_choices - 1) = inside_utils;
-        else
-          V_s = inside_utils;
-
-        V_s -= V_s.max();
-        arma::vec P_s = arma::exp(V_s - std::log(arma::accu(arma::exp(V_s))));
+        arma::vec P_s;
+        stable_softmax(V_s, P_s);
         double P_choice_s = P_s(chosen_alt);
         P_s_vec(s) = P_choice_s;
 
@@ -950,70 +822,24 @@ arma::mat mxl_bhhh_parallel(
     Rcpp::stop("idx_delta_start (%d) exceeds n_params + 1 (%d)", idx_delta_start, n_params + 1);
   }
 
-  // beta: coefficients for design matrix X
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
-
-  // mu: means of random coefficients
-  arma::vec mu;
-  if (rc_mean) {
-    if (idx_L_start > n_params)
-      Rcpp::stop("Theta vector too short: missing mu parameters.");
-    mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-  } else {
-    mu = arma::zeros(K_w); // Fix means to zero if not estimated
-  }
-
-  // L: choleski decomposition of random coefficients matrix
-  if (idx_delta_start > n_params)
-    Rcpp::stop("Theta vector too short: missing L parameters.");
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation); // K_w x K_w
-
-  // delta (ASC)
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) =
-          theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/true);
+  const arma::vec& beta = par.beta;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
 
   // Convenience objects shared by all threads
   arma::uvec alt_idx0 = alt_idx - 1; // 0-based
   Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
-  // mu transformations for distributions
-  arma::vec mu_final = mu;
-  arma::vec dmu_final_dmu = arma::ones(K_w);
-  if (rc_mean) {
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) { // 1 == log-normal
-        mu_final(k) = std::exp(mu(k));
-        dmu_final_dmu(k) = mu_final(k);
-      }
-    }
-  }
-
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util += W * mu_final;
-  } else {
-    arma::vec W_mu = W * mu_final;
-    base_util += W_mu.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util += delta.elem(alt_idx0);
-  }
+  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
@@ -1047,11 +873,8 @@ arma::mat mxl_bhhh_parallel(
       const double w_i = weights[i];
       const auto X_i = X.rows(start_idx, end_idx);
       const auto alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-      arma::mat W_i;
-      if (W.n_rows == X.n_rows)
-        W_i = W.rows(start_idx, end_idx);
-      else
-        W_i = W.rows(alt_idx0_i);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
       int chosen_alt = choice_idx[i];
       if (!include_outside_option)
@@ -1069,14 +892,8 @@ arma::mat mxl_bhhh_parallel(
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = L * eta_i;                   // single dgemm
-      arma::mat Dgamma1(K_w, Sdraw, arma::fill::ones);
-      for (int k = 0; k < K_w; ++k) {
-        if (rc_dist(k) == 1) { // log-normal
-          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-          Dgamma1.row(k) = Gamma_final.row(k);
-        }
-      }
+      arma::mat Dgamma1;
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
@@ -1086,17 +903,12 @@ arma::mat mxl_bhhh_parallel(
         const auto dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector
-        V_s.zeros();
         inside_utils = base_util_i + W_i * gamma_i_s_final;
-        if (include_outside_option)
-          V_s.subvec(1, num_choices - 1) = inside_utils;
-        else
-          V_s = inside_utils;
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
 
         // Probabilities
-        V_s -= V_s.max();
-        const double log_denom = std::log(arma::accu(arma::exp(V_s)));
-        P_s = arma::exp(V_s - log_denom);
+        stable_softmax(V_s, P_s);
         double P_choice = P_s(chosen_alt);
         double log_P = std::log(P_choice);
 
@@ -1145,18 +957,12 @@ arma::mat mxl_bhhh_parallel(
 
         // Delta block
         if (use_asc) {
-          for (int a = 0; a < num_choices; ++a) {
-            const double diff_a = diff_vec(a);
-            if (include_outside_option) {
-              if (a > 0) {
-                const int id = alt_idx0_i[a - 1];
-                g_s[idx_delta_start + id] += diff_a;
-              }
-            } else {
-              const int id = alt_idx0_i[a];
-              if (id > 0)
-                g_s[idx_delta_start + (id - 1)] += diff_a;
-            }
+          if (include_outside_option) {
+            scatter_delta_grad(g_s, idx_delta_start, diff_vec.subvec(1, m_i),
+                               alt_idx0_i, m_i, include_outside_option, 1.0);
+          } else {
+            scatter_delta_grad(g_s, idx_delta_start, diff_vec,
+                               alt_idx0_i, m_i, include_outside_option, 1.0);
           }
         }
 
@@ -1208,7 +1014,6 @@ arma::vec mxl_predict_shares_internal(
     const bool include_outside_option
 ) {
   const int N = M.size();
-  const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
   const double weight_sum = arma::accu(weights);
 
@@ -1217,16 +1022,8 @@ arma::vec mxl_predict_shares_internal(
   }
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util_s = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util_s += W * mu_final;
-  } else {
-    arma::vec W_mu_s = W * mu_final;
-    base_util_s += W_mu_s.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util_s += delta.elem(alt_idx0);
-  }
+  arma::vec base_util_s = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Initialize global accumulator for predicted shares
   arma::vec global_shares = arma::zeros(num_alts);
@@ -1249,11 +1046,8 @@ arma::vec mxl_predict_shares_internal(
       const double w_i = weights[i];
       const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
 
-      arma::mat W_i;
-      if (W.n_rows == X.n_rows)
-        W_i = W.rows(start_idx, end_idx);
-      else
-        W_i = W.rows(alt_idx0_i);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
       // Pre-computed base utility for this individual
       const arma::vec base_util_i = base_util_s.subvec(start_idx, end_idx);
@@ -1263,31 +1057,21 @@ arma::vec mxl_predict_shares_internal(
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = L * eta_i;                   // single dgemm
-      for (int k = 0; k < K_w; ++k) {
-        if (rc_dist(k) == 1) { // log-normal
-          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-        }
-      }
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
       for (int s = 0; s < Sdraw; ++s) {
         // Column view into the batched matrix (zero-copy)
         const auto gamma_i_s_final = Gamma_final.col(s);
 
         // Build utility vector
-        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec V_s(num_choices);
         arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
-
-        if (include_outside_option) {
-          V_s.subvec(1, num_choices - 1) = inside_utils;
-        } else {
-          V_s = inside_utils;
-        }
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
 
         // Compute probabilities with numerical stability
-        V_s -= V_s.max();
-        double log_denom = std::log(arma::accu(arma::exp(V_s)));
-        arma::vec P_s = arma::exp(V_s - log_denom);
+        arma::vec P_s;
+        stable_softmax(V_s, P_s);
 
         P_bar_i += P_s;
       }  // end s loop
@@ -1357,66 +1141,24 @@ Rcpp::List mxl_predict(
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
-  const int n_params = theta.n_elem;
-  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
-  // Parameter block indices (mirror mxl_loglik_gradient_parallel / elasticities)
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
-
-  // Extract beta
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
-
-  // Extract and transform mu
-  arma::vec mu_final = arma::zeros(K_w);
-  if (rc_mean) {
-    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-    mu_final = mu;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        mu_final(k) = std::exp(mu(k));
-      }
-    }
-  }
-
-  // Extract L parameters and build L matrix
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
-
-  // Extract delta (mirror lines 175-192)
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/false);
+  const arma::vec& beta = par.beta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
 
   // 0-based alt indices and prefix sums
   arma::uvec alt_idx0 = alt_idx - 1;
   Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util += W * mu_final;
-  } else {
-    arma::vec W_mu = W * mu_final;
-    base_util += W_mu.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util += delta.elem(alt_idx0);
-  }
+  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Output accumulators (each individual writes to a disjoint subvec)
   arma::vec choice_prob = arma::zeros(X.n_rows);
@@ -1436,11 +1178,8 @@ Rcpp::List mxl_predict(
     const int end_idx = start_idx + m_i - 1;
     const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
 
-    arma::mat W_i;
-    if (W.n_rows == X.n_rows)
-      W_i = W.rows(start_idx, end_idx);
-    else
-      W_i = W.rows(alt_idx0_i);
+    arma::mat W_i =
+        make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
     // Pre-computed base utility for this individual
     const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
@@ -1452,12 +1191,7 @@ Rcpp::List mxl_predict(
 
     // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
     const auto eta_i = eta_draws.slice(i);
-    arma::mat Gamma_final = L * eta_i;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-      }
-    }
+    arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
     for (int s = 0; s < Sdraw; ++s) {
       const auto gamma_i_s_final = Gamma_final.col(s);
@@ -1467,17 +1201,13 @@ Rcpp::List mxl_predict(
       arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
 
       // Build full V_s for softmax
-      arma::vec V_s = arma::zeros(num_choices);
-      if (include_outside_option) {
-        V_s.subvec(1, num_choices - 1) = inside_utils;
-      } else {
-        V_s = inside_utils;
-      }
+      arma::vec V_s(num_choices);
+      fill_choice_utilities(V_s, inside_utils, num_choices,
+                            include_outside_option);
 
       // Stable softmax
-      V_s -= V_s.max();
-      double log_denom = std::log(arma::accu(arma::exp(V_s)));
-      arma::vec P_s = arma::exp(V_s - log_denom);
+      arma::vec P_s;
+      stable_softmax(V_s, P_s);
 
       // Accumulate inside probabilities and utilities
       if (include_outside_option) {
@@ -1568,8 +1298,6 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
-  const int n_params = theta.n_elem;
-  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
   // Check rc_dist input (mirror mxl_loglik_gradient_parallel)
   if (rc_dist.n_elem != K_w) {
@@ -1584,63 +1312,23 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
                eta_draws.n_rows, K_w);
   }
 
-  // Parameter block indices (mirror mxl_loglik_gradient_parallel / mxl_predict)
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
-
-  // Extract beta
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
-
-  // Extract and transform mu
-  arma::vec mu_final = arma::zeros(K_w);
-  if (rc_mean) {
-    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-    mu_final = mu;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        mu_final(k) = std::exp(mu(k));
-      }
-    }
-  }
-
-  // Extract L parameters and build L matrix
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
-
-  // Extract delta (mirror lines 175-192)
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/false);
+  const arma::vec& beta = par.beta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
 
   // 0-based alt indices and prefix sums
   arma::uvec alt_idx0 = alt_idx - 1;
   Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util += W * mu_final;
-  } else {
-    arma::vec W_mu = W * mu_final;
-    base_util += W_mu.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util += delta.elem(alt_idx0);
-  }
+  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Output accumulator (each individual writes only its own slot)
   arma::vec logsum = arma::zeros(N);
@@ -1655,23 +1343,15 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
     const int end_idx = start_idx + m_i - 1;
     const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
 
-    arma::mat W_i;
-    if (W.n_rows == X.n_rows)
-      W_i = W.rows(start_idx, end_idx);
-    else
-      W_i = W.rows(alt_idx0_i);
+    arma::mat W_i =
+        make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
     // Pre-computed base utility for this individual
     const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
 
     // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
     const auto eta_i = eta_draws.slice(i);
-    arma::mat Gamma_final = L * eta_i;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-      }
-    }
+    arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
     // Accumulate the per-draw log-sum-exp (NOT the logsum of averaged
     // utilities; see the Jensen note in the docs above).
@@ -1741,59 +1421,24 @@ arma::vec mxl_predict_shares(
   // Basic dimensions
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int n_params = theta.n_elem;
-  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
-  // Parameter block indices
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
-
-  // Extract beta
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
-
-  // Extract and transform mu
-  arma::vec mu_final = arma::zeros(K_w);
-  if (rc_mean) {
-    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-    mu_final = mu;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        mu_final(k) = std::exp(mu(k));
-      }
-    }
-  }
-
-  // Extract L parameters and build L matrix
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
-
-  // Extract delta (mirror lines 175-192)
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/false);
+  const arma::vec& beta = par.beta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
 
   // 0-based indexing and prefix sums
   arma::uvec alt_idx0 = alt_idx - 1;
   Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
   // Number of alternatives for the output
-  const int J_inside = use_asc ? static_cast<int>(delta.n_elem)
-                                : (static_cast<int>(arma::max(alt_idx0)) + 1);
-  const int num_alts = include_outside_option ? J_inside + 1 : J_inside;
+  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int num_alts = compute_J_total(J_inside, include_outside_option);
 
   return mxl_predict_shares_internal(
     X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
@@ -1863,8 +1508,6 @@ arma::mat mxl_diversion_ratios_parallel(
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
-  const int n_params = theta.n_elem;
-  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
   // Validate the perturbed variable index. Catch the empty-block cases
   // first (K_x=0 with is_random_coef=FALSE, or K_w=0 with is_random_coef=TRUE)
@@ -1891,71 +1534,30 @@ arma::mat mxl_diversion_ratios_parallel(
     }
   }
 
-  // Parameter block indices
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
-
-  // Extract beta
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/false);
+  const arma::vec& beta = par.beta;
   const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
-
-  // Extract and transform mu
-  arma::vec mu_final = arma::zeros(K_w);
-  if (rc_mean) {
-    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-    mu_final = mu;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        mu_final(k) = std::exp(mu(k));
-      }
-    }
-  }
-
-  // Extract L parameters and build L matrix
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
-
-  // Extract delta (mirror lines 175-192)
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  const arma::vec& mu_final = par.mu_final;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
 
   // 0-based alt indices
   arma::uvec alt_idx0 = alt_idx - 1;
 
   // Total alternatives for output matrix
-  const int J_inside = use_asc ? static_cast<int>(delta.n_elem)
-                                : (static_cast<int>(arma::max(alt_idx0)) + 1);
-  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_total = compute_J_total(J_inside, include_outside_option);
 
   // Prefix sums
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util += W * mu_final;
-  } else {
-    arma::vec W_mu = W * mu_final;
-    base_util += W_mu.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util += delta.elem(alt_idx0);
-  }
+  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Global accumulators
   arma::mat global_numerator = arma::zeros(J_total, J_total);
@@ -1980,23 +1582,15 @@ arma::mat mxl_diversion_ratios_parallel(
       const double w_i = weights[i];
       const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
 
-      arma::mat W_i;
-      if (W.n_rows == X.n_rows)
-        W_i = W.rows(start_idx, end_idx);
-      else
-        W_i = W.rows(alt_idx0_i);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
       // Pre-computed base utility for this individual
       const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
 
       // Map local indices to global alternative indices
-      arma::uvec global_j_map(num_choices);
-      if (include_outside_option) {
-        global_j_map(0) = 0;  // Outside option is global index 0
-        global_j_map.subvec(1, m_i) = alt_idx0_i + 1;
-      } else {
-        global_j_map = alt_idx0_i;
-      }
+      arma::uvec global_j_map =
+          build_global_alt_map(alt_idx0_i, m_i, include_outside_option);
 
       // Per-individual accumulators (sum across draws, divided by S below)
       arma::mat ind_num = arma::zeros(num_choices, num_choices);
@@ -2004,12 +1598,7 @@ arma::mat mxl_diversion_ratios_parallel(
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);
-      arma::mat Gamma_final = L * eta_i;
-      for (int k = 0; k < K_w; ++k) {
-        if (rc_dist(k) == 1) {  // log-normal
-          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-        }
-      }
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
       // Loop over draws — cross-products MUST be accumulated INSIDE this loop
       for (int s = 0; s < Sdraw; ++s) {
@@ -2024,19 +1613,14 @@ arma::mat mxl_diversion_ratios_parallel(
             : beta_k;
 
         // Build utility vector
-        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec V_s(num_choices);
         arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
-
-        if (include_outside_option) {
-          V_s.subvec(1, num_choices - 1) = inside_utils;
-        } else {
-          V_s = inside_utils;
-        }
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
 
         // Stable softmax
-        V_s -= V_s.max();
-        double log_denom = std::log(arma::accu(arma::exp(V_s)));
-        arma::vec P_s = arma::exp(V_s - log_denom);
+        arma::vec P_s;
+        stable_softmax(V_s, P_s);
 
         // Accumulate cross-products weighted by beta_k_eff inside the draw loop
         for (int j_local = 0; j_local < num_choices; ++j_local) {
@@ -2347,8 +1931,6 @@ arma::mat mxl_elasticities_parallel(
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
-  const int n_params = theta.n_elem;
-  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
   // Convert 1-based R index to 0-based C++ index
   const int var_idx = elast_var_idx - 1;
@@ -2366,70 +1948,30 @@ arma::mat mxl_elasticities_parallel(
     }
   }
 
-  // Parameter block indices
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
-
-  // Extract beta
-  arma::vec beta = theta.subvec(idx_beta_start, idx_mu_start - 1);
+  // Parse theta into parameter blocks (shared helper)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option,
+                                        /*check_block_lengths=*/false);
+  const arma::vec& beta = par.beta;
   const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
-
-  // Extract and transform mu
-  arma::vec mu_final = arma::zeros(K_w);
-  if (rc_mean) {
-    arma::vec mu = theta.subvec(idx_mu_start, idx_L_start - 1);
-    mu_final = mu;
-    for (int k = 0; k < K_w; ++k) {
-      if (rc_dist(k) == 1) {  // log-normal
-        mu_final(k) = std::exp(mu(k));
-      }
-    }
-  }
-
-  // Extract L parameters and build L matrix
-  arma::vec L_params = theta.subvec(idx_L_start, idx_delta_start - 1);
-  arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
-
-  // Extract delta
-  arma::vec delta;
-  if (use_asc) {
-    const int delta_free_len = n_params - idx_delta_start;
-    if (delta_free_len <= 0) {
-      Rcpp::stop("Theta vector too short: missing delta parameters.");
-    }
-    if (include_outside_option) {
-      delta = theta.subvec(idx_delta_start, n_params - 1);
-    } else {
-      delta = arma::zeros(delta_free_len + 1);
-      delta.subvec(1, delta_free_len) = theta.subvec(idx_delta_start, n_params - 1);
-    }
-  } else {
-    delta.set_size(0);
-  }
+  const arma::vec& mu_final = par.mu_final;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
 
   // Convert to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
 
   // Determine total number of alternatives
-  const int J_inside = use_asc ? static_cast<int>(delta.n_elem) : (arma::max(alt_idx0) + 1);
-  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_total = compute_J_total(J_inside, include_outside_option);
 
   // Compute prefix sums
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util_e = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util_e += W * mu_final;
-  } else {
-    arma::vec W_mu_e = W * mu_final;
-    base_util_e += W_mu_e.elem(alt_idx0);
-  }
-  if (use_asc) {
-    base_util_e += delta.elem(alt_idx0);
-  }
+  arma::vec base_util_e = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
 
   // Global accumulators
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
@@ -2455,23 +1997,15 @@ arma::mat mxl_elasticities_parallel(
       const auto X_i = X.rows(start_idx, end_idx);
       const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
 
-      arma::mat W_i;
-      if (W.n_rows == X.n_rows)
-        W_i = W.rows(start_idx, end_idx);
-      else
-        W_i = W.rows(alt_idx0_i);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
       // Pre-computed base utility for this individual
       const arma::vec base_util_i = base_util_e.subvec(start_idx, end_idx);
 
       // Map local indices to global alternative indices
-      arma::uvec global_j_map(num_choices);
-      if (include_outside_option) {
-        global_j_map(0) = 0;  // Outside option is global index 0
-        global_j_map.subvec(1, m_i) = alt_idx0_i + 1;
-      } else {
-        global_j_map = alt_idx0_i;
-      }
+      arma::uvec global_j_map =
+          build_global_alt_map(alt_idx0_i, m_i, include_outside_option);
 
       // Get attribute values for the elasticity variable
       arma::vec x_k_i = arma::zeros(num_choices);
@@ -2495,12 +2029,7 @@ arma::mat mxl_elasticities_parallel(
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = L * eta_i;                   // single dgemm
-      for (int k = 0; k < K_w; ++k) {
-        if (rc_dist(k) == 1) { // log-normal
-          Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
-        }
-      }
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
       for (int s = 0; s < Sdraw; ++s) {
         // Column view into the batched matrix (zero-copy)
@@ -2515,19 +2044,14 @@ arma::mat mxl_elasticities_parallel(
         }
 
         // Build utility vector
-        arma::vec V_s = arma::zeros(num_choices);
+        arma::vec V_s(num_choices);
         arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
-
-        if (include_outside_option) {
-          V_s.subvec(1, num_choices - 1) = inside_utils;
-        } else {
-          V_s = inside_utils;
-        }
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
 
         // Compute probabilities
-        V_s -= V_s.max();
-        double log_denom = std::log(arma::accu(arma::exp(V_s)));
-        arma::vec P_s = arma::exp(V_s - log_denom);
+        arma::vec P_s;
+        stable_softmax(V_s, P_s);
 
         P_bar_i += P_s;
 
