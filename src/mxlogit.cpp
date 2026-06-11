@@ -117,47 +117,18 @@ Rcpp::List mxl_loglik_gradient_parallel(
   const int L_size =
       rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
 
-  // Check rc_dist input
-  if (rc_dist.n_elem != K_w) {
-    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
-  }
-  if (eta_draws.n_slices != N) {
-    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
-               eta_draws.n_slices, N);
-  }
-  if (eta_draws.n_rows != K_w) {
-    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
-               eta_draws.n_rows, K_w);
-  }
-  if (static_cast<int>(weights.n_elem) != N) {
-    Rcpp::stop("weights length (%d) does not match N (%d)",
-               weights.n_elem, N);
-  }
-
-  // Define parameter block start indices
+  // Parameter block start indices (used below to assemble the gradient)
   const int idx_beta_start = 0;
   const int idx_mu_start = K_x;
   const int idx_L_start = rc_mean ? K_x + K_w : K_x;
   const int idx_delta_start = idx_L_start + L_size;
 
-  // Validate parameter indices
-  if (K_x <= 0) {
-    Rcpp::stop("K_x must be positive, got %d", K_x);
-  }
-  if (idx_mu_start > n_params) {
-    Rcpp::stop("idx_mu_start (%d) exceeds n_params (%d)", idx_mu_start, n_params);
-  }
-  if (idx_L_start > n_params) {
-    Rcpp::stop("idx_L_start (%d) exceeds n_params (%d)", idx_L_start, n_params);
-  }
-  if (idx_delta_start > n_params + 1) {
-    Rcpp::stop("idx_delta_start (%d) exceeds n_params + 1 (%d)", idx_delta_start, n_params + 1);
-  }
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/true);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                      &weights, &choice_idx);
   const arma::vec& beta = par.beta;
   const arma::mat& L = par.L;
   const arma::vec& delta = par.delta;
@@ -486,15 +457,7 @@ arma::mat mxl_hessian_parallel(
   const int n_params = theta.n_elem;
   const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
-  if (rc_dist.n_elem != K_w) {
-    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
-  }
-  if (static_cast<int>(weights.n_elem) != N) {
-    Rcpp::stop("weights length (%d) does not match N (%d)",
-               weights.n_elem, N);
-  }
-
-  // === 1. Parameter Parsing (shared helper) ===
+  // === 1. Parameter Parsing (shared helper; validates theta) ===
   const int idx_beta_start = 0;
   const int idx_mu_start = K_x;
   const int idx_L_start = rc_mean ? K_x + K_w : K_x;
@@ -502,8 +465,9 @@ arma::mat mxl_hessian_parallel(
 
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/true);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                      &weights, &choice_idx);
   const arma::vec& beta = par.beta;
   const arma::mat& L = par.L;
   const arma::vec& delta = par.delta;
@@ -785,48 +749,18 @@ arma::mat mxl_bhhh_parallel(
   const int L_size =
       rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
 
-  // Check rc_dist input
-  if (rc_dist.n_elem != K_w) {
-    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
-  }
-  if (eta_draws.n_slices != N) {
-    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
-               eta_draws.n_slices, N);
-  }
-  if (eta_draws.n_rows != K_w) {
-    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
-               eta_draws.n_rows, K_w);
-  }
-  if (static_cast<int>(weights.n_elem) != N) {
-    Rcpp::stop("weights length (%d) does not match N (%d)",
-               weights.n_elem, N);
-  }
-
-  // Define parameter block start indices
+  // Parameter block start indices (used below to assemble the scores)
   const int idx_beta_start = 0;
   const int idx_mu_start = K_x;
   const int idx_L_start = rc_mean ? K_x + K_w : K_x;
   const int idx_delta_start = idx_L_start + L_size;
 
-  // Validate parameter indices
-  if (K_x <= 0) {
-    Rcpp::stop("K_x must be positive, got %d", K_x);
-  }
-  if (idx_mu_start > n_params) {
-    Rcpp::stop("idx_mu_start (%d) exceeds n_params (%d)", idx_mu_start, n_params);
-  }
-  if (idx_L_start > n_params) {
-    Rcpp::stop("idx_L_start (%d) exceeds n_params (%d)", idx_L_start, n_params);
-  }
-  if (idx_delta_start > n_params + 1) {
-    Rcpp::stop("idx_delta_start (%d) exceeds n_params + 1 (%d)", idx_delta_start, n_params + 1);
-  }
-
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/true);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                      &weights, &choice_idx);
   const arma::vec& beta = par.beta;
   const arma::mat& L = par.L;
   const arma::vec& delta = par.delta;
@@ -1142,11 +1076,11 @@ Rcpp::List mxl_predict(
   const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
 
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/false);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
   const arma::vec& beta = par.beta;
   const arma::vec& mu_final = par.mu_final;
   const arma::mat& L = par.L;
@@ -1299,24 +1233,11 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
   const int K_w = W.n_cols;
   const int Sdraw = eta_draws.n_cols;
 
-  // Check rc_dist input (mirror mxl_loglik_gradient_parallel)
-  if (rc_dist.n_elem != K_w) {
-    Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
-  }
-  if (eta_draws.n_slices != N) {
-    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
-               eta_draws.n_slices, N);
-  }
-  if (eta_draws.n_rows != K_w) {
-    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
-               eta_draws.n_rows, K_w);
-  }
-
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/false);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
   const arma::vec& beta = par.beta;
   const arma::vec& mu_final = par.mu_final;
   const arma::mat& L = par.L;
@@ -1422,11 +1343,12 @@ arma::vec mxl_predict_shares(
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
 
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/false);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                      &weights);
   const arma::vec& beta = par.beta;
   const arma::vec& mu_final = par.mu_final;
   const arma::mat& L = par.L;
@@ -1534,11 +1456,12 @@ arma::mat mxl_diversion_ratios_parallel(
     }
   }
 
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/false);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                      &weights);
   const arma::vec& beta = par.beta;
   const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
   const arma::vec& mu_final = par.mu_final;
@@ -1741,6 +1664,12 @@ arma::vec mxl_blp_contraction(
 ) {
   const int K_w = W.n_cols;
   const bool use_asc = true;
+
+  // delta is harmonized to cover every referenced alternative below, so the
+  // ASC-coverage check is skipped here (use_asc = false, empty delta).
+  check_rc_dist_length(rc_dist, K_w);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws,
+                      /*use_asc=*/false, arma::vec(), &weights);
 
   // Build L matrix
   arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
@@ -1948,11 +1877,12 @@ arma::mat mxl_elasticities_parallel(
     }
   }
 
-  // Parse theta into parameter blocks (shared helper)
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
-                                        include_outside_option,
-                                        /*check_block_lengths=*/false);
+                                        include_outside_option);
+  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                      &weights);
   const arma::vec& beta = par.beta;
   const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
   const arma::vec& mu_final = par.mu_final;

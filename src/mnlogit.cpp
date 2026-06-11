@@ -49,6 +49,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
   const int n_params = theta.n_elem;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -196,6 +197,7 @@ Rcpp::List mnl_predict(
   const int K = X.n_cols;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta);
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -363,6 +365,7 @@ arma::vec mnl_predict_shares(
   const int K = X.n_cols;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -433,6 +436,7 @@ arma::vec blp_contraction(
   if (arma::any(target_shares <= 0)) {
     Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
   }
+  validate_choice_data(X, alt_idx, M, use_asc, delta, &weights);
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -559,6 +563,7 @@ arma::mat mnl_loglik_hessian_parallel(
 
   // Split theta into beta and delta (ASCs) as in your gradient function
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -718,6 +723,7 @@ arma::mat mnl_elasticities_parallel(
 
   // Extract beta and delta (same logic as loglik function)
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
   const double beta_k = par.beta(var_idx); // The coefficient for our variable
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
@@ -879,6 +885,7 @@ arma::mat mnl_diversion_ratios_parallel(
 
   // Extract beta and delta (same logic as elasticities/loglik)
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
 
   // alt_idx is 1-based indexing => shift to 0-based indexing
   arma::uvec alt_idx0 = alt_idx - 1;

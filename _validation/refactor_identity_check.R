@@ -325,6 +325,52 @@ run_errors <- function() {
   out$nl_short <- grab(nl_loglik_gradient_parallel(
     rnorm(3), d$X, d$alt_idx, d$choice_idx, nest_idx, d$M, d$weights,
     FALSE, FALSE))
+
+  # --- Always-on validation added with the parser/validator consolidation ---
+  set.seed(904)
+  # MNL: trailing parameters not parsed when use_asc = FALSE
+  out$mnl_too_long <- grab(mnl_loglik_gradient_parallel(
+    rnorm(4), d$X, d$alt_idx, d$choice_idx, d$M, d$weights, FALSE, FALSE))
+  # MNL: weights length mismatch
+  out$mnl_weights_len <- grab(mnl_loglik_gradient_parallel(
+    rnorm(5), d$X, d$alt_idx, d$choice_idx, d$M, c(d$weights, 1), TRUE, FALSE))
+  # MNL: choice_idx length mismatch
+  out$mnl_choice_len <- grab(mnl_loglik_gradient_parallel(
+    rnorm(5), d$X, d$alt_idx, d$choice_idx[-1], d$M, d$weights, TRUE, FALSE))
+  # MNL: sum(M) does not match nrow(X)
+  M_bad <- d$M; M_bad[1] <- M_bad[1] + 1L
+  out$mnl_m_rows <- grab(mnl_loglik_gradient_parallel(
+    rnorm(5), d$X, d$alt_idx, d$choice_idx, M_bad, d$weights, TRUE, FALSE))
+  # MNL: alt_idx must be 1-based
+  alt_bad <- d$alt_idx; alt_bad[1] <- 0L
+  out$mnl_alt_zero <- grab(mnl_predict(
+    rnorm(5), d$X, alt_bad, d$M, TRUE, FALSE))
+  # MNL: delta block does not cover all referenced alternatives
+  out$mnl_delta_coverage <- grab(mnl_predict(
+    rnorm(4), d$X, d$alt_idx, d$M, TRUE, FALSE))  # delta covers 3 of 4 alts
+  # MXL: trailing parameters not parsed when use_asc = FALSE
+  out$mxl_too_long <- grab(mxl_predict(
+    rnorm(6), d$X, W, d$alt_idx, d$M, eta, c(0L, 0L),
+    FALSE, FALSE, FALSE, FALSE))
+  # MXL: predict family now rejects mismatched eta draws too
+  set.seed(905)
+  eta_bad2 <- get_halton_normals(4, d$N + 1, 2)
+  out$mxl_predict_bad_eta <- grab(mxl_predict(
+    rnorm(4), d$X, W, d$alt_idx, d$M, eta_bad2, c(0L, 0L),
+    FALSE, FALSE, FALSE, FALSE))
+  # MXL: alt-level W with too few rows for the referenced alternatives
+  W_bad <- matrix(rnorm(4), 2, 2)
+  out$mxl_w_rows <- grab(mxl_predict(
+    rnorm(4), d$X, W_bad, d$alt_idx, d$M, eta, c(0L, 0L),
+    FALSE, FALSE, FALSE, FALSE))
+  # NL: nest_idx shorter than the number of referenced alternatives
+  out$nl_nest_short <- grab(nl_loglik_gradient_parallel(
+    c(rnorm(2), 0.8), d$X, d$alt_idx, d$choice_idx, c(1L, 1L, 2L),
+    d$M, d$weights, FALSE, FALSE))
+  # NL: trailing parameters not parsed when use_asc = FALSE
+  out$nl_too_long <- grab(nl_loglik_gradient_parallel(
+    c(rnorm(2), 0.8, 0.9, 1.1), d$X, d$alt_idx, d$choice_idx, nest_idx,
+    d$M, d$weights, FALSE, FALSE))
   out
 }
 
