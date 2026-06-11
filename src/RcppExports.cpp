@@ -136,6 +136,102 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// mnp_gibbs
+Rcpp::List mnp_gibbs(const arma::mat& X, const Rcpp::IntegerVector& y, const int p, const arma::vec& beta_bar, const arma::mat& A, const double nu, const arma::mat& V, const int R, const int burn, const int thin, const double seed, const int trace);
+RcppExport SEXP _choicer_mnp_gibbs(SEXP XSEXP, SEXP ySEXP, SEXP pSEXP, SEXP beta_barSEXP, SEXP ASEXP, SEXP nuSEXP, SEXP VSEXP, SEXP RSEXP, SEXP burnSEXP, SEXP thinSEXP, SEXP seedSEXP, SEXP traceSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type y(ySEXP);
+    Rcpp::traits::input_parameter< const int >::type p(pSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type beta_bar(beta_barSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type A(ASEXP);
+    Rcpp::traits::input_parameter< const double >::type nu(nuSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type V(VSEXP);
+    Rcpp::traits::input_parameter< const int >::type R(RSEXP);
+    Rcpp::traits::input_parameter< const int >::type burn(burnSEXP);
+    Rcpp::traits::input_parameter< const int >::type thin(thinSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type trace(traceSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnp_gibbs(X, y, p, beta_bar, A, nu, V, R, burn, thin, seed, trace));
+    return rcpp_result_gen;
+END_RCPP
+}
+// rnorm_cpp
+arma::vec rnorm_cpp(const int n, const double seed);
+RcppExport SEXP _choicer_rnorm_cpp(SEXP nSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const int >::type n(nSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(rnorm_cpp(n, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
+// rgamma_cpp
+arma::vec rgamma_cpp(const int n, const double a, const double seed);
+RcppExport SEXP _choicer_rgamma_cpp(SEXP nSEXP, SEXP aSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const int >::type n(nSEXP);
+    Rcpp::traits::input_parameter< const double >::type a(aSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(rgamma_cpp(n, a, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
+// rtruncnorm_cpp
+arma::vec rtruncnorm_cpp(const int n, const double mu, const double sigma, const double a, const double b, const double seed);
+RcppExport SEXP _choicer_rtruncnorm_cpp(SEXP nSEXP, SEXP muSEXP, SEXP sigmaSEXP, SEXP aSEXP, SEXP bSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const int >::type n(nSEXP);
+    Rcpp::traits::input_parameter< const double >::type mu(muSEXP);
+    Rcpp::traits::input_parameter< const double >::type sigma(sigmaSEXP);
+    Rcpp::traits::input_parameter< const double >::type a(aSEXP);
+    Rcpp::traits::input_parameter< const double >::type b(bSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(rtruncnorm_cpp(n, mu, sigma, a, b, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
+// rmvnorm_cpp
+arma::mat rmvnorm_cpp(const int n, const arma::vec& mu, const arma::mat& Sigma, const double seed);
+RcppExport SEXP _choicer_rmvnorm_cpp(SEXP nSEXP, SEXP muSEXP, SEXP SigmaSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const int >::type n(nSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type mu(muSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type Sigma(SigmaSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(rmvnorm_cpp(n, mu, Sigma, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
+// rwishart_cpp
+arma::mat rwishart_cpp(const double df, const arma::mat& S, const double seed);
+RcppExport SEXP _choicer_rwishart_cpp(SEXP dfSEXP, SEXP SSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const double >::type df(dfSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type S(SSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(rwishart_cpp(df, S, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
+// riwishart_cpp
+arma::mat riwishart_cpp(const double df, const arma::mat& V, const double seed);
+RcppExport SEXP _choicer_riwishart_cpp(SEXP dfSEXP, SEXP VSEXP, SEXP seedSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const double >::type df(dfSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type V(VSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    rcpp_result_gen = Rcpp::wrap(riwishart_cpp(df, V, seed));
+    return rcpp_result_gen;
+END_RCPP
+}
 // build_L_mat
 arma::mat build_L_mat(const arma::vec& L_params, const int K_w, const bool rc_correlation);
 RcppExport SEXP _choicer_build_L_mat(SEXP L_paramsSEXP, SEXP K_wSEXP, SEXP rc_correlationSEXP) {
@@ -547,6 +643,13 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mnl_loglik_hessian_parallel", (DL_FUNC) &_choicer_mnl_loglik_hessian_parallel, 8},
     {"_choicer_mnl_elasticities_parallel", (DL_FUNC) &_choicer_mnl_elasticities_parallel, 9},
     {"_choicer_mnl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mnl_diversion_ratios_parallel, 7},
+    {"_choicer_mnp_gibbs", (DL_FUNC) &_choicer_mnp_gibbs, 12},
+    {"_choicer_rnorm_cpp", (DL_FUNC) &_choicer_rnorm_cpp, 2},
+    {"_choicer_rgamma_cpp", (DL_FUNC) &_choicer_rgamma_cpp, 3},
+    {"_choicer_rtruncnorm_cpp", (DL_FUNC) &_choicer_rtruncnorm_cpp, 6},
+    {"_choicer_rmvnorm_cpp", (DL_FUNC) &_choicer_rmvnorm_cpp, 4},
+    {"_choicer_rwishart_cpp", (DL_FUNC) &_choicer_rwishart_cpp, 3},
+    {"_choicer_riwishart_cpp", (DL_FUNC) &_choicer_riwishart_cpp, 3},
     {"_choicer_build_L_mat", (DL_FUNC) &_choicer_build_L_mat, 3},
     {"_choicer_build_var_mat", (DL_FUNC) &_choicer_build_var_mat, 3},
     {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 13},

@@ -124,3 +124,36 @@ create_equal_prob_data <- function(N = 100, J = 3, seed = 999) {
 
   dt[]
 }
+
+# Create an identified MNP dataset with real signal: probit DGP with
+# correlated differenced errors. `beta` is on the identified (sigma_11 = 1)
+# scale when Sigma[1, 1] = 1. Returns the long-format data plus the true
+# identified parameters.
+create_mnp_sim_data <- function(N = 800, J = 3,
+                                beta = c(1.0, -0.5),
+                                Sigma = matrix(c(1.0, 0.5, 0.5, 1.5), 2, 2),
+                                seed = 99) {
+  stopifnot(J >= 2, nrow(Sigma) == J - 1)
+  set.seed(seed)
+  p <- J - 1
+  K <- length(beta)
+  cov_cols <- paste0("x", seq_len(K))
+
+  dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+  for (k in seq_len(K)) dt[, (cov_cols[k]) := rnorm(.N)]
+
+  V <- matrix(as.matrix(dt[, ..cov_cols]) %*% beta, nrow = J)   # J x N
+  L <- t(chol(Sigma))
+  eps <- L %*% matrix(rnorm(p * N), p, N)
+  W <- V[2:J, , drop = FALSE] - rep(1, p) %o% V[1, ] + eps      # p x N
+
+  chosen <- apply(W, 2, function(w) if (max(w) < 0) 1L else which.max(w) + 1L)
+  dt[, choice := as.integer(alt == chosen[id])]
+
+  list(
+    data = dt[],
+    beta_id = beta / sqrt(Sigma[1, 1]),
+    Sigma_id = Sigma / Sigma[1, 1],
+    covariate_cols = cov_cols
+  )
+}
