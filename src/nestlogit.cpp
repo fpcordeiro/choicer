@@ -2,6 +2,21 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 
+// Forward declaration: shared NL parameter parsing (defined further below,
+// after the likelihood kernel; see the full doc comment at the definition).
+static void nl_parse_theta(
+    const arma::vec& theta,
+    const arma::uvec& nest_idx,
+    const int K,
+    const bool use_asc,
+    const bool include_outside_option,
+    arma::vec& beta,
+    arma::vec& lambda,
+    arma::vec& delta,
+    int& delta_start_idx,
+    int& delta_length,
+    arma::ivec* nest_k_to_theta_idx = nullptr);
+
 //' Log-likelihood and gradient for Nested Logit model
 //'
 //' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
@@ -55,85 +70,14 @@ Rcpp::List nl_loglik_gradient_parallel(
   const int n_params = theta.n_elem;
   const int n_nests = arma::max(nest_idx); // assuming nest_idx uses 1-based indexing
 
-  // --- 1. Parameter Parsing ---
-  arma::vec beta = theta.subvec(0, K - 1);
-  int delta_length = 0;
-  
-  // Identify singleton nests (nests with only 1 alternative)
-  arma::uvec nest_counts = arma::zeros<arma::uvec>(n_nests);
-  for (unsigned int j = 0; j < nest_idx.n_elem; ++j) {
-      if (nest_idx[j] > 0 && nest_idx[j] <= n_nests) {
-          nest_counts[nest_idx[j] - 1]++; // nest_idx is 1-based
-      } else {
-          Rcpp::stop("Invalid nest index found in nest_idx.");
-      }
-  }
-  arma::uvec is_singleton = (nest_counts == 1);
-  const int n_non_singleton_nests = arma::accu(is_singleton == 0);
-
-  // Lambda parameters (inclusive value coefficients)
-  const int lambda_start_idx = K;
-  
-  // Create a *full* lambda vector (size n_nests), initialized to 1 (ingletons will keep this value)
-  arma::vec lambda = arma::ones(n_nests); 
-  
-  // Create a map to link full nest index 'k' to its gradient position in 'theta'
-  // -1 indicates a singleton nest (lambda=1, not a parameter)
-  arma::ivec nest_k_to_theta_idx = arma::ivec(n_nests).fill(-1);
-  
-  if (n_non_singleton_nests > 0) {
-    // Check if theta is long enough
-    if (theta.n_elem < K + n_non_singleton_nests) {
-        Rcpp::stop("Error: theta vector is too short for K + n_non_singleton_nests.");
-    }
-    // Extract only the non-singleton lambdas from theta
-    arma::vec non_singleton_lambdas = theta.subvec(lambda_start_idx, lambda_start_idx + n_non_singleton_nests - 1);
-    if (arma::any(non_singleton_lambdas <= 0)) {
-        Rcpp::stop("Error: All non-singleton lambda (nest) parameters must be > 0.");
-    }
-    // "Scatter" non-singleton lambdas into the full lambda vector; build the k -> theta_index map
-    int current_lambda_idx = 0;
-    for (int k = 0; k < n_nests; ++k) {
-        if (is_singleton[k] == 0) { // if NOT a singleton
-            lambda[k] = non_singleton_lambdas[current_lambda_idx];
-            nest_k_to_theta_idx[k] = lambda_start_idx + current_lambda_idx;
-            current_lambda_idx++;
-        }
-    }
-  } else {
-    Rcpp::stop("Error: No non-singleton nests found. At least one nest must have multiple alternatives.");
-  }
-  
-  // ASC parameters (delta)
-  const int delta_start_idx = K + n_non_singleton_nests;
-  arma::vec delta;
-  
-  if (use_asc) {
-    // The length of delta is also calculated from the new start index
-    delta_length = n_params - K - n_non_singleton_nests;
-    
-    if (delta_length < 0) {
-      Rcpp::stop("Error: Not enough parameters for K + n_non_singleton_nests + n_delta.");
-    }
-    
-    if (delta_length > 0) {
-        if (include_outside_option) {
-          delta = theta.subvec(delta_start_idx, delta_start_idx + delta_length - 1);
-        } else {
-          delta = arma::zeros(delta_length + 1);
-          delta.subvec(1, delta_length) = theta.subvec(delta_start_idx, delta_start_idx + delta_length - 1);
-        }
-    } else {
-        // Check against K + n_non_singleton_nests
-        if (n_params != K + n_non_singleton_nests) {
-             Rcpp::stop("Error: Mismatch in parameters. Expected K + n_non_singleton_nests.");
-        }
-        delta = arma::zeros((include_outside_option) ? 0 : 1);
-    }
-  } else {
-    delta_length = 0;
-    delta = arma::zeros(delta_length);
-  }
+  // --- 1. Parameter Parsing (shared helper; also returns the map from full
+  // nest index k to lambda_k's position in theta, -1 for singleton nests) ---
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  arma::ivec nest_k_to_theta_idx;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length,
+                 &nest_k_to_theta_idx);
 
   // 0-based indexing for inputs
   arma::uvec alt_idx0 = alt_idx - 1;
@@ -143,8 +87,7 @@ Rcpp::List nl_loglik_gradient_parallel(
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = X * beta;
-  if (use_asc) base_util += delta.elem(alt_idx0);
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -245,16 +188,8 @@ Rcpp::List nl_loglik_gradient_parallel(
 
       // Delta block: scatter loop (irregular alt-index mapping)
       if (use_asc && delta_length > 0) {
-        for (int j = 0; j < m_i; ++j) {
-          const int a_id = alt_idx0_i[j];
-          if (include_outside_option) {
-            local_grad[delta_start_idx + a_id] += w_i * grad_vec[j];
-          } else {
-            if (a_id > 0) {
-              local_grad[delta_start_idx + (a_id - 1)] += w_i * grad_vec[j];
-            }
-          }
-        }
+        scatter_delta_grad(local_grad, delta_start_idx, grad_vec, alt_idx0_i,
+                           m_i, include_outside_option, w_i);
       } // end gradient block for beta/delta
 
       // 4.3: Gradient w.r.t. lambda_k
@@ -415,7 +350,9 @@ arma::mat nl_loglik_numeric_hessian(
 //                           inside alt, fixed to 0 when no outside option)
 //   delta_start_idx         offset of delta block in theta
 //   delta_length            number of *estimated* delta parameters
-// Mirrors the parsing logic inside nl_loglik_gradient_parallel exactly.
+//   nest_k_to_theta_idx     (optional) map from full nest index k to
+//                           lambda_k's position in theta; -1 for singletons
+// Used by every entry point, including nl_loglik_gradient_parallel.
 static void nl_parse_theta(
     const arma::vec& theta,
     const arma::uvec& nest_idx,
@@ -426,7 +363,8 @@ static void nl_parse_theta(
     arma::vec& lambda,
     arma::vec& delta,
     int& delta_start_idx,
-    int& delta_length
+    int& delta_length,
+    arma::ivec* nest_k_to_theta_idx
 ) {
   const int n_params = theta.n_elem;
   const int n_nests = arma::max(nest_idx); // 1-based nest_idx
@@ -448,6 +386,13 @@ static void nl_parse_theta(
   const int lambda_start_idx = K;
   lambda = arma::ones(n_nests);
 
+  // Optional output: map from full nest index k to lambda_k's position in
+  // theta; -1 marks singleton nests (lambda fixed to 1, not a parameter).
+  if (nest_k_to_theta_idx) {
+    nest_k_to_theta_idx->set_size(n_nests);
+    nest_k_to_theta_idx->fill(-1);
+  }
+
   if (n_non_singleton_nests > 0) {
     if (theta.n_elem < (unsigned)(K + n_non_singleton_nests)) {
       Rcpp::stop("Error: theta vector is too short for K + n_non_singleton_nests.");
@@ -461,6 +406,9 @@ static void nl_parse_theta(
     for (int k = 0; k < n_nests; ++k) {
       if (is_singleton[k] == 0) {
         lambda[k] = non_singleton_lambdas[current_lambda_idx];
+        if (nest_k_to_theta_idx) {
+          (*nest_k_to_theta_idx)[k] = lambda_start_idx + current_lambda_idx;
+        }
         current_lambda_idx++;
       }
     }
@@ -541,8 +489,7 @@ Rcpp::List nl_predict(
   arma::uvec nest_idx0 = nest_idx - 1;
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
-  arma::vec base_util = X * beta;
-  if (use_asc) base_util += delta.elem(alt_idx0);
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
   arma::vec V_all = arma::zeros(X.n_rows);
   arma::vec P_all = arma::zeros(X.n_rows);
@@ -600,8 +547,7 @@ static arma::vec nl_predict_shares_internal(
     Rcpp::stop("Error: Sum of weights must be positive.");
   }
 
-  arma::vec base_util = X * beta;
-  if (use_asc) base_util += delta.elem(alt_idx0);
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
   arma::vec global_shares = arma::zeros(num_alts);
 
@@ -778,13 +724,12 @@ arma::mat nl_elasticities_parallel(
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;
 
-  const int J_inside = use_asc ? delta.n_elem : (arma::max(alt_idx0) + 1);
-  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_total = compute_J_total(J_inside, include_outside_option);
 
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
-  arma::vec base_util = X * beta;
-  if (use_asc) base_util += delta.elem(alt_idx0);
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
@@ -820,12 +765,8 @@ arma::mat nl_elasticities_parallel(
       arma::vec x_k_i = X_i.col(var_idx);
 
       // Global alternative index for each inside alt (outside option = 0)
-      arma::uvec global_map(m_i);
-      if (include_outside_option) {
-        global_map = alt_idx0_i + 1;
-      } else {
-        global_map = alt_idx0_i;
-      }
+      arma::uvec global_map =
+          build_global_alt_map_inside(alt_idx0_i, include_outside_option);
 
       // Elasticity of P_ij (row j) w.r.t. attribute x of alt a (col a):
       //   E_ja = beta_k * x_{ia} * d log P_ij / d V_ia
@@ -947,13 +888,12 @@ arma::mat nl_diversion_ratios_parallel(
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;
 
-  const int J_inside = use_asc ? delta.n_elem : (arma::max(alt_idx0) + 1);
-  const int J_total = include_outside_option ? J_inside + 1 : J_inside;
+  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_total = compute_J_total(J_inside, include_outside_option);
 
   const Rcpp::IntegerVector S = compute_prefix_sum(M);
 
-  arma::vec base_util = X * beta;
-  if (use_asc) base_util += delta.elem(alt_idx0);
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
   // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j
   // denominator(j)  = sum_i w_i * (dP_ij/dV_ij)
@@ -989,12 +929,8 @@ arma::mat nl_diversion_ratios_parallel(
       const double P_out = include_outside_option ? std::exp(log_P_outside) : 0.0;
 
       // Global alternative index for each inside alt (outside option = 0)
-      arma::uvec global_map(m_i);
-      if (include_outside_option) {
-        global_map = alt_idx0_i + 1;
-      } else {
-        global_map = alt_idx0_i;
-      }
+      arma::uvec global_map =
+          build_global_alt_map_inside(alt_idx0_i, include_outside_option);
 
       // For each perturbed alt j (column), accumulate response of every alt.
       // dP_im/dV_ij = P_im * (d log P_im/d V_ij), with r = nest of j:
