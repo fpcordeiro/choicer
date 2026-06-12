@@ -9,6 +9,15 @@
 rm(list = ls(all.names = TRUE))
 gc()
 
+# devtools::load_all() lets pkgbuild inject debug flags (-O0 -UNDEBUG) by
+# overriding variables in the user Makevars, which would benchmark an
+# unoptimized choicer against -O2 CRAN builds of the reference packages (and
+# can clobber a custom OpenMP setup in ~/.R/Makevars on macOS). Disable the
+# injection and force a clean rebuild so the comparison is fair (pkgbuild
+# does not invalidate its cache on flag changes, hence the unconditional
+# clean).
+options(pkg.build_extra_flags = FALSE)
+pkgbuild::clean_dll()
 devtools::load_all()
 source("_benchmarks/bench_helpers.R")
 
