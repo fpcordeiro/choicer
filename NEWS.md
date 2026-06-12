@@ -4,6 +4,7 @@
 
 - `run_mnprobit()` — Bayesian multinomial probit via Gibbs sampling with data augmentation (Albert & Chib 1993; McCulloch & Rossi 1994). Runs the non-identified chain with conjugate priors and reports identified quantities normalized per draw by `sigma_11`. New `choicer_mnp` posterior object with `summary()` (posterior mean, SD, credible intervals), `coef()`, `vcov()`, `nobs()`; math note in `docs/bayesian_multinomial_probit_math.md`
 - C++ MCMC infrastructure built from scratch (`src/rng.h`, `src/bayes_samplers.h`): xoshiro256++/splitmix64 RNG with one stream per (iteration, observation) — draws are bitwise reproducible independent of the OpenMP thread count — plus exact truncated-normal (Robert 1995 tail rejection), multivariate-normal, Wishart (Bartlett), and inverse-Wishart samplers. The latent-utility sweep is OpenMP-parallel across choice situations
+- `simulate_mnp_data()` — probit DGP returning a `choicer_sim` with truth on the identified scale; `recovery_table()` gains a `choicer_mnp` method (posterior mean/SD, normal-approximation credible intervals, `sigma` block); parameter-recovery walkthrough in `inst/simulations/mnp_simulation.R`
 
 ## Post-estimation
 

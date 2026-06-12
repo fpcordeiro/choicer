@@ -111,6 +111,38 @@ test_that("recovery_table works for NL (exercises lambda block)", {
   expect_equal(nrow(rt), 9L)
 })
 
+test_that("recovery_table works for MNP (posterior summaries + sigma block)", {
+  sim <- simulate_mnp_data(N = 300, J = 3, seed = 42L)
+  fit <- suppressMessages(
+    run_mnprobit(
+      data = sim$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+      covariate_cols = c("x1", "x2"), use_asc = TRUE,
+      mcmc = list(R = 400, burn = 100, seed = 5)
+    )
+  )
+
+  rt <- recovery_table(fit, sim)
+  expect_s3_class(rt, "choicer_recovery")
+  expect_setequal(
+    names(rt),
+    c("parameter", "group", "true", "estimate", "se", "bias",
+      "rel_bias_pct", "z_vs_true", "lower_ci", "upper_ci", "covers")
+  )
+  # 2 beta + 2 asc + 3 sigma (lower triangle of the 2x2 identified Sigma) = 7.
+  expect_equal(nrow(rt), 7L)
+  expect_setequal(unique(rt$group), c("beta", "asc", "sigma"))
+
+  # Sigma_11 row is the identification normalization: exact, zero posterior SD
+  s11 <- rt[parameter == "Sigma_11"]
+  expect_equal(s11$true, 1)
+  expect_equal(s11$estimate, 1)
+  expect_equal(s11$se, 0)
+  expect_true(s11$covers)
+
+  # Accepts a bare true_params list too
+  expect_equal(rt, recovery_table(fit, sim$true_params))
+})
+
 test_that("monte_carlo MNL smoke test: coverage and bias in plausible ranges", {
   skip_on_cran()
 

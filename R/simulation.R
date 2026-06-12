@@ -35,7 +35,7 @@
 #' @param true_params Named list of true DGP parameters
 #'   (e.g. `beta`, `delta`, `Sigma`, `mu`, `lambdas`).
 #' @param settings Named list of DGP settings (e.g. `N`, `J`, `K_x`).
-#' @param model Character scalar: `"mnl"`, `"mxl"`, or `"nl"`.
+#' @param model Character scalar: `"mnl"`, `"mxl"`, `"nl"`, or `"mnp"`.
 #' @returns A list of class `choicer_sim`.
 #' @export
 new_choicer_sim <- function(data, true_params, settings, model) {
@@ -45,8 +45,8 @@ new_choicer_sim <- function(data, true_params, settings, model) {
   if (!is.list(true_params)) stop("`true_params` must be a named list.")
   if (!is.list(settings))    stop("`settings` must be a named list.")
   if (!is.character(model) || length(model) != 1L ||
-      !(model %in% c("mnl", "mxl", "nl"))) {
-    stop("`model` must be one of \"mnl\", \"mxl\", or \"nl\".")
+      !(model %in% c("mnl", "mxl", "nl", "mnp"))) {
+    stop("`model` must be one of \"mnl\", \"mxl\", \"nl\", or \"mnp\".")
   }
   structure(
     list(data = data, true_params = true_params, settings = settings, model = model),
@@ -317,6 +317,94 @@ simulate_mxl_data <- function(N = 5000,
       vary_choice_set = vary_choice_set
     ),
     model       = "mxl"
+  )
+}
+
+# MNP DGP ======================================================================
+
+#' Simulate multinomial probit data
+#'
+#' Generates synthetic choice data from the MNP data-generating process
+#' estimated by [run_mnprobit()]: latent utility differences against the base
+#' alternative (alternative 1),
+#' \deqn{w_i = X_i \beta + \delta + \varepsilon_i, \qquad
+#'       \varepsilon_i \sim N_{J-1}(0, \Sigma),}
+#' with alternative \eqn{j > 1} chosen iff
+#' \eqn{w_{ij} > \max(0, \max_{k \neq j} w_{ik})} and the base chosen iff all
+#' \eqn{w_{ij} < 0}. Covariates are Uniform(-1, 1). Choice sets are balanced
+#' (every individual faces all `J` alternatives), as the MNP estimator
+#' requires; there is no outside-option flag — model an outside good as a
+#' zero-covariate base alternative instead.
+#'
+#' The MNP likelihood only identifies parameters up to scale, so
+#' `true_params` is reported on the *identified* scale (normalized by
+#' \eqn{\sigma_{11}}): `beta` \eqn{= \beta / \sqrt{\sigma_{11}}}, `delta`
+#' \eqn{= \delta / \sqrt{\sigma_{11}}}, and `Sigma` \eqn{= \Sigma /
+#' \sigma_{11}} — the scale on which [run_mnprobit()] reports its posterior.
+#' With the default `Sigma` (\eqn{\sigma_{11} = 1}) the DGP scale and the
+#' identified scale coincide.
+#'
+#' @param N Number of choice situations.
+#' @param J Number of alternatives (alternative 1 is the base).
+#' @param beta Fixed coefficients for `x1..x{K_x}` (length `K_x = length(beta)`).
+#' @param delta ASCs of the differenced utilities, one per non-base
+#'   alternative (length `J - 1`). Defaults to an alternating pattern of
+#'   `c(0.5, -0.5)`.
+#' @param Sigma Covariance matrix of the differenced errors
+#'   (`(J-1) x (J-1)`).
+#' @param seed Random seed (`NULL` skips `set.seed()`).
+#' @returns A `choicer_sim` object. `true_params` contains `beta`, `delta`,
+#'   and `Sigma` on the identified scale (see Details).
+#' @examples
+#' \donttest{
+#' sim <- simulate_mnp_data(N = 1000, J = 3, seed = 123)
+#' print(sim)
+#' }
+#' @export
+simulate_mnp_data <- function(N = 5000,
+                              J = 3,
+                              beta = c(0.8, -0.6),
+                              delta = NULL,
+                              Sigma = matrix(c(1.0, 0.5, 0.5, 1.5), nrow = 2),
+                              seed = 123) {
+  if (!is.null(seed)) set.seed(seed)
+  p <- J - 1L
+  K_x <- length(beta)
+  Sigma <- as.matrix(Sigma)
+  if (nrow(Sigma) != p || ncol(Sigma) != p) {
+    stop("`Sigma` must be a ", p, " x ", p, " matrix (J - 1 utility differences).")
+  }
+  if (is.null(delta)) delta <- rep(c(0.5, -0.5), length.out = p)
+  if (length(delta) != p) stop("`delta` must have length J - 1 = ", p, ".")
+  x_names <- paste0("x", seq_len(K_x))
+
+  # Balanced choice sets: ids 1..N, alternatives 1..J.
+  dt <- data.table::data.table(
+    id  = rep(seq_len(N), each = J),
+    alt = rep(seq_len(J), N)
+  )
+  for (k in seq_len(K_x)) dt[, (x_names[k]) := stats::runif(.N, -1, 1)]
+
+  # Latent utility differences vs the base (alt 1): rows of W are the J - 1
+  # non-base components; delta recycles down the rows (one ASC per component).
+  V <- matrix(as.matrix(dt[, ..x_names]) %*% beta, nrow = J)        # J x N
+  L <- t(chol(Sigma))
+  eps <- L %*% matrix(stats::rnorm(p * N), p, N)
+  W <- (V[-1L, , drop = FALSE] - rep(1, p) %o% V[1L, ]) + delta + eps
+
+  chosen <- apply(W, 2, function(w) if (max(w) < 0) 1L else which.max(w) + 1L)
+  dt[, choice := as.integer(alt == chosen[id])]
+
+  s11 <- Sigma[1, 1]
+  new_choicer_sim(
+    data        = dt,
+    true_params = list(
+      beta  = beta / sqrt(s11),
+      delta = delta / sqrt(s11),
+      Sigma = Sigma / s11
+    ),
+    settings    = list(N = N, J = J, K_x = K_x, base_alt = 1L),
+    model       = "mnp"
   )
 }
 
