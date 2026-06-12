@@ -1,6 +1,7 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "choicer.h"
 #include "bayes_samplers.h"
+#include <R_ext/Utils.h>   // R_CheckUserInterrupt
 
 // ============================================================================
 // Bayesian multinomial probit (MNP) via Gibbs sampling with data augmentation
@@ -21,7 +22,30 @@
 // exact Gibbs step when parallelized over i. Each (iteration, observation)
 // task draws from its own RNG stream (rng.h), so results are bitwise
 // reproducible regardless of the number of OpenMP threads.
+//
+// The whole chain runs inside ONE OpenMP parallel region: the latent sweep
+// and the Mu refresh are work-shared loops, while the beta / Sigma
+// conditionals run on the master thread between barriers. Per-iteration
+// region setup/teardown is avoided, and no BLAS is called inside the region
+// (the master-path linear algebra is hand-rolled in a fixed summation
+// order), so worker threads only ever wait at lightweight barriers and the
+// draws stay independent of the thread count. Errors and user interrupts
+// inside the region are reported through a shared abort flag and raised
+// after the region ends (exceptions must not cross an OpenMP boundary;
+// R_ToplevelExec lets the master poll for interrupts without a longjmp).
 // ============================================================================
+
+namespace {
+
+void chk_int_fn(void*) { R_CheckUserInterrupt(); }
+
+// True if a user interrupt is pending. Safe inside the parallel region as
+// long as only the master (R's main) thread calls it.
+bool pending_interrupt() {
+  return R_ToplevelExec(chk_int_fn, nullptr) == FALSE;
+}
+
+}  // namespace
 
 static void validate_mnp_inputs(const arma::mat& X, const Rcpp::IntegerVector& y,
                                 const int p, const arma::vec& beta_bar,
@@ -187,29 +211,64 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
     }
   }
 
-  // Pre-allocated workspaces; mu_alias / vm_alias are non-owning vector
-  // views of the Mu / Vm memory (column-major p x N <-> stacked N*p layout).
-  arma::mat Mu(p, N), Vm(p, N), E(p, N);
-  arma::vec mu_alias(Mu.memptr(), static_cast<arma::uword>(N) * p, false, true);
-  arma::vec vm_alias(Vm.memptr(), static_cast<arma::uword>(N) * p, false, true);
+  // Pre-allocated workspaces (all shared; only the master thread writes the
+  // small ones, work-shared loops write disjoint columns of W / Mu).
+  arma::mat Mu(p, N), Vm(p, N);
   arma::mat Q(K, K), U(K, K), S(p, p), Vpost(p, p);
   arma::vec bvec(K), btilde(K), z(K);
-  mu_alias = X * beta;
+
+  // Hoisted per-iteration invariants of the latent sweep: the univariate
+  // conditionals of N_p(mu_i, Sigma) depend on i only through mu_i and the
+  // residuals, so tau_j = sqrt(1 / Omega(j, j)) and Ratio(k, j) =
+  // Omega(k, j) / Omega(j, j) are computed once per Sigma draw instead of
+  // once per (i, j).
+  arma::mat Ratio(p, p);
+  arma::vec tau(p);
+  for (int j = 0; j < p; ++j) {
+    const double ojj = Omega(j, j);
+    tau(j) = std::sqrt(1.0 / ojj);
+    for (int k = 0; k < p; ++k) Ratio(k, j) = Omega(k, j) / ojj;
+  }
+
+  const double* Xv = X.memptr();
+  const arma::uword NP = static_cast<arma::uword>(N) * p;
+
+  // Initial Mu = X beta, same per-observation summation order as the
+  // in-loop refresh.
+  for (int i = 0; i < N; ++i) {
+    double* mucol = Mu.colptr(i);
+    const arma::uword row0 = static_cast<arma::uword>(i) * p;
+    for (int j = 0; j < p; ++j) {
+      double s = 0.0;
+      for (int k = 0; k < K; ++k) s += Xv[k * NP + row0 + j] * beta(k);
+      mucol[j] = s;
+    }
+  }
 
   const int R_keep = (R - burn + thin - 1) / thin;
   arma::mat betadraw(R_keep, K);
   arma::mat sigmadraw(R_keep, p * (p + 1) / 2);
 
-  for (int r = 0; r < R; ++r) {
-    // --- (a) Latent sweep: w_ij | w_i,-j, beta, Sigma, y_i -------------------
-    // Univariate truncated-normal Gibbs steps using the precision-based
-    // conditionals of N_p(mu_i, Sigma): tau_j^2 = 1 / Omega(j, j) and
-    // m_ij = mu_ij - tau_j^2 * sum_{k != j} Omega(j, k) (w_ik - mu_ik).
+  // Abort protocol: the master thread records a reason and iteration, every
+  // thread re-reads the flag after a barrier and leaves the loop together;
+  // the corresponding Rcpp::stop happens after the parallel region.
+  enum { ABORT_NONE = 0, ABORT_CHOL, ABORT_INTERRUPT, ABORT_IWISHART,
+         ABORT_OMEGA };
+  int abort_code = ABORT_NONE;
+  int abort_iter = -1;
+
 #ifdef _OPENMP
 #pragma omp parallel
 #endif
-    {
-      arma::vec d(p);   // thread-local residuals w_i - mu_i
+  {
+    arma::vec d(p);   // thread-local residuals w_i - mu_i
+    arma::vec e(p);   // master-only scratch for the Sigma step
+
+    for (int r = 0; r < R; ++r) {
+      // --- (a) Latent sweep: w_ij | w_i,-j, beta, Sigma, y_i -----------------
+      // Univariate truncated-normal Gibbs steps using the precision-based
+      // conditionals of N_p(mu_i, Sigma): m_ij = mu_ij -
+      // sum_{k != j} Ratio(k, j) (w_ik - mu_ik), sd tau_j.
 #ifdef _OPENMP
 #pragma omp for schedule(static)
 #endif
@@ -222,14 +281,12 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
           d(j) = wcol[j] - mucol[j];
         }
         for (int j = 0; j < p; ++j) {
-          const double* ocol = Omega.colptr(j);   // = row j (Omega symmetric)
-          const double ojj = ocol[j];
-          double dot = 0.0;
+          const double* rcol = Ratio.colptr(j);
+          double rdot = 0.0;
           for (int k = 0; k < p; ++k) {
-            dot += ocol[k] * d(k);
+            rdot += rcol[k] * d(k);
           }
-          const double m = mucol[j] - (dot - ojj * d(j)) / ojj;
-          const double tau = std::sqrt(1.0 / ojj);
+          const double m = mucol[j] - (rdot - d(j));   // Ratio(j, j) == 1
 
           // Truncation region implied by y_i, given the other components.
           double lo = -arma::datum::inf;
@@ -245,69 +302,152 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
             hi = wcol[yi - 1];                     // below the chosen component
           }
 
-          wcol[j] = rtruncnorm(rng, m, tau, lo, hi);
+          wcol[j] = rtruncnorm(rng, m, tau(j), lo, hi);
           d(j) = wcol[j] - mucol[j];
         }
-      }
-    }
+      }   // implied barrier: sweep complete before the beta step
 
-    // --- (b) beta | w, Sigma: N(btilde, Q^{-1}) ------------------------------
-    // Q = A + sum_i X_i' Omega X_i, btilde = Q^{-1} (A beta_bar +
-    // sum_i X_i' Omega w_i); drawn via Cholesky solves, no inverse formed.
-    {
-      Xoshiro256pp rng_beta = make_stream(useed, r, static_cast<uint64_t>(N));
-      Q = A;
-      for (int j = 0; j < p; ++j) {
-        for (int k = 0; k < p; ++k) {
-          Q += Omega(j, k) * G[static_cast<size_t>(j) * p + k];
+      // --- (b) beta | w, Sigma: N(btilde, Q^{-1}) ----------------------------
+      // Q = A + sum_i X_i' Omega X_i, btilde = Q^{-1} (A beta_bar +
+      // sum_i X_i' Omega w_i); drawn via Cholesky solves, no inverse formed.
+      // Master-only; the X' (Omega w) products are hand-rolled in a fixed
+      // order so results do not depend on the BLAS or the thread count.
+#ifdef _OPENMP
+#pragma omp master
+#endif
+      {
+        Xoshiro256pp rng_beta = make_stream(useed, r, static_cast<uint64_t>(N));
+        Q = A;
+        for (int j = 0; j < p; ++j) {
+          for (int k = 0; k < p; ++k) {
+            Q += Omega(j, k) * G[static_cast<size_t>(j) * p + k];
+          }
+        }
+        for (int i = 0; i < N; ++i) {              // Vm = Omega W
+          const double* wcol = W.colptr(i);
+          double* vcol = Vm.colptr(i);
+          for (int j = 0; j < p; ++j) {
+            const double* ocol = Omega.colptr(j);  // = row j (Omega symmetric)
+            double s = 0.0;
+            for (int k = 0; k < p; ++k) s += ocol[k] * wcol[k];
+            vcol[j] = s;
+          }
+        }
+        const double* Vmv = Vm.memptr();           // bvec = Ab + X' vec(Vm)
+        for (int k = 0; k < K; ++k) {
+          const double* xc = X.colptr(k);
+          double s = 0.0;
+          for (arma::uword t = 0; t < NP; ++t) s += xc[t] * Vmv[t];
+          bvec(k) = Ab(k) + s;
+        }
+        if (!arma::chol(U, Q)) {
+          abort_code = ABORT_CHOL;
+          abort_iter = r;
+        } else {
+          btilde = arma::solve(arma::trimatl(U.t()), bvec);
+          btilde = arma::solve(arma::trimatu(U), btilde);
+          for (int k = 0; k < K; ++k) {
+            z(k) = rng_beta.rnorm();
+          }
+          beta = btilde + arma::solve(arma::trimatu(U), z);
         }
       }
-      Vm = Omega * W;
-      bvec = Ab + X.t() * vm_alias;
-      if (!arma::chol(U, Q)) {
-        Rcpp::stop("mnp_gibbs: posterior precision of beta is not positive "
-                   "definite at iteration %d.", r + 1);
-      }
-      btilde = arma::solve(arma::trimatl(U.t()), bvec);
-      btilde = arma::solve(arma::trimatu(U), btilde);
-      for (int k = 0; k < K; ++k) {
-        z(k) = rng_beta.rnorm();
-      }
-      beta = btilde + arma::solve(arma::trimatu(U), z);
-      mu_alias = X * beta;
-    }
+#ifdef _OPENMP
+#pragma omp barrier
+#endif
+      if (abort_code != ABORT_NONE) break;
 
-    // --- (c) Sigma | w, beta: IW(nu + N, V + S), S = sum_i eps_i eps_i' ------
-    {
-      Xoshiro256pp rng_sigma = make_stream(useed, r, static_cast<uint64_t>(N) + 1);
-      E = W - Mu;
-      S = E * E.t();
-      Vpost = V + S;
-      Vpost = 0.5 * (Vpost + Vpost.t());
-      Sigma = riwishart(rng_sigma, nu + N, Vpost);
-      if (!arma::inv_sympd(Omega, Sigma)) {
-        Rcpp::stop("mnp_gibbs: Sigma draw is numerically singular at "
-                   "iteration %d.", r + 1);
-      }
-    }
+      // --- Mu refresh: mu_i = X_i beta with the new beta ---------------------
+      // Per-observation summation order is fixed, so the result is bitwise
+      // independent of the number of threads.
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+      for (int i = 0; i < N; ++i) {
+        double* mucol = Mu.colptr(i);
+        const arma::uword row0 = static_cast<arma::uword>(i) * p;
+        for (int j = 0; j < p; ++j) {
+          double s = 0.0;
+          for (int k = 0; k < K; ++k) s += Xv[k * NP + row0 + j] * beta(k);
+          mucol[j] = s;
+        }
+      }   // implied barrier: Mu complete before the Sigma step
 
-    // --- Record and housekeeping ---------------------------------------------
-    if (r >= burn && (r - burn) % thin == 0) {
-      const int row = (r - burn) / thin;
-      betadraw.row(row) = beta.t();
-      int idx = 0;
-      for (int a = 0; a < p; ++a) {
-        for (int b = 0; b <= a; ++b) {
-          sigmadraw(row, idx++) = Sigma(a, b);
+      // --- (c) Sigma | w, beta: IW(nu + N, V + S), S = sum_i eps_i eps_i' ----
+#ifdef _OPENMP
+#pragma omp master
+#endif
+      {
+        Xoshiro256pp rng_sigma = make_stream(useed, r, static_cast<uint64_t>(N) + 1);
+        S.zeros();
+        for (int i = 0; i < N; ++i) {
+          const double* wcol = W.colptr(i);
+          const double* mucol = Mu.colptr(i);
+          for (int j = 0; j < p; ++j) e(j) = wcol[j] - mucol[j];
+          for (int j = 0; j < p; ++j) {
+            for (int k = 0; k <= j; ++k) S(j, k) += e(j) * e(k);
+          }
+        }
+        for (int j = 0; j < p; ++j) {
+          for (int k = j + 1; k < p; ++k) S(j, k) = S(k, j);
+        }
+        Vpost = V + S;
+        Vpost = 0.5 * (Vpost + Vpost.t());
+        if (!riwishart_nothrow(rng_sigma, nu + N, Vpost, Sigma)) {
+          abort_code = ABORT_IWISHART;
+          abort_iter = r;
+        } else if (!arma::inv_sympd(Omega, Sigma)) {
+          abort_code = ABORT_OMEGA;
+          abort_iter = r;
+        } else {
+          for (int j = 0; j < p; ++j) {
+            const double ojj = Omega(j, j);
+            tau(j) = std::sqrt(1.0 / ojj);
+            for (int k = 0; k < p; ++k) Ratio(k, j) = Omega(k, j) / ojj;
+          }
+
+          // --- Record and housekeeping (master, inside the region) ----------
+          if (r >= burn && (r - burn) % thin == 0) {
+            const int row = (r - burn) / thin;
+            betadraw.row(row) = beta.t();
+            int idx = 0;
+            for (int a = 0; a < p; ++a) {
+              for (int b = 0; b <= a; ++b) {
+                sigmadraw(row, idx++) = Sigma(a, b);
+              }
+            }
+          }
+          if (trace > 0 && (r + 1) % trace == 0) {
+            Rprintf("mnp_gibbs: iteration %d / %d\n", r + 1, R);
+          }
+          if ((r + 1) % 100 == 0 && pending_interrupt()) {
+            abort_code = ABORT_INTERRUPT;
+            abort_iter = r;
+          }
         }
       }
+#ifdef _OPENMP
+#pragma omp barrier
+#endif
+      if (abort_code != ABORT_NONE) break;
     }
-    if (trace > 0 && (r + 1) % trace == 0) {
-      Rprintf("mnp_gibbs: iteration %d / %d\n", r + 1, R);
-    }
-    if ((r + 1) % 100 == 0) {
-      Rcpp::checkUserInterrupt();
-    }
+  }
+
+  switch (abort_code) {
+    case ABORT_CHOL:
+      Rcpp::stop("mnp_gibbs: posterior precision of beta is not positive "
+                 "definite at iteration %d.", abort_iter + 1);
+    case ABORT_IWISHART:
+      Rcpp::stop("mnp_gibbs: Sigma scale matrix is not positive definite at "
+                 "iteration %d.", abort_iter + 1);
+    case ABORT_OMEGA:
+      Rcpp::stop("mnp_gibbs: Sigma draw is numerically singular at "
+                 "iteration %d.", abort_iter + 1);
+    case ABORT_INTERRUPT:
+      Rcpp::stop("mnp_gibbs: interrupted by user at iteration %d.",
+                 abort_iter + 1);
+    default:
+      break;
   }
 
   return Rcpp::List::create(
