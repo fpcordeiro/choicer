@@ -1,8 +1,9 @@
 # Cross-package benchmark helpers. Sourced by _benchmarks/*.R scripts.
 #
 # These helpers fit a `choicer_sim` object (from choicer::simulate_*_data())
-# with one or more reference packages (mlogit, logitr, mixl, gmnl, apollo) and
-# return a long data.table suitable for comparing coefficients, SEs, log-
+# with one or more reference packages (mlogit, logitr, mixl, gmnl, apollo for
+# the MLE models; bayesm, MNP for the Bayesian multinomial probit) and return
+# a long data.table suitable for comparing coefficients, SEs, log-
 # likelihoods, and wall time across implementations.
 #
 # Not part of the installed package: reference packages live in library()
@@ -27,6 +28,11 @@ suppressPackageStartupMessages({
 #   time_sec    numeric    wall time for fit() (repeated per parameter)
 #   converged   logical    convergence flag (repeated per parameter)
 #   n_params    integer    total number of estimated parameters (repeated)
+#
+# Bayesian (MNP) benchmarks reinterpret the columns: estimate / se are the
+# posterior mean / SD of the identified draws, loglik and converged are NA,
+# and an extra `ess` column carries the effective sample size of each
+# parameter's kept draws.
 
 .bench_row <- function(package, parameter, group, estimate, se, loglik, time_sec,
                        converged, n_params) {
@@ -59,8 +65,9 @@ suppressPackageStartupMessages({
 #' @param sim A `choicer_sim` object from simulate_mnl_data / simulate_mxl_data
 #'   / simulate_nl_data.
 #' @param packages Character vector of reference packages. Recognized names:
-#'   "choicer", "mlogit", "logitr", "mixl", "gmnl", "apollo". Not all packages
-#'   support every model; invalid combinations raise a clear error.
+#'   "choicer", "mlogit", "logitr", "mixl", "gmnl", "apollo", "bayesm",
+#'   "MNP". Not all packages support every model; invalid combinations raise
+#'   a clear error.
 #' @param ... Extra arguments forwarded to the per-package dispatcher.
 #' @return A `choicer_benchmark` (a data.table).
 benchmark_fit <- function(sim, packages = c("choicer"), ...) {
@@ -312,6 +319,193 @@ bench_mxl_logitr <- function(sim, S = NULL, rc_dist = NULL, ...) {
              isTRUE(fit$status >= 0), length(est))
 }
 
+# Bayesian MNP dispatchers =====================================================
+#
+# All three samplers target the same model (latent utility differences vs a
+# base alternative, multivariate normal errors). Comparisons are made on the
+# identified scale: each kept draw is normalized by sigma_11, so estimate =
+# E[beta / sqrt(sigma_11)] and Sigma rows are E[Sigma / sigma_11] -- directly
+# comparable to `sim$true_params` from simulate_mnp_data(). Parameter names
+# are canonicalized to choicer's (x*, ASC_*, Sigma_ij with row-wise lower
+# triangle), so the long table lines up across packages.
+#
+# Dispatchers accept a shared `mcmc = list(R, burn, thin)` so every package
+# runs the same chain length on the same dataset.
+
+# Same initial-positive-sequence ESS estimator as
+# inst/simulations/mnp_simulation.R (duplicated: this file is source()'d,
+# not part of the package).
+.ess <- function(x) {
+  n <- length(x)
+  rho <- as.numeric(stats::acf(x, lag.max = min(200L, n - 1L), plot = FALSE)$acf)[-1]
+  cut <- which(rho < 0)[1]
+  if (!is.na(cut)) rho <- rho[seq_len(cut - 1L)]
+  n / (1 + 2 * sum(rho))
+}
+
+.mnp_mcmc_defaults <- function(mcmc) {
+  list(
+    R    = as.integer(mcmc$R %||% 20000L),
+    burn = as.integer(mcmc$burn %||% 5000L),
+    thin = as.integer(mcmc$thin %||% 5L)
+  )
+}
+
+# choicer's Sigma draw naming: row-wise lower triangle (11, 21, 22, 31, ...)
+.sigma_names <- function(p) {
+  nm <- character(p * (p + 1L) / 2L)
+  k <- 1L
+  for (i in seq_len(p)) {
+    for (j in seq_len(i)) {
+      nm[k] <- sprintf("Sigma_%d%d", i, j)
+      k <- k + 1L
+    }
+  }
+  nm
+}
+
+.mnp_bench_rows <- function(package, beta_id, sigma_id, groups_beta, time_sec) {
+  draws <- cbind(beta_id, sigma_id)
+  out <- .bench_row(
+    package, colnames(draws),
+    c(groups_beta, rep("sigma", ncol(sigma_id))),
+    colMeans(draws), apply(draws, 2, stats::sd),
+    NA_real_, time_sec, NA, ncol(draws)
+  )
+  out[, ess := apply(draws, 2, .ess)]
+  # Sigma_11 == 1 by construction on the identified scale; ESS is undefined
+  out[parameter == "Sigma_11", ess := NA_real_]
+  out[]
+}
+
+bench_mnp_choicer <- function(sim, mcmc = list(), ...) {
+  m <- .mnp_mcmc_defaults(mcmc)
+  tic <- Sys.time()
+  fit <- run_mnprobit(
+    data = sim$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = paste0("x", seq_len(sim$settings$K_x)),
+    use_asc = TRUE,
+    mcmc = list(R = m$R, burn = m$burn, thin = m$thin)
+  )
+  elapsed <- as.numeric(difftime(Sys.time(), tic, units = "secs"))
+  pm <- fit$param_map
+  groups <- rep("other", fit$n_params)
+  groups[pm$beta] <- "beta"
+  if (!is.null(pm$asc)) groups[pm$asc] <- "asc"
+  .mnp_bench_rows("choicer", fit$draws$beta, fit$draws$sigma, groups, elapsed)
+}
+
+bench_mnp_bayesm <- function(sim, mcmc = list(), ...) {
+  .require("bayesm")
+  m <- .mnp_mcmc_defaults(mcmc)
+  if (m$burn %% m$thin != 0L) {
+    stop("bayesm dispatcher requires mcmc$burn divisible by mcmc$thin.")
+  }
+  # Closest apples-to-apples reference: rmnpGibbs implements the same
+  # McCulloch-Rossi (1994) Gibbs sampler, and runs here on the *identical*
+  # differenced design matrix and priors as choicer (via prepare_mnp_data()).
+  # bayesm codes the base alternative as y = J; choicer codes it as 0.
+  input <- prepare_mnp_data(
+    sim$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = paste0("x", seq_len(sim$settings$K_x)), use_asc = TRUE
+  )
+  y <- ifelse(input$y == 0L, input$J, input$y)
+  nu <- input$p + 3
+
+  tic <- Sys.time()
+  out <- bayesm::rmnpGibbs(
+    Data = list(y = y, X = input$X, p = input$J),
+    Prior = list(betabar = rep(0, input$K), A = 0.01 * diag(input$K),
+                 nu = nu, V = nu * diag(input$p)),
+    Mcmc = list(R = m$R, keep = m$thin, nprint = 0)
+  )
+  elapsed <- as.numeric(difftime(Sys.time(), tic, units = "secs"))
+
+  # rmnpGibbs has no burn-in argument: drop the first burn/thin kept rows,
+  # then normalize per draw by sigma_11.
+  drop_rows <- seq_len(m$burn %/% m$thin)
+  betadraw <- out$betadraw[-drop_rows, , drop = FALSE]
+  sigmadraw <- out$sigmadraw[-drop_rows, , drop = FALSE]
+  s11 <- sigmadraw[, 1L]
+  beta_id <- betadraw / sqrt(s11)
+  colnames(beta_id) <- colnames(input$X)
+
+  # sigmadraw rows are vec(Sigma) (column-major p x p); reorder to choicer's
+  # row-wise lower triangle
+  p <- input$p
+  lower_idx <- unlist(lapply(seq_len(p), function(i) (seq_len(i) - 1L) * p + i))
+  sigma_id <- (sigmadraw / s11)[, lower_idx, drop = FALSE]
+  colnames(sigma_id) <- .sigma_names(p)
+
+  groups <- rep("other", ncol(beta_id))
+  groups[input$param_map$beta] <- "beta"
+  if (!is.null(input$param_map$asc)) groups[input$param_map$asc] <- "asc"
+  .mnp_bench_rows("bayesm", beta_id, sigma_id, groups, elapsed)
+}
+
+bench_mnp_MNP <- function(sim, mcmc = list(), ...) {
+  .require("MNP")
+  m <- .mnp_mcmc_defaults(mcmc)
+  x_cols <- paste0("x", seq_len(sim$settings$K_x))
+  base_alt <- sim$settings$base_alt
+
+  # MNP::mnp() wants wide data (one row per choice situation) with a factor
+  # response, plus a list of per-alternative covariate matrices (choiceX).
+  dt <- copy(sim$data)
+  wide <- dcast(dt, id ~ alt, value.var = x_cols)
+  wide <- merge(wide, dt[choice == 1L, .(id, choice = factor(alt))], by = "id")
+  setorder(wide, id)
+  alts <- sort(unique(dt$alt))
+  choiceX <- lapply(alts, function(a) {
+    as.matrix(wide[, paste0(x_cols, "_", a), with = FALSE])
+  })
+  names(choiceX) <- as.character(alts)
+
+  # Imai-van Dyk (2005) marginal data augmentation sampler. Priors are
+  # matched where the parameterizations align: p.var = 100 is choicer's
+  # prior precision A = 0.01 * I, p.df its nu = p + 3. MNP identifies the
+  # scale in-sampler (trace restriction by default), so its implied prior on
+  # Sigma is not identical to the inverse-Wishart used by choicer/bayesm;
+  # draws are renormalized to the sigma_11 = 1 scale below either way.
+  # MNP's `thin` counts skipped draws, hence thin - 1 to keep every thin-th.
+  # mnp() forwards `choiceX` unevaluated and evaluates it against `data` with
+  # fallback to the global environment, so a local variable is not visible
+  # here; do.call() inlines the evaluated list into the call.
+  p <- length(alts) - 1L
+  tic <- Sys.time()
+  fit <- do.call(MNP::mnp, list(
+    choice ~ 1, data = as.data.frame(wide),
+    choiceX = choiceX, cXnames = x_cols,
+    base = as.character(base_alt),
+    n.draws = m$R, burnin = m$burn, thin = m$thin - 1L,
+    p.var = 100, p.df = p + 3,
+    verbose = FALSE
+  ))
+  elapsed <- as.numeric(difftime(Sys.time(), tic, units = "secs"))
+
+  # fit$param columns: coefficients, then the upper triangle of Sigma named
+  # by alternative labels ("2:2", "2:3", ...). Note "(Intercept):2" also
+  # contains ":", so covariance columns are matched by exact name.
+  draws <- fit$param
+  non_base <- setdiff(alts, base_alt)
+  sig_cols <- unlist(lapply(seq_len(p), function(i) {
+    vapply(seq_len(i), function(j) paste0(non_base[j], ":", non_base[i]), character(1))
+  }))
+  stopifnot(all(sig_cols %in% colnames(draws)))
+
+  s11 <- draws[, sig_cols[1L]]
+  sigma_id <- draws[, sig_cols, drop = FALSE] / s11
+  colnames(sigma_id) <- .sigma_names(p)
+
+  beta_id <- draws[, setdiff(colnames(draws), sig_cols), drop = FALSE] / sqrt(s11)
+  colnames(beta_id) <- sub("^\\(Intercept\\):", "ASC_", colnames(beta_id))
+  # match choicer's column order: covariates first, then ASCs
+  beta_id <- beta_id[, c(x_cols, setdiff(colnames(beta_id), x_cols)), drop = FALSE]
+
+  groups <- ifelse(colnames(beta_id) %in% x_cols, "beta", "asc")
+  .mnp_bench_rows("MNP", beta_id, sigma_id, groups, elapsed)
+}
+
 # Stubs for packages without working dispatchers yet ===========================
 # These raise a clear error so benchmark_fit() surfaces the gap rather than
 # silently skipping. Implement them by adapting the reference package's own
@@ -331,6 +525,7 @@ print.choicer_benchmark <- function(x, ...) {
   for (col in c("estimate", "se", "loglik", "time_sec")) {
     show[, (col) := round(get(col), 4)]
   }
+  if ("ess" %in% names(show)) show[, ess := round(ess)]
   print(show)
   invisible(x)
 }
