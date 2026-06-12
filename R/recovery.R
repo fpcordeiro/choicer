@@ -168,6 +168,58 @@ recovery_table.choicer_fit <- function(object, truth = NULL, level = 0.95, ...) 
   out
 }
 
+#' @describeIn recovery_table Method for Bayesian MNP fits (`choicer_mnp`).
+#'   The `estimate` column holds posterior means of the identified draws and
+#'   `se` holds their posterior standard deviations, so `lower_ci` /
+#'   `upper_ci` are normal-approximation credible intervals. In addition to
+#'   the `beta` and `asc` blocks, a `sigma` block compares the identified
+#'   covariance of the utility differences (lower triangle in the
+#'   estimator's row-major `Sigma_ij` order); its first row is the
+#'   `sigma_11 = 1` normalization and is exact by construction. `truth` must
+#'   be on the identified scale, as returned by [simulate_mnp_data()].
+#' @export
+recovery_table.choicer_mnp <- function(object, truth = NULL, level = 0.95, ...) {
+  if (inherits(truth, "choicer_sim")) truth <- truth$true_params
+  if (!is.list(truth)) stop("`truth` must be a named list or a `choicer_sim`.")
+  z <- stats::qnorm(1 - (1 - level) / 2)
+
+  # Extended estimate/SD vectors: coefficients first, then the Sigma lower
+  # triangle (posterior summaries of the identified draws).
+  sigma_mean <- colMeans(object$draws$sigma)
+  sigma_sd   <- apply(object$draws$sigma, 2, stats::sd)
+  coefs <- c(stats::coef(object), sigma_mean)
+  se    <- c(object$se, sigma_sd)
+
+  pm <- object$param_map
+  blocks <- list()
+  if (!is.null(pm$beta) && !is.null(truth$beta)) {
+    blocks <- c(blocks, list(list(
+      group = "beta", idx = pm$beta, truth_vec = as.numeric(truth$beta)
+    )))
+  }
+  if (!is.null(pm$asc) && !is.null(truth$delta)) {
+    blocks <- c(blocks, list(list(
+      group = "asc", idx = pm$asc, truth_vec = as.numeric(truth$delta)
+    )))
+  }
+  if (!is.null(truth$Sigma)) {
+    blocks <- c(blocks, list(list(
+      group = "sigma",
+      idx = object$n_params + seq_along(sigma_mean),
+      truth_vec = vech_row(as.matrix(truth$Sigma))
+    )))
+  }
+
+  rows <- lapply(blocks, function(b) {
+    .build_recovery_rows(b$group, b$idx, b$truth_vec, coefs, se, z)
+  })
+  out <- data.table::rbindlist(rows)
+  class(out) <- c("choicer_recovery", class(out))
+  attr(out, "level") <- level
+  attr(out, "model") <- "choicer_mnp"
+  out
+}
+
 #' @describeIn recovery_table For a `choicer_mc` object, delegates to
 #'   `summary(object, level)` and returns a `choicer_mc_summary`. Inspect
 #'   `object$replications` directly for per-rep detail.

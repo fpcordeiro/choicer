@@ -3,12 +3,15 @@
 \name{recovery_table}
 \alias{recovery_table}
 \alias{recovery_table.choicer_fit}
+\alias{recovery_table.choicer_mnp}
 \alias{recovery_table.choicer_mc}
 \title{Parameter recovery table}
 \usage{
 recovery_table(object, truth = NULL, level = 0.95, ...)
 
 \method{recovery_table}{choicer_fit}(object, truth = NULL, level = 0.95, ...)
+
+\method{recovery_table}{choicer_mnp}(object, truth = NULL, level = 0.95, ...)
 
 \method{recovery_table}{choicer_mc}(object, truth = NULL, level = 0.95, ...)
 }
@@ -52,6 +55,16 @@ dropped before the comparison so lengths match.
 \code{data.table}) with columns \code{parameter}, \code{group}, \code{true}, \code{estimate},
 \code{se}, \code{bias}, \code{rel_bias_pct}, \code{z_vs_true}, \code{lower_ci}, \code{upper_ci},
 \code{covers}.
+
+\item \code{recovery_table(choicer_mnp)}: Method for Bayesian MNP fits (\code{choicer_mnp}).
+The \code{estimate} column holds posterior means of the identified draws and
+\code{se} holds their posterior standard deviations, so \code{lower_ci} /
+\code{upper_ci} are normal-approximation credible intervals. In addition to
+the \code{beta} and \code{asc} blocks, a \code{sigma} block compares the identified
+covariance of the utility differences (lower triangle in the
+estimator's row-major \code{Sigma_ij} order); its first row is the
+\code{sigma_11 = 1} normalization and is exact by construction. \code{truth} must
+be on the identified scale, as returned by \code{\link[=simulate_mnp_data]{simulate_mnp_data()}}.
 
 \item \code{recovery_table(choicer_mc)}: For a \code{choicer_mc} object, delegates to
 \code{summary(object, level)} and returns a \code{choicer_mc_summary}. Inspect
