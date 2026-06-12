@@ -795,7 +795,6 @@ arma::mat nl_elasticities_parallel(
         const int global_j = global_map[j];
         const int r = nest_idx0_i[j];   // nest of responding alt j
         const double lam_r = lambda[r];
-        const double P_ij = P_i[j];
 
         for (int a = 0; a < m_i; ++a) {
           const int global_a = global_map[a];
