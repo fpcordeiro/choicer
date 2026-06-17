@@ -60,9 +60,21 @@ Rcpp::List mnl_loglik_gradient_parallel(
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
 
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  // Rcpp::stop() is only safe outside parallel regions.
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d", i);
+    }
+  }
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
+  bool nonfinite_seen = false; // H1: flag set inside parallel, warning emitted after
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -72,6 +84,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
     arma::vec diff_vec; // pre-allocated per-thread, resized per individual
+    bool local_nonfinite = false;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -96,21 +109,18 @@ Rcpp::List mnl_loglik_gradient_parallel(
       arma::vec P_i;
       const double log_denom = stable_softmax(V_i, P_i);
 
-      // Identify chosen alternative
+      // Identify chosen alternative (validated serially above)
       int chosen_alt = choice_idx[i];
       if (!include_outside_option) {
         chosen_alt -= 1; // shift by 1 for inside-only indexing
-      }
-      if (chosen_alt < 0 || chosen_alt >= num_choices) {
-        Rcpp::stop("Invalid chosen alternative index for individual %d", i);
       }
 
       // Probability of chosen alternative
       double V_choice = V_i(chosen_alt);
       double log_P_choice = V_choice - log_denom;
       if (!std::isfinite(log_P_choice)) {
-        Rcpp::Rcout << "Warning: log_P_choice is not finite at individual " << i << std::endl;
-        log_P_choice = -1e10; // fallback to a large negative value
+        local_nonfinite = true; // H1: note without printing (R-API unsafe here)
+        log_P_choice = -1e10;  // fallback to a large negative value
       }
 
       // Accumulate local weighted log-likelihood
@@ -149,13 +159,27 @@ Rcpp::List mnl_loglik_gradient_parallel(
     {
       global_loglik += local_loglik;
       global_grad += local_grad;
+      if (local_nonfinite) nonfinite_seen = true;
     }
   } // end parallel region
 
-  // Return negative log-likelihood and gradient
+  // H1: emit warning once, outside the parallel region (R-API safe here)
+  if (nonfinite_seen) {
+    Rcpp::warning("Non-finite log-probability encountered; clamped to -1e10. Check for extreme utility values.");
+  }
+
+  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel)
+  double obj = -global_loglik;
+  arma::vec grad = -global_grad;
+  if (!std::isfinite(obj)) {
+    obj = 1e10;
+    grad.zeros();
+  } else {
+    grad.elem(arma::find_nonfinite(grad)).zeros();
+  }
   return Rcpp::List::create(
-    Rcpp::Named("objective") = -global_loglik,
-    Rcpp::Named("gradient")  = -global_grad
+    Rcpp::Named("objective") = obj,
+    Rcpp::Named("gradient")  = grad
   );
 }
 
@@ -481,6 +505,7 @@ arma::vec blp_contraction(
 
   // iterate until convergence or until max_iter reached
   while (iter < max_iter) {
+      Rcpp::checkUserInterrupt(); // H4: allow user to interrupt long-running contraction
       delta_new = delta_old + (log_shares_target - log_shares_old);
       if (include_outside_option) {
         // Outside option's delta is the fixed normalization; pin it at 0.

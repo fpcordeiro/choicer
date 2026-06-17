@@ -91,6 +91,17 @@ Rcpp::List nl_loglik_gradient_parallel(
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  // Rcpp::stop() is only safe outside parallel regions.
+  for (int i = 0; i < N; ++i) {
+    const int chosen_alt_idx_check = choice_idx[i];
+    if (include_outside_option && chosen_alt_idx_check == 0) continue; // outside option is valid
+    const int chosen_inside = chosen_alt_idx_check - 1;
+    if (chosen_inside < 0 || chosen_inside >= M[i]) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d", i);
+    }
+  }
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -144,18 +155,14 @@ Rcpp::List nl_loglik_gradient_parallel(
       if (include_outside_option && chosen_alt_idx == 0) {
         log_P_choice = log_P_outside;
       } else {
+        // validated serially above; no in-loop Rcpp::stop needed
         chosen_inside_idx = chosen_alt_idx - 1;
-
-        if (chosen_inside_idx < 0 || chosen_inside_idx >= m_i) {
-          Rcpp::stop("Invalid chosen alternative index for individual %d", i);
-        }
-
         log_P_choice = log_P_i[chosen_inside_idx];
         chosen_nest_k = nest_idx0_i[chosen_inside_idx];
       }
 
       if (!std::isfinite(log_P_choice)) {
-        log_P_choice = -1e10;
+        log_P_choice = -1e10; // H1: clamp without in-loop R-API call
       }
       local_loglik += w_i * log_P_choice;
 
@@ -196,32 +203,32 @@ Rcpp::List nl_loglik_gradient_parallel(
 
       // 4.3: Gradient w.r.t. lambda_k
       for (int k = 0; k < n_nests; ++k) {
-        
+
         // Check if this nest 'k' corresponds to an estimated parameter
         const int theta_idx_k = thread_nest_k_to_theta_idx[k];
         if (theta_idx_k == -1) continue;
- 
+
         if (!std::isfinite(log_I_k[k])) continue;
 
         const double lambda_k = lambda[k];
         double grad_lambda_k = 0.0;
-        
+
         double term_in_brackets = log_I_k[k] - (1.0 / lambda_k) * sum_P_V_k[k];
-        
+
         double P_k_k = P_k[k]; // P(B_k)
-        
+
         if (k == chosen_nest_k) {
           grad_lambda_k += (1.0 - P_k_k) * term_in_brackets;
-          
+
           double V_chosen = V_inside[chosen_inside_idx];
           grad_lambda_k += (1.0 / (lambda_k * lambda_k)) * (sum_P_V_k[k] - V_chosen);
-          
+
         } else {
           grad_lambda_k += -P_k_k * term_in_brackets;
         }
-        
+
         local_grad[theta_idx_k] += w_i * grad_lambda_k;
-        
+
       } // end gradient loop for lambda
     } // end of i loop
 
@@ -235,10 +242,18 @@ Rcpp::List nl_loglik_gradient_parallel(
     }
   } // end parallel region
 
-  // Return negative log-likelihood and gradient for minimization
+  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel)
+  double obj = -global_loglik;
+  arma::vec grad = -global_grad;
+  if (!std::isfinite(obj)) {
+    obj = 1e10;
+    grad.zeros();
+  } else {
+    grad.elem(arma::find_nonfinite(grad)).zeros();
+  }
   return Rcpp::List::create(
-    Rcpp::Named("objective") = -global_loglik,
-    Rcpp::Named("gradient")  = -global_grad
+    Rcpp::Named("objective") = obj,
+    Rcpp::Named("gradient")  = grad
   );
 }
 
@@ -1135,6 +1150,7 @@ arma::vec nl_blp_contraction(
   int iter = 0;
 
   while (iter < max_iter) {
+    Rcpp::checkUserInterrupt(); // H4: allow user to interrupt long-running contraction
     delta_new = delta_old + damping * (log_shares_target - log_shares_old);
     if (include_outside_option) {
       // Outside option's delta is the fixed normalization; pin it at 0.
