@@ -530,6 +530,9 @@ arma::mat mxl_hessian_parallel(
     // cc: Kc x Kc dense outer-product sum
     arma::mat sum_Pzz_cc(Kc, Kc);
     // cd: Kc x Jd; each col j accumulates P_a * zc_a for the alt whose delta is j
+    // Note: the "Jd > 0 ? Jd : 1" sentinel below (and for all Jd-sized buffers) avoids
+    // zero-size allocation when there are no ASC parameters; these buffers are never read
+    // when Jd == 0 because every access is guarded by "if (Jd > 0)" / "if (j_delta >= 0)".
     arma::mat sum_Pzz_cd(Kc, Jd > 0 ? Jd : 1);
     // dd: diagonal only — stored as length-Jd vector
     arma::vec sum_Pzz_dd(Jd > 0 ? Jd : 1);
@@ -617,11 +620,8 @@ arma::mat mxl_hessian_parallel(
         for (int a = 0; a < num_choices; ++a) {
           // Determine if this alt contributes a nonzero z (outside option at a==0 skips)
           if (include_outside_option && a == 0) {
-            // outside option: z_as == 0, H_V_as == 0; only P contributes to g via diff
-            // diff = (a==chosen_alt ? 1 : 0) - P_s(a)
-            const double diff = (a == chosen_alt ? 1.0 : 0.0) - P_s(a);
-            // zc_a is zero, delta index is irrelevant — nothing to accumulate
-            (void)diff; // no contribution when z=0
+            // Outside option: z_as == 0 and H_V_as == 0, so this alternative
+            // contributes nothing to the Hessian accumulators — skip entirely.
             continue;
           }
 
