@@ -144,6 +144,17 @@ Rcpp::List mxl_loglik_gradient_parallel(
   arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  // Rcpp::stop() is only safe outside parallel regions.
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_loglik_gradient_parallel)", i);
+    }
+  }
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -181,7 +192,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
       arma::mat W_i =
           make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
-      // chosen alternative index
+      // chosen alternative index (validated serially above)
       int chosen_alt = choice_idx[i];
       if (!include_outside_option)
         chosen_alt -= 1; // to 0-based inside-only
@@ -204,15 +215,19 @@ Rcpp::List mxl_loglik_gradient_parallel(
       arma::mat Dgamma1;
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
+      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
+
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
         // Column views into the batched matrices (zero-copy)
         const auto eta_i_s             = eta_i.col(s);
-        const auto gamma_i_s_final     = Gamma_final.col(s);
+        const auto gamma_i_s_final     = Gamma_final.col(s); // still needed for grad L-block
         const auto dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector V_i_s for individual i and simulation s
-        inside_utils = base_util_i + W_i * gamma_i_s_final; // Length m_i
+        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+        inside_utils = base_util_i + WGamma.col(s); // Length m_i
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
 
@@ -482,6 +497,16 @@ arma::mat mxl_hessian_parallel(
   arma::vec base_util_h = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_hessian_parallel)", i);
+    }
+  }
+
   // Global accumulator
   arma::mat global_hess = arma::zeros(n_params, n_params);
 
@@ -490,6 +515,20 @@ arma::mat mxl_hessian_parallel(
 #endif
   {
     arma::mat local_hess = arma::zeros(n_params, n_params);
+
+    // CHANGE #5: Hoist per-draw / per-alt allocations outside the for-i loop
+    // as thread-private scratch; reset per use inside the loops.
+    arma::vec V_s;          // resized per individual
+    arma::vec inside_utils; // resized per individual
+    arma::vec P_s;          // resized per individual
+    // Per-draw accumulators (reset to zero at start of each draw s)
+    arma::vec g_is(n_params);
+    arma::vec sum_Pz(n_params);
+    arma::mat sum_Pzz(n_params, n_params);
+    arma::mat sum_diff_H_V(n_params, n_params);
+    // Per-alt scratch (reset to zero at start of each alt a)
+    arma::vec z_as(n_params);
+    arma::mat H_V_as(n_params, n_params);
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -506,6 +545,7 @@ arma::mat mxl_hessian_parallel(
       arma::mat W_i =
           make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
+      // chosen alternative index (validated serially above)
       int chosen_alt = choice_idx[i];
       if (!include_outside_option)
         chosen_alt -= 1;
@@ -518,40 +558,48 @@ arma::mat mxl_hessian_parallel(
       arma::vec grad_numerator = arma::zeros(n_params);
       arma::mat hess_term1_numerator = arma::zeros(n_params, n_params);
 
+      // CHANGE #5: resize thread-private scratch to current individual's size
+      V_s.set_size(num_choices);
+      inside_utils.set_size(m_i);
+
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Dgamma1, Dgamma2;
       arma::mat Gamma_final =
           batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1, &Dgamma2);
 
+      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
+
       // Loop over simulations (draws) s
       for (int s = 0; s < Sdraw; ++s) {
         // Column views into the batched matrices (zero-copy)
         const auto eta_i_s                = eta_i.col(s);
-        const auto gamma_i_s_final        = Gamma_final.col(s);
+        const auto gamma_i_s_final        = Gamma_final.col(s); // still needed for grad blocks
         const auto dgamma_final_dgamma    = Dgamma1.col(s);
         const auto d2gamma_final_dgamma2  = Dgamma2.col(s);
 
         // === 3. Utility ===
-        arma::vec V_s(num_choices);
-        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+        inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
 
-        arma::vec P_s;
         stable_softmax(V_s, P_s);
         double P_choice_s = P_s(chosen_alt);
         P_s_vec(s) = P_choice_s;
 
         // === 4. Per-Draw Gradient (g_is) and Hessian (H_is) ===
-        arma::vec g_is = arma::zeros(n_params);
-        arma::vec sum_Pz = arma::zeros(n_params);
-        arma::mat sum_Pzz = arma::zeros(n_params, n_params);
-        arma::mat sum_diff_H_V = arma::zeros(n_params, n_params);
+        // CHANGE #5: re-zero accumulated scratch at the start of each draw
+        g_is.zeros();
+        sum_Pz.zeros();
+        sum_Pzz.zeros();
+        sum_diff_H_V.zeros();
 
         for (int a = 0; a < num_choices; ++a) {
-          arma::vec z_as = arma::zeros(n_params);
-          arma::mat H_V_as = arma::zeros(n_params, n_params);
+          // CHANGE #5: re-zero per-alt scratch at the start of each alt
+          z_as.zeros();
+          H_V_as.zeros();
 
           if (!include_outside_option || a > 0) {
             int current_a_idx = include_outside_option ? a - 1 : a;
@@ -775,6 +823,16 @@ arma::mat mxl_bhhh_parallel(
   arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_bhhh_parallel)", i);
+    }
+  }
+
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
 
@@ -810,6 +868,7 @@ arma::mat mxl_bhhh_parallel(
       arma::mat W_i =
           make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
 
+      // chosen alternative index (validated serially above)
       int chosen_alt = choice_idx[i];
       if (!include_outside_option)
         chosen_alt -= 1;
@@ -829,15 +888,19 @@ arma::mat mxl_bhhh_parallel(
       arma::mat Dgamma1;
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
+      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
+
       // Loop over simulations
       for (int s = 0; s < Sdraw; ++s) {
         // Column views into the batched matrices (zero-copy)
         const auto eta_i_s             = eta_i.col(s);
-        const auto gamma_i_s_final     = Gamma_final.col(s);
+        const auto gamma_i_s_final     = Gamma_final.col(s); // still needed for grad L-block
         const auto dgamma_final_dgamma = Dgamma1.col(s);
 
         // Build utility vector
-        inside_utils = base_util_i + W_i * gamma_i_s_final;
+        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+        inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
 
@@ -993,18 +1056,21 @@ arma::vec mxl_predict_shares_internal(
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
-      for (int s = 0; s < Sdraw; ++s) {
-        // Column view into the batched matrix (zero-copy)
-        const auto gamma_i_s_final = Gamma_final.col(s);
+      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
 
-        // Build utility vector
-        arma::vec V_s(num_choices);
-        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+      // CHANGE #5: hoist per-draw temporaries outside the s loop
+      arma::vec V_s(num_choices);
+      arma::vec inside_utils(m_i);
+      arma::vec P_s;
+
+      for (int s = 0; s < Sdraw; ++s) {
+        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+        inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
 
         // Compute probabilities with numerical stability
-        arma::vec P_s;
         stable_softmax(V_s, P_s);
 
         P_bar_i += P_s;
@@ -1127,20 +1193,22 @@ Rcpp::List mxl_predict(
     const auto eta_i = eta_draws.slice(i);
     arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
+    // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+    const arma::mat WGamma = W_i * Gamma_final;
+
+    // CHANGE #5: hoist per-draw temporaries outside the s loop
+    arma::vec inside_utils(m_i);
+    arma::vec V_s(num_choices);
+    arma::vec P_s;
+
     for (int s = 0; s < Sdraw; ++s) {
-      const auto gamma_i_s_final = Gamma_final.col(s);
+      // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+      inside_utils = base_util_i + WGamma.col(s);
 
-      // Inside utilities (length m_i): includes X*beta + W*mu_final + delta
-      // plus the draw-specific W*gamma term.
-      arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
-
-      // Build full V_s for softmax
-      arma::vec V_s(num_choices);
       fill_choice_utilities(V_s, inside_utils, num_choices,
                             include_outside_option);
 
       // Stable softmax
-      arma::vec P_s;
       stable_softmax(V_s, P_s);
 
       // Accumulate inside probabilities and utilities
@@ -1274,19 +1342,24 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
     const auto eta_i = eta_draws.slice(i);
     arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
+    // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+    const arma::mat WGamma = W_i * Gamma_final;
+
     // Accumulate the per-draw log-sum-exp (NOT the logsum of averaged
     // utilities; see the Jensen note in the docs above).
     double logsum_acc = 0.0;
-    for (int s = 0; s < Sdraw; ++s) {
-      const auto gamma_i_s_final = Gamma_final.col(s);
 
-      // Inside utilities (length m_i): includes X*beta + W*mu_final + delta
-      // plus the draw-specific W*gamma term.
-      arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+    // CHANGE #5: hoist per-draw temporaries outside the s loop
+    arma::vec inside_utils(m_i);
+    arma::vec V_s(num_choices, arma::fill::zeros);
+
+    for (int s = 0; s < Sdraw; ++s) {
+      // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+      inside_utils = base_util_i + WGamma.col(s);
 
       // Build full V_s with the outside option's V = 0 slot when present
-      arma::vec V_s = arma::zeros(num_choices);
       if (include_outside_option) {
+        V_s(0) = 0.0; // outside option fixed at 0
         V_s.subvec(1, num_choices - 1) = inside_utils;
       } else {
         V_s = inside_utils;
@@ -1523,9 +1596,17 @@ arma::mat mxl_diversion_ratios_parallel(
       const auto eta_i = eta_draws.slice(i);
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
+      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
+
+      // CHANGE #5: hoist per-draw temporaries outside the s loop
+      arma::vec V_s(num_choices);
+      arma::vec inside_utils(m_i);
+      arma::vec P_s;
+
       // Loop over draws — cross-products MUST be accumulated INSIDE this loop
       for (int s = 0; s < Sdraw; ++s) {
-        const auto gamma_i_s_final = Gamma_final.col(s);
+        const auto gamma_i_s_final = Gamma_final.col(s); // still needed for random coef value
 
         // Realized coefficient on the perturbed variable for this (i, s).
         // For a fixed coef this is the constant beta_k; for a random coef
@@ -1535,14 +1616,12 @@ arma::mat mxl_diversion_ratios_parallel(
             ? (mu_final(var_idx) + gamma_i_s_final(var_idx))
             : beta_k;
 
-        // Build utility vector
-        arma::vec V_s(num_choices);
-        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+        inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
 
         // Stable softmax
-        arma::vec P_s;
         stable_softmax(V_s, P_s);
 
         // Accumulate cross-products weighted by beta_k_eff inside the draw loop
@@ -1758,6 +1837,7 @@ arma::vec mxl_blp_contraction(
   double residual = 10.0;
 
   while (iter < max_iter) {
+    Rcpp::checkUserInterrupt(); // H4: allow user to interrupt long-running contraction
     arma::vec delta_new = delta_current + (log_shares_target - log_shares_old);
 
     // Re-anchor baseline each iteration when there is no outside option
@@ -1961,9 +2041,16 @@ arma::mat mxl_elasticities_parallel(
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
 
+      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
+
+      // CHANGE #5: hoist per-draw temporaries outside the s loop
+      arma::vec V_s(num_choices);
+      arma::vec inside_utils(m_i);
+      arma::vec P_s;
+
       for (int s = 0; s < Sdraw; ++s) {
-        // Column view into the batched matrix (zero-copy)
-        const auto gamma_i_s_final = Gamma_final.col(s);
+        const auto gamma_i_s_final = Gamma_final.col(s); // still needed for random coef value
 
         // Get effective coefficient for this draw
         double beta_k_eff;
@@ -1973,14 +2060,12 @@ arma::mat mxl_elasticities_parallel(
           beta_k_eff = beta_k;
         }
 
-        // Build utility vector
-        arma::vec V_s(num_choices);
-        arma::vec inside_utils = base_util_i + W_i * gamma_i_s_final;
+        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
+        inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
 
         // Compute probabilities
-        arma::vec P_s;
         stable_softmax(V_s, P_s);
 
         P_bar_i += P_s;
