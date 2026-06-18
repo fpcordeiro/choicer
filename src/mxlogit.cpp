@@ -171,10 +171,12 @@ Rcpp::List mxl_loglik_gradient_parallel(
     arma::vec V_s;          // Re-sized per individual
     arma::vec inside_utils; // Re-sized per individual
     arma::vec P_s;          // Re-sized per individual
-    arma::vec diff_vec;     // Re-sized per individual
 
-    arma::vec g_s(n_params);
-    arma::vec Wt_diff(K_w); // W_i^T * diff_inside, shared by mu and L blocks
+    // BLAS-3 collapse scratch (re-sized per individual)
+    arma::mat DiffW;  // m_i x Sdraw: DiffW(:,s) = P_choice_s * diff_inside_s
+    arma::mat BW;     // K_w x Sdraw: BW = W_i^T * DiffW  (one dgemm)
+    arma::mat Btil;   // K_w x Sdraw: Btil = BW .% Dgamma1 (elementwise)
+    arma::mat A;      // K_w x K_w:   A = Btil * eta_i^T  (one dgemm)
 
 // Loop over individuals in parallel
 #ifdef _OPENMP
@@ -200,30 +202,25 @@ Rcpp::List mxl_loglik_gradient_parallel(
       // Pre-computed base utility for this individual (includes X*beta + W*mu_final + delta)
       const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
 
-      //  Per-draw accumulators
+      //  Per-draw accumulator (loglik only)
       double log_P_avg = -std::numeric_limits<double>::infinity();
-      arma::vec grad_num = arma::zeros(n_params); // Sigma_s P_s * g_s
 
-      // Size variable vectors for this individual
+      // Size working vectors for this individual
       V_s.set_size(num_choices);
       inside_utils.set_size(m_i);
-      diff_vec.set_size(num_choices);
-      // P_s set_size happens implicitly or can be reserved
+      DiffW.set_size(m_i, Sdraw); // m_i x Sdraw
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Dgamma1;
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
-      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
       const arma::mat WGamma = W_i * Gamma_final;
 
-      // Loop over simulations
+      // ---- Draw loop: minimal work — utilities, softmax, logSumExp, DiffW ----
+      // Everything that can be collapsed across draws is done AFTER this loop.
       for (int s = 0; s < Sdraw; ++s) {
-        // Column views into the batched matrices (zero-copy)
-        const auto eta_i_s             = eta_i.col(s);
-        const auto dgamma_final_dgamma = Dgamma1.col(s);
-
         // Build utility vector V_i_s for individual i and simulation s
         inside_utils = base_util_i + WGamma.col(s); // Length m_i
         fill_choice_utilities(V_s, inside_utils, num_choices,
@@ -242,81 +239,77 @@ Rcpp::List mxl_loglik_gradient_parallel(
           log_P_avg = logSumExp2(log_P_avg, log_P);
         }
 
-        // Gradient g_s = d(log P_choice) / d(theta)
-        // Vectorized: build diff_vec = e_{chosen} - P_s, then replace the
-        // per-alternative scatter loop with two mat-vec multiplies.
-        //
-        // For parameter block theta_k the gradient is:
-        //   g_s[k] = sum_a diff[a] * dV_a/dtheta_k
-        // Factoring out scalars that don't depend on a gives:
-        //   beta:   X_i^T * diff_inside  (BLAS dgemv)
-        //   mu_p:   (W_i^T * diff_inside)_p * dmu_final_dmu(p)
-        //   ell_pq: (W_i^T * diff_inside)_p * dgamma_final_dgamma(p)
-        //             * dL_pq/d(ell_pq) * eta_q^s
-        //   delta:  scatter (kept as loop — irregular indexing)
-        g_s.zeros(); // Zero needed for delta scatter below
-
-        // diff_vec[a] = 1{a == chosen_alt} - P_s[a]
-        diff_vec = -P_s;
-        diff_vec(chosen_alt) += 1.0;
-
-        // ---- Beta and W blocks: mat-vec with inside-alt slice of diff_vec ----
-        // When include_outside_option: inside alts occupy diff_vec[1..m_i];
-        // X_i and W_i have m_i rows with no row for the outside option.
+        // Build DiffW column: P_choice_s * diff_inside_s
+        // diff_inside_s = -P_s[inside] with chosen-alt slot incremented by 1.
+        // Outside-option slot (index 0 when present) is excluded from inside.
         if (include_outside_option) {
-          const auto diff_inside = diff_vec.subvec(1, m_i); // subview, no copy
-          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_inside;
-          Wt_diff = W_i.t() * diff_inside;
+          // inside alts are P_s[1..m_i]; outside option diff is excluded
+          DiffW.col(s) = P_choice * (-P_s.subvec(1, m_i));
+          // adjust the chosen-inside slot (chosen_alt is in full space)
+          if (chosen_alt > 0) {
+            DiffW(chosen_alt - 1, s) += P_choice;
+          }
+          // If chosen_alt == 0 (outside option chosen), inside diff is -P_s[1..m_i];
+          // no adjustment needed (the +1 lands in the discarded outside slot).
         } else {
-          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_vec;
-          Wt_diff = W_i.t() * diff_vec;
+          DiffW.col(s) = P_choice * (-P_s);
+          DiffW(chosen_alt, s) += P_choice;
         }
 
-        // ---- Mu block: element-wise scale of Wt_diff by dmu_final/dmu ----
-        // dV_{ij}/dmu_p = W_{ijp} * dmu_final_dmu(p)  (see math doc §3.4.2)
+      } // end S loop
+
+      // ---- Post-draw BLAS-3 gradient assembly ----
+      // d_bar = sum_s DiffW(:,s) = DiffW * ones = rowSums(DiffW)  [m_i vector]
+      arma::vec d_bar = arma::sum(DiffW, 1); // m_i x 1
+
+      // Build grad_num block by block and write directly into local_grad
+      // (scaled by w_i * exp(-log_P_avg) = w_i / sum_s P_choice_s).
+      const double scale = w_i * std::exp(-log_P_avg);
+
+      // ---- Beta block: X_i^T * d_bar  (one BLAS dgemv) ----
+      local_grad.subvec(idx_beta_start, idx_mu_start - 1) +=
+          scale * (X_i.t() * d_bar);
+
+      if (K_w > 0) {
+        // BW = W_i^T * DiffW  (K_w x Sdraw, one dgemm)
+        BW = W_i.t() * DiffW;
+
+        // ---- Mu block (only if rc_mean): sum(BW, 1) .* dmu_final_dmu ----
         if (rc_mean) {
-          g_s.subvec(idx_mu_start, idx_L_start - 1) = Wt_diff % dmu_final_dmu;
+          local_grad.subvec(idx_mu_start, idx_L_start - 1) +=
+              scale * (arma::sum(BW, 1) % dmu_final_dmu);
         }
 
-        // ---- L block ----
-        // dV_{ij}/d(ell_pq) = W_{ijp} * dgamma_final_dgamma(p) * dL_pq * eta_q^s
-        // Summing over j: (W_i^T * diff)_p * dgamma_final_dgamma(p) * dL_pq * eta_q^s
-        // (see math doc §3.4.3, steps 1-4)
+        // ---- L block: the only block with per-draw eta coupling ----
+        // Btil(p,s) = BW(p,s) * Dgamma1(p,s)  (elementwise; Dgamma1=1 for normal)
+        // A = Btil * eta_i^T  (K_w x K_w, one dgemm)
+        // grad_num[L_pq] = dLpq * A(p, q)
+        Btil = BW % Dgamma1;                  // K_w x Sdraw elementwise
+        A = Btil * eta_i.t();                 // K_w x K_w
+
         if (rc_correlation) {
-          // Full lower-triangular L: parameters indexed row-major (p >= q)
-          int lp_idx = 0;
+          int lp = 0;
           for (int p = 0; p < K_w; ++p) {
-            // Factor out the row-p weight: Wt_diff(p) * dgamma_final_dgamma(p)
-            const double Wt_p = Wt_diff(p) * dgamma_final_dgamma(p);
-            for (int q = 0; q <= p; ++q, ++lp_idx) {
-              // dL_pq/d(ell_pq): exp(ell_pp) = L(p,p) on diagonal, 1 off-diagonal
+            for (int q = 0; q <= p; ++q, ++lp) {
               const double dLpq = (p == q) ? L(p, p) : 1.0;
-              g_s[idx_L_start + lp_idx] = Wt_p * dLpq * eta_i_s(q);
+              local_grad[idx_L_start + lp] += scale * dLpq * A(p, q);
             }
           }
         } else {
-          // Diagonal L: g[L_start + p] = Wt_diff(p) * dgamma(p) * L(p,p) * eta_p^s
-          g_s.subvec(idx_L_start, idx_L_start + K_w - 1) =
-              Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s;
-        }
-
-        // ---- Delta block (scatter — irregular alt-index mapping) ----
-        if (use_asc) {
-          if (include_outside_option) {
-            scatter_delta_grad(g_s, idx_delta_start, diff_vec.subvec(1, m_i),
-                               alt_idx0_i, m_i, include_outside_option, 1.0);
-          } else {
-            scatter_delta_grad(g_s, idx_delta_start, diff_vec,
-                               alt_idx0_i, m_i, include_outside_option, 1.0);
+          // Diagonal L: grad_num[L_start + p] = L(p,p) * A(p,p)
+          for (int p = 0; p < K_w; ++p) {
+            local_grad[idx_L_start + p] += scale * L(p, p) * A(p, p);
           }
         }
+      }
 
-        // accumulate numerator     Sigma_s P_s * g_s
-        grad_num += P_choice * g_s;
+      // ---- Delta block (scatter — irregular alt-index mapping) ----
+      // scatter of d_bar: sum_s P_choice_s * diff_inside_s = d_bar (already summed)
+      if (use_asc) {
+        scatter_delta_grad(local_grad, idx_delta_start, d_bar,
+                           alt_idx0_i, m_i, include_outside_option, scale);
+      }
 
-      } // end S loop
-      // Compute gradient contribution for individual i
-      local_grad += w_i * grad_num * std::exp(-log_P_avg);
       // Finish log-probability: divide by S
       log_P_avg -= std::log((double)Sdraw);
       //  Add weighted contribution to thread totals
@@ -912,10 +905,13 @@ arma::mat mxl_bhhh_parallel(
     arma::vec V_s;
     arma::vec inside_utils;
     arma::vec P_s;
-    arma::vec diff_vec;
 
-    arma::vec g_s(n_params);
-    arma::vec Wt_diff(K_w);
+    // BLAS-3 collapse scratch (re-sized per individual)
+    arma::mat DiffW;  // m_i x Sdraw: DiffW(:,s) = P_choice_s * diff_inside_s
+    arma::mat BW;     // K_w x Sdraw: BW = W_i^T * DiffW  (one dgemm)
+    arma::mat Btil;   // K_w x Sdraw: Btil = BW .% Dgamma1 (elementwise)
+    arma::mat A;      // K_w x K_w:   A = Btil * eta_i^T  (one dgemm)
+    arma::vec s_i;    // n_params score vector per individual
 
 // Loop over individuals in parallel
 #ifdef _OPENMP
@@ -940,28 +936,23 @@ arma::mat mxl_bhhh_parallel(
 
       const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
 
-      //  Per-draw accumulators
+      //  Per-draw accumulator (loglik denominator only)
       double log_P_avg = -std::numeric_limits<double>::infinity();
-      arma::vec grad_num = arma::zeros(n_params); // Sum_s P_s * g_s
 
       V_s.set_size(num_choices);
       inside_utils.set_size(m_i);
-      diff_vec.set_size(num_choices);
+      DiffW.set_size(m_i, Sdraw); // m_i x Sdraw
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
       const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
       arma::mat Dgamma1;
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
-      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
       const arma::mat WGamma = W_i * Gamma_final;
 
-      // Loop over simulations
+      // ---- Draw loop: minimal work — utilities, softmax, logSumExp, DiffW ----
       for (int s = 0; s < Sdraw; ++s) {
-        // Column views into the batched matrices (zero-copy)
-        const auto eta_i_s             = eta_i.col(s);
-        const auto dgamma_final_dgamma = Dgamma1.col(s);
-
         // Build utility vector
         inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
@@ -979,63 +970,69 @@ arma::mat mxl_bhhh_parallel(
           log_P_avg = logSumExp2(log_P_avg, log_P);
         }
 
-        // Gradient g_s = d(log P_choice) / d(theta)
-        g_s.zeros();
-
-        diff_vec = -P_s;
-        diff_vec(chosen_alt) += 1.0;
-
-        // Beta and W blocks
+        // Build DiffW column: P_choice_s * diff_inside_s
         if (include_outside_option) {
-          const auto diff_inside = diff_vec.subvec(1, m_i);
-          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_inside;
-          Wt_diff = W_i.t() * diff_inside;
-        } else {
-          g_s.subvec(idx_beta_start, idx_mu_start - 1) = X_i.t() * diff_vec;
-          Wt_diff = W_i.t() * diff_vec;
-        }
-
-        // Mu block
-        if (rc_mean) {
-          g_s.subvec(idx_mu_start, idx_L_start - 1) = Wt_diff % dmu_final_dmu;
-        }
-
-        // L block
-        if (rc_correlation) {
-          int lp_idx = 0;
-          for (int p = 0; p < K_w; ++p) {
-            const double Wt_p = Wt_diff(p) * dgamma_final_dgamma(p);
-            for (int q = 0; q <= p; ++q, ++lp_idx) {
-              const double dLpq = (p == q) ? L(p, p) : 1.0;
-              g_s[idx_L_start + lp_idx] = Wt_p * dLpq * eta_i_s(q);
-            }
+          DiffW.col(s) = P_choice * (-P_s.subvec(1, m_i));
+          if (chosen_alt > 0) {
+            DiffW(chosen_alt - 1, s) += P_choice;
           }
         } else {
-          g_s.subvec(idx_L_start, idx_L_start + K_w - 1) =
-              Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s;
+          DiffW.col(s) = P_choice * (-P_s);
+          DiffW(chosen_alt, s) += P_choice;
         }
-
-        // Delta block
-        if (use_asc) {
-          if (include_outside_option) {
-            scatter_delta_grad(g_s, idx_delta_start, diff_vec.subvec(1, m_i),
-                               alt_idx0_i, m_i, include_outside_option, 1.0);
-          } else {
-            scatter_delta_grad(g_s, idx_delta_start, diff_vec,
-                               alt_idx0_i, m_i, include_outside_option, 1.0);
-          }
-        }
-
-        // accumulate numerator sum_s P_s * g_s
-        grad_num += P_choice * g_s;
 
       } // end S loop
 
-      // Per-individual score: s_i = grad_num / sum_s P_choice_s
-      // log_P_avg currently holds log(sum_s P_choice_s) -- BEFORE the
-      // "-= log(Sdraw)" normalization used by the gradient function. Use it
-      // directly since the 1/S factor cancels between numerator and denominator.
-      arma::vec s_i = grad_num * std::exp(-log_P_avg);
+      // ---- Post-draw BLAS-3 score assembly (same collapse as gradient) ----
+      // d_bar = sum_s DiffW(:,s) = rowSums(DiffW)  [m_i vector]
+      arma::vec d_bar = arma::sum(DiffW, 1); // m_i x 1
+
+      // s_i = grad_num / sum_s P_choice_s  (exp(-log_P_avg) = 1/sum_s P_choice_s)
+      // log_P_avg holds log(sum_s P_choice_s) -- BEFORE the "-= log(Sdraw)"
+      // normalization; the 1/S factor cancels between numerator and denominator.
+      const double inv_sum_P = std::exp(-log_P_avg);
+
+      s_i.zeros(n_params);
+
+      // Beta block
+      s_i.subvec(idx_beta_start, idx_mu_start - 1) =
+          inv_sum_P * (X_i.t() * d_bar);
+
+      if (K_w > 0) {
+        // BW = W_i^T * DiffW  (K_w x Sdraw, one dgemm)
+        BW = W_i.t() * DiffW;
+
+        // Mu block
+        if (rc_mean) {
+          s_i.subvec(idx_mu_start, idx_L_start - 1) =
+              inv_sum_P * (arma::sum(BW, 1) % dmu_final_dmu);
+        }
+
+        // L block
+        Btil = BW % Dgamma1;          // K_w x Sdraw elementwise
+        A = Btil * eta_i.t();         // K_w x K_w
+
+        if (rc_correlation) {
+          int lp = 0;
+          for (int p = 0; p < K_w; ++p) {
+            for (int q = 0; q <= p; ++q, ++lp) {
+              const double dLpq = (p == q) ? L(p, p) : 1.0;
+              s_i[idx_L_start + lp] = inv_sum_P * dLpq * A(p, q);
+            }
+          }
+        } else {
+          for (int p = 0; p < K_w; ++p) {
+            s_i[idx_L_start + p] = inv_sum_P * L(p, p) * A(p, p);
+          }
+        }
+      }
+
+      // Delta block (scatter of d_bar)
+      if (use_asc) {
+        scatter_delta_grad(s_i, idx_delta_start, d_bar,
+                           alt_idx0_i, m_i, include_outside_option, inv_sum_P);
+      }
+
       local_bhhh += w_i * s_i * s_i.t();
     } // end N loop
 
