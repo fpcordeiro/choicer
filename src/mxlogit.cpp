@@ -264,6 +264,9 @@ Rcpp::List mxl_loglik_gradient_parallel(
 
       // Build grad_num block by block and write directly into local_grad
       // (scaled by w_i * exp(-log_P_avg) = w_i / sum_s P_choice_s).
+      // IMPORTANT: scale must be computed HERE, while log_P_avg still holds
+      // log(sum_s P_choice_s); the "-= log(Sdraw)" normalization (~line 314)
+      // happens later and would corrupt the gradient scale if applied first.
       const double scale = w_i * std::exp(-log_P_avg);
 
       // ---- Beta block: X_i^T * d_bar  (one BLAS dgemv) ----
