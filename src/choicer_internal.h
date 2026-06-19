@@ -371,9 +371,9 @@ inline void fill_choice_utilities(arma::vec& V, const arma::vec& inside_utils,
 
 inline double stable_softmax(arma::vec& V, arma::vec& P) {
   V -= V.max(); // for numerical stability; after this, max(V) == 0, so exp(V) <= 1
-  const arma::vec e = arma::exp(V);
-  const double s = arma::accu(e);
-  P = e / s;
+  P = arma::exp(V);       // reuse caller-owned P as the exp buffer — no per-call alloc
+  const double s = arma::accu(P);
+  P /= s;                 // in-place; bitwise identical to previous `P = e / s`
   return std::log(s);
 }
 
