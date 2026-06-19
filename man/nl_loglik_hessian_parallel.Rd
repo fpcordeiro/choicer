@@ -65,7 +65,8 @@ dt[, choice := 0L]
 dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 K_x <- ncol(d$X)
-theta <- c(rep(0, K_x), rep(0.8, 1), rep(0, J - 1))
+K_l <- sum(table(d$nest_idx) > 1)   # number of non-singleton nests (= 2)
+theta <- c(rep(0, K_x), rep(0.8, K_l), rep(0, J - 1))
 H <- nl_loglik_hessian_parallel(theta, d$X, d$alt_idx, d$choice_idx,
   d$nest_idx, d$M, d$weights)
 dim(H)
