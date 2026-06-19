@@ -31,3 +31,5 @@ AGENTS.md
 .claude/*
 !.claude/settings.json
 data_room/
+_benchmarks/*/output/*
+!_benchmarks/*/output/.gitkeep

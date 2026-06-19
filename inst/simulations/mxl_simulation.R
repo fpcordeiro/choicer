@@ -10,7 +10,7 @@
 library(choicer)
 
 # 1) DGP ======================================================================
-sim <- simulate_mxl_data(N = 2e4, J = 8, seed = 123)
+sim <- simulate_mxl_data(N = 2e4, J = 20, seed = 123)
 print(sim)
 
 # 2) Data preparation =========================================================
@@ -89,15 +89,27 @@ upper <- setNames(rep( 5, K_w), L_diag_names)
 # 6) Final MXL fit ============================================================
 cat("\n--- Final MXL fit ---\n")
 fit <- run_mxlogit(
-  input_data = mxl_inputs,
-  eta_draws  = eta_draws,
+  data                   = sim$data,
+  id_col                 = "id",
+  alt_col                = "alt",
+  choice_col             = "choice",
+  covariate_cols         = c("x1", "x2"),
+  random_var_cols        = c("w1", "w2"),
+  outside_opt_label      = 0L,
+  include_outside_option = FALSE,
+  rc_correlation         = TRUE,
+  # input_data = mxl_inputs,
+  # eta_draws  = eta_draws,
+  S = 400L,
   use_asc    = TRUE,
   theta_init = theta_init,
   lower      = lower,
   upper      = upper,
   scale_vars = "sd",
   se_method  = "bhhh",
-  control    = list(print_level = 1L)
+  control    = list(print_level = 1L),
+  draws = "generate",
+  seed = 2026L
 )
 
 cat("\n")
