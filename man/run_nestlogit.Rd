@@ -21,6 +21,7 @@ run_nestlogit(
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   keep_data = TRUE,
+  se_method = c("hessian", "numeric"),
   nloptr_opts = NULL
 )
 }
@@ -66,6 +67,11 @@ equal weights are used.}
 
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in
 the returned object for post-estimation functions.}
+
+\item{se_method}{Method for computing standard errors: \code{"hessian"}
+(default, analytical Hessian via \code{nl_loglik_hessian_parallel}) or
+\code{"numeric"} (finite-difference oracle via
+\code{nl_loglik_numeric_hessian}).}
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control}
 instead.}

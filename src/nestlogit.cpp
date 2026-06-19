@@ -355,6 +355,459 @@ arma::mat nl_loglik_numeric_hessian(
   return Hess;
 }
 
+//' Analytical Hessian of the negated log-likelihood for the Nested Logit model
+//'
+//' Computes the exact (analytical) Hessian of the negated log-likelihood for the
+//' Nested Logit model using OpenMP parallelisation with thread-local accumulators.
+//' Covers all parameter blocks: beta-beta, beta-lambda, beta-delta,
+//' lambda-lambda, lambda-delta, and delta-delta. Singleton nests (lambda fixed
+//' to 1, not estimated) contribute no rows or columns to the lambda blocks.
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) parameter vector.
+//'   Order: \code{[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]}.
+//'   Same layout as \code{nl_loglik_gradient_parallel}.
+//' @param X sum(M) x K design matrix of covariates.
+//' @param alt_idx sum(M)-length integer vector of 1-based alternative indices.
+//' @param choice_idx N-length integer vector of 1-based chosen alternative
+//'   indices; 0 indicates the outside option was chosen.
+//' @param nest_idx J-length integer vector of 1-based nest indices for each
+//'   inside alternative.
+//' @param M N-length integer vector of alternative-set sizes.
+//' @param weights N-length numeric vector of individual weights.
+//' @param use_asc Logical; whether alternative-specific constants are included.
+//' @param include_outside_option Logical; whether an outside option (V=0) is
+//'   present.
+//' @returns A symmetric (P x P) matrix: the Hessian of the negated
+//'   log-likelihood evaluated at \code{theta}. Structurally identical to the
+//'   output of \code{nl_loglik_numeric_hessian}; suitable for
+//'   \code{invert_hessian()}.
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' K_x <- ncol(d$X)
+//' theta <- c(rep(0, K_x), rep(0.8, 1), rep(0, J - 1))
+//' H <- nl_loglik_hessian_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+//'   d$nest_idx, d$M, d$weights)
+//' dim(H)
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::mat nl_loglik_hessian_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx,
+    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  // Extract dimensions
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+  const int n_nests = arma::max(nest_idx);
+
+  // --- 1. Parameter Parsing ---
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  arma::ivec nest_k_to_theta_idx;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length,
+                 &nest_k_to_theta_idx);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
+                     &weights, &choice_idx);
+
+  // 0-based indexing for inputs
+  arma::uvec alt_idx0  = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+
+  // Compute prefix sums for indexing
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    const int chosen_alt_idx_check = choice_idx[i];
+    if (include_outside_option && chosen_alt_idx_check == 0) continue;
+    const int chosen_inside = chosen_alt_idx_check - 1;
+    if (chosen_inside < 0 || chosen_inside >= M[i]) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d", i);
+    }
+  }
+
+  // Initialize global Hessian accumulator
+  arma::mat global_H(n_params, n_params, arma::fill::zeros);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local Hessian accumulator
+    arma::mat local_H(n_params, n_params, arma::fill::zeros);
+
+    // Make the index map thread-private
+    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i       = M[i];
+      const int start_idx = S[i];
+      const int end_idx   = start_idx + m_i - 1;
+      const double w_i    = weights[i];
+
+      // Step 2a: Slice individual data
+      const arma::mat X_i        = X.rows(start_idx, end_idx);  // m_i x K
+      arma::uvec alt_idx0_i      = alt_idx0.subvec(start_idx, end_idx);
+      arma::uvec nest_idx0_i     = nest_idx0.elem(alt_idx0_i);
+      arma::vec  V_inside        = base_util.subvec(start_idx, end_idx);
+
+      // Step 2b: Compute probabilities
+      arma::vec P_i_vec, P_j_given_k, P_k, log_I_k, log_P_i;
+      double log_P_outside;
+      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                          include_outside_option,
+                          P_i_vec, P_j_given_k, P_k, log_I_k,
+                          log_P_i, log_P_outside);
+
+      // Resolve chosen alternative
+      const int chosen_alt_idx_i  = choice_idx[i];
+      int chosen_nest_k       = -1;
+      int chosen_inside_idx   = -1;
+
+      double log_P_choice;
+      if (include_outside_option && chosen_alt_idx_i == 0) {
+        log_P_choice = log_P_outside;
+      } else {
+        chosen_inside_idx = chosen_alt_idx_i - 1;
+        log_P_choice      = log_P_i[chosen_inside_idx];
+        chosen_nest_k     = static_cast<int>(nest_idx0_i[chosen_inside_idx]);
+      }
+
+      // H1 clamp: skip individual if log_P_choice is non-finite
+      if (!std::isfinite(log_P_choice)) continue;
+
+      // Step 2c: Accumulate per-nest auxiliary scalars and vectors
+      // Vbar_k[k]   = sum_{j in B_k} P(j|k) * V_j
+      // S2Vbar_k[k] = sum_{j in B_k} P(j|k) * V_j^2
+      // m_k[k]      = sum_{j in B_k} P_ij * x_j         (K-vector)
+      // c_k[k]      = sum_{j in B_k} P(j|k) * x_j       (K-vector)
+      // S2_k[k]     = sum_{j in B_k} P_ij * x_j x_j^T   (KxK matrix)
+      // Q_k[k]      = sum_{j in B_k} P(j|k) * x_j x_j^T (KxK matrix)
+      std::vector<double> Vbar_k(n_nests, 0.0);
+      std::vector<double> S2Vbar_k(n_nests, 0.0);
+      std::vector<arma::vec> m_k_vec(n_nests, arma::zeros<arma::vec>(K));
+      std::vector<arma::vec> c_k_vec(n_nests, arma::zeros<arma::vec>(K));
+      std::vector<arma::mat> S2_k(n_nests, arma::zeros<arma::mat>(K, K));
+      std::vector<arma::mat> Q_k(n_nests, arma::zeros<arma::mat>(K, K));
+
+      for (int j = 0; j < m_i; ++j) {
+        const int k = static_cast<int>(nest_idx0_i[j]);
+        const double pj_given_k = P_j_given_k[j];
+        const double p_ij       = P_i_vec[j];
+        const double V_j        = V_inside[j];
+        const arma::vec x_j     = X_i.row(j).t();
+
+        Vbar_k[k]   += pj_given_k * V_j;
+        S2Vbar_k[k] += pj_given_k * V_j * V_j;
+        m_k_vec[k]  += p_ij * x_j;
+        c_k_vec[k]  += pj_given_k * x_j;
+        S2_k[k]     += p_ij * (x_j * x_j.t());
+        Q_k[k]      += pj_given_k * (x_j * x_j.t());
+      }
+
+      // Per-nest derived quantities
+      std::vector<double> T_k(n_nests, 0.0);
+      std::vector<double> VarV_k(n_nests, 0.0);
+      for (int k = 0; k < n_nests; ++k) {
+        T_k[k]    = log_I_k[k] - Vbar_k[k] / lambda[k];
+        VarV_k[k] = S2Vbar_k[k] - Vbar_k[k] * Vbar_k[k];
+      }
+
+      // P_i-weighted global mean: Xbar_i = X_i^T * P_i  (K-vector)
+      arma::vec Xbar_i = X_i.t() * P_i_vec;
+
+      // -----------------------------------------------------------------------
+      // Step 2d & 2e: Accumulate beta-beta, beta-delta, delta-delta blocks.
+      //
+      // The V-space Hessian of the negated log-likelihood is:
+      //   Q_i[a,b] = d²(-loglik_i)/dV_a dV_b = -dg[a]/dV_b
+      //
+      // Correct formula (derived from differentiating the gradient):
+      //
+      //   Q_i[a,b] = P_ia * { -P_ib
+      //             + 1_{k(a)=k(b)} * [1_{a=b}/lam_k + P(b|k)(1 - 1/lam_k)] }
+      //           - C(a,b)
+      //
+      // where C(a,b) = [(1-1/lam_ki)/lam_ki] * P(a|ki) * (1_{a=b} - P(a|ki))
+      //                  for k(a)=k(b)=ki (chosen-nest correction)
+      //
+      // The beta-beta block is w_i * X_i^T * Q_i * X_i (Hessian of -loglik).
+      // Decomposing X^T Q X into per-nest terms gives Terms A, B, C below.
+      // -----------------------------------------------------------------------
+
+      // Build the full m_i x m_i Q_i matrix (correct formula)
+      arma::mat Qi(m_i, m_i, arma::fill::zeros);
+      for (int a = 0; a < m_i; ++a) {
+        const int ka = static_cast<int>(nest_idx0_i[a]);
+        const double Pia = P_i_vec[a];
+        const double Pa_given_ka = P_j_given_k[a];
+        const double lam_ka = lambda[ka];
+        const double inv_lam_ka = 1.0 / lam_ka;
+
+        for (int b = 0; b < m_i; ++b) {
+          const int kb = static_cast<int>(nest_idx0_i[b]);
+          const double Pib = P_i_vec[b];
+          const double Pb_given_kb = P_j_given_k[b];
+
+          // Base term: -P_ia * P_ib (all pairs)
+          double Qab = -Pia * Pib;
+
+          // Within-nest correction (correct formula from gradient derivation)
+          // Contribution: P_ia * [1_{a=b}/lam_k + P(b|k) * (1 - 1/lam_k)]
+          if (ka == kb) {
+            const double indicator_ab = (a == b) ? 1.0 : 0.0;
+            Qab += Pia * (indicator_ab * inv_lam_ka + Pb_given_kb * (1.0 - inv_lam_ka));
+          }
+
+          // Chosen-nest correction C(a,b)
+          // Only nonzero when k(a)=k(b)=ki (chosen nest)
+          // C(a,b) = scale_C * P(a|ki) * (1_{a=b} - P(a|ki))
+          // This comes from the (1-1/lam_ki) * d(P(a|ki))/dV_b term in the gradient
+          if (chosen_nest_k >= 0 && ka == chosen_nest_k && kb == chosen_nest_k) {
+            const double lam_ki = lambda[chosen_nest_k];
+            const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
+            const double ind_ab = (a == b) ? 1.0 : 0.0;
+            // C_ab uses P(a|ki), not P(b|ki) — the original gradient term is
+            // (1-1/lam_ki) * dP(a|ki)/dV_b = (1-1/lam_ki) * (1/lam_ki) * P(a|ki) * (1_{a=b} - P(b|ki))
+            Qab -= scale_C * Pa_given_ka * (ind_ab - Pb_given_kb);
+          }
+
+          Qi(a, b) = Qab;
+        }
+      }
+
+      // delta-delta block: w_i * Q_i[a,b] for free-ASC alternatives a, b
+      if (use_asc && delta_length > 0) {
+        for (int a = 0; a < m_i; ++a) {
+          const int id_a = static_cast<int>(alt_idx0_i[a]);
+          int p_theta_a;
+          if (include_outside_option) {
+            p_theta_a = delta_start_idx + id_a;
+          } else {
+            p_theta_a = (id_a > 0) ? (delta_start_idx + id_a - 1) : -1;
+          }
+          if (p_theta_a < 0) continue;
+
+          for (int b = 0; b < m_i; ++b) {
+            const int id_b = static_cast<int>(alt_idx0_i[b]);
+            int p_theta_b;
+            if (include_outside_option) {
+              p_theta_b = delta_start_idx + id_b;
+            } else {
+              p_theta_b = (id_b > 0) ? (delta_start_idx + id_b - 1) : -1;
+            }
+            if (p_theta_b < 0) continue;
+
+            local_H(p_theta_a, p_theta_b) += w_i * Qi(a, b);
+          }
+        }
+
+        // beta-delta block: for each free-delta alternative b,
+        // add w_i * X_i^T * Qi[:, b] to column p_theta_b of beta block
+        for (int b = 0; b < m_i; ++b) {
+          const int id_b = static_cast<int>(alt_idx0_i[b]);
+          int p_theta_b;
+          if (include_outside_option) {
+            p_theta_b = delta_start_idx + id_b;
+          } else {
+            p_theta_b = (id_b > 0) ? (delta_start_idx + id_b - 1) : -1;
+          }
+          if (p_theta_b < 0) continue;
+
+          arma::vec h_col_b = w_i * Qi.col(b);
+          arma::vec beta_delta_contrib = X_i.t() * h_col_b;  // K-vector
+
+          local_H.submat(0, p_theta_b, K - 1, p_theta_b) += beta_delta_contrib;
+          local_H.submat(p_theta_b, 0, p_theta_b, K - 1) += beta_delta_contrib.t();
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Step 2e: Beta-beta block = w_i * X_i^T * Q_i * X_i
+      //
+      // Decompose using three terms:
+      //   H_BB = -Xbar*Xbar^T + sum_k [(1-1/lam_k)*m_k*c_k^T + (1/lam_k)*S2_k]
+      //          - 1_{ki>=0} * scale_Ci * (Q_ki - c_ki*c_ki^T)
+      //
+      // Signs derived from the correct Q_i formula above.
+      // -----------------------------------------------------------------------
+
+      // Term A (subtract): -w_i * Xbar_i * Xbar_i^T  (from -P_ia * P_ib term)
+      local_H.submat(0, 0, K - 1, K - 1) -= w_i * (Xbar_i * Xbar_i.t());
+
+      // Term B (add): per-nest within-nest contributions
+      for (int k = 0; k < n_nests; ++k) {
+        const double lam_k   = lambda[k];
+        const double inv_lam = 1.0 / lam_k;
+        const double scale_B = 1.0 - inv_lam;  // = 0 for singletons (lam=1)
+        local_H.submat(0, 0, K - 1, K - 1) +=
+          w_i * (scale_B * (m_k_vec[k] * c_k_vec[k].t()) + inv_lam * S2_k[k]);
+      }
+
+      // Term C (subtract): chosen-nest correction (only if chosen_nest_k >= 0)
+      // C contribution: -scale_Ci * P(a|ki) * (1_{a=b} - P(b|ki))
+      // In matrix form: -scale_Ci * (Q_ki - c_ki * c_ki^T)
+      // where Q_ki = sum_{a in ki} P(a|ki) x_a x_a^T  (= Q_k[ki])
+      if (chosen_nest_k >= 0) {
+        const int ki        = chosen_nest_k;
+        const double lam_ki = lambda[ki];
+        const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
+        local_H.submat(0, 0, K - 1, K - 1) -=
+          w_i * scale_C * (Q_k[ki] - c_k_vec[ki] * c_k_vec[ki].t());
+      }
+
+      // -----------------------------------------------------------------------
+      // Step 2f: Lambda-beta and lambda-delta cross blocks
+      // d_V^(k)[b] = dg_{lambda_k}/dV_b
+      // -----------------------------------------------------------------------
+      for (int k = 0; k < n_nests; ++k) {
+        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
+        if (theta_idx_k == -1) continue;
+        if (!std::isfinite(log_I_k[k])) continue;
+
+        const double lam_k = lambda[k];
+        const double P_k_k = P_k[k];
+
+        // Compute d_V^(k), length m_i
+        arma::vec d_V_k(m_i, arma::fill::zeros);
+
+        if (k != chosen_nest_k) {
+          // Non-chosen nest formula
+          for (int b = 0; b < m_i; ++b) {
+            const int kb = static_cast<int>(nest_idx0_i[b]);
+            d_V_k[b] = P_k_k * T_k[k] * P_i_vec[b];
+            if (kb == k) {
+              d_V_k[b] += P_k_k * P_j_given_k[b]
+                          * ((V_inside[b] - Vbar_k[k]) / (lam_k * lam_k) - T_k[k]);
+            }
+          }
+        } else {
+          // Chosen nest formula (k == chosen_nest_k, ki >= 0)
+          for (int b = 0; b < m_i; ++b) {
+            const int kb = static_cast<int>(nest_idx0_i[b]);
+            d_V_k[b] = P_k_k * T_k[k] * P_i_vec[b];
+            if (b == chosen_inside_idx) {
+              d_V_k[b] -= 1.0 / (lam_k * lam_k);
+            }
+            if (kb == k) {
+              double bracket = -P_k_k * T_k[k]
+                + (V_inside[b] - Vbar_k[k]) / (lam_k * lam_k)
+                  * (P_k_k - 1.0 + 1.0 / lam_k)
+                + 1.0 / (lam_k * lam_k);
+              d_V_k[b] += P_j_given_k[b] * bracket;
+            }
+          }
+        }
+
+        // lambda-beta cross: K-vector contribution
+        arma::vec lambda_beta_contrib = -w_i * (X_i.t() * d_V_k);
+        local_H.submat(theta_idx_k, 0, theta_idx_k, K - 1) +=
+          lambda_beta_contrib.t();
+        local_H.submat(0, theta_idx_k, K - 1, theta_idx_k) +=
+          lambda_beta_contrib;
+
+        // lambda-delta cross: scatter over free-ASC alternatives
+        if (use_asc && delta_length > 0) {
+          for (int b = 0; b < m_i; ++b) {
+            const int id_b = static_cast<int>(alt_idx0_i[b]);
+            int p_theta_b;
+            if (include_outside_option) {
+              p_theta_b = delta_start_idx + id_b;
+            } else {
+              p_theta_b = (id_b > 0) ? (delta_start_idx + id_b - 1) : -1;
+            }
+            if (p_theta_b < 0) continue;
+            const double val = -w_i * d_V_k[b];
+            local_H(theta_idx_k, p_theta_b) += val;
+            local_H(p_theta_b, theta_idx_k) += val;
+          }
+        }
+      }  // end lambda cross blocks
+
+      // -----------------------------------------------------------------------
+      // Step 2g: Lambda-lambda block
+      // -----------------------------------------------------------------------
+      for (int k = 0; k < n_nests; ++k) {
+        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
+        if (theta_idx_k == -1) continue;
+        if (!std::isfinite(log_I_k[k])) continue;
+
+        // Off-diagonal: k != l
+        for (int l = k + 1; l < n_nests; ++l) {
+          const int theta_idx_l = thread_nest_k_to_theta_idx[l];
+          if (theta_idx_l == -1) continue;
+          if (!std::isfinite(log_I_k[l])) continue;
+
+          const double off_diag =
+            -w_i * P_k[k] * P_k[l] * T_k[k] * T_k[l];
+          local_H(theta_idx_k, theta_idx_l) += off_diag;
+          local_H(theta_idx_l, theta_idx_k) += off_diag;
+        }
+
+        // Diagonal
+        const double lam_k = lambda[k];
+        double diag_val;
+        if (k == chosen_nest_k) {
+          // Chosen-nest diagonal formula
+          const double V_ca = V_inside[chosen_inside_idx];
+          diag_val = w_i * (
+              P_k[k] * (1.0 - P_k[k]) * T_k[k] * T_k[k]
+            - (1.0 - P_k[k]) * VarV_k[k] / (lam_k * lam_k * lam_k)
+            + VarV_k[k] / (lam_k * lam_k * lam_k * lam_k)
+            + 2.0 * (Vbar_k[k] - V_ca) / (lam_k * lam_k * lam_k)
+          );
+        } else {
+          // Non-chosen nest diagonal formula
+          diag_val = w_i * (
+              P_k[k] * (1.0 - P_k[k]) * T_k[k] * T_k[k]
+            + P_k[k] * VarV_k[k] / (lam_k * lam_k * lam_k)
+          );
+        }
+        local_H(theta_idx_k, theta_idx_k) += diag_val;
+      }  // end lambda-lambda block
+
+    }  // end individual loop
+
+    // Step 2h: Merge thread-local Hessian into global
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_H += local_H;
+    }
+  }  // end parallel region
+
+  // Step 3: Symmetrize and sanitize
+  global_H = (global_H + global_H.t()) / 2.0;
+  global_H.elem(arma::find_nonfinite(global_H)).zeros();
+
+  return global_H;
+}
+
 // =============================================================================
 // Shared NL parameter parsing (file-local)
 //

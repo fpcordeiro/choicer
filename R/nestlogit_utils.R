@@ -38,6 +38,10 @@
 #'   (convenience workflow).
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in
 #'   the returned object for post-estimation functions.
+#' @param se_method Method for computing standard errors: \code{"hessian"}
+#'   (default, analytical Hessian via \code{nl_loglik_hessian_parallel}) or
+#'   \code{"numeric"} (finite-difference oracle via
+#'   \code{nl_loglik_numeric_hessian}).
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
 #'   instead.
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
@@ -80,8 +84,10 @@ run_nestlogit <- function(
     outside_opt_label = NULL,
     include_outside_option = FALSE,
     keep_data = TRUE,
+    se_method = c("hessian", "numeric"),
     nloptr_opts = NULL
 ) {
+  se_method <- match.arg(se_method)
   cl <- match.call()
 
   # Backward compatibility: nloptr_opts -> optimizer + control
@@ -191,17 +197,31 @@ run_nestlogit <- function(
   lambda <- theta_hat[param_map$lambda]
 
   # Compute vcov eagerly
-  hess <- nl_loglik_numeric_hessian(
-    theta = theta_hat,
-    X = input_data$X,
-    alt_idx = input_data$alt_idx,
-    choice_idx = input_data$choice_idx,
-    nest_idx = input_data$nest_idx,
-    M = input_data$M,
-    weights = input_data$weights,
-    use_asc = use_asc,
-    include_outside_option = input_data$include_outside_option
-  )
+  hess <- if (identical(se_method, "numeric")) {
+    nl_loglik_numeric_hessian(
+      theta = theta_hat,
+      X = input_data$X,
+      alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx,
+      nest_idx = input_data$nest_idx,
+      M = input_data$M,
+      weights = input_data$weights,
+      use_asc = use_asc,
+      include_outside_option = input_data$include_outside_option
+    )
+  } else {
+    nl_loglik_hessian_parallel(
+      theta = theta_hat,
+      X = input_data$X,
+      alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx,
+      nest_idx = input_data$nest_idx,
+      M = input_data$M,
+      weights = input_data$weights,
+      use_asc = use_asc,
+      include_outside_option = input_data$include_outside_option
+    )
+  }
   vcov_result <- invert_hessian(hess)
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
@@ -242,7 +262,8 @@ run_nestlogit <- function(
       )
     },
     lambda = lambda,
-    nest_idx = input_data$nest_idx
+    nest_idx = input_data$nest_idx,
+    se_method = se_method
   )
 }
 
