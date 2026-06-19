@@ -9,6 +9,14 @@ This document provides a detailed mathematical description of the nested logit (
 3. [Log-Likelihood Function](#2-log-likelihood-function)
 4. [Gradient Computation](#3-gradient-computation)
 5. [Hessian Computation](#4-hessian-computation)
+   - [4.1 Notation and Scope](#41-notation-and-scope)
+   - [4.2 V-Space Hessian Q_i](#42-v-space-hessian-q_i)
+   - [4.3 Beta-Beta Block](#43-beta-beta-block)
+   - [4.4 Beta-Delta and Delta-Delta Blocks](#44-beta-delta-and-delta-delta-blocks)
+   - [4.5 Lambda-V Cross Derivative](#45-lambda-v-cross-derivative)
+   - [4.6 Lambda-Beta and Lambda-Delta Blocks](#46-lambda-beta-and-lambda-delta-blocks)
+   - [4.7 Lambda-Lambda Block](#47-lambda-lambda-block)
+   - [4.8 Single-Pass Implementation](#48-single-pass-implementation-and-auxiliary-accumulations)
 6. [Implementation Details](#5-implementation-details)
 7. [Post-Estimation Quantities](#6-post-estimation-quantities)
 
@@ -291,23 +299,311 @@ The common factor $\log I_k - \bar{V}_k / \lambda_k$ is labeled `term_in_bracket
 
 ## 4. Hessian Computation
 
-The nested logit Hessian is computed numerically via central finite differences on the gradient:
+**This section documents the Hessian of the *negated* log-likelihood.** The function `nl_loglik_hessian_parallel` returns $H(\theta) = -\nabla^2 \ell(\theta)$, the same quantity that `invert_hessian()` expects (positive semi-definite at the MLE). The sign convention matches the numeric oracle `nl_loglik_numeric_hessian` (which differences the negated gradient), so both functions are interchangeable as inputs to `invert_hessian()`.
+
+Two implementations are available:
+
+- `nl_loglik_hessian_parallel` — **default** (`se_method = "hessian"`): single-pass analytical Hessian derived below. Validated against the numeric oracle at max absolute difference $\approx 2.6 \times 10^{-8}$ across all test fixtures (Fixtures A–I), well below the $10^{-6}$ equivalence gate. At extreme $\lambda_k < 0.1$, the oracle's own finite-difference accuracy degrades; the analytical Hessian remains finite and symmetric throughout.
+- `nl_loglik_numeric_hessian` — retained oracle (`se_method = "numeric"`): central finite differences on the analytical gradient with step $\epsilon_i = 10^{-6} \cdot \max(|\theta_i|, 1)$. Use for diagnostic comparison or whenever a direct verification of the analytical path is required.
+
+---
+
+### 4.1 Notation and Scope
+
+All notation follows §§0–3. Subscripts $i$ (individual), $j/a/b$ (alternative local indices within $i$'s choice set, 0-based), and $k$/$l$ (nest indices, 0-based) are used throughout. Additional symbols specific to this section:
+
+| Symbol | Description |
+|--------|-------------|
+| $k_i$ | 0-based index of the chosen nest ($-1$ when outside option is chosen) |
+| $c_a$ | 0-based local index of the chosen inside alternative |
+| $\bar{V}_k$ | $\sum_{j \in B_k} P(j \mid k) \cdot V_{ij}$ — $P(\cdot \mid k)$-weighted mean utility in nest $k$ |
+| $T_k$ | $\log I_k - \bar{V}_k / \lambda_k$ — the "bracket term" from §3.4 |
+| $\widetilde{V}^2_k$ | $\sum_{j \in B_k} P(j \mid k) \cdot V_{ij}^2$ — conditional second moment |
+| $\mathrm{VarV}_k$ | $\widetilde{V}^2_k - \bar{V}_k^2$ — $P(\cdot\mid k)$-weighted variance of $V$ in nest $k$ |
+| $\mathbf{m}_k$ | $\sum_{j \in B_k} P_{ij} \cdot \mathbf{x}_{ij}$ — $P_{ij}$-weighted mean of $X$ in nest $k$ ($K$-vector) |
+| $\mathbf{c}_k$ | $\sum_{j \in B_k} P(j \mid k) \cdot \mathbf{x}_{ij}$ — $P(\cdot\mid k)$-weighted mean of $X$ in nest $k$ ($K$-vector) |
+| $\mathbf{S}^{(2)}_k$ | $\sum_{j \in B_k} P_{ij} \cdot \mathbf{x}_{ij} \mathbf{x}_{ij}^T$ — $P_{ij}$-weighted second moment of $X$ ($K \times K$) |
+| $\mathbf{Q}_k$ | $\sum_{j \in B_k} P(j \mid k) \cdot \mathbf{x}_{ij} \mathbf{x}_{ij}^T$ — $P(\cdot\mid k)$-weighted second moment of $X$ ($K \times K$) |
+| $\bar{\mathbf{x}}_i$ | $\sum_j P_{ij} \cdot \mathbf{x}_{ij}$ — $P_{ij}$-weighted global mean of $X$ for individual $i$ ($K$-vector) |
+
+The negated per-individual log-likelihood contribution is $f_i = -w_i \log P_{i,c_a}$. The full Hessian is the sum $H = \sum_{i=1}^N H^{(i)}$ where $H^{(i)} = -w_i \nabla^2 \log P_{i,c_a}$.
+
+---
+
+### 4.2 V-Space Hessian $Q_i$
+
+Because $V_{ij} = \mathbf{x}_{ij} \beta + \delta_j$ is linear in $\beta$ and $\delta$, the second derivatives with respect to these parameters factor through the $m_i \times m_i$ V-space Hessian. Define:
 
 $$
-\frac{\partial^2 \ell}{\partial \theta_i \, \partial \theta_j} \approx \frac{(\nabla_\theta \ell)_j\big|_{\theta + \epsilon_i e_i} - (\nabla_\theta \ell)_j\big|_{\theta - \epsilon_i e_i}}{2\epsilon_i}
+Q_i[a, b] = -\frac{\partial^2 \log P_{i,c_a}}{\partial V_{ia} \, \partial V_{ib}}
 $$
 
-where $e_i$ is the $i$-th standard basis vector and the step size is scaled to the parameter magnitude:
+Starting from the gradient formula (§3.1):
 
 $$
-\epsilon_i = \epsilon \cdot \max(|\theta_i|, 1)
+g[a] = \frac{\partial \log P_{i,c_a}}{\partial V_{ia}}
+= -P_{ia} + \left(1 - \frac{1}{\lambda_{k_i}}\right) \mathbf{1}_{a \in B_{k_i}} P(a \mid k_i) + \frac{\mathbf{1}_{a = c_a}}{\lambda_{k_i}}
 $$
 
-with default $\epsilon = 10^{-6}$.
+differentiating with respect to $V_{ib}$ yields:
 
-This approach avoids the considerably more complex analytical derivation required for a closed-form nested logit Hessian. The resulting matrix is used to compute the variance-covariance matrix of the estimates.
+$$
+\frac{\partial g[a]}{\partial V_{ib}} = -\frac{\partial P_{ia}}{\partial V_{ib}} + \left(1 - \frac{1}{\lambda_{k_i}}\right) \mathbf{1}_{a \in B_{k_i}} \frac{\partial P(a \mid k_i)}{\partial V_{ib}}
+$$
 
-*Code reference: [nestlogit.cpp:396-458](../src/nestlogit.cpp#L396-L458)*
+**Partial derivative of $P_{ia}$ with respect to $V_{ib}$.** Write $k_a = k(a)$, $k_b = k(b)$. Expanding $P_{ia} = P(a \mid k_a) \cdot P_{k_a}$ via the product rule and using $\partial P_{k_a}/\partial V_{ib} = P_{k_a}[\mathbf{1}_{k_b=k_a} P(b\mid k_a) - P_{ib}]$:
+
+$$
+\frac{\partial P_{ia}}{\partial V_{ib}}
+= P_{ia} \left\{
+  \mathbf{1}_{k_a = k_b} \cdot P(b \mid k_a) \left[1 + \frac{\mathbf{1}_{a=b} - P(a \mid k_a)}{\lambda_{k_a}}\right]
+  - P_{ib}
+\right\}
+$$
+
+**Partial derivative of $P(a \mid k_i)$ with respect to $V_{ib}$.** Non-zero only when $a \in B_{k_i}$:
+
+$$
+\frac{\partial P(a \mid k_i)}{\partial V_{ib}}
+= \frac{1}{\lambda_{k_i}} \mathbf{1}_{k_b = k_i} P(b \mid k_i) \left(\mathbf{1}_{a=b} - P(a \mid k_i)\right)
+$$
+
+**Combined V-space Hessian (correct formula).** Negating and combining:
+
+$$
+\boxed{
+Q_i[a, b]
+= P_{ia} \left\{
+  \mathbf{1}_{k_a = k_b} P(b \mid k_a) \left[1 + \frac{\mathbf{1}_{a=b} - P(a \mid k_a)}{\lambda_{k_a}}\right]
+  - P_{ib}
+\right\}
+- \underbrace{\mathbf{1}_{k_a = k_i} \mathbf{1}_{k_b = k_i} \cdot \frac{1 - 1/\lambda_{k_i}}{\lambda_{k_i}} \cdot P(b \mid k_i)\bigl(\mathbf{1}_{a=b} - P(a \mid k_i)\bigr)}_{C_{a,b}: \text{ chosen-nest correction}}
+}
+$$
+
+The chosen-nest correction $C_{a,b}$ is nonzero only when both $a$ and $b$ are in the chosen nest $k_i$ (and $k_i \geq 0$). It arises from the $(1 - 1/\lambda_{k_i})$ factor in $g[a]$ coupling the conditional probability gradient back to $V_{ib}$.
+
+**Structural notes and MNL limit:**
+
+- For $k_a \neq k_b$: $Q_i[a,b] = -P_{ia} P_{ib}$ (cross-nest entries equal the product of marginal probabilities, the familiar multinomial variance term).
+- **MNL limit** ($\lambda_k = 1$ for all $k$): $Q_i[a,b] = P_{ia}(\mathbf{1}_{a=b} - P_{ib})$, the standard multinomial Hessian of $-\log P_{c_a}$. Own diagonal $= P_{ia}(1-P_{ia})$; off-diagonal $= -P_{ia}P_{ib}$. The chosen-nest correction vanishes because $1 - 1/\lambda_{k_i} = 0$.
+- When the outside option is chosen ($k_i = -1$) or when $\lambda_{k_i} = 1$ (singleton chosen nest), $C_{a,b} = 0$ for all pairs.
+
+*Implementation note:* The implementation materializes $Q_i$ as an explicit $m_i \times m_i$ matrix, which is efficient for typical choice set sizes ($J \leq 20$). The outer-product decomposition used for the beta-beta block (§4.3) avoids forming this matrix explicitly for the $K \times K$ accumulation.
+
+*Code reference: [nestlogit.cpp:563–601](../src/nestlogit.cpp#L563-L601)*
+
+---
+
+### 4.3 Beta-Beta Block
+
+Since $\partial V_{ij}/\partial \beta_r = x_{ij,r}$:
+
+$$
+H^{(i)}_{\beta_r, \beta_s} = w_i \sum_{a} \sum_{b} x_{ia,r} \cdot Q_i[a,b] \cdot x_{ib,s}
+= w_i \, \mathbf{X}_i^T \mathbf{Q}_i \mathbf{X}_i
+$$
+
+The matrix product is decomposed into three terms that can be accumulated in a single nest-level pass, exploiting the outer-product structure of $Q_i$:
+
+**Term A — universal outer product (subtracted):**
+$$
+-w_i \, \bar{\mathbf{x}}_i \, \bar{\mathbf{x}}_i^T
+$$
+
+This arises from the $-P_{ia} P_{ib}$ term universal to all pairs: $\sum_{a,b} x_{ia,r} P_{ia} P_{ib} x_{ib,s} = \bar{x}_{i,r} \bar{x}_{i,s}$.
+
+**Term B — per-nest within-nest correction (added), summed over all nests $k$:**
+$$
++w_i \sum_{k} \left[ \left(1 - \frac{1}{\lambda_k}\right) \mathbf{m}_k \mathbf{c}_k^T + \frac{1}{\lambda_k} \mathbf{S}^{(2)}_k \right]
+$$
+
+For singleton nests ($\lambda_k = 1$): $(1 - 1/\lambda_k) = 0$, so the contribution reduces to $\mathbf{S}^{(2)}_k$.
+
+**Term C — chosen-nest correction (subtracted), only when $k_i \geq 0$:**
+$$
+-w_i \cdot \frac{1 - 1/\lambda_{k_i}}{\lambda_{k_i}} \left( \mathbf{Q}_{k_i} - \mathbf{c}_{k_i} \mathbf{c}_{k_i}^T \right)
+$$
+
+Here $\mathbf{Q}_{k_i} - \mathbf{c}_{k_i}\mathbf{c}_{k_i}^T$ is the $P(\cdot\mid k_i)$-weighted covariance of $X$ within the chosen nest.
+
+**Full beta-beta block (Hessian of the negated log-likelihood; positive semi-definite at the MLE):**
+$$
+H^{(i)}_{\beta\beta}
+= w_i \left[
+  -\bar{\mathbf{x}}_i \bar{\mathbf{x}}_i^T
+  + \sum_k \!\left(\!\left(1-\frac{1}{\lambda_k}\right)\mathbf{m}_k \mathbf{c}_k^T + \frac{1}{\lambda_k}\mathbf{S}^{(2)}_k\right)
+  - \mathbf{1}_{k_i \geq 0} \cdot \frac{1-1/\lambda_{k_i}}{\lambda_{k_i}} \!\left(\mathbf{Q}_{k_i} - \mathbf{c}_{k_i}\mathbf{c}_{k_i}^T\right)
+\right]
+$$
+
+**MNL limit check.** At $\lambda_k = 1$ for all $k$: Term B $= \sum_k \mathbf{S}^{(2)}_k = \mathbf{X}_i^T \mathrm{diag}(P_i) \mathbf{X}_i$; Term C vanishes; the formula yields the standard MNL expression $w_i(\mathbf{X}_i^T \mathrm{diag}(P_i) \mathbf{X}_i - \bar{\mathbf{x}}_i \bar{\mathbf{x}}_i^T)$.
+
+*Code reference: [nestlogit.cpp:651–682](../src/nestlogit.cpp#L651-L682)*
+
+---
+
+### 4.4 Beta-Delta and Delta-Delta Blocks
+
+Since $\partial V_{ij}/\partial \delta_a = \mathbf{1}_{j=a}$, these blocks are direct projections of $Q_i$ onto free-ASC alternatives.
+
+**Delta-delta block** (for free-ASC alternatives $a'$ and $b'$):
+$$
+H^{(i)}_{\delta_{a'}, \delta_{b'}} = w_i \cdot Q_i[a', b']
+$$
+
+**Beta-delta block** (for covariate index $r$ and free-ASC alternative $b'$):
+$$
+H^{(i)}_{\beta_r, \delta_{b'}} = w_i \sum_{a} x_{ia,r} \cdot Q_i[a, b']
+= w_i \, \bigl(\mathbf{X}_i^T \mathbf{Q}_i[:, b']\bigr)_r
+$$
+
+Both blocks reuse the same $Q_i$ matrix computed in §4.2. No additional auxiliary quantities are required.
+
+**ASC normalization.** Without an outside option, the first inside alternative's ASC is fixed to zero: free-ASC alternatives satisfy `alt_idx0[a] > 0`, mapped to theta positions `delta_start_idx + alt_idx0[a] - 1`.
+
+*Code reference: [nestlogit.cpp:604–648](../src/nestlogit.cpp#L604-L648)*
+
+---
+
+### 4.5 Lambda-V Cross Derivative
+
+The lambda parameters enter nonlinearly through both $\log I_k$ and the nest probabilities, so cross-derivatives between $\lambda_k$ and $\beta/\delta$ must be computed via the chain rule. Define:
+
+$$
+d^{(k)}_b = \frac{\partial g_{\lambda_k}}{\partial V_{ib}}, \qquad
+g_{\lambda_k} = \frac{\partial \log P_{i,c_a}}{\partial \lambda_k}
+$$
+
+Key intermediates (derived from §3.4):
+
+$$
+\frac{\partial T_k}{\partial V_{ib}} = -\mathbf{1}_{k(b)=k} P(b \mid k) \frac{V_{ib} - \bar{V}_k}{\lambda_k^2}, \qquad
+\frac{\partial P_k}{\partial V_{ib}} = P_k \bigl[\mathbf{1}_{k(b)=k} P(b \mid k) - P_{ib}\bigr]
+$$
+
+**For non-chosen nests ($k \neq k_i$), using $g_{\lambda_k} = -P_k T_k$:**
+$$
+d^{(k)}_b = P_k T_k P_{ib}
++ \mathbf{1}_{k(b)=k} P_k P(b \mid k) \left[\frac{V_{ib} - \bar{V}_k}{\lambda_k^2} - T_k\right]
+$$
+
+The first term is a universal "shift" proportional to $P_{ib}$; the second is the within-nest correction active only for $b \in B_k$.
+
+**For the chosen nest ($k = k_i$, only when $k_i \geq 0$), using $g_{\lambda_{k_i}} = (1-P_{k_i})T_{k_i} + (\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^2$:**
+$$
+d^{(k_i)}_b = P_{k_i} T_{k_i} P_{ib}
+- \frac{\mathbf{1}_{b = c_a}}{\lambda_{k_i}^2}
++ \mathbf{1}_{k(b)=k_i} P(b \mid k_i) \left[
+  -P_{k_i} T_{k_i}
+  + \frac{V_{ib} - \bar{V}_{k_i}}{\lambda_{k_i}^2} \left(P_{k_i} - 1 + \frac{1}{\lambda_{k_i}}\right)
+  + \frac{1}{\lambda_{k_i}^2}
+\right]
+$$
+
+The extra $-1/\lambda_{k_i}^2$ term for $b = c_a$ arises from differentiating the $(\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^2$ component of the chosen-nest gradient.
+
+---
+
+### 4.6 Lambda-Beta and Lambda-Delta Blocks
+
+Using $\partial V_{ib}/\partial \beta_r = x_{ib,r}$ and $\partial V_{ib}/\partial \delta_{b'} = \mathbf{1}_{b=b'}$:
+
+$$
+H^{(i)}_{\lambda_k, \beta_r} = -w_i \sum_{b} d^{(k)}_b \cdot x_{ib,r}
+= -w_i \, \bigl(\mathbf{X}_i^T \mathbf{d}^{(k)}\bigr)_r
+$$
+
+$$
+H^{(i)}_{\lambda_k, \delta_{b'}} = -w_i \, d^{(k)}_{b'}
+$$
+
+Both are filled symmetrically. Singleton nests (theta index $= -1$) contribute no rows or columns to these blocks.
+
+*Code reference: [nestlogit.cpp:684–750](../src/nestlogit.cpp#L684-L750)*
+
+---
+
+### 4.7 Lambda-Lambda Block
+
+Differentiating $g_{\lambda_k}$ with respect to $\lambda_l$, using:
+$$
+\frac{\partial T_k}{\partial \lambda_k} = \frac{\mathrm{VarV}_k}{\lambda_k^3} \geq 0, \qquad
+\frac{\partial P_k}{\partial \lambda_k} = P_k (1 - P_k) T_k, \qquad
+\frac{\partial P_k}{\partial \lambda_l} = -P_k P_l T_l \;(l \neq k), \qquad
+\frac{\partial T_k}{\partial \lambda_l} = 0 \;(l \neq k)
+$$
+
+**Off-diagonal $k \neq l$ (any combination of chosen/non-chosen nests):**
+$$
+H^{(i)}_{\lambda_k, \lambda_l} = -w_i \, P_k P_l T_k T_l
+$$
+
+This formula holds uniformly regardless of whether $k$ or $l$ equals $k_i$. It can be negative (whenever $T_k$ and $T_l$ share the same sign), reflecting correlation between nest-level inclusive values.
+
+**Diagonal $k \neq k_i$ (non-chosen nest):**
+$$
+H^{(i)}_{\lambda_k, \lambda_k} = w_i \left[ P_k (1 - P_k) T_k^2 + \frac{P_k \, \mathrm{VarV}_k}{\lambda_k^3} \right]
+$$
+
+The first term is a Fisher-information-type squared-gradient term; the second is positive and captures curvature from $T_k$'s dependence on $\lambda_k$ through the within-nest utility variance.
+
+**Diagonal $k = k_i$ (chosen nest, only when $k_i \geq 0$):**
+$$
+H^{(i)}_{\lambda_{k_i}, \lambda_{k_i}} = w_i \left[
+  P_{k_i}(1 - P_{k_i}) T_{k_i}^2
+  - \frac{(1 - P_{k_i}) \mathrm{VarV}_{k_i}}{\lambda_{k_i}^3}
+  + \frac{\mathrm{VarV}_{k_i}}{\lambda_{k_i}^4}
+  + \frac{2(\bar{V}_{k_i} - V_{c_a})}{\lambda_{k_i}^3}
+\right]
+$$
+
+The chosen-nest diagonal differs from the non-chosen formula because the $(\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^2$ term in $g_{\lambda_{k_i}}$ contributes $-\mathrm{VarV}_{k_i}/\lambda_{k_i}^4 - 2(\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^3$ when differentiated. Since the chosen alternative tends to have above-average utility within its nest ($V_{c_a} \geq \bar{V}_{k_i}$ in expectation), the last term is typically negative, making the chosen-nest diagonal somewhat smaller than the non-chosen counterpart.
+
+When the outside option is chosen ($k_i = -1$), all lambda diagonals use the non-chosen formula.
+
+*Code reference: [nestlogit.cpp:755–791](../src/nestlogit.cpp#L755-L791)*
+
+---
+
+### 4.8 Single-Pass Implementation and Auxiliary Accumulations
+
+All six blocks are accumulated in a **single parallel pass** over individuals. The per-nest auxiliary quantities below are accumulated in an inner loop over alternatives at $O(m_i)$ cost before any block is computed.
+
+**Per-nest scalars** (zero-initialized per individual, indexed by nest $k$):
+
+| Quantity | Formula | Blocks that use it |
+|----------|---------|-------------------|
+| $\bar{V}_k$ | $\sum_{j \in B_k} P(j\mid k) V_j$ | $T_k$, lambda-lambda, lambda-V cross |
+| $\widetilde{V}^2_k$ | $\sum_{j \in B_k} P(j\mid k) V_j^2$ | $\mathrm{VarV}_k$ for lambda-lambda diagonal |
+| $T_k$ | $\log I_k - \bar{V}_k/\lambda_k$ | lambda-lambda (all entries), lambda-V cross |
+| $\mathrm{VarV}_k$ | $\widetilde{V}^2_k - \bar{V}_k^2$ | lambda-lambda diagonal |
+
+**Per-nest K-vectors:**
+
+| Quantity | Formula | Blocks that use it |
+|----------|---------|-------------------|
+| $\mathbf{m}_k$ | $\sum_{j \in B_k} P_{ij} \mathbf{x}_j$ | beta-beta Term B |
+| $\mathbf{c}_k$ | $\sum_{j \in B_k} P(j\mid k) \mathbf{x}_j$ | beta-beta Terms B and C |
+
+**Per-nest $K \times K$ matrices:**
+
+| Quantity | Formula | Blocks that use it |
+|----------|---------|-------------------|
+| $\mathbf{S}^{(2)}_k$ | $\sum_{j \in B_k} P_{ij} \mathbf{x}_j \mathbf{x}_j^T$ | beta-beta Term B |
+| $\mathbf{Q}_k$ | $\sum_{j \in B_k} P(j\mid k) \mathbf{x}_j \mathbf{x}_j^T$ | beta-beta Term C (chosen nest $k_i$ only) |
+
+**Global per-individual:** $\bar{\mathbf{x}}_i = \sum_j P_{ij} \mathbf{x}_j = \sum_k \mathbf{m}_k$ (beta-beta Term A).
+
+**OpenMP structure.** The outer loop over individuals is parallelized with dynamic scheduling. Each thread maintains a thread-local $P \times P$ accumulator `local_H`, merged into `global_H` via `#pragma omp critical` after the individual loop. The nest-to-theta-index map is copied thread-privately to avoid false sharing.
+
+**Symmetrization and sanitization.** After the parallel loop: $H \leftarrow (H + H^T)/2$ enforces exact symmetry; any remaining non-finite entries are zeroed.
+
+**Singleton-nest handling.** Singleton nests ($\lambda_k = 1$, theta index $= -1$) contribute nothing to the lambda-lambda, lambda-beta, or lambda-delta blocks. Their beta-beta contribution via Term B simplifies to $\mathbf{S}^{(2)}_k$ (since $1 - 1/\lambda_k = 0$).
+
+**Per-individual weights.** Every contribution is multiplied by $w_i$ (WESML weight; equals 1 for unweighted data).
+
+*Code reference: [nestlogit.cpp:404–810](../src/nestlogit.cpp#L404-L810)*
 
 ---
 
