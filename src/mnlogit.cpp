@@ -633,48 +633,106 @@ arma::mat mnl_loglik_hessian_parallel(
       stable_softmax(V_i, P_i);
 
       // Calculate Hessian components for individual i -----------------------
-      arma::vec sum_P_Z    = arma::zeros(n_params);
-      arma::mat sum_P_Z_Zt = arma::zeros(n_params, n_params);
-      arma::vec Z_a        = arma::zeros(n_params);
+      // O2: Block decomposition — BB (beta-beta), BD (beta-delta), DD (delta-delta)
+      // O5: Exploit symmetry of BB and DD — accumulate upper triangle only, mirror after loop
+      const int J_asc = n_params - K;  // number of free ASC parameters (0 when use_asc=false)
 
-      for (int a = 0; a < num_choices; ++a) {
-        const double P_ia  = P_i[a];
-        
-        // Reset Z_a to zero
-        Z_a.zeros(); 
-        
-        // Construct Z_a (covariate vector for alternative a)
-        if (include_outside_option) {
-            if (a > 0) { // skip outside option (a=0)
-                // beta part
-                Z_a.subvec(0, K - 1) = X_i.row(a - 1).t();
-                // delta part
-                if (use_asc) {
-                    const int a_id = alt_idx0_i[a - 1]; // 0 ... J-1
-                    Z_a[K + a_id] = 1.0;
-                }
-            }
-            // if a == 0, Z_a remains all zeros
-        } else {
-            // beta part
-            Z_a.subvec(0, K - 1) = X_i.row(a).t();
-            // delta part
-            if (use_asc) {
-                const int a_id = alt_idx0_i[a]; // 0 ... J-1
-                if (a_id > 0) { // delta_0 is normalized to 0
-                    Z_a[K + (a_id - 1)] = 1.0;
-                }
+      arma::mat BB       = arma::zeros(K, K);          // beta-beta  (K x K, symmetric)
+      arma::vec mu_beta  = arma::zeros(K);              // P-weighted mean of x_a
+      arma::mat BD       = (J_asc > 0) ? arma::zeros(K, J_asc) : arma::mat(); // beta-delta (K x J_asc)
+      arma::vec mu_delta = (J_asc > 0) ? arma::zeros(J_asc) : arma::vec();    // P-weighted ASC indicator sums
+
+      for (int a = 0; a < m_i; ++a) {
+        // Probability of this inside alternative
+        const double p_a = include_outside_option ? P_i[a + 1] : P_i[a];
+
+        // Covariate column vector for this inside alternative
+        const arma::vec x_a = X_i.row(a).t();   // K x 1
+
+        // --- Beta-beta block: accumulate upper triangle of p_a * x_a x_a^T ---
+        // O5: only upper triangle (c >= r), mirror after loop
+        for (int r = 0; r < K; ++r) {
+            const double p_x_r = p_a * x_a[r];
+            for (int c = r; c < K; ++c) {
+                BB(r, c) += p_x_r * x_a[c];
             }
         }
-        
-        // Accumulate H_i components
-        sum_P_Z    += P_ia * Z_a;
-        sum_P_Z_Zt += P_ia * (Z_a * Z_a.t()); // outer product
+        mu_beta += p_a * x_a;
+
+        // --- Delta position: skip if no free ASCs or if this alt's ASC is normalized ---
+        if (J_asc > 0) {
+            int delta_pos;
+            bool has_free_asc;
+            if (include_outside_option) {
+                delta_pos    = static_cast<int>(alt_idx0_i[a]);  // 0 ... J-1
+                has_free_asc = true;
+            } else {
+                const int a_id = static_cast<int>(alt_idx0_i[a]);
+                if (a_id == 0) {
+                    has_free_asc = false;
+                    delta_pos    = -1;
+                } else {
+                    has_free_asc = true;
+                    delta_pos    = a_id - 1;  // 0 ... J-2
+                }
+            }
+
+            if (has_free_asc) {
+                // Beta-delta block: scatter p_a * x_a into column delta_pos
+                BD.col(delta_pos) += p_a * x_a;
+                // Delta accumulator (diagonal of diag(mu_delta) before outer-product subtraction)
+                mu_delta[delta_pos] += p_a;
+            }
+        }
       } // end of alt loop
 
-      // Compute H_i and add to local accumulator
-      // H_i = sum_P_Z_Zt - (sum_P_Z * sum_P_Z.t())
-      local_hess += w_i * ( (sum_P_Z * sum_P_Z.t()) - sum_P_Z_Zt );
+      // O5: Mirror BB lower triangle from upper triangle
+      for (int r = 0; r < K; ++r) {
+          for (int c = r + 1; c < K; ++c) {
+              BB(c, r) = BB(r, c);
+          }
+      }
+
+      // Subtract outer products to complete the variance terms:
+      // BB = sum_a p_a x_a x_a^T - mu_beta mu_beta^T  (P-weighted covariance of covariates)
+      BB -= mu_beta * mu_beta.t();
+
+      // Scatter blocks into local_hess with the correct sign convention:
+      // local_hess accumulates w_i * (sum_P_Z sum_P_Z^T - sum_P_Z_Zt) = -w_i * Var_P(Z)
+      // Blocks BB, BD, DD compute +Var_P(Z) direction, so we subtract (local_hess -= w_i * block)
+      // Final return -global_hess then gives the Hessian of the negative log-likelihood.
+
+      // Beta-beta block (rows 0:K-1, cols 0:K-1)
+      local_hess.submat(0, 0, K-1, K-1) -= w_i * BB;
+
+      if (J_asc > 0) {
+          // BD = sum_a p_a x_a e_{d(a)}^T - mu_beta mu_delta^T  (K x J_asc)
+          BD -= mu_beta * mu_delta.t();
+
+          // Delta-delta block: diag(mu_delta) - mu_delta mu_delta^T
+          // Assemble upper triangle only, then mirror
+          arma::mat DD_upper = arma::zeros(J_asc, J_asc);
+          for (int r = 0; r < J_asc; ++r) {
+              DD_upper(r, r) += mu_delta[r];                        // diagonal: sum of p_a for ASC r
+              for (int c = r + 1; c < J_asc; ++c) {
+                  DD_upper(r, c) -= mu_delta[r] * mu_delta[c];     // off-diagonal: -p_r * p_c
+              }
+              DD_upper(r, r) -= mu_delta[r] * mu_delta[r];         // diagonal: p_r - p_r^2
+          }
+          // Mirror DD lower triangle from upper triangle
+          for (int r = 0; r < J_asc; ++r) {
+              for (int c = r + 1; c < J_asc; ++c) {
+                  DD_upper(c, r) = DD_upper(r, c);
+              }
+          }
+
+          // Beta-delta block (rows 0:K-1, cols K:n_params-1)
+          local_hess.submat(0, K, K-1, n_params-1) -= w_i * BD;
+          // Delta-beta block = transpose of beta-delta
+          local_hess.submat(K, 0, n_params-1, K-1) -= w_i * BD.t();
+          // Delta-delta block (rows K:n_params-1, cols K:n_params-1)
+          local_hess.submat(K, K, n_params-1, n_params-1) -= w_i * DD_upper;
+      }
 
     } // end of i loop
 
