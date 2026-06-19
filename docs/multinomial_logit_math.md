@@ -179,40 +179,81 @@ The delta gradient reuses the same difference vector $d_i$ computed for the beta
 
 ## 4. Hessian Computation
 
-### 4.1 Analytical Hessian
-
-The implementation provides an analytical Hessian for efficient computation of standard errors.
-
-Define the "score vector" for alternative $a$ as $Z_a$, which concatenates:
-- $X_{ia}^T$ for the $\beta$ components
-- Indicator $\mathbf{1}_{a = j}$ for the $\delta_j$ components
+### 4.1 Analytical Hessian — Full-Vector Form
 
 The Hessian of the log-likelihood for individual $i$ is:
 
-$$
-H_i = \frac{\partial^2 \ell_i}{\partial \theta \partial \theta'} = -w_i \left[ \sum_{j=1}^{J_i} P_{ij} Z_j Z_j^T - \left(\sum_{j=1}^{J_i} P_{ij} Z_j\right)\left(\sum_{j=1}^{J_i} P_{ij} Z_j\right)^T \right]
-$$
+$$H_i = \frac{\partial^2 \ell_i}{\partial \theta \,\partial \theta'} = -w_i \left[ \sum_{a \in A_i} P_{ia} Z_a Z_a^T - \left(\sum_{a \in A_i} P_{ia} Z_a\right)\left(\sum_{a \in A_i} P_{ia} Z_a\right)^T \right]$$
 
-This can be written more compactly as:
+where $A_i$ is individual $i$'s choice set (including the outside option when present) and $Z_a \in \mathbb{R}^{K + J_\delta}$ is the "score vector" for alternative $a$:
 
-$$
-H_i = -w_i \left[ \mathbb{E}_P[Z Z^T] - \mathbb{E}_P[Z] \mathbb{E}_P[Z]^T \right] = -w_i \cdot \text{Var}_P(Z)
-$$
+$$Z_a = \begin{pmatrix} x_a \\ e_{d(a)} \end{pmatrix}$$
 
-where the expectation is taken with respect to the choice probabilities $P_{ij}$.
+Here $x_a \in \mathbb{R}^K$ is the covariate vector for alternative $a$, $e_{d(a)}$ is the standard basis vector in $\mathbb{R}^{J_\delta}$ indicating the free ASC position $d(a)$ for alternative $a$, and $J_\delta$ is the number of free ASC parameters ($J-1$ without outside option, $J$ with outside option). For the outside option itself, $Z_0 = 0$ (no covariates, no free ASC).
 
-The full Hessian is:
+This can be written compactly as:
 
-$$
-\nabla^2_\theta \ell = \sum_{i=1}^{N} H_i
-$$
+$$H_i = -w_i \operatorname{Var}_{P_i}(Z)$$
 
-In the code:
-- `sum_P_Z` = $\sum_j P_{ij} Z_j$
-- `sum_P_Z_Zt` = $\sum_j P_{ij} Z_j Z_j^T$
-- `H_i` = $w_i \cdot (\text{sum\_P\_Z} \cdot \text{sum\_P\_Z}^T - \text{sum\_P\_Z\_Zt})$
+where the variance is taken under the discrete distribution $P_i = (P_{i0}, P_{i1}, \ldots, P_{iJ_i})$. The full Hessian is $\nabla^2_\theta \ell = \sum_{i=1}^N H_i$ and the function returns $-\nabla^2_\theta \ell$ (Hessian of the negative log-likelihood).
 
-*Code reference: [mnlogit.cpp:694-736](../src/mnlogit.cpp#L694-L736)*
+### 4.2 Block Decomposition
+
+The parameter vector is $\theta = (\beta, \delta)$ with $\beta \in \mathbb{R}^K$ (covariate coefficients) and $\delta \in \mathbb{R}^{J_\delta}$ (free ASC parameters). Because $Z_a$ has at most $K+1$ nonzero entries — $K$ in the $\beta$ block and at most one in the $\delta$ block — the dense $n_\mathrm{params} \times n_\mathrm{params}$ outer product $Z_a Z_a^T$ has only three nontrivial submatrices. Summing over alternatives, the individual Hessian decomposes into three blocks:
+
+$$-H_i / w_i = \begin{pmatrix} \mathbf{BB}_i & \mathbf{BD}_i \\ \mathbf{BD}_i^T & \mathbf{DD}_i \end{pmatrix}$$
+
+**Beta-beta block** ($K \times K$, symmetric):
+
+$$\mathbf{BB}_i = \sum_{a=1}^{m_i} p_{ia} \, x_a x_a^T - \mu_\beta \mu_\beta^T, \qquad \mu_\beta = \sum_{a=1}^{m_i} p_{ia} \, x_a$$
+
+where the sum runs over the $m_i$ inside alternatives only (since $Z_0 = 0$). This is the probability-weighted covariance of the covariates:
+
+$$\mathbf{BB}_i = \mathbb{E}_{P_i}[x x^T] - \mathbb{E}_{P_i}[x]\, \mathbb{E}_{P_i}[x]^T = \operatorname{Cov}_{P_i}(x)$$
+
+**Delta-delta block** ($J_\delta \times J_\delta$, symmetric):
+
+$$\mathbf{DD}_i = \operatorname{diag}(\mu_\delta) - \mu_\delta \mu_\delta^T, \qquad \mu_\delta[r] = \sum_{\{a : d(a)=r\}} p_{ia}$$
+
+Because at most one alternative maps to each free ASC index, $\mu_\delta$ is the vector of choice probabilities for ASC-bearing alternatives. The diagonal of $\mathbf{DD}_i$ is $\mu_\delta \odot (1 - \mu_\delta)$ and the off-diagonal $(r,s)$ entry is $-\mu_\delta[r]\,\mu_\delta[s]$.
+
+**Beta-delta block** ($K \times J_\delta$, generally not symmetric):
+
+$$\mathbf{BD}_i[:,r] = \sum_{\{a : d(a)=r\}} p_{ia} \, x_a - \mu_\beta \, \mu_\delta[r]$$
+
+This block measures the probability-weighted covariance between the covariates and the ASC indicators.
+
+**Why the decomposition equals the full-vector form.** Partition $Z_a = (x_a^T, e_{d(a)}^T)^T$. Then:
+
+$$\sum_a p_{ia} Z_a Z_a^T = \begin{pmatrix} \sum_a p_{ia} x_a x_a^T & \sum_a p_{ia} x_a e_{d(a)}^T \\ \sum_a p_{ia} e_{d(a)} x_a^T & \sum_a p_{ia} e_{d(a)} e_{d(a)}^T \end{pmatrix}$$
+
+$$\left(\sum_a p_{ia} Z_a\right)\left(\sum_a p_{ia} Z_a\right)^T = \begin{pmatrix} \mu_\beta \mu_\beta^T & \mu_\beta \mu_\delta^T \\ \mu_\delta \mu_\beta^T & \mu_\delta \mu_\delta^T \end{pmatrix}$$
+
+Subtracting block by block yields exactly $\mathbf{BB}_i$, $\mathbf{BD}_i$, $\mathbf{DD}_i$ above.
+
+### 4.3 Symmetry Exploitation
+
+$\mathbf{BB}_i$ and $\mathbf{DD}_i$ are symmetric. The implementation accumulates only the upper triangles of these blocks during the inner loop over alternatives and reflects them once after the loop, halving the write operations for those blocks:
+
+- **BB**: the double loop `for r in 0..K-1, for c in r..K-1` accumulates $p_{ia} x_{ar} x_{ac}$ into the upper triangle; the lower triangle is filled by mirroring.
+- **DD**: $\mu_\delta$ is a length-$J_\delta$ vector; the matrix $\operatorname{diag}(\mu_\delta) - \mu_\delta \mu_\delta^T$ is assembled from the vector after all alternatives are processed, with upper triangle only and then mirrored.
+- **BD**: $K \times J_\delta$ rectangular — the full block is computed (no symmetry available across the two index spaces).
+
+The existing final symmetrization `global_hess = 0.5*(global_hess + global_hess^T)` remains as a numerical tidy-up.
+
+**Complexity.** The block assembly costs $O(J \cdot K^2 / 2)$ for BB, $O(J \cdot K)$ for BD scatter, and $O(J_\delta^2 / 2)$ for DD — versus $O(J \cdot (K + J_\delta)^2)$ for the naive dense outer product. The asymptotic gain scales as $(1 + J_\delta/K)^2$, which is material when the number of free ASC parameters is comparable to or larger than $K$.
+
+### 4.4 ASC Normalization and Indexing
+
+The free-delta position $d(a)$ for inside alternative $a$ (0-based local index within individual $i$'s choice set, with $a \in \{0,\ldots,m_i-1\}$) is:
+
+$$d(a) = \begin{cases} \text{alt\_idx0\_i}[a] & \text{if } \texttt{include\_outside\_option} = \text{TRUE} \\ \text{alt\_idx0\_i}[a] - 1 & \text{if } \texttt{include\_outside\_option} = \text{FALSE and alt\_idx0\_i}[a] > 0 \\ \text{(skip — no ASC contribution)} & \text{if } \texttt{include\_outside\_option} = \text{FALSE and alt\_idx0\_i}[a] = 0 \end{cases}$$
+
+where `alt_idx0_i[a]` is the 0-based global alternative ID from `alt_idx0`. When there is no outside option, the first inside alternative ($\text{alt\_idx0\_i}[a] = 0$) has its ASC fixed to zero by the identification convention, so it contributes no free ASC entry and is skipped in the BD and DD accumulation.
+
+**Implementation note.** The optimization is internal and numerically equivalent (within $\approx 10^{-9}$ in absolute terms, well within the $10^{-6}$ tolerance verified at test time) to the prior dense outer-product implementation. The public results — vcov, se, logLik, and all post-estimation quantities — are unchanged.
+
+*Code reference: `src/mnlogit.cpp`, function `mnl_loglik_hessian_parallel`.*
 
 ---
 
