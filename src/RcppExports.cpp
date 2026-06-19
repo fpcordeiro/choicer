@@ -11,6 +11,58 @@ Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
 Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
+// halton_radical_inverse
+double halton_radical_inverse(double n, double base);
+RcppExport SEXP _choicer_halton_radical_inverse(SEXP nSEXP, SEXP baseSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< double >::type n(nSEXP);
+    Rcpp::traits::input_parameter< double >::type base(baseSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_radical_inverse(n, base));
+    return rcpp_result_gen;
+END_RCPP
+}
+// halton_inv_normal_cdf
+double halton_inv_normal_cdf(double p);
+RcppExport SEXP _choicer_halton_inv_normal_cdf(SEXP pSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< double >::type p(pSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_inv_normal_cdf(p));
+    return rcpp_result_gen;
+END_RCPP
+}
+// halton_generate_uniform
+arma::mat halton_generate_uniform(int n, int dim, double seed, int scramble);
+RcppExport SEXP _choicer_halton_generate_uniform(SEXP nSEXP, SEXP dimSEXP, SEXP seedSEXP, SEXP scrambleSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< int >::type n(nSEXP);
+    Rcpp::traits::input_parameter< int >::type dim(dimSEXP);
+    Rcpp::traits::input_parameter< double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< int >::type scramble(scrambleSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_generate_uniform(n, dim, seed, scramble));
+    return rcpp_result_gen;
+END_RCPP
+}
+// halton_generate_normal
+arma::mat halton_generate_normal(int S, int N, int K_w, double seed, int scramble);
+RcppExport SEXP _choicer_halton_generate_normal(SEXP SSEXP, SEXP NSEXP, SEXP K_wSEXP, SEXP seedSEXP, SEXP scrambleSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< int >::type S(SSEXP);
+    Rcpp::traits::input_parameter< int >::type N(NSEXP);
+    Rcpp::traits::input_parameter< int >::type K_w(K_wSEXP);
+    Rcpp::traits::input_parameter< double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< int >::type scramble(scrambleSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_generate_normal(S, N, K_w, seed, scramble));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -259,8 +311,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_loglik_gradient_parallel
-Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -277,7 +329,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -295,8 +350,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_hessian_parallel
-arma::mat mxl_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat mxl_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -313,13 +368,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_hessian_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_hessian_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_bhhh_parallel
-arma::mat mxl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat mxl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -336,13 +394,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_bhhh_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_bhhh_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_predict
-Rcpp::List mxl_predict(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_predict(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::List mxl_predict(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_predict(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -357,13 +418,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_predict(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_predict(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_logsum
-arma::vec mxl_logsum(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_logsum(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::vec mxl_logsum(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_logsum(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -378,13 +442,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_logsum(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_logsum(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_predict_shares
-arma::vec mxl_predict_shares(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_predict_shares(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::vec mxl_predict_shares(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_predict_shares(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -400,13 +467,16 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_predict_shares(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_predict_shares(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_diversion_ratios_parallel
-arma::mat mxl_diversion_ratios_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const int elast_var_idx, const bool is_random_coef, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_diversion_ratios_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP elast_var_idxSEXP, SEXP is_random_coefSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat mxl_diversion_ratios_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const int elast_var_idx, const bool is_random_coef, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_diversion_ratios_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP elast_var_idxSEXP, SEXP is_random_coefSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -424,7 +494,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_diversion_ratios_parallel(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_diversion_ratios_parallel(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -456,8 +529,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_elasticities_parallel
-arma::mat mxl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const int elast_var_idx, const bool is_random_coef, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mxl_elasticities_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP elast_var_idxSEXP, SEXP is_random_coefSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat mxl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const int elast_var_idx, const bool is_random_coef, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_elasticities_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP elast_var_idxSEXP, SEXP is_random_coefSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -476,7 +549,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_elasticities_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_elasticities_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -636,6 +712,10 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
+    {"_choicer_halton_radical_inverse", (DL_FUNC) &_choicer_halton_radical_inverse, 2},
+    {"_choicer_halton_inv_normal_cdf", (DL_FUNC) &_choicer_halton_inv_normal_cdf, 1},
+    {"_choicer_halton_generate_uniform", (DL_FUNC) &_choicer_halton_generate_uniform, 4},
+    {"_choicer_halton_generate_normal", (DL_FUNC) &_choicer_halton_generate_normal, 5},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},
     {"_choicer_mnl_predict_shares", (DL_FUNC) &_choicer_mnl_predict_shares, 7},
@@ -652,16 +732,16 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_riwishart_cpp", (DL_FUNC) &_choicer_riwishart_cpp, 3},
     {"_choicer_build_L_mat", (DL_FUNC) &_choicer_build_L_mat, 3},
     {"_choicer_build_var_mat", (DL_FUNC) &_choicer_build_var_mat, 3},
-    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 13},
+    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 16},
     {"_choicer_jacobian_vech_Sigma", (DL_FUNC) &_choicer_jacobian_vech_Sigma, 3},
-    {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 13},
-    {"_choicer_mxl_bhhh_parallel", (DL_FUNC) &_choicer_mxl_bhhh_parallel, 13},
-    {"_choicer_mxl_predict", (DL_FUNC) &_choicer_mxl_predict, 11},
-    {"_choicer_mxl_logsum", (DL_FUNC) &_choicer_mxl_logsum, 11},
-    {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 12},
-    {"_choicer_mxl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mxl_diversion_ratios_parallel, 14},
+    {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 16},
+    {"_choicer_mxl_bhhh_parallel", (DL_FUNC) &_choicer_mxl_bhhh_parallel, 16},
+    {"_choicer_mxl_predict", (DL_FUNC) &_choicer_mxl_predict, 14},
+    {"_choicer_mxl_logsum", (DL_FUNC) &_choicer_mxl_logsum, 14},
+    {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 15},
+    {"_choicer_mxl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mxl_diversion_ratios_parallel, 17},
     {"_choicer_mxl_blp_contraction", (DL_FUNC) &_choicer_mxl_blp_contraction, 17},
-    {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 15},
+    {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 18},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
     {"_choicer_nl_predict", (DL_FUNC) &_choicer_nl_predict, 7},

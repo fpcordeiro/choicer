@@ -478,6 +478,8 @@ The implementation parallelizes over individuals using OpenMP:
 
 3. **Gradient vectorization**: The per-draw gradient is computed without a per-alternative loop. After forming $\mathbf{d}_i^s = \mathbf{e}_{j_i} - P_i^s$, the $\beta$ and $\mu$/$L$ blocks are evaluated with two BLAS dgemv calls ($X_i^T \mathbf{d}_i^s$ and $W_i^T \mathbf{d}_i^s$). The delta block uses an irregular scatter and remains a loop.
 
+4. **Draw source (RQMC mode)**: By default (`draws = "store"` in `run_mxlogit()`), the $K_w \times S \times N$ Halton cube is pre-materialized via `randtoolbox::halton` and stored in memory. With `draws = "generate"`, each individual's $S$ draws are computed on the fly by the C++ `HaltonGen` class using the same radical-inverse formula, so the integrand and all math in this document are unchanged — only the source of $\eta_i^s$ differs. Owen (2017) digit scrambling (`scramble = "owen"`, the default for generate mode) randomizes the Halton sequence by applying a per-digit permutation table derived from a master seed, yielding RQMC draws with better uniformity in high dimensions (Bhat 2003).
+
 ---
 
 ## 6. Elasticity Computation

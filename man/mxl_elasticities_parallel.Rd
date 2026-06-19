@@ -19,7 +19,10 @@ mxl_elasticities_parallel(
   rc_correlation = TRUE,
   rc_mean = FALSE,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  gen_seed = -1L,
+  gen_scramble = 1L,
+  gen_S = 0L
 )
 }
 \arguments{
@@ -52,6 +55,15 @@ mxl_elasticities_parallel(
 \item{use_asc}{whether ASCs are included}
 
 \item{include_outside_option}{whether outside option is included}
+
+\item{gen_seed}{Integer master seed for the on-the-fly Halton generator. \code{< 0}
+(default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+on the fly from this seed.}
+
+\item{gen_scramble}{Integer scramble mode for on-the-fly generation: \code{0} =
+identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.}
+
+\item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
 }
 \value{
 J x J matrix of aggregate elasticities

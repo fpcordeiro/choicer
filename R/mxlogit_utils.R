@@ -141,6 +141,23 @@
 #' @param outside_opt_label Label for the outside option (convenience workflow).
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
+#' @param draws Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
+#'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times N} Halton cube
+#'   (existing behavior, exact reproducibility). \code{"generate"} computes each
+#'   individual's draws on-the-fly in C++ from a stored seed, eliminating the O(N)
+#'   cube; recommended for memory-constrained or large-N settings. Uses randomized
+#'   digit-scrambled (Owen 2017) Halton sequences when \code{scramble = "owen"}.
+#'   Only supported in the convenience workflow.
+#' @param seed Integer master seed for the on-the-fly generator. Used only when
+#'   \code{draws = "generate"}. If \code{NULL} (default), a seed is drawn from R's
+#'   RNG at call time (so \code{set.seed()} governs reproducibility). Ignored when
+#'   \code{draws = "store"}.
+#' @param scramble Scrambling mode for on-the-fly Halton draws. One of
+#'   \code{"owen"} (default) for Owen (2017) digit scrambling, or \code{"none"} for
+#'   plain unscrambled Halton (identity permutations). \code{"none"} reproduces the
+#'   randtoolbox sequence exactly and is intended for testing; \code{"owen"} is
+#'   strongly recommended for estimation with \eqn{K_w > 5}. Used only when
+#'   \code{draws = "generate"}.
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in
 #'   the returned object for post-estimation functions.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
@@ -191,6 +208,9 @@ run_mxlogit <- function(
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
+    draws       = c("store", "generate"),
+    seed        = NULL,
+    scramble    = c("owen", "none"),
     keep_data = TRUE,
     nloptr_opts = NULL,
     weights_col = NULL
@@ -199,6 +219,19 @@ run_mxlogit <- function(
 
   se_method <- match.arg(se_method)
   scale_vars <- match.arg(scale_vars)
+  draws   <- match.arg(draws)
+  scramble <- match.arg(scramble)
+
+  # Validate seed parameter
+  if (!is.null(seed)) {
+    if (!is.numeric(seed) || length(seed) != 1L || !is.finite(seed) || seed < 0) {
+      stop("'seed' must be NULL or a single non-negative integer.")
+    }
+    seed <- as.integer(seed)
+    if (draws != "generate") {
+      message("'seed' is ignored when draws = 'store'.")
+    }
+  }
 
   # Backward compatibility: nloptr_opts -> optimizer + control
   if (!is.null(nloptr_opts)) {
@@ -261,9 +294,22 @@ run_mxlogit <- function(
       rc_correlation = rc_correlation
     )
     K_w <- ncol(input_data$W)
-    eta_draws <- get_halton_normals(S, input_data$N, K_w)
+    if (draws == "store") {
+      eta_draws <- get_halton_normals(S, input_data$N, K_w)
+    } else {
+      # generate mode: no cube ever materialized; empty placeholder
+      eta_draws <- array(0, dim = c(K_w, 0L, 0L))
+      # Draw seed from R RNG when not supplied (like run_mnprobit)
+      if (is.null(seed)) {
+        seed <- sample.int(.Machine$integer.max, 1L)
+      }
+    }
   } else {
     # Advanced workflow
+    if (draws == "generate") {
+      stop("draws=generate is only supported in the convenience workflow. ",
+           "In the advanced workflow, supply 'eta_draws' directly.")
+    }
     if (is.null(eta_draws)) {
       stop("'eta_draws' is required when using 'input_data' (advanced workflow).")
     }
@@ -412,6 +458,12 @@ run_mxlogit <- function(
     upper <- (upper - bt_shift) / bt_mult
   }
 
+  # Resolve generate-mode parameters for C++ kernels.
+  # In store mode (draws="store"): gen_seed_cpp = -1L triggers cube path (unchanged behavior).
+  gen_seed_cpp     <- if (draws == "generate") seed else -1L
+  gen_scramble_cpp <- if (draws == "generate") (if (scramble == "owen") 1L else 0L) else 1L
+  gen_S_cpp        <- if (draws == "generate") S else 0L
+
   # Build eval_f closure
   eval_f <- function(theta) {
     mxl_loglik_gradient_parallel(
@@ -427,7 +479,10 @@ run_mxlogit <- function(
       rc_mean = rc_mean,
       eta_draws = eta_draws,
       use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
+      include_outside_option = input_data$include_outside_option,
+      gen_seed = gen_seed_cpp,
+      gen_scramble = gen_scramble_cpp,
+      gen_S = gen_S_cpp
     )
   }
 
@@ -482,7 +537,8 @@ run_mxlogit <- function(
       M = input_data$M, weights = input_data$weights, eta_draws = eta_draws,
       rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
       use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
+      include_outside_option = input_data$include_outside_option,
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
     )
     B_meat <- mxl_bhhh_parallel(
       theta = theta_hat, X = input_data$X, W = input_data$W,
@@ -490,7 +546,8 @@ run_mxlogit <- function(
       M = input_data$M, weights = input_data$weights^2, eta_draws = eta_draws,
       rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
       use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
+      include_outside_option = input_data$include_outside_option,
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
     )
     vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {
@@ -509,7 +566,8 @@ run_mxlogit <- function(
       rc_correlation = rc_correlation,
       rc_mean = rc_mean,
       use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
+      include_outside_option = input_data$include_outside_option,
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
     ),
     bhhh = mxl_bhhh_parallel(
       theta = theta_hat,
@@ -524,7 +582,8 @@ run_mxlogit <- function(
       rc_correlation = rc_correlation,
       rc_mean = rc_mean,
       use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
+      include_outside_option = input_data$include_outside_option,
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
     )
   )
   vcov_result <- invert_hessian(hess)
@@ -558,9 +617,12 @@ run_mxlogit <- function(
 
   # Draws info (metadata only, not the full array)
   draws_info <- list(
-    S = dim(eta_draws)[2],
-    N = dim(eta_draws)[3],
-    K_w = K_w
+    S       = S,
+    N       = input_data$N,
+    K_w     = K_w,
+    mode    = draws,
+    seed    = if (draws == "generate") seed else NULL,
+    scramble = if (draws == "generate") scramble else NULL
   )
 
   # Build S3 object
@@ -912,4 +974,32 @@ get_halton_normals <- function(S, N, K_w) {
   }
 
   return(eta_draws)
+}
+
+
+#' Resolve draw parameters for post-estimation regeneration sites
+#'
+#' When the fitted object used generate mode, returns an empty placeholder cube
+#' plus the three gen_* integers. When in store mode, materialises the Halton
+#' cube from the stored metadata.
+#'
+#' @param draws_info List from a fitted choicer_mxl object.
+#' @noRd
+.mxl_gen_params <- function(draws_info) {
+  mode <- draws_info$mode %||% "store"
+  if (mode == "generate") {
+    list(
+      eta_draws    = array(0, dim = c(draws_info$K_w, 0L, 0L)),
+      gen_seed     = as.integer(draws_info$seed),
+      gen_scramble = if (identical(draws_info$scramble, "owen")) 1L else 0L,
+      gen_S        = as.integer(draws_info$S)
+    )
+  } else {
+    list(
+      eta_draws    = get_halton_normals(draws_info$S, draws_info$N, draws_info$K_w),
+      gen_seed     = -1L,
+      gen_scramble = 1L,
+      gen_S        = 0L
+    )
+  }
 }
