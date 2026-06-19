@@ -76,6 +76,206 @@ test_that("mnl_loglik_hessian at zero parameters", {
   expect_equal(H_anal, H_num, tolerance = TOL_HESS)
 })
 
+
+# --- MNL Hessian regression tests for block-decomposition branches ---
+
+# S3: use_asc = FALSE — only the BB block is populated; J_asc == 0,
+# so the delta/BD/DD sub-matrices are entirely absent.
+test_that("mnl Hessian block-decomp S3: use_asc=FALSE matches numerical oracle", {
+  skip_if_not_installed("numDeriv")
+
+  dt <- create_small_mnl_data()
+  inputs <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+
+  K <- ncol(inputs$X)
+  # use_asc = FALSE: theta is just the K beta parameters (no ASC block)
+  set.seed(42)
+  theta <- runif(K, -0.3, 0.3)
+
+  H_anal <- mnl_loglik_hessian_parallel(
+    theta, inputs$X, inputs$alt_idx, inputs$choice_idx,
+    inputs$M, inputs$weights, FALSE, FALSE
+  )
+
+  obj_fn <- function(th) {
+    mnl_loglik_gradient_parallel(
+      th, inputs$X, inputs$alt_idx, inputs$choice_idx,
+      inputs$M, inputs$weights, FALSE, FALSE
+    )$objective
+  }
+
+  H_num <- numDeriv::hessian(obj_fn, theta, method = "Richardson")
+
+  expect_true(all(is.finite(H_anal)),
+              label = "Hessian (use_asc=FALSE) is finite")
+  expect_equal(H_anal, t(H_anal), tolerance = 1e-10,
+               label = "Hessian (use_asc=FALSE) is symmetric")
+  expect_equal(H_anal, H_num, tolerance = TOL_HESS,
+               label = "Hessian (use_asc=FALSE) matches numerical oracle")
+})
+
+test_that("mnl Hessian block-decomp S3: use_asc=FALSE yields finite non-negative SEs", {
+  dt <- create_small_mnl_data()
+  fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"), use_asc = FALSE)
+  ses <- fit$se
+  expect_true(all(is.finite(ses)),
+              label = "SEs are finite when use_asc=FALSE")
+  expect_true(all(ses >= 0),
+              label = "SEs are non-negative when use_asc=FALSE")
+})
+
+# S4: include_outside_option = TRUE — the outside option contributes a zero
+# utility row; the ASC indexing shifts so every inside alternative has a free
+# delta (J_asc == J, not J-1), and choice_idx == 0 signals outside-option
+# choosers.  This exercises the `delta_pos = alt_idx0_i[a]` branch in the
+# block-decomposition Hessian (vs. `a_id - 1` in the baseline).
+test_that("mnl Hessian block-decomp S4: include_outside_option=TRUE matches numerical oracle", {
+  skip_if_not_installed("numDeriv")
+
+  set.seed(77)
+  N <- 30; J <- 3
+  dt <- data.table::data.table(
+    id  = rep(1:N, each = J),
+    alt = rep(1:J, N),
+    x1  = rnorm(N * J),
+    x2  = runif(N * J, -1, 1)
+  )
+  # Mark ~3/4 of individuals as inside-option choosers; rest are outside-option choosers
+  dt[, choice := 0L]
+  set.seed(77)
+  chosen_ids <- sample(1:N, ceiling(3 * N / 4))
+  for (id_i in chosen_ids) {
+    rows_i <- which(dt$id == id_i)
+    dt[rows_i[sample(J, 1)], choice := 1L]
+  }
+
+  inputs <- prepare_mnl_data(
+    dt, "id", "alt", "choice", c("x1", "x2"),
+    include_outside_option = TRUE
+  )
+
+  K <- ncol(inputs$X)
+  J_inside <- nrow(inputs$alt_mapping) - 1L  # exclude outside-option row
+  # With include_outside_option=TRUE all J inside alts have free ASCs
+  n_params <- K + J_inside
+  set.seed(42)
+  theta <- runif(n_params, -0.3, 0.3)
+
+  H_anal <- mnl_loglik_hessian_parallel(
+    theta, inputs$X, inputs$alt_idx, inputs$choice_idx,
+    inputs$M, inputs$weights, TRUE, TRUE
+  )
+
+  obj_fn <- function(th) {
+    mnl_loglik_gradient_parallel(
+      th, inputs$X, inputs$alt_idx, inputs$choice_idx,
+      inputs$M, inputs$weights, TRUE, TRUE
+    )$objective
+  }
+
+  H_num <- numDeriv::hessian(obj_fn, theta, method = "Richardson")
+
+  expect_true(all(is.finite(H_anal)),
+              label = "Hessian (include_outside_option=TRUE) is finite")
+  expect_equal(H_anal, t(H_anal), tolerance = 1e-10,
+               label = "Hessian (include_outside_option=TRUE) is symmetric")
+  expect_equal(H_anal, H_num, tolerance = TOL_HESS,
+               label = "Hessian (include_outside_option=TRUE) matches numerical oracle")
+})
+
+test_that("mnl Hessian block-decomp S4: include_outside_option=TRUE yields finite non-negative SEs", {
+  set.seed(77)
+  N <- 30; J <- 3
+  dt <- data.table::data.table(
+    id  = rep(1:N, each = J),
+    alt = rep(1:J, N),
+    x1  = rnorm(N * J),
+    x2  = runif(N * J, -1, 1)
+  )
+  dt[, choice := 0L]
+  set.seed(77)
+  chosen_ids <- sample(1:N, ceiling(3 * N / 4))
+  for (id_i in chosen_ids) {
+    rows_i <- which(dt$id == id_i)
+    dt[rows_i[sample(J, 1)], choice := 1L]
+  }
+  fit <- run_mnlogit(
+    dt, "id", "alt", "choice", c("x1", "x2"),
+    include_outside_option = TRUE
+  )
+  ses <- fit$se
+  expect_true(all(is.finite(ses)),
+              label = "SEs are finite when include_outside_option=TRUE")
+  expect_true(all(ses >= 0),
+              label = "SEs are non-negative when include_outside_option=TRUE")
+})
+
+# S6: non-uniform per-individual weights (w_i != 1) — exercises the weight
+# accumulation path in the block-decomposition Hessian.  The analytical
+# Hessian must still match the jacobian-of-gradient numerical oracle, because
+# the numerical oracle also uses the same weighted objective.
+test_that("mnl Hessian block-decomp S6: non-uniform weights matches numerical oracle", {
+  skip_if_not_installed("numDeriv")
+
+  dt <- create_small_mnl_data()
+  inputs <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+
+  K <- ncol(inputs$X)
+  J <- nrow(inputs$alt_mapping)
+  set.seed(42)
+  theta <- runif(K + J - 1, -0.3, 0.3)
+
+  # Replace unit weights with random positive weights
+  N <- inputs$N
+  set.seed(7)
+  w_rand <- runif(N, 0.5, 2.5)
+
+  H_anal <- mnl_loglik_hessian_parallel(
+    theta, inputs$X, inputs$alt_idx, inputs$choice_idx,
+    inputs$M, w_rand, TRUE, FALSE
+  )
+
+  obj_fn <- function(th) {
+    mnl_loglik_gradient_parallel(
+      th, inputs$X, inputs$alt_idx, inputs$choice_idx,
+      inputs$M, w_rand, TRUE, FALSE
+    )$objective
+  }
+
+  H_num <- numDeriv::hessian(obj_fn, theta, method = "Richardson")
+
+  expect_true(all(is.finite(H_anal)),
+              label = "Hessian (non-uniform weights) is finite")
+  expect_equal(H_anal, t(H_anal), tolerance = 1e-10,
+               label = "Hessian (non-uniform weights) is symmetric")
+  expect_equal(H_anal, H_num, tolerance = TOL_HESS,
+               label = "Hessian (non-uniform weights) matches numerical oracle")
+})
+
+test_that("mnl Hessian block-decomp S6: non-uniform weights yields finite non-negative SEs", {
+  set.seed(42)
+  N <- 20; J <- 3
+  dt <- data.table::data.table(
+    id  = rep(1:N, each = J),
+    alt = rep(1:J, N),
+    x1  = rnorm(N * J),
+    x2  = runif(N * J, -1, 1)
+  )
+  dt[, choice := 0L]
+  dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+  set.seed(7)
+  w_rand <- runif(N, 0.5, 2.5)
+  fit <- run_mnlogit(
+    dt, "id", "alt", "choice", c("x1", "x2"),
+    weights = w_rand
+  )
+  ses <- fit$se
+  expect_true(all(is.finite(ses)),
+              label = "SEs are finite with non-uniform weights")
+  expect_true(all(ses >= 0),
+              label = "SEs are non-negative with non-uniform weights")
+})
+
 # --- MXL Hessian tests ---
 
 test_that("mxl_hessian_parallel matches numerical Hessian", {
