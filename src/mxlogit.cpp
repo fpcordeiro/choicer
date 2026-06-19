@@ -1,6 +1,7 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "choicer.h"
 #include "choicer_internal.h"
+#include "halton.h"
 
 // Scalar logSumExp for two values to avoid vector allocation
 inline double logSumExp2(double a, double b) {
@@ -75,6 +76,12 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 //' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
 //' @param use_asc whether to use alternative-specific constants. If so, parameters should be included in theta after beta and L (and mu, if applicable).
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns List with loglikelihood and gradient evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -106,13 +113,14 @@ Rcpp::List mxl_loglik_gradient_parallel(
     const Rcpp::IntegerVector &M, const arma::vec &weights,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
-    const bool use_asc = true, const bool include_outside_option = false) {
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
 
   // Basic dimensions
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols; // # simulations per individual
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
   const int L_size =
       rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
@@ -127,8 +135,16 @@ Rcpp::List mxl_loglik_gradient_parallel(
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                      &weights, &choice_idx);
+  // In generate mode bypass the cube check; otherwise validate normally.
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        &weights, &choice_idx);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const arma::mat& L = par.L;
   const arma::vec& delta = par.delta;
@@ -155,6 +171,14 @@ Rcpp::List mxl_loglik_gradient_parallel(
     }
   }
 
+  // Construct on-the-fly Halton generator (outside parallel region; no shared mutable state).
+  // In cube mode (gen_seed < 0) this object is never used.
+  const bool use_generate = (gen_seed >= 0);
+  HaltonGen halton_gen;
+  if (use_generate) {
+    halton_gen = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -177,6 +201,10 @@ Rcpp::List mxl_loglik_gradient_parallel(
     arma::mat BW;     // K_w x Sdraw: BW = W_i^T * DiffW  (one dgemm)
     arma::mat Btil;   // K_w x Sdraw: Btil = BW .% Dgamma1 (elementwise)
     arma::mat A;      // K_w x K_w:   A = Btil * eta_i^T  (one dgemm)
+
+    // Thread-private buffers for generate mode
+    arma::mat eta_i_buf;    // re-sized by fill_eta_i on first use; generate mode
+    arma::mat eta_i_store;  // materialised cube slice; cube mode
 
 // Loop over individuals in parallel
 #ifdef _OPENMP
@@ -211,7 +239,16 @@ Rcpp::List mxl_loglik_gradient_parallel(
       DiffW.set_size(m_i, Sdraw); // m_i x Sdraw
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
+      // Acquire eta_i: either fill from on-the-fly generator or materialise cube slice.
+      const arma::mat* eta_i_ptr;
+      if (use_generate) {
+        halton_gen.fill_eta_i(eta_i_buf, i + 1);
+        eta_i_ptr = &eta_i_buf;
+      } else {
+        eta_i_store = eta_draws.slice(i);
+        eta_i_ptr = &eta_i_store;
+      }
+      const arma::mat& eta_i = *eta_i_ptr;
       arma::mat Dgamma1;
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
@@ -427,6 +464,12 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //' @param rc_mean whether to estimate means for random coefficients.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Hessian evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -457,12 +500,13 @@ arma::mat mxl_hessian_parallel(
     const Rcpp::IntegerVector &M, const arma::vec &weights,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
-    const bool use_asc = true, const bool include_outside_option = false) {
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
   // Basic dimensions
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
   const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
@@ -475,8 +519,15 @@ arma::mat mxl_hessian_parallel(
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                      &weights, &choice_idx);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        &weights, &choice_idx);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const arma::mat& L = par.L;
   const arma::vec& delta = par.delta;
@@ -508,6 +559,13 @@ arma::mat mxl_hessian_parallel(
   const int Kc = idx_delta_start;           // size of continuous block
   const int Jd = n_params - idx_delta_start; // size of delta block (0 when !use_asc)
 
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_h = (gen_seed >= 0);
+  HaltonGen halton_gen_h;
+  if (use_generate_h) {
+    halton_gen_h = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   // Global accumulator
   arma::mat global_hess = arma::zeros(n_params, n_params);
 
@@ -521,6 +579,8 @@ arma::mat mxl_hessian_parallel(
     arma::vec V_s;          // resized per individual
     arma::vec inside_utils; // resized per individual
     arma::vec P_s;          // resized per individual
+    arma::mat eta_i_buf_h;    // generate mode scratch
+    arma::mat eta_i_store_h;  // cube mode materialised slice
 
     // Per-draw block accumulators (reset at start of each draw s).
     // cc: Kc x Kc dense outer-product sum
@@ -576,7 +636,15 @@ arma::mat mxl_hessian_parallel(
       inside_utils.set_size(m_i);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
+      const arma::mat* eta_i_ptr_h;
+      if (use_generate_h) {
+        halton_gen_h.fill_eta_i(eta_i_buf_h, i + 1);
+        eta_i_ptr_h = &eta_i_buf_h;
+      } else {
+        eta_i_store_h = eta_draws.slice(i);
+        eta_i_ptr_h = &eta_i_store_h;
+      }
+      const arma::mat& eta_i = *eta_i_ptr_h;
       arma::mat Dgamma1, Dgamma2;
       arma::mat Gamma_final =
           batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1, &Dgamma2);
@@ -814,6 +882,12 @@ arma::mat mxl_hessian_parallel(
 //' @param rc_mean whether to estimate means for random coefficients.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns n_params x n_params PSD matrix representing the observed information
 //'   matrix estimated by the outer product of gradients (same sign convention
 //'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -847,13 +921,14 @@ arma::mat mxl_bhhh_parallel(
     const Rcpp::IntegerVector &M, const arma::vec &weights,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
-    const bool use_asc = true, const bool include_outside_option = false) {
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
 
   // Basic dimensions
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols; // # simulations per individual
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
   const int L_size =
       rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
@@ -868,8 +943,15 @@ arma::mat mxl_bhhh_parallel(
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                      &weights, &choice_idx);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        &weights, &choice_idx);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const arma::mat& L = par.L;
   const arma::vec& delta = par.delta;
@@ -894,6 +976,13 @@ arma::mat mxl_bhhh_parallel(
     }
   }
 
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_b = (gen_seed >= 0);
+  HaltonGen halton_gen_b;
+  if (use_generate_b) {
+    halton_gen_b = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
 
@@ -915,6 +1004,8 @@ arma::mat mxl_bhhh_parallel(
     arma::mat Btil;   // K_w x Sdraw: Btil = BW .% Dgamma1 (elementwise)
     arma::mat A;      // K_w x K_w:   A = Btil * eta_i^T  (one dgemm)
     arma::vec s_i;    // n_params score vector per individual
+    arma::mat eta_i_buf_b;    // generate mode scratch
+    arma::mat eta_i_store_b;  // cube mode materialised slice
 
 // Loop over individuals in parallel
 #ifdef _OPENMP
@@ -947,7 +1038,15 @@ arma::mat mxl_bhhh_parallel(
       DiffW.set_size(m_i, Sdraw); // m_i x Sdraw
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
+      const arma::mat* eta_i_ptr_b;
+      if (use_generate_b) {
+        halton_gen_b.fill_eta_i(eta_i_buf_b, i + 1);
+        eta_i_ptr_b = &eta_i_buf_b;
+      } else {
+        eta_i_store_b = eta_draws.slice(i);
+        eta_i_ptr_b = &eta_i_store_b;
+      }
+      const arma::mat& eta_i = *eta_i_ptr_b;
       arma::mat Dgamma1;
       arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
 
@@ -1071,10 +1170,22 @@ arma::vec mxl_predict_shares_internal(
     const arma::uvec& rc_dist,
     const int num_alts,
     const bool use_asc,
-    const bool include_outside_option
+    const bool include_outside_option,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   const int N = M.size();
-  const int Sdraw = eta_draws.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
+  // C++ runtime guards for generate mode
+  if (gen_seed >= 0 && gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+  if (gen_seed >= 0 && K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+
+  const bool use_generate_s = (gen_seed >= 0);
+  HaltonGen halton_gen_s;
+  if (use_generate_s) {
+    halton_gen_s = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   const double weight_sum = arma::accu(weights);
 
   if (weight_sum <= 0) {
@@ -1094,6 +1205,8 @@ arma::vec mxl_predict_shares_internal(
   {
     // Thread-local accumulator
     arma::vec local_shares = arma::zeros(num_alts);
+    arma::mat eta_i_buf_s;    // generate mode scratch
+    arma::mat eta_i_store_s;  // cube mode materialised slice
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1116,19 +1229,25 @@ arma::vec mxl_predict_shares_internal(
       arma::vec P_bar_i = arma::zeros(num_choices);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
+      const arma::mat* eta_i_ptr_s;
+      if (use_generate_s) {
+        halton_gen_s.fill_eta_i(eta_i_buf_s, i + 1);
+        eta_i_ptr_s = &eta_i_buf_s;
+      } else {
+        eta_i_store_s = eta_draws.slice(i);
+        eta_i_ptr_s = &eta_i_store_s;
+      }
+      const arma::mat& eta_i_s_ref = *eta_i_ptr_s;
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i_s_ref, rc_dist);
 
-      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
       const arma::mat WGamma = W_i * Gamma_final;
 
-      // CHANGE #5: hoist per-draw temporaries outside the s loop
       arma::vec V_s(num_choices);
       arma::vec inside_utils(m_i);
       arma::vec P_s;
 
       for (int s = 0; s < Sdraw; ++s) {
-        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
         inside_utils = base_util_i + WGamma.col(s);
         fill_choice_utilities(V_s, inside_utils, num_choices,
                               include_outside_option);
@@ -1181,6 +1300,12 @@ arma::vec mxl_predict_shares_internal(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether the outside option is present
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 //'   simulated mean of the deterministic + W*gamma component), and, when
 //'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
@@ -1197,19 +1322,27 @@ Rcpp::List mxl_predict(
     const bool rc_correlation = true,
     const bool rc_mean = false,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   // Basic dimensions
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
 
   // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const arma::vec& mu_final = par.mu_final;
   const arma::mat& L = par.L;
@@ -1223,6 +1356,13 @@ Rcpp::List mxl_predict(
   arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_p = (gen_seed >= 0);
+  HaltonGen halton_gen_p;
+  if (use_generate_p) {
+    halton_gen_p = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   // Output accumulators (each individual writes to a disjoint subvec)
   arma::vec choice_prob = arma::zeros(X.n_rows);
   arma::vec utility = arma::zeros(X.n_rows);
@@ -1231,8 +1371,12 @@ Rcpp::List mxl_predict(
     choice_prob_outside = arma::zeros(N);
   }
 
+  // Thread-private buffers (declared outside the parallel loop for OpenMP)
+  arma::mat eta_i_buf_p;
+  arma::mat eta_i_store_p;
+
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) firstprivate(eta_i_buf_p, eta_i_store_p)
 #endif
   for (int i = 0; i < N; ++i) {
     const int m_i = M[i];
@@ -1253,19 +1397,25 @@ Rcpp::List mxl_predict(
     double P_outside_avg = 0.0;
 
     // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-    const auto eta_i = eta_draws.slice(i);
-    arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
+    const arma::mat* eta_i_ptr_p;
+    if (use_generate_p) {
+      halton_gen_p.fill_eta_i(eta_i_buf_p, i + 1);
+      eta_i_ptr_p = &eta_i_buf_p;
+    } else {
+      eta_i_store_p = eta_draws.slice(i);
+      eta_i_ptr_p = &eta_i_store_p;
+    }
+    const arma::mat& eta_i_p_ref = *eta_i_ptr_p;
+    arma::mat Gamma_final = batch_gamma_draws(L, eta_i_p_ref, rc_dist);
 
-    // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+    // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
     const arma::mat WGamma = W_i * Gamma_final;
 
-    // CHANGE #5: hoist per-draw temporaries outside the s loop
     arma::vec inside_utils(m_i);
     arma::vec V_s(num_choices);
     arma::vec P_s;
 
     for (int s = 0; s < Sdraw; ++s) {
-      // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
       inside_utils = base_util_i + WGamma.col(s);
 
       fill_choice_utilities(V_s, inside_utils, num_choices,
@@ -1329,6 +1479,12 @@ Rcpp::List mxl_predict(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether the outside option is present
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Vector of length N with the simulated expected logsum per choice
 //'   situation.
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -1357,18 +1513,26 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
                      const arma::uvec &alt_idx, const Rcpp::IntegerVector &M,
                      const arma::cube &eta_draws, const arma::uvec &rc_dist,
                      const bool rc_correlation = true, const bool rc_mean = false,
-                     const bool use_asc = true, const bool include_outside_option = false) {
+                     const bool use_asc = true, const bool include_outside_option = false,
+                     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
   // Basic dimensions
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
 
   // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const arma::vec& mu_final = par.mu_final;
   const arma::mat& L = par.L;
@@ -1382,11 +1546,22 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
   arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_ls = (gen_seed >= 0);
+  HaltonGen halton_gen_ls;
+  if (use_generate_ls) {
+    halton_gen_ls = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
+  // Thread-private buffers (declared here; copied per-thread via firstprivate)
+  arma::mat eta_i_buf_ls;
+  arma::mat eta_i_store_ls;
+
   // Output accumulator (each individual writes only its own slot)
   arma::vec logsum = arma::zeros(N);
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) firstprivate(eta_i_buf_ls, eta_i_store_ls)
 #endif
   for (int i = 0; i < N; ++i) {
     const int m_i = M[i];
@@ -1402,10 +1577,18 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
     const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
 
     // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-    const auto eta_i = eta_draws.slice(i);
-    arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
+    const arma::mat* eta_i_ptr_ls;
+    if (use_generate_ls) {
+      halton_gen_ls.fill_eta_i(eta_i_buf_ls, i + 1);
+      eta_i_ptr_ls = &eta_i_buf_ls;
+    } else {
+      eta_i_store_ls = eta_draws.slice(i);
+      eta_i_ptr_ls = &eta_i_store_ls;
+    }
+    const arma::mat& eta_i_ls_ref = *eta_i_ptr_ls;
+    arma::mat Gamma_final = batch_gamma_draws(L, eta_i_ls_ref, rc_dist);
 
-    // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+    // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
     const arma::mat WGamma = W_i * Gamma_final;
 
     // Accumulate the per-draw log-sum-exp (NOT the logsum of averaged
@@ -1457,6 +1640,12 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 //' @export
 // [[Rcpp::export]]
@@ -1472,7 +1661,8 @@ arma::vec mxl_predict_shares(
     const bool rc_correlation = true,
     const bool rc_mean = false,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   // Basic dimensions
   const int K_x = X.n_cols;
@@ -1482,8 +1672,15 @@ arma::vec mxl_predict_shares(
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                      &weights);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        &weights);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const arma::vec& mu_final = par.mu_final;
   const arma::mat& L = par.L;
@@ -1499,7 +1696,8 @@ arma::vec mxl_predict_shares(
 
   return mxl_predict_shares_internal(
     X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
-    delta, eta_draws, rc_dist, num_alts, use_asc, include_outside_option
+    delta, eta_draws, rc_dist, num_alts, use_asc, include_outside_option,
+    gen_seed, gen_scramble, gen_S
   );
 }
 
@@ -1531,6 +1729,12 @@ arma::vec mxl_predict_shares(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 //' @export
 // [[Rcpp::export]]
@@ -1548,7 +1752,8 @@ arma::mat mxl_diversion_ratios_parallel(
     const bool rc_correlation = true,
     const bool rc_mean = false,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   // Attribute-based diversion ratio (simulated):
   //   DR(k, j) = E_i[ w_i * (1/S) sum_s beta_{ik}^s * P_ij(s) * P_ik(s) ]
@@ -1564,7 +1769,7 @@ arma::mat mxl_diversion_ratios_parallel(
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
 
   // Validate the perturbed variable index. Catch the empty-block cases
   // first (K_x=0 with is_random_coef=FALSE, or K_w=0 with is_random_coef=TRUE)
@@ -1595,8 +1800,15 @@ arma::mat mxl_diversion_ratios_parallel(
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                      &weights);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        &weights);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
   const arma::vec& mu_final = par.mu_final;
@@ -1617,6 +1829,13 @@ arma::mat mxl_diversion_ratios_parallel(
   arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_d = (gen_seed >= 0);
+  HaltonGen halton_gen_d;
+  if (use_generate_d) {
+    halton_gen_d = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   // Global accumulators
   arma::mat global_numerator = arma::zeros(J_total, J_total);
   arma::vec global_denominator = arma::zeros(J_total);
@@ -1628,6 +1847,8 @@ arma::mat mxl_diversion_ratios_parallel(
     // Thread-local accumulators
     arma::mat local_numerator = arma::zeros(J_total, J_total);
     arma::vec local_denominator = arma::zeros(J_total);
+    arma::mat eta_i_buf_d;
+    arma::mat eta_i_store_d;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1655,13 +1876,20 @@ arma::mat mxl_diversion_ratios_parallel(
       arma::vec ind_den = arma::zeros(num_choices);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const auto eta_i = eta_draws.slice(i);
-      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
+      const arma::mat* eta_i_ptr_d;
+      if (use_generate_d) {
+        halton_gen_d.fill_eta_i(eta_i_buf_d, i + 1);
+        eta_i_ptr_d = &eta_i_buf_d;
+      } else {
+        eta_i_store_d = eta_draws.slice(i);
+        eta_i_ptr_d = &eta_i_store_d;
+      }
+      const arma::mat& eta_i_d_ref = *eta_i_ptr_d;
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i_d_ref, rc_dist);
 
-      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
       const arma::mat WGamma = W_i * Gamma_final;
 
-      // CHANGE #5: hoist per-draw temporaries outside the s loop
       arma::vec V_s(num_choices);
       arma::vec inside_utils(m_i);
       arma::vec P_s;
@@ -1957,6 +2185,12 @@ arma::vec mxl_blp_contraction(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns J x J matrix of aggregate elasticities
 //' @examples
 //' \donttest{
@@ -1993,7 +2227,8 @@ arma::mat mxl_elasticities_parallel(
     const bool rc_correlation = true,
     const bool rc_mean = false,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   (void)choice_idx;  // unused, kept for API consistency
 
@@ -2001,7 +2236,7 @@ arma::mat mxl_elasticities_parallel(
   const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = eta_draws.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
 
   // Convert 1-based R index to 0-based C++ index
   const int var_idx = elast_var_idx - 1;
@@ -2023,8 +2258,15 @@ arma::mat mxl_elasticities_parallel(
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                      &weights);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        &weights);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
+    check_rc_dist_length(rc_dist, K_w);
+  }
   const arma::vec& beta = par.beta;
   const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
   const arma::vec& mu_final = par.mu_final;
@@ -2045,6 +2287,13 @@ arma::mat mxl_elasticities_parallel(
   arma::vec base_util_e = compute_base_util_mxl(X, W, beta, mu_final,
                                           alt_idx0, use_asc, delta);
 
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_e = (gen_seed >= 0);
+  HaltonGen halton_gen_e;
+  if (use_generate_e) {
+    halton_gen_e = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
   // Global accumulators
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
@@ -2056,6 +2305,8 @@ arma::mat mxl_elasticities_parallel(
     // Thread-local accumulators
     arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
     double local_total_weight = 0.0;
+    arma::mat eta_i_buf_e;
+    arma::mat eta_i_store_e;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -2100,13 +2351,20 @@ arma::mat mxl_elasticities_parallel(
       arma::mat elas_accum = arma::zeros(num_choices, num_choices);
 
       // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const auto eta_i = eta_draws.slice(i);              // K_w x Sdraw view
-      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist);
+      const arma::mat* eta_i_ptr_e;
+      if (use_generate_e) {
+        halton_gen_e.fill_eta_i(eta_i_buf_e, i + 1);
+        eta_i_ptr_e = &eta_i_buf_e;
+      } else {
+        eta_i_store_e = eta_draws.slice(i);
+        eta_i_ptr_e = &eta_i_store_e;
+      }
+      const arma::mat& eta_i_e_ref = *eta_i_ptr_e;
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i_e_ref, rc_dist);
 
-      // CHANGE #2: Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
       const arma::mat WGamma = W_i * Gamma_final;
 
-      // CHANGE #5: hoist per-draw temporaries outside the s loop
       arma::vec V_s(num_choices);
       arma::vec inside_utils(m_i);
       arma::vec P_s;

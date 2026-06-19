@@ -1042,11 +1042,25 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
     N_draws <- d$N
   }
 
-  eta_draws <- get_halton_normals(
-    S   = object$draws_info$S,
-    N   = N_draws,
-    K_w = object$draws_info$K_w
-  )
+  # Resolve draws: in generate mode use empty placeholder + gen params.
+  # Note: newdata with a different N is handled automatically by the C++ generator
+  # (which uses (i-1)*S+s+1 regardless of N); for store mode we regenerate for N_draws.
+  mode_pred <- (object$draws_info$mode) %||% "store"
+  if (mode_pred == "store") {
+    eta_draws        <- get_halton_normals(
+      S   = object$draws_info$S,
+      N   = N_draws,
+      K_w = object$draws_info$K_w
+    )
+    gen_seed_arg     <- -1L
+    gen_scramble_arg <- 1L
+    gen_S_arg        <- 0L
+  } else {
+    eta_draws        <- array(0, dim = c(object$draws_info$K_w, 0L, 0L))
+    gen_seed_arg     <- as.integer(object$draws_info$seed)
+    gen_scramble_arg <- if (identical(object$draws_info$scramble, "owen")) 1L else 0L
+    gen_S_arg        <- as.integer(object$draws_info$S)
+  }
 
   args <- list(
     theta                  = object$coefficients,
@@ -1059,7 +1073,10 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
     rc_correlation         = object$rc_correlation,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,
-    include_outside_option = object$include_outside_option
+    include_outside_option = object$include_outside_option,
+    gen_seed               = gen_seed_arg,
+    gen_scramble           = gen_scramble_arg,
+    gen_S                  = gen_S_arg
   )
 
   if (type == "probabilities") {
@@ -1389,11 +1406,7 @@ elasticities.choicer_mxl <- function(object, elast_var,
   col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
   idx <- resolve_var_index(elast_var, col_names)
 
-  eta_draws <- get_halton_normals(
-    S = object$draws_info$S,
-    N = object$draws_info$N,
-    K_w = object$draws_info$K_w
-  )
+  gp_el <- .mxl_gen_params(object$draws_info)
 
   mat <- mxl_elasticities_parallel(
     theta = object$coefficients,
@@ -1403,14 +1416,15 @@ elasticities.choicer_mxl <- function(object, elast_var,
     choice_idx = d$choice_idx,
     M = d$M,
     weights = d$weights,
-    eta_draws = eta_draws,
+    eta_draws = gp_el$eta_draws,
     rc_dist = object$rc_dist,
     elast_var_idx = idx,
     is_random_coef = is_random_coef,
     rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean,
     use_asc = object$use_asc,
-    include_outside_option = object$include_outside_option
+    include_outside_option = object$include_outside_option,
+    gen_seed = gp_el$gen_seed, gen_scramble = gp_el$gen_scramble, gen_S = gp_el$gen_S
   )
 
   label_matrix(mat, object$alt_mapping)
@@ -1472,11 +1486,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
   col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
   idx <- resolve_var_index(wrt_var, col_names)
 
-  eta_draws <- get_halton_normals(
-    S   = object$draws_info$S,
-    N   = object$draws_info$N,
-    K_w = object$draws_info$K_w
-  )
+  gp_dr <- .mxl_gen_params(object$draws_info)
 
   mat <- mxl_diversion_ratios_parallel(
     theta                  = object$coefficients,
@@ -1485,14 +1495,15 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
     alt_idx                = d$alt_idx,
     M                      = d$M,
     weights                = d$weights,
-    eta_draws              = eta_draws,
+    eta_draws              = gp_dr$eta_draws,
     rc_dist                = object$rc_dist,
     elast_var_idx          = idx,
     is_random_coef         = is_random_coef,
     rc_correlation         = object$rc_correlation,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,
-    include_outside_option = object$include_outside_option
+    include_outside_option = object$include_outside_option,
+    gen_seed = gp_dr$gen_seed, gen_scramble = gp_dr$gen_scramble, gen_S = gp_dr$gen_S
   )
 
   label_matrix(mat, object$alt_mapping)

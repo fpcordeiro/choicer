@@ -437,11 +437,7 @@ compute_hessian <- function(object) {
       include_outside_option = object$include_outside_option
     ),
     mxl = {
-      eta_draws <- get_halton_normals(
-        S = object$draws_info$S,
-        N = object$draws_info$N,
-        K_w = object$draws_info$K_w
-      )
+      gp <- .mxl_gen_params(object$draws_info)
       se_method <- object$se_method %||% "hessian"
       if (se_method == "bhhh") {
         mxl_bhhh_parallel(
@@ -452,12 +448,13 @@ compute_hessian <- function(object) {
           choice_idx = object[["data"]]$choice_idx,
           M = object[["data"]]$M,
           weights = object[["data"]]$weights,
-          eta_draws = eta_draws,
+          eta_draws = gp$eta_draws,
           rc_dist = object$rc_dist,
           rc_correlation = object$rc_correlation,
           rc_mean = object$rc_mean,
           use_asc = object$use_asc,
-          include_outside_option = object$include_outside_option
+          include_outside_option = object$include_outside_option,
+          gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
         )
       } else {
         mxl_hessian_parallel(
@@ -468,12 +465,13 @@ compute_hessian <- function(object) {
           choice_idx = object[["data"]]$choice_idx,
           M = object[["data"]]$M,
           weights = object[["data"]]$weights,
-          eta_draws = eta_draws,
+          eta_draws = gp$eta_draws,
           rc_dist = object$rc_dist,
           rc_correlation = object$rc_correlation,
           rc_mean = object$rc_mean,
           use_asc = object$use_asc,
-          include_outside_option = object$include_outside_option
+          include_outside_option = object$include_outside_option,
+          gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
         )
       }
     },
@@ -606,28 +604,26 @@ compute_sandwich_vcov <- function(object) {
   # operates entirely in natural space (unlike the eager run_mxlogit() path,
   # which works in scaled space and then back-transforms the result).
   theta <- object$coefficients
-  eta_draws <- get_halton_normals(
-    S = object$draws_info$S,
-    N = object$draws_info$N,
-    K_w = object$draws_info$K_w
-  )
+  gp_sw <- .mxl_gen_params(object$draws_info)
   w <- object[["data"]]$weights
 
   A <- mxl_hessian_parallel(
     theta = theta, X = object[["data"]]$X, W = object[["data"]]$W,
     alt_idx = object[["data"]]$alt_idx, choice_idx = object[["data"]]$choice_idx,
-    M = object[["data"]]$M, weights = w, eta_draws = eta_draws,
+    M = object[["data"]]$M, weights = w, eta_draws = gp_sw$eta_draws,
     rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean, use_asc = object$use_asc,
-    include_outside_option = object$include_outside_option
+    include_outside_option = object$include_outside_option,
+    gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
   )
   B <- mxl_bhhh_parallel(
     theta = theta, X = object[["data"]]$X, W = object[["data"]]$W,
     alt_idx = object[["data"]]$alt_idx, choice_idx = object[["data"]]$choice_idx,
-    M = object[["data"]]$M, weights = w^2, eta_draws = eta_draws,
+    M = object[["data"]]$M, weights = w^2, eta_draws = gp_sw$eta_draws,
     rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean, use_asc = object$use_asc,
-    include_outside_option = object$include_outside_option
+    include_outside_option = object$include_outside_option,
+    gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
   )
   .sandwich_combine(A, B)
 }

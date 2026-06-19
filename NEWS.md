@@ -1,5 +1,31 @@
 # choicer (development version)
 
+## Mixed logit — on-the-fly randomized Halton draws
+
+- `run_mxlogit()` gains three new arguments: `draws`, `seed`, and `scramble`.
+  - `draws = "store"` (default) keeps the existing behavior: a full
+    K_w × S × N Halton cube is pre-materialized and stored in memory.
+  - `draws = "generate"` activates the new mode: each individual's S draws are
+    computed on the fly in C++ from a compact seed, eliminating the O(N)
+    `eta_draws` cube. This is the recommended choice when N is large or memory
+    is constrained.
+  - `scramble = "owen"` (default when `draws = "generate"`) applies Owen (2017)
+    digit scrambling to the Halton sequence for better high-dimensional
+    uniformity; recommended for K_w > 5 (Bhat 2003). `scramble = "none"`
+    reproduces the randtoolbox sequence exactly and is intended for testing.
+  - `seed` sets the integer master seed for the on-the-fly generator; if
+    `NULL` (default), a seed is drawn from R's RNG so `set.seed()` governs
+    reproducibility. Ignored when `draws = "store"`.
+- The `draws_info` field on `choicer_mxl` objects gains three new elements:
+  `mode` (`"store"` or `"generate"`), `seed`, and `scramble`. Existing code
+  that accesses `draws_info$S`, `draws_info$N`, or `draws_info$K_w` is
+  unaffected; the new fields are `NULL` for objects fitted before this release.
+- All post-estimation generics (`predict()`, `elasticities()`,
+  `diversion_ratios()`, `logsum()`, `consumer_surplus()`, `vcov()`) propagate
+  the fitted draw mode automatically — no user action required.
+- Default behavior (`draws = "store"`) is bitwise unchanged.
+
+
 ## Bayesian models
 
 - `run_mnprobit()` — Bayesian multinomial probit via Gibbs sampling with data augmentation (Albert & Chib 1993; McCulloch & Rossi 1994). Runs the non-identified chain with conjugate priors and reports identified quantities normalized per draw by `sigma_11`. New `choicer_mnp` posterior object with `summary()` (posterior mean, SD, credible intervals), `coef()`, `vcov()`, `nobs()`; math note in `docs/bayesian_multinomial_probit_math.md`

@@ -28,6 +28,9 @@ run_mxlogit(
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
+  draws = c("store", "generate"),
+  seed = NULL,
+  scramble = c("owen", "none"),
   keep_data = TRUE,
   nloptr_opts = NULL,
   weights_col = NULL
@@ -137,6 +140,26 @@ equal weights are used.}
 
 \item{include_outside_option}{Logical whether to include an outside option
 (convenience workflow).}
+
+\item{draws}{Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
+\code{"store"} pre-materializes the full \eqn{K_w \times S \times N} Halton cube
+(existing behavior, exact reproducibility). \code{"generate"} computes each
+individual's draws on-the-fly in C++ from a stored seed, eliminating the O(N)
+cube; recommended for memory-constrained or large-N settings. Uses randomized
+digit-scrambled (Owen 2017) Halton sequences when \code{scramble = "owen"}.
+Only supported in the convenience workflow.}
+
+\item{seed}{Integer master seed for the on-the-fly generator. Used only when
+\code{draws = "generate"}. If \code{NULL} (default), a seed is drawn from R's
+RNG at call time (so \code{set.seed()} governs reproducibility). Ignored when
+\code{draws = "store"}.}
+
+\item{scramble}{Scrambling mode for on-the-fly Halton draws. One of
+\code{"owen"} (default) for Owen (2017) digit scrambling, or \code{"none"} for
+plain unscrambled Halton (identity permutations). \code{"none"} reproduces the
+randtoolbox sequence exactly and is intended for testing; \code{"owen"} is
+strongly recommended for estimation with \eqn{K_w > 5}. Used only when
+\code{draws = "generate"}.}
 
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in
 the returned object for post-estimation functions.}
