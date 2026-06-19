@@ -595,6 +595,25 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// nl_loglik_hessian_parallel
+arma::mat nl_loglik_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+RcppExport SEXP _choicer_nl_loglik_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_loglik_hessian_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
 // nl_predict
 Rcpp::List nl_predict(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::uvec& nest_idx, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_predict(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP nest_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -744,6 +763,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 18},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
+    {"_choicer_nl_loglik_hessian_parallel", (DL_FUNC) &_choicer_nl_loglik_hessian_parallel, 9},
     {"_choicer_nl_predict", (DL_FUNC) &_choicer_nl_predict, 7},
     {"_choicer_nl_predict_shares", (DL_FUNC) &_choicer_nl_predict_shares, 8},
     {"_choicer_nl_elasticities_parallel", (DL_FUNC) &_choicer_nl_elasticities_parallel, 10},

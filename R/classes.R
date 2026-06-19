@@ -143,6 +143,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
 #' @param nest_idx Integer vector of length J mapping each (inside) alternative,
 #'   in alt_mapping row order, to its 1-based nest index. Stored top-level so
 #'   newdata prediction works even when data = NULL (keep_data = FALSE).
+#' @param se_method Character. Method used for standard errors: \code{"hessian"}
+#'   (analytical Hessian, default) or \code{"numeric"} (finite-difference oracle).
 #' @returns A choicer_nl object (S3 class)
 #' @noRd
 new_choicer_nl <- function(call, coefficients, loglik,
@@ -151,7 +153,8 @@ new_choicer_nl <- function(call, coefficients, loglik,
                            use_asc, include_outside_option,
                            optimizer,
                            vcov = NULL, se = NULL, data = NULL,
-                           lambda = NULL, nest_idx = NULL) {
+                           lambda = NULL, nest_idx = NULL,
+                           se_method = "hessian") {
   structure(
     list(
       call = call,
@@ -172,7 +175,8 @@ new_choicer_nl <- function(call, coefficients, loglik,
       optimizer = optimizer,
       data = data,
       lambda = lambda,
-      nest_idx = nest_idx
+      nest_idx = nest_idx,
+      se_method = se_method
     ),
     class = c("choicer_nl", "choicer_fit")
   )
@@ -475,17 +479,34 @@ compute_hessian <- function(object) {
         )
       }
     },
-    nl = nl_loglik_numeric_hessian(
-      theta = theta,
-      X = object[["data"]]$X,
-      alt_idx = object[["data"]]$alt_idx,
-      choice_idx = object[["data"]]$choice_idx,
-      nest_idx = object[["data"]]$nest_idx,
-      M = object[["data"]]$M,
-      weights = object[["data"]]$weights,
-      use_asc = object$use_asc,
-      include_outside_option = object$include_outside_option
-    ),
+    nl = {
+      se_method_nl <- object$se_method %||% "hessian"
+      if (identical(se_method_nl, "numeric")) {
+        nl_loglik_numeric_hessian(
+          theta = theta,
+          X = object[["data"]]$X,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          nest_idx = object[["data"]]$nest_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      } else {
+        nl_loglik_hessian_parallel(
+          theta = theta,
+          X = object[["data"]]$X,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          nest_idx = object[["data"]]$nest_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      }
+    },
     stop("Unknown model type: '", object$model, "'.")
   )
 }
