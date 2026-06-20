@@ -430,6 +430,217 @@ Note: since both $q < p$ and $r < p$, both derivatives $\partial L_{pq}/\partial
 
 ---
 
+### 4.4 Implementation Tricks in `mxl_hessian_parallel`
+
+The four subsections below describe the computational restructuring introduced in the O3
+optimization of `mxl_hessian_parallel`. They cover (i) a block decomposition of the score
+vector and Hessian terms, (ii) buffer accumulation that eliminates the per-draw dense
+matrix allocation, (iii) BLAS-3 batching of two outer-product sums, and (iv) the symmetry
+strategy used for final assembly.
+
+A reader who has never seen the C++ can understand what the function does and why the
+result is numerically equivalent to the per-draw naive form (§4.1–4.2) from the following
+four sections alone.
+
+#### 4.4.1 Parameter Block Layout and Score Vector Decomposition
+
+The parameter vector $\theta$ is partitioned into a **continuous block** of length $K_c$
+and a **delta block** (ASCs) of length $J_d$:
+
+$$
+\theta = \bigl(\underbrace{\beta,\; \mu,\; \mathrm{vec}(L)}_{\text{continuous, length } K_c},\;
+               \underbrace{\delta}_{\text{delta, length } J_d}\bigr),
+\qquad n_\text{params} = K_c + J_d.
+$$
+
+The boundary index $K_c = K_x + (\mathbf{1}_{\mathrm{rc\_mean}} \cdot K_w) + L\_\text{size}$
+is stored as `idx_delta_start` in the code.
+
+The per-draw score vector $g_{is} \in \mathbb{R}^{n_\text{params}}$ inherits this partition:
+$g_{is} = [g_{is,c};\; g_{is,d}]$. The continuous sub-vector is
+
+$$
+g_{is,c} = \sum_{a} d_{ia}^s\, z_{c,ia}^s,
+\qquad d_{ia}^s = \mathbf{1}_{a = j_i} - P_{ia}^s,
+$$
+
+where $z_{c,ia}^s \in \mathbb{R}^{K_c}$ is the continuous-block utility gradient for
+alternative $a$ at draw $s$. The delta sub-vector scatters logit residuals $d_{ia}^s$
+into the ASC index for each alternative.
+
+Define also:
+- $\mathrm{sum\_Pz}_{is} = \sum_a P_{ia}^s z_{c,ia}^s \in \mathbb{R}^{K_c}$ (the cc
+  weighted-score sum, plus a $J_d$-length delta counterpart $\mathrm{sum\_Pz\_d}_{is}$),
+- $\mathrm{sum\_Pzz}_{cc,is} = \sum_a P_{ia}^s z_{c,ia}^s (z_{c,ia}^s)^\top$ ($K_c \times K_c$,
+  symmetric), and its cd ($K_c \times J_d$) and dd (diagonal $J_d$-vector) sub-blocks.
+
+#### 4.4.2 Block Buffer Accumulation — Identity C
+
+Two of the three terms in $H_{is}$ (§4.2) are **linear** in the draw weight $P_{is}$:
+
+$$
+-\mathrm{sum\_Pzz}_{is} \quad \text{and} \quad +\mathrm{sum\_diff\_H\_V}_{is}.
+$$
+
+Their draw-weighted sum can therefore be accumulated directly into per-individual buffer
+matrices without constructing the full $n_\text{params} \times n_\text{params}$ dense
+matrix $H_{is}$ at each draw:
+
+$$
+\mathrm{buf\_Pzz} = \sum_{s=1}^{S} P_{is} \cdot \mathrm{sum\_Pzz}_{is},
+\qquad
+\mathrm{buf\_diff\_HV} = \sum_{s=1}^{S} P_{is} \cdot \mathrm{sum\_diff\_HV}_{is}.
+$$
+
+Each buffer is updated at the end of draw $s$ with a single scalar-times-matrix addition
+(`buf += P_s * block_s`), replacing the original path that assembled the full $H_{is}$
+and then computed `hess_term1_numerator += P_s * (g_is * g_isᵀ + H_is)`.
+
+The block structure of `buf_Pzz` minimizes memory by storing only the three structurally
+distinct sub-blocks:
+
+| Buffer | Shape | Content | Notes |
+|--------|-------|---------|-------|
+| `buf_Pzz_cc` | $K_c \times K_c$ | $\sum_s P_{is}\,\mathrm{sum\_Pzz}_{cc,s}$ | Symmetric |
+| `buf_Pzz_cd` | $K_c \times J_d$ | $\sum_s P_{is}\,\mathrm{sum\_Pzz}_{cd,s}$ | Rectangular; not symmetric |
+| `buf_Pzz_dd` | $J_d$-vector | $\sum_s P_{is}\,\mathrm{sum\_Pzz}_{dd,s}$ | Diagonal only |
+| `buf_diff_HV_cc` | $K_c \times K_c$ | $\sum_s P_{is}\,\mathrm{sum\_diff\_HV}_{s}$ | Symmetric; cc block only ($H_V$ has no delta rows) |
+
+All four buffers are thread-private scratch allocated once per thread outside the
+$N$-loop and zeroed at the start of each individual $i$.
+
+#### 4.4.3 BLAS-3 Batching of Outer-Product Sums — Identities A and B
+
+The third term in $H_{is}$ — $+\mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top$ —
+is **not** linear in $P_{is}$, so it cannot go into a linear buffer. Instead, together
+with the OPG term $\sum_s P_{is} g_{is} g_{is}^\top$, it is handled by reformulating both
+weighted outer-product sums as a single BLAS level-3 matrix multiply.
+
+**Identity A (OPG batching).** Define the $n_\text{params} \times S$ matrix $G$ with columns
+
+$$
+G_{[:,s]} = \sqrt{P_{is}}\; g_{is}.
+$$
+
+Then
+
+$$
+\sum_{s=1}^{S} P_{is}\, g_{is} g_{is}^\top = G G^\top.
+$$
+
+*Proof.* $G G^\top = \sum_s (\sqrt{P_{is}}\, g_{is})(\sqrt{P_{is}}\, g_{is})^\top = \sum_s P_{is}\, g_{is} g_{is}^\top$. The identity is exact in real arithmetic and requires only $P_{is} \geq 0$, which holds because $P_{is}$ is a softmax probability (guaranteed by `stable_softmax`).
+
+**Identity B (sum-Pz outer-product batching).** Define the $n_\text{params} \times S$
+matrix $F$ with columns
+
+$$
+F_{[:,s]} = \sqrt{P_{is}}\;\bigl[\mathrm{sum\_Pz\_c}_{is};\;\mathrm{sum\_Pz\_d}_{is}\bigr].
+$$
+
+Then
+
+$$
+\sum_{s=1}^{S} P_{is}\;\mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top = F F^\top.
+$$
+
+The proof is identical to Identity A.
+
+**Combined BLAS-3 form.** Concatenating $G$ and $F$ into $[G \mid F] \in
+\mathbb{R}^{n_\text{params} \times 2S}$ and forming one matrix product gives
+
+$$
+[G \mid F]\;[G \mid F]^\top = G G^\top + F F^\top,
+$$
+
+because $[G \mid F]^\top = [G^\top;\; F^\top]$ and the block multiply sums over $2S$
+columns with no $G$-$F$ cross term. This is the form implemented in `mxl_hessian_parallel`:
+`G_stash` and `F_stash` are filled column-by-column during the $S$-loop, and after the
+loop `GF = join_rows(G_stash, F_stash); opg_pz = GF * GF.t()` delivers
+$\sum_s P_{is}(g_{is} g_{is}^\top + \mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top)$
+in a single cache-friendly level-3 kernel.
+
+**Floating-point precision.** Changing the summation order (per-draw increments vs. one
+level-3 multiply) is a reassociation of additions that is exact in real arithmetic. In
+floating-point the results differ only by rounding. Across 10 equivalence scenarios
+sweeping all combinations of `rc_dist`, `rc_correlation`, and `rc_mean`, the worst-case
+element-wise deviation was $4.588 \times 10^{-13}$, roughly 2,000 times smaller than the
+$10^{-6}$ acceptance gate.
+
+#### 4.4.4 Optional Per-Draw Batching of `sum_Pzz_cc` — Identity D
+
+Within each draw $s$, the cc sub-block of `sum_Pzz` accumulates per-alternative rank-1
+updates:
+
+$$
+\mathrm{sum\_Pzz\_cc}_{s} = \sum_{a} P_{ia}^s\, z_{c,ia}^s (z_{c,ia}^s)^\top.
+$$
+
+This can equivalently be expressed as a single matrix product:
+
+$$
+\mathrm{sum\_Pzz\_cc}_{s} = \tilde{Z}_{c}^s\, (\tilde{Z}_{c}^s)^\top,
+\qquad \tilde{Z}_{c,[:,a]}^s = \sqrt{P_{ia}^s}\; z_{c,ia}^s,
+$$
+
+where $\tilde{Z}_c^s \in \mathbb{R}^{K_c \times J_{\text{eff}}^*}$ and $J_{\text{eff}}^*$
+counts the active (non-outside-option) alternatives. One `dsyrk` call per draw over
+$J_{\text{eff}}^*$ columns would replace $J_{\text{eff}}^*$ individual `dsyr` rank-1
+updates. The identity holds by the same $P_{ia}^s \geq 0$ argument as Identities A and B.
+
+**Shipped code decision.** The current implementation retains the per-alternative rank-1
+accumulation (`sum_Pzz_cc += P_a * (zc_a * zc_a.t())`). Both forms are correct; the
+result flows into `buf_Pzz_cc` via the Identity C scalar-times-matrix step at the end of
+each draw. Identity D represents an available further micro-optimization deferred to a
+future pass.
+
+#### 4.4.5 Final Assembly and Symmetry
+
+After the $S$-loop for individual $i$, define $\hat{P}_i = \sum_s P_{is}$ and let
+$\mathrm{opg\_pz} = [G \mid F][G \mid F]^\top$. The numerator $\sum_s P_{is}(g_{is}
+g_{is}^\top + H_{is})$ is assembled block-by-block:
+
+$$
+\mathrm{hess\_t1}\big|_{\mathrm{cc}} =
+  \mathrm{opg\_pz}_{\mathrm{cc}} - \mathrm{buf\_Pzz\_cc} + \mathrm{buf\_diff\_HV\_cc},
+$$
+
+$$
+\mathrm{hess\_t1}\big|_{\mathrm{cd}} =
+  \mathrm{opg\_pz}_{\mathrm{cd}} - \mathrm{buf\_Pzz\_cd},
+\qquad
+\mathrm{hess\_t1}\big|_{\mathrm{dc}} =
+  \bigl(\mathrm{hess\_t1}|_{\mathrm{cd}}\bigr)^\top,
+$$
+
+$$
+\mathrm{hess\_t1}\big|_{\mathrm{dd}} =
+  \mathrm{opg\_pz}_{\mathrm{dd}} - \mathrm{diag}(\mathrm{buf\_Pzz\_dd}).
+$$
+
+The cd block is rectangular ($K_c \times J_d$) and not symmetric, so both the cd and dc
+sub-matrices are written explicitly into `hess_t1`. The remaining finalization steps are
+unchanged from the original code:
+
+$$
+g_i = \frac{\mathrm{grad\_numerator}_i}{\hat{P}_i},
+\qquad
+H_i = \frac{\mathrm{hess\_t1}}{\hat{P}_i} - g_i g_i^\top,
+\qquad
+\mathrm{local\_hess} \mathrel{+}= w_i H_i.
+$$
+
+**Symmetry strategy.** The Hessian $H_i$ is symmetric. The current code uses a
+full-matrix approach: `buf_Pzz_cc` and `buf_diff_HV_cc` are accumulated as full symmetric
+matrices (the existing per-alternative loop writes both $(r, p)$ and $(p, r)$ positions
+for off-diagonal $L$-$L$ entries in `sum_diff_H_V_cc`, and this is retained unchanged),
+and the outer product $g_i g_i^\top$ is computed in full. An alternative upper-triangle-only
+strategy — accumulating only the upper triangle in the cc buffers and mirroring once
+before the OpenMP critical merge — would halve the work for those buffers. It was deferred
+because the asymmetric cd block requires explicit transposition regardless, and the
+full-matrix path is simpler to audit.
+
+---
+
 ## 5. Implementation Details
 
 ### 5.1 Parameter Vector Structure

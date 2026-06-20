@@ -1,8 +1,8 @@
 # choicer — System Architecture
 
-**Run:** O1 Analytical NL Hessian
-**Date:** 2026-06-19
-**Commit:** 39f50fd (worktree: agent-a0890026f7ebb629e)
+**Run:** O3 MXL Hessian BLAS-3 Restructure
+**Date:** 2026-06-20
+**Commit:** 79a4310 (worktree: agent-a19d36074ea8df700)
 
 ---
 
@@ -35,8 +35,8 @@ graph TD
 
     subgraph CPP["C++ Kernel Layer — src/"]
         MNLC[mnlogit.cpp<br/>loglik / gradient / Hessian<br/>BLP / elasticities]
-        MXLC[mxlogit.cpp<br/>loglik / gradient / Hessian<br/>BHHH / Halton]
-        NLC[nestlogit.cpp<br/>loglik / gradient<br/>analytical + numeric Hessian]
+        MXLC[mxlogit.cpp<br/>loglik / gradient<br/>Hessian BLAS-3<br/>BHHH / Halton]
+        NLC[nestlogit.cpp<br/>loglik / gradient<br/>analytical Hessian]
         MNPC[mnprobit.cpp<br/>Gibbs sampler]
         UTLC[utils.cpp<br/>softmax / shared kernels]
     end
@@ -81,18 +81,17 @@ graph TD
     SIM --> REC
     SMP --> MNL
 
-    style NLC fill:#1e90ff,stroke:#1565c0,color:#fff
-    style NL fill:#1e90ff,stroke:#1565c0,color:#fff
-    style CLS fill:#1e90ff,stroke:#1565c0,color:#fff
+    style MXLC fill:#1e90ff,stroke:#1565c0,color:#fff
+    style MXL fill:#1e90ff,stroke:#1565c0,color:#fff
 ```
 
 | Module | Purpose | Key Dependencies | Changed in This Run |
 |--------|---------|-----------------|---------------------|
 | `R/mnlogit_utils.R` | Data prep and estimation wrapper for MNL | classes.R, mnlogit.cpp | No |
 | `R/mxlogit_utils.R` | Data prep and estimation wrapper for MXL; BHHH SE | classes.R, mxlogit.cpp | No |
-| `R/nestlogit_utils.R` | Data prep and estimation wrapper for NL; `se_method` dispatch | classes.R, nestlogit.cpp | **YES — `se_method` parameter** |
+| `R/nestlogit_utils.R` | Data prep and estimation wrapper for NL | classes.R, nestlogit.cpp | No |
 | `R/mnprobit_utils.R` | Data prep and estimation wrapper for Bayesian MNP | classes.R, mnprobit.cpp | No |
-| `R/classes.R` | S3 constructors, optimizer dispatch, Hessian inversion | nloptr, all C++ kernels | **YES — NL `se_method` wiring** |
+| `R/classes.R` | S3 constructors, optimizer dispatch, Hessian inversion | nloptr, all C++ kernels | No |
 | `R/methods.R` | S3 generics: coef, vcov, predict, elasticities, blp, diversion | classes.R | No |
 | `R/wtp.R` | WTP with delta-method SEs | methods.R | No |
 | `R/surplus.R` | Logsum and consumer surplus | methods.R | No |
@@ -103,8 +102,8 @@ graph TD
 | `R/recovery.R` | Parameter-recovery diagnostics, Monte Carlo | simulation.R | No |
 | `R/utils.R` | Shared R helpers | — | No |
 | `src/mnlogit.cpp` | MNL likelihood, gradient, Hessian (block-decomposition), post-estimation | choicer_internal.h, utils.cpp | No |
-| `src/mxlogit.cpp` | MXL likelihood, gradient, Hessian, BHHH, Halton | choicer_internal.h, halton.h, utils.cpp | No |
-| `src/nestlogit.cpp` | NL likelihood, gradient, **analytical Hessian (new)**, numeric oracle | choicer_internal.h, utils.cpp | **YES — `nl_loglik_hessian_parallel`** |
+| `src/mxlogit.cpp` | MXL likelihood, gradient, **Hessian (BLAS-3 restructured)**, BHHH, Halton | choicer_internal.h, halton.h, utils.cpp | **YES — `mxl_hessian_parallel` O3** |
+| `src/nestlogit.cpp` | NL likelihood, gradient, analytical Hessian | choicer_internal.h, utils.cpp | No |
 | `src/mnprobit.cpp` | Bayesian MNP Gibbs sampler | bayes_samplers.h, rng.h | No |
 | `src/utils.cpp` | Shared C++ kernels: softmax, log-sum-exp | choicer_internal.h | No |
 | `src/choicer.h` | Public C++ API header | — | No |
@@ -112,62 +111,53 @@ graph TD
 | `src/bayes_samplers.h` | MNP-specific sampling routines | rng.h | No |
 | `src/rng.h` | Thread-safe per-draw RNG | — | No |
 | `src/halton.h` | On-the-fly Halton draw generator (HaltonGen) | — | No |
-| `docs/nested_logit_math.md` | NL mathematical reference | — | **YES — §4 rewritten** |
+| `docs/mixed_logit_math.md` | MXL mathematical reference | — | **YES — §4.4 added** |
 
 ---
 
 ### Function Call Graph
 
-#### Main Pipeline: NL Estimation (this run's change)
+#### Main Pipeline: MXL Hessian (this run's change)
 
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
 graph TD
-    A[run_nestlogit] --> B[prepare_nl_data]
+    A[run_mxlogit] --> B[prepare_mxl_data]
     A --> C[run_optimizer]
-    C --> D[nl_loglik_gradient_parallel]
-    D --> D1[nl_parse_theta]
-    D --> D2[nl_individual_probs<br/>P_i / P_j_given_k / P_k / log_I_k]
-    D --> D3[compute_base_util]
-    C --> E{se_method?}
-    E -- hessian default --> F[nl_loglik_hessian_parallel]
-    E -- numeric --> G[nl_loglik_numeric_hessian]
+    C --> D[mxl_loglik_parallel<br/>returns -ell]
+    D --> C
+    C --> CONV{Converged?}
+    CONV -- No --> C
+    CONV -- Yes --> E[compute_hessian<br/>se_method dispatch]
+    E --> F[mxl_hessian_parallel]
     style F fill:#1e90ff,stroke:#1565c0,color:#fff
-    F --> F1[nl_parse_theta + validate]
-    F --> F2[nl_individual_probs]
-    F --> F3[per-nest auxiliary accumulation<br/>Vbar_k / VarV_k / m_k / c_k / S2_k / Q_k]
-    F3 --> F4[V-space Hessian Q_i<br/>m_i x m_i matrix]
-    F4 --> F5[delta-delta block scatter]
-    F4 --> F6[beta-delta block X^T Q_i col]
-    F3 --> F7[beta-beta Terms A+B+C<br/>outer product decomposition]
-    F3 --> F8[lambda-V cross d_V^k<br/>chosen vs non-chosen formula]
-    F8 --> F9[lambda-beta X^T d_V^k]
-    F8 --> F10[lambda-delta scatter]
-    F3 --> F11[lambda-lambda block<br/>off-diag -P_k P_l T_k T_l<br/>diag chosen vs non-chosen]
-    F5 --> F12[OpenMP critical merge]
-    F6 --> F12
-    F7 --> F12
-    F9 --> F12
-    F10 --> F12
-    F11 --> F12
-    F12 --> F13[symmetrize + sanitize]
-    F13 --> H[invert_hessian / ensure_vcov]
-    H --> I[new_choicer_nl constructor<br/>se_method stored]
+    F --> F0[Parse theta<br/>validate inputs<br/>WGamma batch Cholesky]
+    F0 --> F1[N-loop per individual]
+    F1 --> F2[S-loop: stable_softmax<br/>P_choice_s per draw]
+    F2 --> F3[Alt-loop: build zc_a<br/>sum_Pzz_cc / sum_Pz_c / g_c]
+    F3 --> F4[End-of-draw Identity C<br/>buf_Pzz_cc += P_s x sum_Pzz_cc<br/>buf_diff_HV_cc += P_s x sum_diff_HV]
+    F3 --> F5[End-of-draw Identities A+B<br/>G_stash col s = sqrt_Ps x g_is<br/>F_stash col s = sqrt_Ps x sum_Pz_s]
+    F4 --> F6[Post-S BLAS-3<br/>GF = join_rows G_stash F_stash<br/>opg_pz = GF x GF_t]
+    F5 --> F6
+    F6 --> F7[Block assembly hess_t1<br/>cc / cd / dc / dd blocks]
+    F7 --> F8[Finalize per individual<br/>H_i = hess_t1/P_hat - g_i g_i_t<br/>local_hess += w_i H_i]
+    F8 --> F9[OpenMP critical merge<br/>global_hess += local_hess]
+    F9 --> G[invert_hessian -> vcov / se]
+    G --> H[choicer_mxl S3 object]
+    H --> POST[Post-estimation<br/>elasticities / WTP / BLP / CS / GoF]
 ```
 
 | Function | Purpose | Key Dependencies | Changed in This Run |
 |----------|---------|-----------------|---------------------|
-| `run_nestlogit` | Public NL estimation entry point; `se_method` dispatch | prepare_nl_data, run_optimizer | **YES** |
-| `prepare_nl_data` | Validates inputs, builds X matrix, prefix sums, nest mapping | data.table | No |
+| `run_mxlogit` | Public MXL estimation entry point | prepare_mxl_data, run_optimizer | No |
+| `prepare_mxl_data` | Validates inputs, builds X/W matrices, Halton draws | data.table, randtoolbox | No |
 | `run_optimizer` | Unified optimizer dispatch (nloptr / optim / custom) | nloptr | No |
-| `nl_loglik_gradient_parallel` | NL log-likelihood and gradient (OpenMP) | nl_individual_probs | No |
-| `nl_loglik_hessian_parallel` | **NEW: single-pass analytical Hessian of -loglik** | nl_individual_probs, nl_parse_theta | **YES** |
-| `nl_loglik_numeric_hessian` | Numeric oracle: 2P finite-diff passes on gradient (retained) | nl_loglik_gradient_parallel | No |
-| `nl_individual_probs` | Per-individual P_i, P_j\|k, P_k, log_I_k | — | No |
-| `nl_parse_theta` | Splits theta into beta/lambda/delta; builds nest_k_to_theta_idx | — | No |
+| `mxl_loglik_parallel` | MXL log-likelihood (OpenMP over individuals) | stable_softmax | No |
+| `mxl_gradient_parallel` | MXL gradient (OpenMP; per-draw score accumulation) | stable_softmax | No |
+| `mxl_hessian_parallel` | **O3: BLAS-3 restructured Hessian** — block buffers + G/F stash + fused syrk | stable_softmax, arma BLAS | **YES** |
+| `mxl_bhhh_parallel` | OPG/BHHH variance estimator (outer product of scores) | stable_softmax | No |
 | `invert_hessian` | Invert Hessian to get vcov; fallback to pseudo-inverse | arma::inv_sympd | No |
-| `new_choicer_nl` | S3 constructor for choicer_nl objects; stores `se_method` | — | **YES** |
-| `compute_hessian` (NL branch) | Dispatches to analytical or numeric Hessian based on `se_method` | nl_loglik_hessian_parallel | **YES** |
+| `new_choicer_mxl` | S3 constructor for choicer_mxl objects | — | No |
 
 ---
 
@@ -176,62 +166,53 @@ graph TD
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
 graph TD
-    IN[Input: data.frame<br/>id/alt/choice/nest/covariates] --> PREP[prepare_nl_data<br/>validate + build matrices<br/>nest_idx / alt_idx]
-    PREP --> XMX[X matrix stacked<br/>prefix sums S<br/>nest_idx / choice_idx]
+    IN[Input: data.frame<br/>id/alt/choice/covariates] --> PREP[prepare_mxl_data<br/>validate + build X/W matrices<br/>Halton draws or HaltonGen seed]
+    PREP --> XMX[X / W stacked matrices<br/>eta_draws cube or gen_seed<br/>alt_idx / choice_idx / M]
     XMX --> OPT{Optimizer loop<br/>nloptr / optim}
-    OPT --> GRAD[nl_loglik_gradient_parallel<br/>returns -ell / -grad]
+    OPT --> GRAD[mxl_loglik_parallel<br/>returns -ell]
     GRAD --> OPT
     OPT --> CONV{Converged?}
     CONV -- No --> OPT
-    CONV -- Yes --> DISP{se_method?}
-    DISP -- hessian default --> ANA[nl_loglik_hessian_parallel<br/>single-pass analytical]
-    DISP -- numeric --> NUM[nl_loglik_numeric_hessian<br/>2P finite-diff oracle]
-    style ANA fill:#1e90ff,stroke:#1565c0,color:#fff
-    ANA --> BB[beta-beta<br/>Terms A + B + C]
-    ANA --> BD[beta-delta<br/>X^T Q_i col b]
-    ANA --> DD[delta-delta<br/>Q_i a,b direct]
-    ANA --> LB[lambda-beta<br/>-X^T d_V^k]
-    ANA --> LD[lambda-delta<br/>-d_V^k b scatter]
-    ANA --> LL[lambda-lambda<br/>off-diag + diagonal cases]
-    BB --> ASSEM[Assemble n_params x n_params<br/>symmetrize + sanitize]
-    BD --> ASSEM
-    DD --> ASSEM
-    LB --> ASSEM
-    LD --> ASSEM
-    LL --> ASSEM
-    NUM --> ASSEM
+    CONV -- Yes --> HESS[mxl_hessian_parallel<br/>O3 BLAS-3 restructure]
+    style HESS fill:#1e90ff,stroke:#1565c0,color:#fff
+    HESS --> SLOOP[S-loop per individual<br/>stable_softmax / P_choice_s]
+    SLOOP --> BUFACC[Identity C: buf_Pzz_cc/cd/dd<br/>buf_diff_HV_cc<br/>scalar-times-matrix accumulation]
+    SLOOP --> STASH[Identities A+B: G_stash F_stash<br/>col s = sqrt_Ps x g_is or sum_Pz_s]
+    BUFACC --> BLAS3[BLAS-3: GF x GF_t<br/>= G x G_t + F x F_t]
+    STASH --> BLAS3
+    BLAS3 --> ASSEM[Block assembly hess_t1<br/>cc/cd/dc/dd finalize H_i]
     ASSEM --> VCOV[invert_hessian -> vcov / se]
-    VCOV --> OBJ[choicer_nl S3 object<br/>se_method stored]
+    VCOV --> OBJ[choicer_mxl S3 object]
     OBJ --> POST[Post-estimation<br/>elasticities / WTP / BLP / CS / GoF]
 ```
 
 ---
 
-## Key Architectural Change — O1 Analytical NL Hessian
+## Key Architectural Change — O3 MXL Hessian BLAS-3 Restructure
 
 ### Before
 
-`run_nestlogit()` always called `nl_loglik_numeric_hessian`, which computed the Hessian of the negated log-likelihood via $2P$ central finite-difference passes over the analytical gradient (cost: $2P$ gradient evaluations = $O(N \cdot J \cdot P)$ per evaluation, $2P$ evaluations total).
+`mxl_hessian_parallel` maintained two $n\_\text{params} \times n\_\text{params}$ allocations per individual: a per-draw dense matrix `H_is` and a running accumulator `hess_term1_numerator`. At each draw $s$ it assembled the full `H_is` from `sum_Pzz`, `sum_Pz`, and `sum_diff_H_V`, then computed `hess_term1_numerator += P_s * (g_is * g_isᵀ + H_is)` — $S$ separate rank-1 outer-product additions inside the draw loop.
 
 ### After
 
-A new exported C++ function `nl_loglik_hessian_parallel` computes the exact analytical Hessian in a **single pass** over individuals. It shares the same parameter layout, OpenMP structure, and sign convention as the gradient, and is numerically equivalent to the numeric oracle at worst-case $\approx 2.6 \times 10^{-8}$ (38× below the $10^{-6}$ equivalence gate).
+The restructure eliminates both per-draw allocations by splitting the numerator into four independently handled pieces:
 
-**R-side:** `run_nestlogit(..., se_method = "hessian")` (new default) routes to the analytical path. `se_method = "numeric"` retains the oracle for diagnostic comparison.
+**Identity C (linear pieces):** `buf_Pzz_cc/cd/dd` and `buf_diff_HV_cc` accumulate the two terms of $H_{is}$ that are linear in $P_{is}$ via direct scalar-times-matrix additions, avoiding the dense `H_is` assembly.
 
-**Six second-derivative blocks:**
+**Identities A + B (outer-product pieces):** `G_stash` and `F_stash` (both $n\_\text{params} \times S$) are filled column-by-column during the draw loop. After the loop a single BLAS level-3 multiply `[G|F][G|F]ᵀ` delivers $G G^\top + F F^\top = \sum_s P_{is}(g_{is} g_{is}^\top + \mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top)$, replacing $S$ separate rank-1 outer products with one cache-efficient kernel.
 
-| Block | Dimensions | Key formula/structure |
-|-------|-----------|----------------------|
-| beta-beta | $K \times K$ | $\mathbf{X}_i^T \mathbf{Q}_i \mathbf{X}_i$ via outer-product decomposition (Terms A, B, C) |
-| beta-delta | $K \times J_\text{asc}$ | $\mathbf{X}_i^T \mathbf{Q}_i[:, b']$ for free-ASC alternative $b'$ |
-| delta-delta | $J_\text{asc} \times J_\text{asc}$ | $Q_i[a', b']$ direct from V-space Hessian |
-| lambda-beta | $K_\lambda \times K$ | $-\mathbf{X}_i^T \mathbf{d}^{(k)}$ (lambda-V cross derivative) |
-| lambda-delta | $K_\lambda \times J_\text{asc}$ | $-d^{(k)}_{b'}$ (lambda-V cross derivative, scatter) |
-| lambda-lambda | $K_\lambda \times K_\lambda$ | off-diag: $-P_k P_l T_k T_l$; diagonal: two cases (chosen/non-chosen nest) |
+**Identity D (optional):** Per-draw `dsyrk` over $\tilde{Z}_c^s$ to batch `sum_Pzz_cc_s` — available but deferred; per-alt rank-1 loop retained.
 
-**Two spec bugs corrected by the builder (implementation is source of truth):**
+**No API change.** Signature, return type, sign convention, and WESML weight handling are all unchanged. Worst-case numerical deviation vs. oracle: $4.588 \times 10^{-13}$ (floating-point summation order only), 2,000 times inside the $10^{-6}$ gate. All 1,371 existing tests pass; CRAN: 0 errors / 0 warnings.
 
-1. **Q_i formula**: The spec's phi term incorrectly had an extra $P(b\mid k)$ factor on the $\mathbf{1}_{a=b}/\lambda_k$ term. The correct within-nest contribution is $P_{ia} \cdot [\mathbf{1}_{a=b}/\lambda_k + P(b\mid k)(1 - 1/\lambda_k)]$. MNL limit verification: at $\lambda_k = 1$, $Q_i[a,a] = P_{ia}(1-P_{ia})$ as required.
+**Six buffer types replacing two allocations:**
 
-2. **Beta-beta sign convention**: The spec's Terms A/B/C gave the Hessian of $+\ell$ (negative semi-definite). The correct Hessian of $-\ell$ (positive semi-definite at the MLE) requires all three term signs flipped: Term A subtracted, Term B added, Term C subtracted.
+| Buffer / Stash | Shape | Role | Identity |
+|----------------|-------|------|----------|
+| `buf_Pzz_cc` | $K_c \times K_c$ | $\sum_s P_s\,\mathrm{sum\_Pzz}_{cc}$ | C |
+| `buf_Pzz_cd` | $K_c \times J_d$ | $\sum_s P_s\,\mathrm{sum\_Pzz}_{cd}$ | C |
+| `buf_Pzz_dd` | $J_d$-vector | $\sum_s P_s\,\mathrm{sum\_Pzz}_{dd}$ diagonal | C |
+| `buf_diff_HV_cc` | $K_c \times K_c$ | $\sum_s P_s\,\mathrm{sum\_diff\_HV}$ | C |
+| `G_stash` | $n\_\text{params} \times S$ | $G_{[:,s]} = \sqrt{P_s}\,g_{is}$ | A |
+| `F_stash` | $n\_\text{params} \times S$ | $F_{[:,s]} = \sqrt{P_s}\,\mathrm{sum\_Pz}_s$ | B |
