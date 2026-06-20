@@ -1,0 +1,1434 @@
+# The math behind choicer: mixed logit
+
+This document provides a detailed mathematical description of the mixed
+logit (random coefficients logit) model as implemented in
+`src/mxlogit.cpp`.
+
+## Table of Contents
+
+0.  [Notation](#notation)
+1.  [Model Definition](#id_1-model-definition)
+2.  [Log-Likelihood Function](#id_2-log-likelihood-function)
+3.  [Gradient Computation](#id_3-gradient-computation)
+4.  [Hessian Computation](#id_4-hessian-computation)
+5.  [Implementation Details](#id_5-implementation-details)
+6.  [Elasticity Computation](#id_6-elasticity-computation)
+7.  [Diversion Ratios](#id_7-diversion-ratios)
+8.  [BLP Contraction Mapping](#id_8-blp-contraction-mapping)
+9.  [Choice-Based Sampling and WESML
+    Weighting](#id_9-choice-based-sampling-and-wesml-weighting)
+10. [Willingness to Pay](#id_10-willingness-to-pay)
+11. [Consumer Surplus and the Simulated
+    Logsum](#id_11-consumer-surplus-and-the-simulated-logsum)
+12. [Goodness of Fit](#id_12-goodness-of-fit)
+
+------------------------------------------------------------------------
+
+## Notation
+
+| Symbol | Description |
+|----|----|
+| $`i = 1, \ldots, N`$ | Index for individuals (choice situations) |
+| $`j = 1, \ldots, J_i`$ | Index for alternatives available to individual $`i`$ |
+| $`s = 1, \ldots, S`$ | Index for simulation draws |
+| $`j_i`$ | The alternative chosen by individual $`i`$ |
+| $`w_i`$ | Weight for individual $`i`$ |
+| $`X_{ij}`$ | Row vector of covariates with fixed coefficients ($`1 \times K_x`$) |
+| $`W_{ij}`$ | Row vector of covariates with random coefficients ($`1 \times K_w`$) |
+| $`\beta`$ | Fixed coefficient vector ($`K_x \times 1`$) |
+| $`\mu`$ | Mean parameters for random coefficients ($`K_w \times 1`$) |
+| $`L`$ | Lower-triangular Cholesky factor ($`K_w \times K_w`$) |
+| $`\Sigma = LL'`$ | Covariance matrix of random coefficients |
+| $`\delta_j`$ | Alternative-specific constant (ASC) for alternative $`j`$ |
+| $`\eta_i`$ | Standard normal draw vector for individual $`i`$ ($`K_w \times 1`$) |
+| $`\gamma_i = L\eta_i`$ | Random coefficient deviations for individual $`i`$ |
+
+------------------------------------------------------------------------
+
+## 1. Model Definition
+
+### 1.1 Utility Specification
+
+The utility that individual $`i`$ derives from alternative $`j`$ under
+simulation draw $`s`$ is:
+
+``` math
+V_{ij}^s = X_{ij}\beta + W_{ij}\left(\mu^* + \gamma_i^{s*}\right) + \delta_j
+```
+
+where: - $`X_{ij}\beta`$ captures the systematic utility from fixed
+coefficients - $`W_{ij}\mu^*`$ captures the mean contribution of random
+coefficients - $`W_{ij}\gamma_i^{s*}`$ captures the individual-specific
+random deviation - $`\delta_j`$ is the alternative-specific constant
+(with one normalized to zero for identification)
+
+### 1.2 Random Coefficient Structure
+
+Random coefficients are generated through a Cholesky decomposition
+structure:
+
+``` math
+\gamma_i^s = L \eta_i^s, \quad \text{where } \eta_i^s \sim N(0, I_{K_w})
+```
+
+This implies:
+
+``` math
+\gamma_i^s \sim N(0, \Sigma), \quad \text{where } \Sigma = LL'
+```
+
+The Cholesky parameterization ensures $`\Sigma`$ is always positive
+semi-definite.
+
+### 1.3 Distribution Transformations
+
+The implementation supports two distributions for each random
+coefficient $`k`$:
+
+**Normal Distribution** (`rc_dist[k] = 0`):
+``` math
+\mu_k^* = \mu_k, \quad \gamma_{ik}^{s*} = \gamma_{ik}^s
+```
+
+**Log-Normal Distribution** (`rc_dist[k] = 1`):
+``` math
+\mu_k^* = \exp(\mu_k), \quad \gamma_{ik}^{s*} = \exp(\gamma_{ik}^s)
+```
+
+> **Note:** This is a *shifted* log-normal parameterization:
+> $`\beta_k = \exp(\mu_k) + \exp(L_k \eta)`$, which differs from the
+> textbook parameterization $`\beta_k = \exp(\mu_k + L_k \eta)`$.
+
+### 1.4 Cholesky Parameterization
+
+For a full covariance matrix (`rc_correlation = TRUE`), the
+lower-triangular matrix $`L`$ is parameterized as:
+
+``` math
+L = \begin{pmatrix}
+\exp(\ell_{11}) & 0 & 0 & \cdots \\
+\ell_{21} & \exp(\ell_{22}) & 0 & \cdots \\
+\ell_{31} & \ell_{32} & \exp(\ell_{33}) & \cdots \\
+\vdots & \vdots & \vdots & \ddots
+\end{pmatrix}
+```
+
+where: - **Diagonal elements**: $`L_{pp} = \exp(\ell_{pp})`$ (ensures
+positivity) - **Off-diagonal elements**: $`L_{pq} = \ell_{pq}`$ for
+$`p > q`$ (unconstrained)
+
+For diagonal-only covariance (`rc_correlation = FALSE`):
+
+``` math
+L = \text{diag}\left(\exp(\ell_{11}), \exp(\ell_{22}), \ldots, \exp(\ell_{K_w K_w})\right)
+```
+
+The parameter vector for $`L`$ has length: - Full: $`K_w(K_w + 1)/2`$ -
+Diagonal: $`K_w`$
+
+### 1.5 Variable Scaling
+
+**Motivation.** When columns of $`X`$ and $`W`$ span very different
+magnitudes — e.g., a price variable in thousands alongside a binary
+dummy — the Hessian becomes ill-conditioned, L-BFGS step sizes mismatch
+across parameter blocks, and $`\exp(X\beta)`$ can overflow before the
+log-sum-exp normalization kicks in. Dividing each column by its sample
+standard deviation removes data-unit dependence from the Hessian
+condition number and can substantially accelerate convergence.
+
+**Why centering is omitted.** Subtracting a column mean from $`X`$
+shifts every utility by the same global constant
+$`-\beta_k \cdot \overline{X_{\cdot k}}`$, which cancels in the soft-max
+within each choice situation; the analogous argument carries through for
+$`W`$ at every draw of $`\eta`$. The likelihood, gradient, and Hessian
+are therefore invariant under global column centering, and the
+Z-transformation reduces to scale-by-SD as far as the optimizer is
+concerned. We skip centering on practical grounds: it destroys the 0/1
+structure of dummy columns in the stored design matrices (complicating
+inspection and downstream tooling) and adds bookkeeping for column means
+with no estimation benefit.
+
+**The transformation.** Let $`s_k^X = \widehat{\text{sd}}(X_{\cdot k})`$
+and $`s_k^W = \widehat{\text{sd}}(W_{\cdot k})`$. Define scaled matrices
+
+``` math
+\tilde X_{ijk} = X_{ijk} / s_k^X, \qquad \tilde W_{ijk} = W_{ijk} / s_k^W.
+```
+
+Estimation runs on $`(\tilde X, \tilde W)`$. Let
+$`\tilde\beta, \tilde\mu, \tilde\ell`$ denote the parameter estimates in
+the scaled space.
+
+**Back-transformation.** After optimization, parameters are mapped back
+to natural units:
+
+| Parameter | Natural-scale value |
+|----|----|
+| $`\beta_k`$ | $`\tilde\beta_k / s_k^X`$ |
+| $`\mu_k`$ (normal RC) | $`\tilde\mu_k / s_k^W`$ |
+| $`\ell_{pp}`$ (Cholesky diagonal, stored as $`\log L_{pp}`$) | $`\tilde\ell_{pp} - \log(s_p^W)`$ |
+| $`\ell_{pq}`$ (Cholesky off-diagonal, $`p > q`$) | $`\tilde\ell_{pq} / s_p^W`$ |
+| $`\text{ASC}_j`$ | $`\widetilde{\text{ASC}}_j`$ (unchanged) |
+
+For the Cholesky rows: scaling column $`p`$ of $`\tilde W`$ by
+$`1/s_p^W`$ means row $`p`$ of $`L`$ must be scaled by $`s_p^W`$ to keep
+utilities $`\tilde W_{ijk} \cdot (L\eta)_k`$ invariant. On the diagonal
+— where $`L_{pp}`$ is stored as $`\ell_{pp} = \log L_{pp}`$ — this
+multiplicative scaling becomes an additive shift
+($`\ell_{pp} = \tilde\ell_{pp} - \log s_p^W`$); for off-diagonal entries
+it is a direct multiplicative rescaling
+($`\ell_{pq} = \tilde\ell_{pq} / s_p^W`$). Note that the scale factor is
+keyed on the *row* index $`p`$ in both cases — i.e., on the
+random-coefficient associated with the chosen-row $`W`$ column — not on
+the column index $`q`$.
+
+**Variance-covariance.** The back-transform is linear in the stored
+parameters, so the delta method gives
+
+``` math
+V_{\text{natural}} = J \cdot V_{\text{scaled}} \cdot J^\top,
+```
+
+where $`J`$ is the diagonal Jacobian of the natural-from-scaled map:
+entries are $`1/s_k^X`$ for $`\beta_k`$, $`1/s_k^W`$ for $`\mu_k`$,
+$`1`$ for $`\ell_{pp}`$ (additive shift carries no scale factor on
+variance), $`1/s_p^W`$ for $`\ell_{pq}`$, and $`1`$ for ASCs.
+
+**Log-normal random coefficients.** The shifted log-normal
+parameterization $`\beta_k = \exp(\mu_k) + \exp((L\eta)_k)`$ does not
+admit a closed-form back-transform under multiplicative column scaling:
+dividing the full distribution of $`\beta_k`$ by $`s_k^W`$ cannot be
+re-expressed as a single shifted log-normal with shifted
+$`(\mu_k, L_{k,\cdot})`$, because the two $`\exp`$ terms cannot share a
+common scale factor. The implementation therefore passes log-normal
+$`W`$ columns through unscaled: $`s_k^W := 1`$ whenever
+`rc_dist[k] == 1`. The user retains responsibility for choosing
+reasonable units for log-normal RC variables.
+
+**Alternative scale denominators.** The `scale_vars` option also accepts
+`"mad"` ([`stats::mad`](https://rdrr.io/r/stats/mad.html), equal to
+$`1.4826 \times \text{median}|X_{\cdot k} - \text{median}(X_{\cdot k})|`$)
+and `"iqr"` (`stats::IQR(x) / 1.349`); both are SD-equivalent under
+normality and yield the same Jacobian construction as `"sd"` — only the
+per-column denominator $`s_k^X`$ (or $`s_k^W`$) differs. The robust
+denominators are preferable when heavy-tailed columns cause the sample
+SD to be dominated by outliers.
+
+------------------------------------------------------------------------
+
+## 2. Log-Likelihood Function
+
+### 2.1 Choice Probability
+
+For a given draw $`s`$, the probability that individual $`i`$ chooses
+alternative $`j`$ follows the logit formula:
+
+``` math
+P_{ij}^s = \frac{\exp(V_{ij}^s)}{\sum_{k=1}^{J_i} \exp(V_{ik}^s)}
+```
+
+If an outside option is included, it is normalized to $`V_{i0}^s = 0`$.
+
+### 2.2 Simulated Probability
+
+Since the random coefficients $`\gamma_i`$ are unobserved, we integrate
+over their distribution using simulation:
+
+``` math
+\bar{P}_{ij_i} = \frac{1}{S} \sum_{s=1}^{S} P_{ij_i}^s
+```
+
+where $`j_i`$ is the alternative chosen by individual $`i`$.
+
+### 2.3 Log-Likelihood
+
+The simulated log-likelihood is:
+
+``` math
+\ell(\theta) = \sum_{i=1}^{N} w_i \log\left(\bar{P}_{ij_i}\right) = \sum_{i=1}^{N} w_i \log\left(\frac{1}{S} \sum_{s=1}^{S} P_{ij_i}^s\right)
+```
+
+where $`\theta = (\beta, \mu, \text{vec}(L), \delta)`$ is the full
+parameter vector.
+
+### 2.4 Log-Sum-Exp Trick for Numerical Stability
+
+To avoid numerical overflow/underflow, the implementation uses:
+
+1.  **Probability computation**: Before computing $`P_{ij}^s`$, subtract
+    $`\max_k V_{ik}^s`$:
+    ``` math
+    P_{ij}^s = \frac{\exp(V_{ij}^s - \max_k V_{ik}^s)}{\sum_k \exp(V_{ik}^s - \max_k V_{ik}^s)}
+    ```
+
+2.  **Log-probability averaging**: Use log-sum-exp to compute
+    $`\log(\sum_s P_{ij_i}^s)`$:
+    ``` math
+    \text{logSumExp}(a, b) = \max(a,b) + \log\left(\exp(a - \max(a,b)) + \exp(b - \max(a,b))\right)
+    ```
+
+    Applied iteratively across draws $`s`$.
+
+------------------------------------------------------------------------
+
+## 3. Gradient Computation
+
+### 3.1 General Formula
+
+Define for draw $`s`$ the log-probability of the chosen alternative:
+
+``` math
+\log P_{ij_i}^s = V_{ij_i}^s - \log\left(\sum_k \exp(V_{ik}^s)\right)
+```
+
+The gradient of this with respect to utility is:
+
+``` math
+\frac{\partial \log P_{ij_i}^s}{\partial V_{ia}^s} = \mathbf{1}_{a = j_i} - P_{ia}^s
+```
+
+### 3.2 Per-Draw Gradient
+
+Define $`z_{ij}^s = \frac{\partial V_{ij}^s}{\partial \theta}`$ as the
+gradient of utility with respect to parameters. The per-draw gradient
+is:
+
+``` math
+g_i^s = \frac{\partial \log P_{ij_i}^s}{\partial \theta} = \sum_{j=1}^{J_i} \left(\mathbf{1}_{j = j_i} - P_{ij}^s\right) z_{ij}^s
+```
+
+**Vectorized implementation.** Define the logit residual vector
+$`\mathbf{d}_i^s \in \mathbb{R}^{J_i}`$ with elements
+$`d_{ij}^s = \mathbf{1}_{j = j_i} - P_{ij}^s`$. The per-block gradient
+components collapse to matrix-vector products — computed once per draw
+rather than looped over alternatives:
+
+| Block | Scalar sum | Vectorized form |
+|----|----|----|
+| $`\beta`$ | $`\sum_j d_{ij}^s X_{ij}^T`$ | $`X_i^T \mathbf{d}_i^s`$ |
+| $`\mu_p`$ | $`\sum_j d_{ij}^s W_{ijp} \cdot \partial\mu_p^*/\partial\mu_p`$ | $`(\tilde{w}_i^s)_p \cdot \partial\mu_p^*/\partial\mu_p`$ |
+| $`\ell_{pq}`$ | $`\sum_j d_{ij}^s W_{ijp} \cdot \partial\gamma_p^{s*}/\partial\gamma_p^s \cdot \partial L_{pq}/\partial\ell_{pq} \cdot \eta_q^s`$ | $`(\tilde{w}_i^s)_p \cdot \partial\gamma_p^{s*}/\partial\gamma_p^s \cdot \partial L_{pq}/\partial\ell_{pq} \cdot \eta_q^s`$ |
+
+where $`\tilde{w}_i^s = W_i^T \mathbf{d}_i^s \in \mathbb{R}^{K_w}`$
+(`Wt_diff` in the code) is computed once and shared across the $`\mu`$
+and $`L`$ blocks. The $`\delta`$ block uses an irregular alt-index
+scatter and is kept as a loop.
+
+*Code reference:
+[mxlogit.cpp:325-398](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L325-L398)*
+
+### 3.3 Gradient of Simulated Log-Likelihood
+
+Using the identity for the derivative of a logarithm of a sum:
+
+``` math
+\frac{\partial}{\partial \theta} \log\left(\frac{1}{S}\sum_s P_{ij_i}^s\right) = \frac{\sum_s P_{ij_i}^s \cdot g_i^s}{\sum_s P_{ij_i}^s}
+```
+
+The full gradient is:
+
+``` math
+\nabla_\theta \ell = \sum_{i=1}^{N} w_i \cdot \frac{\sum_s P_{ij_i}^s \cdot g_i^s}{\sum_s P_{ij_i}^s}
+```
+
+*Code reference:
+[mxlogit.cpp:400-409](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L400-L409)*
+
+### 3.4 Utility Derivatives by Parameter Block
+
+#### 3.4.1 Fixed Coefficients ($`\beta`$)
+
+``` math
+\frac{\partial V_{ij}^s}{\partial \beta} = X_{ij}^T
+```
+
+Summing over alternatives:
+$`\sum_j d_{ij}^s X_{ij}^T = X_i^T \mathbf{d}_i^s`$.
+
+*Code reference:
+[mxlogit.cpp:343-352](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L343-L352)*
+
+#### 3.4.2 Random Coefficient Means ($`\mu`$)
+
+For Normal distribution:
+``` math
+\frac{\partial V_{ij}^s}{\partial \mu_p} = W_{ijp}
+```
+
+For Log-Normal distribution:
+``` math
+\frac{\partial V_{ij}^s}{\partial \mu_p} = W_{ijp} \cdot \exp(\mu_p)
+```
+
+Both cases are captured by `dmu_final_dmu(p)` ($`= 1`$ for normal,
+$`= \exp(\mu_p)`$ for log-normal). Summing over alternatives:
+$`g_\mu = \tilde{w}_i^s \odot \text{dmu\_final\_dmu}`$.
+
+*Code reference:
+[mxlogit.cpp:355-359](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L355-L359)*
+
+#### 3.4.3 Cholesky Parameters ($`L`$)
+
+Let $`\ell_{pq}`$ denote the parameter for $`L_{pq}`$ (where
+$`p \geq q`$).
+
+**Step 1**: Derivative of $`L_{pq}`$ with respect to $`\ell_{pq}`$:
+``` math
+\frac{\partial L_{pq}}{\partial \ell_{pq}} = \begin{cases}
+L_{pp} = \exp(\ell_{pp}) & \text{if } p = q \text{ (diagonal)} \\
+1 & \text{if } p > q \text{ (off-diagonal)}
+\end{cases}
+```
+
+**Step 2**: Derivative of $`\gamma_p^s`$ with respect to $`\ell_{pq}`$:
+``` math
+\frac{\partial \gamma_p^s}{\partial \ell_{pq}} = \frac{\partial L_{pq}}{\partial \ell_{pq}} \cdot \eta_q^s
+```
+
+Note: $`\gamma_p^s = \sum_{r \leq p} L_{pr} \eta_r^s`$, so only the term
+with $`r = q`$ contributes.
+
+**Step 3**: Derivative of transformed $`\gamma_p^{s*}`$:
+
+For Normal distribution:
+``` math
+\frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} = 1
+```
+
+For Log-Normal distribution:
+``` math
+\frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} = \exp(\gamma_p^s) = \gamma_p^{s*}
+```
+
+**Step 4**: Chain rule for utility derivative:
+``` math
+\frac{\partial V_{ij}^s}{\partial \ell_{pq}} = W_{ijp} \cdot \frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pq}}
+```
+
+**Step 5**: Summing over alternatives using
+$`\tilde{w}_i^s = W_i^T \mathbf{d}_i^s`$:
+``` math
+g_{\ell_{pq}}^s = (\tilde{w}_i^s)_p \cdot \frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} \cdot \frac{\partial L_{pq}}{\partial \ell_{pq}} \cdot \eta_q^s
+```
+
+For the diagonal case, all $`K_w`$ parameters are computed
+simultaneously as `Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s`.
+For the full correlated case,
+`Wt_p = Wt_diff(p) * dgamma_final_dgamma(p)` is factored out per row
+$`p`$.
+
+*Code reference:
+[mxlogit.cpp:361-381](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L361-L381)*
+
+#### 3.4.4 Alternative-Specific Constants ($`\delta`$)
+
+``` math
+\frac{\partial V_{ij}^s}{\partial \delta_a} = \mathbf{1}_{j = a}
+```
+
+where $`\delta_1 = 0`$ (normalized) if no outside option, or all
+$`\delta_j`$ for $`j \geq 1`$ are free if outside option is included.
+The sum over alternatives is a simple scatter (one non-zero contribution
+per alternative), implemented as a loop.
+
+*Code reference:
+[mxlogit.cpp:383-398](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L383-L398)*
+
+------------------------------------------------------------------------
+
+## 4. Hessian Computation
+
+### 4.1 General Formula
+
+Define: - $`g_i = \frac{\partial \log \bar{P}_i}{\partial \theta}`$ —
+the gradient for individual $`i`$ -
+$`g_i^s = \frac{\partial \log P_{ij_i}^s}{\partial \theta}`$ — the
+per-draw gradient -
+$`H_i^s = \frac{\partial^2 \log P_{ij_i}^s}{\partial \theta \partial \theta'}`$
+— the per-draw Hessian
+
+The Hessian of the simulated log-probability for individual $`i`$ is:
+
+``` math
+H_i = \frac{\partial^2 \log \bar{P}_i}{\partial \theta \partial \theta'} = \frac{\sum_s P_{ij_i}^s \left(g_i^s (g_i^s)' + H_i^s\right)}{\sum_s P_{ij_i}^s} - g_i g_i'
+```
+
+The full Hessian is:
+
+``` math
+\nabla^2_\theta \ell = \sum_{i=1}^{N} w_i \cdot H_i
+```
+
+*Code reference:
+[mxlogit.cpp:809-815](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L809-L815)*
+
+### 4.2 Per-Draw Hessian
+
+The per-draw Hessian $`H_i^s`$ has the form:
+
+``` math
+H_i^s = -\sum_j P_{ij}^s z_{ij}^s (z_{ij}^s)' + \left(\sum_j P_{ij}^s z_{ij}^s\right)\left(\sum_j P_{ij}^s z_{ij}^s\right)' + \sum_j \left(\mathbf{1}_{j=j_i} - P_{ij}^s\right) H_{V,ij}^s
+```
+
+where
+$`H_{V,ij}^s = \frac{\partial^2 V_{ij}^s}{\partial \theta \partial \theta'}`$
+is the Hessian of utility.
+
+In the code, this is computed as: - `sum_Pzz`
+$`= \sum_j P_{ij}^s z_{ij}^s (z_{ij}^s)'`$ - `sum_Pz`
+$`= \sum_j P_{ij}^s z_{ij}^s`$ - `sum_diff_H_V`
+$`= \sum_j (\mathbf{1}_{j=j_i} - P_{ij}^s) H_{V,ij}^s`$
+
+Then:
+$`H_i^s = -\text{sum\_Pzz} + \text{sum\_Pz} \cdot \text{sum\_Pz}' + \text{sum\_diff\_H\_V}`$
+
+*Code reference:
+[mxlogit.cpp:802](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L802)*
+
+### 4.3 Second Derivatives of Utility
+
+Most second derivatives are zero since utility is linear in most
+parameters. Non-zero second derivatives arise from:
+
+#### 4.3.1 Mean Parameters ($`\mu`$) — Log-Normal Only
+
+For log-normal distribution:
+``` math
+\frac{\partial^2 V_{ij}^s}{\partial \mu_p^2} = W_{ijp} \cdot \exp(\mu_p)
+```
+
+*Code reference:
+[mxlogit.cpp:725-727](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L725-L727)*
+
+#### 4.3.2 Cholesky Diagonal Parameters ($`\ell_{pp}`$)
+
+Since $`L_{pp} = \exp(\ell_{pp})`$:
+``` math
+\frac{\partial^2 L_{pp}}{\partial \ell_{pp}^2} = \exp(\ell_{pp}) = L_{pp}
+```
+
+For normal distribution:
+``` math
+\frac{\partial^2 V_{ij}^s}{\partial \ell_{pp}^2} = W_{ijp} \cdot L_{pp} \cdot \eta_p^s
+```
+
+For log-normal distribution (combining chain rule):
+``` math
+\frac{\partial^2 V_{ij}^s}{\partial \ell_{pp}^2} = W_{ijp} \left[ \gamma_p^{s*} \left(\frac{\partial \gamma_p^s}{\partial \ell_{pp}}\right)^2 + \frac{\partial \gamma_p^{s*}}{\partial \gamma_p^s} \cdot \frac{\partial^2 \gamma_p^s}{\partial \ell_{pp}^2} \right]
+```
+
+where
+$`\frac{\partial^2 \gamma_p^s}{\partial \ell_{pp}^2} = L_{pp} \cdot \eta_p^s`$.
+
+*Code reference:
+[mxlogit.cpp:783-786](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L783-L786)*
+
+#### 4.3.3 Cholesky Cross-Derivatives ($`\ell_{pq}`$, $`\ell_{pr}`$)
+
+For off-diagonal elements with the same row $`p`$ but different columns
+$`q \neq r`$ (both $`< p`$):
+
+This contributes through the log-normal transformation (when
+applicable):
+``` math
+\frac{\partial^2 V_{ij}^s}{\partial \ell_{pq} \partial \ell_{pr}} = W_{ijp} \cdot \gamma_p^{s*} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pq}} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pr}}
+```
+
+Note: since both $`q < p`$ and $`r < p`$, both derivatives
+$`\partial L_{pq}/\partial \ell_{pq} = 1`$ and
+$`\partial L_{pr}/\partial \ell_{pr} = 1`$ (off-diagonal elements are
+unconstrained).
+
+*Code reference:
+[mxlogit.cpp:757-765](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L757-L765)*
+
+------------------------------------------------------------------------
+
+### 4.4 Implementation Tricks in `mxl_hessian_parallel`
+
+The four subsections below describe the computational restructuring
+introduced in the O3 optimization of `mxl_hessian_parallel`. They cover
+(i) a block decomposition of the score vector and Hessian terms, (ii)
+buffer accumulation that eliminates the per-draw dense matrix
+allocation, (iii) BLAS-3 batching of two outer-product sums, and (iv)
+the symmetry strategy used for final assembly.
+
+A reader who has never seen the C++ can understand what the function
+does and why the result is numerically equivalent to the per-draw naive
+form (§4.1–4.2) from the following four sections alone.
+
+#### 4.4.1 Parameter Block Layout and Score Vector Decomposition
+
+The parameter vector $`\theta`$ is partitioned into a **continuous
+block** of length $`K_c`$ and a **delta block** (ASCs) of length
+$`J_d`$:
+
+``` math
+\theta = \bigl(\underbrace{\beta,\; \mu,\; \mathrm{vec}(L)}_{\text{continuous, length } K_c},\;
+               \underbrace{\delta}_{\text{delta, length } J_d}\bigr),
+\qquad n_\text{params} = K_c + J_d.
+```
+
+The boundary index
+$`K_c = K_x + (\mathbf{1}_{\mathrm{rc\_mean}} \cdot K_w) + L\_\text{size}`$
+is stored as `idx_delta_start` in the code.
+
+The per-draw score vector $`g_{is} \in \mathbb{R}^{n_\text{params}}`$
+inherits this partition: $`g_{is} = [g_{is,c};\; g_{is,d}]`$. The
+continuous sub-vector is
+
+``` math
+g_{is,c} = \sum_{a} d_{ia}^s\, z_{c,ia}^s,
+\qquad d_{ia}^s = \mathbf{1}_{a = j_i} - P_{ia}^s,
+```
+
+where $`z_{c,ia}^s \in \mathbb{R}^{K_c}`$ is the continuous-block
+utility gradient for alternative $`a`$ at draw $`s`$. The delta
+sub-vector scatters logit residuals $`d_{ia}^s`$ into the ASC index for
+each alternative.
+
+Define also: -
+$`\mathrm{sum\_Pz}_{is} = \sum_a P_{ia}^s z_{c,ia}^s \in \mathbb{R}^{K_c}`$
+(the cc weighted-score sum, plus a $`J_d`$-length delta counterpart
+$`\mathrm{sum\_Pz\_d}_{is}`$), -
+$`\mathrm{sum\_Pzz}_{cc,is} = \sum_a P_{ia}^s z_{c,ia}^s (z_{c,ia}^s)^\top`$
+($`K_c \times K_c`$, symmetric), and its cd ($`K_c \times J_d`$) and dd
+(diagonal $`J_d`$-vector) sub-blocks.
+
+#### 4.4.2 Block Buffer Accumulation — Identity C
+
+Two of the three terms in $`H_{is}`$ (§4.2) are **linear** in the draw
+weight $`P_{is}`$:
+
+``` math
+-\mathrm{sum\_Pzz}_{is} \quad \text{and} \quad +\mathrm{sum\_diff\_H\_V}_{is}.
+```
+
+Their draw-weighted sum can therefore be accumulated directly into
+per-individual buffer matrices without constructing the full
+$`n_\text{params} \times n_\text{params}`$ dense matrix $`H_{is}`$ at
+each draw:
+
+``` math
+\mathrm{buf\_Pzz} = \sum_{s=1}^{S} P_{is} \cdot \mathrm{sum\_Pzz}_{is},
+\qquad
+\mathrm{buf\_diff\_HV} = \sum_{s=1}^{S} P_{is} \cdot \mathrm{sum\_diff\_HV}_{is}.
+```
+
+Each buffer is updated at the end of draw $`s`$ with a single
+scalar-times-matrix addition (`buf += P_s * block_s`), replacing the
+original path that assembled the full $`H_{is}`$ and then computed
+`hess_term1_numerator += P_s * (g_is * g_isᵀ + H_is)`.
+
+The block structure of `buf_Pzz` minimizes memory by storing only the
+three structurally distinct sub-blocks:
+
+| Buffer | Shape | Content | Notes |
+|----|----|----|----|
+| `buf_Pzz_cc` | $`K_c \times K_c`$ | $`\sum_s P_{is}\,\mathrm{sum\_Pzz}_{cc,s}`$ | Symmetric |
+| `buf_Pzz_cd` | $`K_c \times J_d`$ | $`\sum_s P_{is}\,\mathrm{sum\_Pzz}_{cd,s}`$ | Rectangular; not symmetric |
+| `buf_Pzz_dd` | $`J_d`$-vector | $`\sum_s P_{is}\,\mathrm{sum\_Pzz}_{dd,s}`$ | Diagonal only |
+| `buf_diff_HV_cc` | $`K_c \times K_c`$ | $`\sum_s P_{is}\,\mathrm{sum\_diff\_HV}_{s}`$ | Symmetric; cc block only ($`H_V`$ has no delta rows) |
+
+All four buffers are thread-private scratch allocated once per thread
+outside the $`N`$-loop and zeroed at the start of each individual $`i`$.
+
+#### 4.4.3 BLAS-3 Batching of Outer-Product Sums — Identities A and B
+
+The third term in $`H_{is}`$ —
+$`+\mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top`$ — is **not**
+linear in $`P_{is}`$, so it cannot go into a linear buffer. Instead,
+together with the OPG term $`\sum_s P_{is} g_{is} g_{is}^\top`$, it is
+handled by reformulating both weighted outer-product sums as a single
+BLAS level-3 matrix multiply.
+
+**Identity A (OPG batching).** Define the $`n_\text{params} \times S`$
+matrix $`G`$ with columns
+
+``` math
+G_{[:,s]} = \sqrt{P_{is}}\; g_{is}.
+```
+
+Then
+
+``` math
+\sum_{s=1}^{S} P_{is}\, g_{is} g_{is}^\top = G G^\top.
+```
+
+*Proof.*
+$`G G^\top = \sum_s (\sqrt{P_{is}}\, g_{is})(\sqrt{P_{is}}\, g_{is})^\top = \sum_s P_{is}\, g_{is} g_{is}^\top`$.
+The identity is exact in real arithmetic and requires only
+$`P_{is} \geq 0`$, which holds because $`P_{is}`$ is a softmax
+probability (guaranteed by `stable_softmax`).
+
+**Identity B (sum-Pz outer-product batching).** Define the
+$`n_\text{params} \times S`$ matrix $`F`$ with columns
+
+``` math
+F_{[:,s]} = \sqrt{P_{is}}\;\bigl[\mathrm{sum\_Pz\_c}_{is};\;\mathrm{sum\_Pz\_d}_{is}\bigr].
+```
+
+Then
+
+``` math
+\sum_{s=1}^{S} P_{is}\;\mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top = F F^\top.
+```
+
+The proof is identical to Identity A.
+
+**Combined BLAS-3 form.** Concatenating $`G`$ and $`F`$ into
+$`[G \mid F] \in
+\mathbb{R}^{n_\text{params} \times 2S}`$ and forming one matrix product
+gives
+
+``` math
+[G \mid F]\;[G \mid F]^\top = G G^\top + F F^\top,
+```
+
+because $`[G \mid F]^\top = [G^\top;\; F^\top]`$ and the block multiply
+sums over $`2S`$ columns with no $`G`$-$`F`$ cross term. This is the
+form implemented in `mxl_hessian_parallel`: `G_stash` and `F_stash` are
+filled column-by-column during the $`S`$-loop, and after the loop
+`GF = join_rows(G_stash, F_stash); opg_pz = GF * GF.t()` delivers
+$`\sum_s P_{is}(g_{is} g_{is}^\top + \mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top)`$
+in a single cache-friendly level-3 kernel.
+
+**Floating-point precision.** Changing the summation order (per-draw
+increments vs. one level-3 multiply) is a reassociation of additions
+that is exact in real arithmetic. In floating-point the results differ
+only by rounding. Across 10 equivalence scenarios sweeping all
+combinations of `rc_dist`, `rc_correlation`, and `rc_mean`, the
+worst-case element-wise deviation was $`4.588 \times 10^{-13}`$, roughly
+2,000 times smaller than the $`10^{-6}`$ acceptance gate.
+
+#### 4.4.4 Optional Per-Draw Batching of `sum_Pzz_cc` — Identity D
+
+Within each draw $`s`$, the cc sub-block of `sum_Pzz` accumulates
+per-alternative rank-1 updates:
+
+``` math
+\mathrm{sum\_Pzz\_cc}_{s} = \sum_{a} P_{ia}^s\, z_{c,ia}^s (z_{c,ia}^s)^\top.
+```
+
+This can equivalently be expressed as a single matrix product:
+
+``` math
+\mathrm{sum\_Pzz\_cc}_{s} = \tilde{Z}_{c}^s\, (\tilde{Z}_{c}^s)^\top,
+\qquad \tilde{Z}_{c,[:,a]}^s = \sqrt{P_{ia}^s}\; z_{c,ia}^s,
+```
+
+where $`\tilde{Z}_c^s \in \mathbb{R}^{K_c \times J_{\text{eff}}^*}`$ and
+$`J_{\text{eff}}^*`$ counts the active (non-outside-option)
+alternatives. One `dsyrk` call per draw over $`J_{\text{eff}}^*`$
+columns would replace $`J_{\text{eff}}^*`$ individual `dsyr` rank-1
+updates. The identity holds by the same $`P_{ia}^s \geq 0`$ argument as
+Identities A and B.
+
+**Shipped code decision.** The current implementation retains the
+per-alternative rank-1 accumulation
+(`sum_Pzz_cc += P_a * (zc_a * zc_a.t())`). Both forms are correct; the
+result flows into `buf_Pzz_cc` via the Identity C scalar-times-matrix
+step at the end of each draw. Identity D represents an available further
+micro-optimization deferred to a future pass.
+
+#### 4.4.5 Final Assembly and Symmetry
+
+After the $`S`$-loop for individual $`i`$, define
+$`\hat{P}_i = \sum_s P_{is}`$ and let
+$`\mathrm{opg\_pz} = [G \mid F][G \mid F]^\top`$. The numerator
+$`\sum_s P_{is}(g_{is}
+g_{is}^\top + H_{is})`$ is assembled block-by-block:
+
+``` math
+\mathrm{hess\_t1}\big|_{\mathrm{cc}} =
+  \mathrm{opg\_pz}_{\mathrm{cc}} - \mathrm{buf\_Pzz\_cc} + \mathrm{buf\_diff\_HV\_cc},
+```
+
+``` math
+\mathrm{hess\_t1}\big|_{\mathrm{cd}} =
+  \mathrm{opg\_pz}_{\mathrm{cd}} - \mathrm{buf\_Pzz\_cd},
+\qquad
+\mathrm{hess\_t1}\big|_{\mathrm{dc}} =
+  \bigl(\mathrm{hess\_t1}|_{\mathrm{cd}}\bigr)^\top,
+```
+
+``` math
+\mathrm{hess\_t1}\big|_{\mathrm{dd}} =
+  \mathrm{opg\_pz}_{\mathrm{dd}} - \mathrm{diag}(\mathrm{buf\_Pzz\_dd}).
+```
+
+The cd block is rectangular ($`K_c \times J_d`$) and not symmetric, so
+both the cd and dc sub-matrices are written explicitly into `hess_t1`.
+The remaining finalization steps are unchanged from the original code:
+
+``` math
+g_i = \frac{\mathrm{grad\_numerator}_i}{\hat{P}_i},
+\qquad
+H_i = \frac{\mathrm{hess\_t1}}{\hat{P}_i} - g_i g_i^\top,
+\qquad
+\mathrm{local\_hess} \mathrel{+}= w_i H_i.
+```
+
+**Symmetry strategy.** The Hessian $`H_i`$ is symmetric. The current
+code uses a full-matrix approach: `buf_Pzz_cc` and `buf_diff_HV_cc` are
+accumulated as full symmetric matrices (the existing per-alternative
+loop writes both $`(r, p)`$ and $`(p, r)`$ positions for off-diagonal
+$`L`$-$`L`$ entries in `sum_diff_H_V_cc`, and this is retained
+unchanged), and the outer product $`g_i g_i^\top`$ is computed in full.
+An alternative upper-triangle-only strategy — accumulating only the
+upper triangle in the cc buffers and mirroring once before the OpenMP
+critical merge — would halve the work for those buffers. It was deferred
+because the asymmetric cd block requires explicit transposition
+regardless, and the full-matrix path is simpler to audit.
+
+------------------------------------------------------------------------
+
+## 5. Implementation Details
+
+### 5.1 Parameter Vector Structure
+
+The full parameter vector $`\theta`$ is organized as:
+
+| Block | Indices | Length | Description |
+|----|----|----|----|
+| $`\beta`$ | $`[0, K_x)`$ | $`K_x`$ | Fixed coefficients |
+| $`\mu`$ | $`[K_x, K_x + K_w)`$ | $`K_w`$ (if `rc_mean=TRUE`) | Random coefficient means |
+| $`L`$ | next block | $`K_w(K_w+1)/2`$ or $`K_w`$ | Cholesky parameters |
+| $`\delta`$ | remaining | $`J-1`$ or $`J`$ | ASCs |
+
+### 5.2 Delta Method for Variance Parameters
+
+When reporting results, the Cholesky parameters $`\ell`$ are transformed
+to variance matrix elements $`\Sigma = LL'`$.
+
+The Jacobian $`J = \frac{\partial \text{vech}(\Sigma)}{\partial \ell}`$
+is computed analytically in
+[`jacobian_vech_Sigma()`](https://fpcordeiro.github.io/choicer/reference/jacobian_vech_Sigma.md).
+
+For element $`\Sigma_{ij} = \sum_k L_{ik} L_{jk}`$:
+``` math
+\frac{\partial \Sigma_{ij}}{\partial \ell_{pq}} = \frac{\partial L_{pq}}{\partial \ell_{pq}} \left( L_{jq} \mathbf{1}_{i=p} + L_{iq} \mathbf{1}_{j=p} \right)
+```
+
+This follows from the product rule applied to $`\Sigma = LL^T`$:
+$`\partial \Sigma / \partial \ell_{pq} = E \cdot L^T + L \cdot E^T`$,
+where $`E`$ is the matrix with a single non-zero entry
+$`E_{pq} = \partial L_{pq} / \partial \ell_{pq}`$.
+
+The variance-covariance matrix of $`\text{vech}(\Sigma)`$ is then:
+``` math
+V_\Sigma = J \cdot V_\ell \cdot J'
+```
+
+*Code reference:
+[mxlogit.cpp:462-474](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp#L462-L474)*
+
+### 5.3 OpenMP Parallelization
+
+The implementation parallelizes over individuals using OpenMP: - Each
+thread maintains local accumulators for log-likelihood and
+gradient/Hessian - Thread results are combined using
+`#pragma omp critical` sections - Dynamic scheduling is used for load
+balancing: `#pragma omp for schedule(dynamic)`
+
+### 5.4 Practical Notes
+
+1.  **Negated Objectives**: The C++ functions return $`-\ell(\theta)`$
+    and $`-\nabla\ell(\theta)`$ (and $`-\nabla^2\ell(\theta)`$ for the
+    Hessian) for compatibility with minimization routines that expect a
+    loss function.
+
+2.  **ASC Identification**: When `include_outside_option = FALSE`, the
+    first inside alternative’s ASC ($`\delta_1`$) is fixed to zero for
+    identification. When `include_outside_option = TRUE`, all inside
+    ASCs are free parameters (the outside option with $`V=0`$ serves as
+    the reference).
+
+3.  **Gradient vectorization**: The per-draw gradient is computed
+    without a per-alternative loop. After forming
+    $`\mathbf{d}_i^s = \mathbf{e}_{j_i} - P_i^s`$, the $`\beta`$ and
+    $`\mu`$/$`L`$ blocks are evaluated with two BLAS dgemv calls
+    ($`X_i^T \mathbf{d}_i^s`$ and $`W_i^T \mathbf{d}_i^s`$). The delta
+    block uses an irregular scatter and remains a loop.
+
+4.  **Draw source (RQMC mode)**: By default (`draws = "store"` in
+    [`run_mxlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mxlogit.md)),
+    the $`K_w \times S \times N`$ Halton cube is pre-materialized via
+    [`randtoolbox::halton`](https://rdrr.io/pkg/randtoolbox/man/quasiRNG.html)
+    and stored in memory. With `draws = "generate"`, each individual’s
+    $`S`$ draws are computed on the fly by the C++ `HaltonGen` class
+    using the same radical-inverse formula, so the integrand and all
+    math in this document are unchanged — only the source of
+    $`\eta_i^s`$ differs. Owen (2017) digit scrambling
+    (`scramble = "owen"`, the default for generate mode) randomizes the
+    Halton sequence by applying a per-digit permutation table derived
+    from a master seed, yielding RQMC draws with better uniformity in
+    high dimensions (Bhat 2003).
+
+------------------------------------------------------------------------
+
+## 6. Elasticity Computation
+
+### 6.1 Elasticity Definitions
+
+The elasticity measures the percentage change in choice probability with
+respect to a percentage change in an attribute. For the mixed logit
+model, we compute elasticities using simulated probabilities.
+
+**Simulated Probability:**
+
+``` math
+\bar{P}_{ij} = \frac{1}{S} \sum_{s=1}^{S} P_{ij}^s
+```
+
+### 6.2 Elasticity for Fixed Coefficients (X Variables)
+
+For a variable $`k`$ in the design matrix $`X`$ with fixed coefficient
+$`\beta_k`$:
+
+**Own-Elasticity** (elasticity of $`P_{ij}`$ with respect to
+$`x_{ijk}`$):
+
+``` math
+E_{jj}^k = \frac{\partial \bar{P}_{ij}}{\partial x_{ijk}} \cdot \frac{x_{ijk}}{\bar{P}_{ij}}
+```
+
+Using the chain rule and averaging over draws:
+
+``` math
+E_{jj}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \beta_k \cdot x_{ijk} \cdot P_{ij}^s \cdot (1 - P_{ij}^s)
+```
+
+**Cross-Elasticity** (elasticity of $`P_{ij}`$ with respect to
+$`x_{imk}`$ where $`m \neq j`$):
+
+``` math
+E_{jm}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \left( -\beta_k \cdot x_{imk} \cdot P_{ij}^s \cdot P_{im}^s \right)
+```
+
+### 6.3 Elasticity for Random Coefficients (W Variables)
+
+For a variable $`k`$ in the design matrix $`W`$ with random coefficient,
+the effective coefficient for individual $`i`$ and draw $`s`$ is:
+
+``` math
+\beta_{ik}^s = \mu_k^* + \gamma_{ik}^{s*}
+```
+
+where: - For normal distribution: $`\mu_k^* = \mu_k`$,
+$`\gamma_{ik}^{s*} = \gamma_{ik}^s`$ - For log-normal distribution:
+$`\mu_k^* = \exp(\mu_k)`$, $`\gamma_{ik}^{s*} = \exp(\gamma_{ik}^s)`$
+
+**Own-Elasticity:**
+
+``` math
+E_{jj}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \beta_{ik}^s \cdot w_{ijk} \cdot P_{ij}^s \cdot (1 - P_{ij}^s)
+```
+
+**Cross-Elasticity:**
+
+``` math
+E_{jm}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \left( -\beta_{ik}^s \cdot w_{imk} \cdot P_{ij}^s \cdot P_{im}^s \right)
+```
+
+### 6.4 Aggregate Elasticities
+
+The implementation computes weighted average elasticities across all
+individuals:
+
+``` math
+\bar{E}_{jm}^k = \frac{\sum_{i=1}^{N} w_i \cdot E_{ijm}^k}{\sum_{i=1}^{N} w_i}
+```
+
+*Code reference:
+[mxlogit.cpp:mxl_elasticities_parallel](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp)*
+
+------------------------------------------------------------------------
+
+## 7. Diversion Ratios
+
+### 7.1 Definition
+
+The *attribute-based* diversion ratio from alternative $`j`$ to
+alternative $`m`$ with respect to attribute $`k`$ is
+
+``` math
+\mathrm{DR}_{j \to m}(x_k) \;=\; -\,\frac{\partial s_m / \partial x_{j,k}}{\partial s_j / \partial x_{j,k}},
+```
+
+where $`s_j = \frac{1}{\sum_i w_i}\sum_i w_i \bar{P}_{ij}`$ is the
+aggregate share. It is the fraction of demand lost by $`j`$ that is
+captured by $`m`$ when a marginal change in $`j`$’s attribute $`k`$
+reduces $`s_j`$.
+
+### 7.2 MNL Special Case (β cancels)
+
+For multinomial logit, the per-individual derivatives of the choice
+probability are
+
+``` math
+\frac{\partial P_{ij}}{\partial x_{j,k}} = \beta_k\, P_{ij}(1 - P_{ij}), \qquad
+\frac{\partial P_{im}}{\partial x_{j,k}} = -\beta_k\, P_{ij}P_{im} \quad (m \neq j).
+```
+
+Letting $`\bar{w} = \sum_i w_i`$, the aggregate share derivatives are
+
+``` math
+\frac{\partial s_j}{\partial x_{j,k}} \;=\; \frac{1}{\bar{w}}\sum_i w_i \frac{\partial P_{ij}}{\partial x_{j,k}} \;=\; \beta_k \cdot \frac{1}{\bar{w}}\sum_i w_i\, P_{ij}(1 - P_{ij}),
+```
+
+``` math
+\frac{\partial s_m}{\partial x_{j,k}} \;=\; -\,\beta_k \cdot \frac{1}{\bar{w}}\sum_i w_i\, P_{ij} P_{im}.
+```
+
+Because $`\beta_k`$ is a scalar constant, it pulls out of both weighted
+sums. Forming the ratio,
+
+``` math
+\mathrm{DR}_{j \to m}^{\text{MNL}}
+\;=\; -\,\frac{\partial s_m / \partial x_{j,k}}{\partial s_j / \partial x_{j,k}}
+\;=\; \frac{\beta_k \cdot \tfrac{1}{\bar{w}}\sum_i w_i\, P_{ij} P_{im}}{\beta_k \cdot \tfrac{1}{\bar{w}}\sum_i w_i\, P_{ij}(1 - P_{ij})}
+\;=\; \frac{\sum_i w_i\, P_{ij} P_{im}}{\sum_i w_i\, P_{ij}(1 - P_{ij})},
+```
+
+with $`\beta_k`$ and $`1/\bar{w}`$ cancelling. The result is independent
+of which attribute is perturbed — this is a special property of MNL.
+
+### 7.3 MXL: β Does Not Cancel
+
+For mixed logit the realized coefficient on a random variable for
+individual $`i`$ at draw $`s`$ is
+
+``` math
+\beta_{ik}^s = \mu_k^* + \gamma_{ik}^{s*},
+```
+
+with the same distribution transforms as in §6.3. The derivatives
+evaluated at draw $`s`$ are
+
+``` math
+\frac{\partial P_{ij}^s}{\partial x_{j,k}} = \beta_{ik}^s\, P_{ij}^s\,(1 - P_{ij}^s), \qquad
+\frac{\partial P_{im}^s}{\partial x_{j,k}} = -\beta_{ik}^s\, P_{ij}^s P_{im}^s.
+```
+
+Integrating over draws gives
+$`\partial \bar{P}_{ij}/\partial x_{j,k} = \frac{1}{S}\sum_s \beta_{ik}^s P_{ij}^s(1-P_{ij}^s)`$
+and similarly for the cross term. Aggregating over individuals, the
+diversion ratio is
+
+``` math
+\mathrm{DR}_{j \to m}^{\text{MXL}}(x_k) \;=\; \frac{\sum_i w_i \cdot \tfrac{1}{S}\sum_s \beta_{ik}^s\, P_{ij}^s P_{im}^s}{\sum_i w_i \cdot \tfrac{1}{S}\sum_s \beta_{ik}^s\, P_{ij}^s (1 - P_{ij}^s)}.
+```
+
+Because $`\beta_{ik}^s`$ varies across $`(i, s)`$, it cannot be pulled
+out of the sums and does not cancel. The MXL diversion ratio therefore
+*depends on the perturbed variable*. For a variable with a fixed
+coefficient the dependence again vanishes ($`\beta_{ik}^s`$ is a
+constant scalar); for a random-coefficient variable it does not.
+
+### 7.4 Properties
+
+**Column-sum identity.** For each $`j`$,
+$`\sum_{m \neq j} \mathrm{DR}_{j \to m} = 1`$. This follows from
+$`\sum_{m \neq j} P_{ij}^s P_{im}^s = P_{ij}^s(1 - P_{ij}^s)`$, which
+holds inside the draw sum and is preserved through the same
+$`\beta_{ik}^s`$ weight on both sides.
+
+**Sign of $`\beta_{ik}^s`$.** If $`\beta_{ik}^s`$ is constant negative
+(e.g. a fixed price coefficient), both numerator and denominator change
+sign together and the ratio is unchanged — DR is non-negative. With a
+random coefficient of mixed sign across $`(i, s)`$, terms can partially
+cancel; the aggregate ratio is still well-defined but can be numerically
+sensitive. The implementation guards against this with an
+`abs(denominator) > 1e-15` check.
+
+**Implementation.** Cross-products $`P_{ij}^s P_{im}^s`$ and
+$`P_{ij}^s(1 - P_{ij}^s)`$ must be accumulated *inside* the per-draw
+loop, multiplied by $`\beta_{ik}^s`$ at that point, and only then
+averaged across draws and weighted by $`w_i`$. Computing
+$`(\overline{P}_{ij})(\overline{P}_{im})`$ or $`\beta_{ik}^s`$-weighted
+averages computed outside the draw loop is biased.
+
+*Code reference:
+[mxlogit.cpp:mxl_diversion_ratios_parallel](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp)*
+
+------------------------------------------------------------------------
+
+## 8. BLP Contraction Mapping
+
+### 8.1 Problem Statement
+
+Given observed market shares $`s_j`$, find the ASC parameters
+$`\delta_j`$ such that the model-predicted shares match the observed
+shares:
+
+``` math
+\hat{s}_j(\delta) = s_j \quad \forall j
+```
+
+where $`\hat{s}_j(\delta)`$ is the predicted market share for
+alternative $`j`$ computed using simulated probabilities.
+
+### 8.2 Simulated Market Shares
+
+The predicted market share for alternative $`j`$ is:
+
+``` math
+\hat{s}_j(\delta) = \frac{1}{\sum_i w_i} \sum_{i=1}^{N} w_i \cdot \bar{P}_{ij}
+```
+
+where:
+
+``` math
+\bar{P}_{ij} = \frac{1}{S} \sum_{s=1}^{S} P_{ij}^s(\delta)
+```
+
+and $`P_{ij}^s(\delta)`$ is the probability for individual $`i`$,
+alternative $`j`$, and draw $`s`$, which depends on $`\delta`$ through
+the utility specification.
+
+### 8.3 Contraction Mapping Algorithm
+
+Berry, Levinsohn, and Pakes (1995) show that the following iteration
+converges to the solution:
+
+``` math
+\delta_j^{(t+1)} = \delta_j^{(t)} + \log(s_j) - \log(\hat{s}_j^{(t)})
+```
+
+This can be written in vector form as:
+
+``` math
+\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
+```
+
+### 8.4 Implementation Details
+
+1.  **Initialization**: Start with initial guess $`\delta^{(0)}`$
+2.  **Prediction**: Compute predicted shares $`\hat{s}(\delta^{(t)})`$
+    using `mxl_predict_shares_internal`
+3.  **Update**: Apply the contraction:
+    $`\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})`$
+4.  **Convergence**: Check if
+    $`\max_j |\delta_j^{(t+1)} - \delta_j^{(t)}| < \text{tol}`$
+5.  **Normalization**: Subtract $`\delta_1`$ from all ASCs to maintain
+    identification
+
+*Code reference:
+[mxlogit.cpp:mxl_blp_contraction](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp)*
+
+------------------------------------------------------------------------
+
+## 9. Choice-Based Sampling and WESML Weighting
+
+### 9.1 Endogenous Stratified (Choice-Based) Sampling
+
+In *random* (exogenous) sampling each choice situation is drawn
+independently of its outcome. Under **choice-based** (endogenous
+stratified) sampling the strata are defined by the **chosen
+alternative** $`j_i`$, and situations are drawn with stratum-specific
+frequencies – for example, deliberately oversampling the few individuals
+who chose a rare alternative. Let
+
+``` math
+Q(j) = \text{population share of alternative } j, \qquad
+H(j) = \text{sample share of choosers of } j .
+```
+
+Maximum simulated likelihood applied naively to such a sample is
+**generally inconsistent for the population parameters**. (A known
+special case: in a pure multinomial logit with a full set of
+alternative-specific constants, choice-based sampling biases only the
+constants; in general – and for the mixed logit – both the slopes and
+the constants are affected.)
+
+### 9.2 The WESML Weighted Log-Likelihood
+
+Manski and Lerman (1977) restore consistency by weighting each
+situation’s contribution by the ratio of population to sample share of
+its chosen alternative,
+
+``` math
+w_i = \frac{Q(j_i)}{H(j_i)},
+```
+
+which yields the weighted simulated log-likelihood already defined in
+\$\$2.3,
+
+``` math
+\ell^{W}(\theta) = \sum_{i=1}^{N} w_i \log \bar{P}_{i j_i}(\theta).
+```
+
+The maximizer $`\hat{\theta}`$ is invariant to multiplying every $`w_i`$
+by a common positive constant (the objective is merely rescaled), so the
+weights may be normalized to mean 1 without changing the estimates.
+
+### 9.3 Robust (Sandwich) Variance: the $`w^2`$ Meat
+
+WESML is a weighted M-estimator solving
+$`\sum_i w_i\, s_i(\hat{\theta}) = 0`$, where
+$`s_i = \partial \log \bar{P}_{i j_i} / \partial\theta`$ is the
+per-situation score (\$\$3) and
+$`H_i = \partial^2 \log\bar{P}_{i j_i}/\partial\theta\,\partial\theta^\top`$
+its Hessian (\$\$4). Its robust (Huber–White) asymptotic variance is the
+**sandwich**
+
+``` math
+V = A^{-1} B A^{-1}, \qquad
+A = \sum_{i} w_i\,(-H_i), \qquad
+B = \sum_{i} w_i^{2}\, s_i s_i^{\top}.
+```
+
+The weight enters the **bread** $`A`$ linearly, but the **meat** $`B`$
+carries the weight **squared**: the contribution of situation $`i`$ to
+the estimating equation is $`w_i s_i`$, so the variance of that
+contribution involves
+$`(w_i s_i)(w_i s_i)^{\top} = w_i^{2}\, s_i s_i^{\top}`$.
+
+This is exactly why the two naive variances are wrong under weighting:
+
+- the inverse-Hessian $`A^{-1}`$ assumes the information-matrix equality
+  $`A = B`$, which **fails** once the $`w_i`$ are non-degenerate;
+- the ordinary BHHH/OPG $`\big(\sum_i w_i\, s_i s_i^{\top}\big)^{-1}`$
+  uses the weight to the *first* power, not the second.
+
+A consistency check: rescaling all weights by a constant $`c`$ sends
+$`A \to cA`$ and $`B \to c^{2} B`$, so
+$`V \to (cA)^{-1}(c^{2}B)(cA)^{-1} = A^{-1}BA^{-1}`$ – the sandwich is
+**invariant** to the weight scale, whereas $`A^{-1} \to c^{-1} A^{-1}`$
+is not.
+
+### 9.4 Scope: Robust vs. Design-Based Variance
+
+The estimator implemented here is the **robust weighted-M-estimator
+(Huber–White) variance**, whose meat
+$`B = \sum_i w_i^{2}\, s_i s_i^{\top}`$ is uncentered. This is the
+asymptotic variance under **variable-probability sampling** (each
+population unit sampled independently with a stratum-dependent
+probability). Under a **fixed-quota** design – a prescribed number drawn
+from each choice stratum, i.e. *standard stratified sampling* – the
+design-based variance centers the scores within strata and **may be
+smaller**; that stratum-centered (design-based) estimator is **out of
+scope** here. See Manski & McFadden (1981) for the design-based
+treatment and Cosslett (1981) for the asymptotically efficient
+conditional-maximum-likelihood alternative.
+
+### 9.5 Implementation
+
+No new C++ is required. The per-individual score accumulated inside
+`mxl_bhhh_parallel` is weight-free, so the two summed matrices are
+obtained from the existing exports evaluated at $`\hat{\theta}`$:
+
+| Matrix | Call |
+|----|----|
+| Bread $`A = \sum_i w_i(-H_i)`$ | `mxl_hessian_parallel(..., weights = w)` |
+| Meat $`B = \sum_i w_i^{2} s_i s_i^{\top}`$ | `mxl_bhhh_parallel(..., weights = w^2)` |
+
+and combined in R as $`V = A^{-1} B A^{-1}`$. The variable-scaling
+back-transform (\$$`1.5) and the Cholesky-to-`$\$ delta method (\$\$5.2)
+apply on top, exactly as for any stored `vcov`. User-facing entry
+points:
+[`wesml_weights()`](https://fpcordeiro.github.io/choicer/reference/wesml_weights.md)
+and
+[`sample_by_choice()`](https://fpcordeiro.github.io/choicer/reference/sample_by_choice.md)
+build the weights; `run_mxlogit(..., se_method = "sandwich")` estimates
+with the robust variance;
+[`wesml_vcov()`](https://fpcordeiro.github.io/choicer/reference/wesml_vcov.md)
+returns it post hoc.
+
+*Code reference: `compute_sandwich_vcov()` and `.sandwich_combine()` in
+[R/classes.R](https://fpcordeiro.github.io/choicer/R/classes.R);
+[`wesml_weights()`](https://fpcordeiro.github.io/choicer/reference/wesml_weights.md)
+/
+[`sample_by_choice()`](https://fpcordeiro.github.io/choicer/reference/sample_by_choice.md)
+in [R/sampling.R](https://fpcordeiro.github.io/choicer/R/sampling.R).*
+
+------------------------------------------------------------------------
+
+## 10. Willingness to Pay
+
+### 10.1 Fixed Coefficients
+
+When the price variable has a *fixed* coefficient $`\alpha = \beta_p`$
+(a column of $`X`$), the WTP for any fixed attribute $`k`$ is the usual
+marginal rate of substitution, with the same analytic delta-method SE as
+in the MNL case (§8 of the MNL document):
+
+``` math
+\mathrm{WTP}_k = -\frac{\beta_k}{\alpha},
+\qquad
+\nabla g = \begin{pmatrix} -1/\alpha \\ \beta_k/\alpha^2 \end{pmatrix},
+\qquad
+\widehat{\mathrm{SE}} = \sqrt{\nabla g^T \hat{V}_{(k,p)} \nabla g}
+```
+
+### 10.2 Random Coefficients
+
+For a random attribute coefficient $`\beta_k(\eta)`$ the WTP is itself a
+random variable $`-\beta_k(\eta)/\alpha`$, and a scalar summary must be
+chosen. The summaries reported follow the package’s parameterization
+(§1.3):
+
+**Normal RC with estimated mean** (`rc_mean = TRUE`, `rc_dist[k] = 0`):
+$`\beta_k = \mu_k + (L\eta)_k`$ has mean $`\mu_k`$, so the **mean WTP**
+is
+
+``` math
+\mathrm{WTP}_k = -\frac{\mu_k}{\alpha}
+```
+
+with the linear-ratio gradient of §10.1 applied to $`(\mu_k, \alpha)`$.
+
+**Shifted log-normal RC with estimated location** (`rc_mean = TRUE`,
+`rc_dist[k] = 1`): $`\beta_k = \exp(\mu_k) + \exp((L\eta)_k)`$. Since
+$`\beta_k`$ is monotone in the normal draw $`(L\eta)_k`$ and the median
+of $`\exp((L\eta)_k)`$ is $`\exp(0) = 1`$, the population **median** is
+$`\exp(\mu_k) + 1`$ and the **median WTP** is
+
+``` math
+\mathrm{WTP}_k^{\text{med}} = -\frac{\exp(\mu_k) + 1}{\alpha},
+\qquad
+\frac{\partial g}{\partial \mu_k} = -\frac{\exp(\mu_k)}{\alpha},
+\qquad
+\frac{\partial g}{\partial \alpha} = \frac{\exp(\mu_k) + 1}{\alpha^2}
+```
+
+The median is preferred to the mean,
+$`\exp(\mu_k) + \exp(\sigma_k^2/2)`$ with $`\sigma_k^2 = (LL^T)_{kk}`$,
+because the mean is highly sensitive to the estimated variance (a thin
+right tail dominates it).
+
+**Shifted log-normal RC without location** (`rc_mean = FALSE`,
+`rc_dist[k] = 1`): $`\beta_k = \exp((L\eta)_k)`$ has median exactly 1,
+so the median WTP is $`-1/\alpha`$ with
+$`\partial g / \partial \alpha = 1/\alpha^2`$ — uncertainty comes solely
+from $`\hat\alpha`$.
+
+**Normal RC without mean** (`rc_mean = FALSE`, `rc_dist[k] = 0`): the
+mean is 0 by construction; no WTP row is reported.
+
+### 10.3 Random Price Coefficients Are Rejected
+
+If the price coefficient itself is random, the WTP ratio
+$`-\beta_k/\alpha(\eta)`$ generally has **no finite moments**: a
+normally distributed $`\alpha`$ has positive density in any neighborhood
+of zero, so $`E|{-\beta_k/\alpha}| = \infty`$, and location summaries
+computed from the estimated parameters would be meaningless. The
+implementation refuses a random `price_var` and suggests either a fixed
+price coefficient or estimation in *WTP space* (reparameterizing utility
+as $`\alpha(p_{ij} + \mathrm{WTP}^T x_{ij})`$ so that WTPs are estimated
+directly; Train & Weeks 2005).
+
+*Code reference:
+[R/wtp.R](https://fpcordeiro.github.io/choicer/R/wtp.R)*
+
+------------------------------------------------------------------------
+
+## 11. Consumer Surplus and the Simulated Logsum
+
+### 11.1 Expected Logsum
+
+Conditional on a coefficient realization $`\beta(\eta)`$, the logsum is
+the MNL expression $`\log \sum_j \exp(V_{ij}(\eta))`$. The mixed logit
+logsum integrates over the mixing distribution:
+
+``` math
+\mathrm{logsum}_i = \mathbb{E}_\eta\left[\log \sum_{j \in C_i} \exp\big(V_{ij}(\eta)\big)\right]
+\;\approx\;
+\frac{1}{S} \sum_{s=1}^{S} \log \sum_{j \in C_i} \exp\big(V_{ij}^s\big)
+```
+
+simulated over the same deterministic Halton draws used in estimation
+(regenerated from the stored draw metadata), with the outside option
+contributing $`\exp(0)`$ in each draw’s sum when present, and the
+max-subtraction trick applied per draw.
+
+**Order of operations matters.** The log-sum-exp function is convex, so
+by Jensen’s inequality
+
+``` math
+\frac{1}{S}\sum_s \mathrm{lse}(V^s) \;\geq\; \mathrm{lse}\left(\frac{1}{S}\sum_s V^s\right),
+```
+
+with strict inequality for any nondegenerate $`\Sigma`$: taking the
+logsum of *draw-averaged* utilities (as returned by the prediction
+kernel) systematically understates the expected logsum. A dedicated C++
+kernel (`mxl_logsum`) therefore computes the per-draw logsum and
+averages across draws.
+
+### 11.2 Expected Consumer Surplus
+
+With a *fixed* price coefficient $`\alpha`$ (the marginal utility of
+income $`-\alpha`$ is then nonrandom):
+
+``` math
+\mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i}{-\alpha}
+```
+
+A random price coefficient is rejected for the same no-finite-moments
+reason as in §10.3 ($`1/(-\alpha(\eta))`$ has no finite expectation). As
+in the MNL case, the formula assumes no income effects, and CS levels
+inherit the ASC normalization — only differences across counterfactual
+scenarios are meaningful. The implementation reports point estimates for
+MXL (the delta-method SE of the mean CS is currently provided for MNL
+only); Krinsky–Robb resampling of $`\hat\theta`$ from its asymptotic
+distribution is the practical interval method.
+
+*Code reference:
+[R/surplus.R](https://fpcordeiro.github.io/choicer/R/surplus.R); kernel
+in
+[src/mxlogit.cpp](https://fpcordeiro.github.io/choicer/src/mxlogit.cpp)
+(`mxl_logsum`)*
+
+------------------------------------------------------------------------
+
+## 12. Goodness of Fit
+
+The measures are model-agnostic and identical to §10 of the MNL
+document, computed from the simulated log-likelihood and simulated
+choice probabilities:
+
+- **McFadden pseudo R²**: $`R^2 = 1 - \ell(\hat\theta)/\ell_0`$,
+  adjusted $`R^2_{\text{adj}} = 1 - (\ell(\hat\theta) - K)/\ell_0`$,
+  with $`K`$ counting all estimated parameters ($`\beta`$, $`\mu`$,
+  Cholesky block, ASCs).
+- **Equal-shares null** (default; exact for unbalanced choice sets and
+  weights):
+  $`\ell_0 = -\sum_i w_i \log(M_i + \mathbf{1}_{\text{outside}})`$.
+- **Market-shares null** (constants-only closed form):
+  $`\ell_0 = \sum_j N_j \log(s_j)`$, valid only for identical choice-set
+  composition and uniform weights. The constants-only model contains no
+  random coefficients, so the MNL closed form applies unchanged.
+- **Hit rate**: weighted share of choice situations whose observed
+  choice has the highest *simulated* probability
+  $`\bar{P}_{ij} = \frac{1}{S}\sum_s P_{ij}^s`$; with an outside option,
+  the kernel returns the simulated outside probability directly and the
+  outside good competes for the maximum.
+
+*Code reference:
+[R/gof.R](https://fpcordeiro.github.io/choicer/R/gof.R)*
+
+------------------------------------------------------------------------
+
+## References
+
+- Train, K. E. (2009). *Discrete Choice Methods with Simulation*.
+  Cambridge University Press.
+- Train, K., & Weeks, M. (2005). Discrete choice models in preference
+  space and willingness-to-pay space. In R. Scarpa & A. Alberini (Eds.),
+  *Applications of Simulation Methods in Environmental and Resource
+  Economics* (pp. 1-16). Springer.
+- McFadden, D., & Train, K. (2000). Mixed MNL models for discrete
+  response. *Journal of Applied Econometrics*, 15(5), 447-470.
+- Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in
+  market equilibrium. *Econometrica*, 63(4), 841-890.
+- Manski, C. F., & Lerman, S. R. (1977). The estimation of choice
+  probabilities from choice based samples. *Econometrica*, 45(8),
+  1977-1988.
+- Manski, C. F., & McFadden, D. (1981). Alternative estimators and
+  sample designs for discrete choice analysis. In *Structural Analysis
+  of Discrete Data with Econometric Applications*. MIT Press.
+- Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based
+  samples. *Econometrica*, 49(5), 1289-1316.
+- Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and
+  Panel Data* (2nd ed.), Section 13.8. MIT Press.

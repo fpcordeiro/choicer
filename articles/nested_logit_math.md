@@ -1,0 +1,1220 @@
+# The math behind choicer: nested logit
+
+This document provides a detailed mathematical description of the nested
+logit (NL) model as implemented in `src/nestlogit.cpp`.
+
+## Table of Contents
+
+1.  [Notation](#notation)
+2.  [Model Definition](#id_1-model-definition)
+3.  [Log-Likelihood Function](#id_2-log-likelihood-function)
+4.  [Gradient Computation](#id_3-gradient-computation)
+5.  [Hessian Computation](#id_4-hessian-computation)
+    - [4.1 Notation and Scope](#id_41-notation-and-scope)
+    - [4.2 V-Space Hessian Q_i](#id_42-v-space-hessian-q_i)
+    - [4.3 Beta-Beta Block](#id_43-beta-beta-block)
+    - [4.4 Beta-Delta and Delta-Delta
+      Blocks](#id_44-beta-delta-and-delta-delta-blocks)
+    - [4.5 Lambda-V Cross Derivative](#id_45-lambda-v-cross-derivative)
+    - [4.6 Lambda-Beta and Lambda-Delta
+      Blocks](#id_46-lambda-beta-and-lambda-delta-blocks)
+    - [4.7 Lambda-Lambda Block](#id_47-lambda-lambda-block)
+    - [4.8 Single-Pass
+      Implementation](#id_48-single-pass-implementation-and-auxiliary-accumulations)
+6.  [Implementation Details](#id_5-implementation-details)
+7.  [Post-Estimation Quantities](#id_6-post-estimation-quantities)
+
+------------------------------------------------------------------------
+
+## Notation
+
+| Symbol | Description |
+|----|----|
+| $`i = 1, \ldots, N`$ | Index for individuals (choice situations) |
+| $`j = 1, \ldots, J_i`$ | Index for inside alternatives available to individual $`i`$ |
+| $`j_i`$ | The alternative chosen by individual $`i`$ |
+| $`w_i`$ | Weight for individual $`i`$ |
+| $`X_{ij}`$ | Row vector of covariates for individual $`i`$ and alternative $`j`$ ($`1 \times K`$) |
+| $`\beta`$ | Coefficient vector ($`K \times 1`$) |
+| $`\delta_j`$ | Alternative-specific constant (ASC) for alternative $`j`$ |
+| $`V_{ij}`$ | Systematic (deterministic) utility |
+| $`B_k`$ | Set of alternatives belonging to nest $`k`$ |
+| $`k(j)`$ | The nest containing alternative $`j`$ |
+| $`\lambda_k`$ | Inclusive value (dissimilarity) coefficient for nest $`k`$ |
+| $`I_k`$ | Inclusive value for nest $`k`$ |
+| $`P(j \mid k)`$ | Probability of choosing $`j`$ conditional on choosing nest $`k`$ |
+| $`P_k`$ | Marginal probability of choosing nest $`k`$ |
+| $`P_{ij}`$ | Probability that individual $`i`$ chooses alternative $`j`$ |
+
+------------------------------------------------------------------------
+
+## 1. Model Definition
+
+### 1.1 Utility Specification
+
+The utility that individual $`i`$ derives from alternative $`j`$ is:
+
+``` math
+U_{ij} = V_{ij} + \varepsilon_{ij}
+```
+
+where the systematic utility is:
+
+``` math
+V_{ij} = X_{ij}\beta + \delta_j
+```
+
+The error term $`\varepsilon_{ij}`$ follows a Generalized Extreme Value
+(GEV) distribution that induces within-nest correlation.
+
+### 1.2 Nest Structure
+
+The $`J`$ inside alternatives are partitioned into $`K`$ mutually
+exclusive and exhaustive nests $`B_1, \ldots, B_K`$. An outside option
+(alternative 0) with $`V_{i0} = 0`$ may optionally be included, and it
+is always assigned its own singleton nest with $`\lambda_0 = 1`$.
+
+### 1.3 Inclusive Value Coefficients
+
+Each nest $`k`$ has a dissimilarity parameter $`\lambda_k > 0`$ that
+governs within-nest substitution:
+
+- $`\lambda_k = 1`$ corresponds to independent (MNL-like) alternatives
+  within the nest.
+- $`0 < \lambda_k < 1`$ indicates positive within-nest correlation (the
+  typical case).
+- $`\lambda_k > 1`$ is theoretically permissible but implies negative
+  correlation.
+
+**Singleton nests** (nests with exactly one alternative) have
+$`\lambda_k`$ fixed to 1 and are not estimated. Only non-singleton nests
+contribute $`\lambda`$ parameters to $`\theta`$.
+
+*Code reference:
+[nestlogit.cpp:61-104](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L61-L104)*
+
+### 1.4 Alternative-Specific Constants (ASCs)
+
+The ASC identification follows the same convention as MNL:
+
+- **Without outside option** (`include_outside_option = FALSE`): The
+  first inside alternative’s ASC is fixed to zero ($`\delta_1 = 0`$).
+  The parameter vector contains $`J-1`$ free ASC parameters.
+- **With outside option** (`include_outside_option = TRUE`): The outside
+  option serves as the reference with $`V_{i0} = 0`$. All $`J`$ inside
+  alternatives have free ASC parameters.
+
+*Code reference:
+[nestlogit.cpp:107-135](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L107-L135)*
+
+------------------------------------------------------------------------
+
+## 2. Log-Likelihood Function
+
+### 2.1 Probability Decomposition
+
+The nested logit choice probability decomposes as:
+
+``` math
+P_{ij} = P(j \mid k(j)) \cdot P_{k(j)}
+```
+
+The two components are derived from the GEV generating function.
+
+### 2.2 Inclusive Value
+
+The inclusive value for nest $`k`$ is the log-sum of scaled utilities
+within the nest:
+
+``` math
+I_k = \sum_{j \in B_k} \exp\!\left(\frac{V_{ij}}{\lambda_k}\right)
+```
+
+``` math
+\log I_k = \log\!\left(\sum_{j \in B_k} \exp\!\left(\frac{V_{ij}}{\lambda_k}\right)\right)
+```
+
+### 2.3 Conditional Choice Probability
+
+The probability of choosing alternative $`j`$ given that nest $`k(j)`$
+is chosen:
+
+``` math
+P(j \mid k) = \frac{\exp(V_{ij}/\lambda_k)}{I_k}
+```
+
+In log form:
+
+``` math
+\log P(j \mid k) = \frac{V_{ij}}{\lambda_k} - \log I_k
+```
+
+### 2.4 Nest (Marginal) Probability
+
+The probability of choosing nest $`k`$:
+
+``` math
+P_k = \frac{\exp(\lambda_k \log I_k)}{\sum_{l} \exp(\lambda_l \log I_l)}
+```
+
+If an outside option is included, its contribution enters the
+denominator as
+$`\exp(\lambda_0 \log I_0) = \exp(1 \cdot \log(\exp(0/1))) = \exp(0) = 1`$.
+
+In log form:
+
+``` math
+\log P_k = \lambda_k \log I_k - \log\!\left(\sum_l \exp(\lambda_l \log I_l)\right)
+```
+
+### 2.5 Joint Choice Probability
+
+Taking logs of the joint probability:
+
+``` math
+\log P_{ij} = \log P(j \mid k(j)) + \log P_{k(j)}
+```
+
+``` math
+\log P_{ij} = \frac{V_{ij}}{\lambda_{k(j)}} - \log I_{k(j)} + \lambda_{k(j)} \log I_{k(j)} - \log D_i
+```
+
+where $`D_i = \sum_l \exp(\lambda_l \log I_l)`$ (plus 1 if an outside
+option is present).
+
+*Code reference:
+[nestlogit.cpp:235-260](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L235-L260)*
+
+### 2.6 Log-Likelihood
+
+The log-likelihood is the weighted sum of log-probabilities of the
+observed choices:
+
+``` math
+\ell(\theta) = \sum_{i=1}^{N} w_i \log P_{ij_i}
+```
+
+where $`\theta = (\beta, \lambda, \delta)`$ and $`j_i`$ is the
+alternative chosen by individual $`i`$.
+
+*Code reference:
+[nestlogit.cpp:263-266](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L263-L266)*
+
+### 2.7 Log-Sum-Exp Trick for Numerical Stability
+
+Two log-sum-exp stabilizations are applied.
+
+**Within-nest inclusive value.** To compute $`\log I_k`$ without
+overflow, the implementation subtracts the maximum scaled utility in
+each nest:
+
+``` math
+\log I_k = V_{\max,k} + \log\!\left(\sum_{j \in B_k} \exp\!\left(\frac{V_{ij}}{\lambda_k} - V_{\max,k}\right)\right)
+```
+
+where $`V_{\max,k} = \max_{j \in B_k} V_{ij}/\lambda_k`$.
+
+**Across-nest denominator.** The denominator
+$`D_i = \sum_l \exp(\lambda_l \log I_l)`$ is similarly stabilized by
+subtracting $`\max_l \lambda_l \log I_l`$ before exponentiation.
+
+*Code reference:
+[nestlogit.cpp:190-230](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L190-L230)*
+
+------------------------------------------------------------------------
+
+## 3. Gradient Computation
+
+### 3.1 Gradient with Respect to $`V_{ia}`$ (Utility Scores)
+
+To derive the gradients with respect to $`\beta`$ and $`\delta`$, we
+first compute the derivative of the log-probability of the chosen
+alternative with respect to the systematic utility $`V_{ia}`$ of each
+alternative $`a`$.
+
+Let $`k_i`$ denote the chosen nest (i.e., $`k(j_i)`$). The
+log-probability of the chosen alternative is:
+
+``` math
+\log P_{ij_i} = \log P(j_i \mid k_i) + \log P_{k_i}
+```
+
+**Derivative of the conditional term.** Since
+$`\log P(j \mid k) = V_{ij}/\lambda_k - \log I_k`$ and
+$`\frac{\partial \log I_k}{\partial V_{ia}} = \frac{1}{\lambda_k} \mathbf{1}_{a \in B_k} P(a \mid k)`$:
+
+``` math
+\frac{\partial \log P(j_i \mid k_i)}{\partial V_{ia}} = \frac{1}{\lambda_{k_i}}\left(\mathbf{1}_{a = j_i} - \mathbf{1}_{a \in B_{k_i}} P(a \mid k_i)\right)
+```
+
+**Derivative of the nest term.** Using
+$`\frac{\partial \log D_i}{\partial V_{ia}} = P_{k(a)} P(a \mid k(a)) = P_{ia}`$:
+
+``` math
+\frac{\partial \log P_{k_i}}{\partial V_{ia}} = \mathbf{1}_{a \in B_{k_i}} P(a \mid k_i) - P_{ia}
+```
+
+**Combined.** Adding both terms:
+
+``` math
+\frac{\partial \log P_{ij_i}}{\partial V_{ia}} = \frac{\mathbf{1}_{a = j_i}}{\lambda_{k_i}} + \left(1 - \frac{1}{\lambda_{k_i}}\right)\mathbf{1}_{a \in B_{k_i}} P(a \mid k_i) - P_{ia}
+```
+
+This is implemented as the vector `grad_vec` of length $`J_i`$:
+
+``` math
+\text{grad\_vec}[a] = -P_{ia} + \left(1 - \frac{1}{\lambda_{k_i}}\right) \mathbf{1}_{a \in B_{k_i}} P(a \mid k_i) + \frac{1}{\lambda_{k_i}} \mathbf{1}_{a = j_i}
+```
+
+*Code reference:
+[nestlogit.cpp:284-295](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L284-L295)*
+
+### 3.2 Gradient with Respect to $`\beta`$
+
+Since $`\frac{\partial V_{ij}}{\partial \beta} = X_{ij}^T`$, the
+contribution from individual $`i`$ is:
+
+``` math
+\frac{\partial \ell_i}{\partial \beta} = w_i \sum_{j=1}^{J_i} \text{grad\_vec}[j] \cdot X_{ij}^T = w_i \, X_i^T \, \text{grad\_vec}
+```
+
+The full gradient is accumulated as a single BLAS matrix-vector product,
+identically to MNL.
+
+*Code reference:
+[nestlogit.cpp:297-298](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L297-L298)*
+
+### 3.3 Gradient with Respect to $`\delta`$
+
+Since
+$`\frac{\partial V_{ij}}{\partial \delta_a} = \mathbf{1}_{j = a}`$, the
+gradient entries are the corresponding elements of `grad_vec`, scattered
+to the appropriate positions in $`\theta`$:
+
+``` math
+\frac{\partial \ell_i}{\partial \delta_a} = w_i \cdot \text{grad\_vec}[a]
+```
+
+The same free-ASC convention as MNL applies (first inside alternative’s
+ASC excluded when no outside option).
+
+*Code reference:
+[nestlogit.cpp:300-312](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L300-L312)*
+
+### 3.4 Gradient with Respect to $`\lambda_k`$
+
+Define the within-nest probability-weighted mean utility:
+
+``` math
+\bar{V}_k = \sum_{j \in B_k} P(j \mid k) \cdot V_{ij}
+```
+
+**For the chosen nest ($`k = k_i`$).** The log-probability decomposes
+as:
+
+``` math
+\log P_{ij_i} = \underbrace{\frac{V_{ij_i}}{\lambda_{k_i}} - \log I_{k_i}}_{\log P(j_i \mid k_i)} + \underbrace{\lambda_{k_i} \log I_{k_i} - \log D_i}_{\log P_{k_i}}
+```
+
+Using
+$`\frac{\partial \log I_k}{\partial \lambda_k} = -\bar{V}_k / \lambda_k^2`$:
+
+``` math
+\frac{\partial \log P(j_i \mid k_i)}{\partial \lambda_{k_i}} = \frac{\bar{V}_{k_i} - V_{ij_i}}{\lambda_{k_i}^2}
+```
+
+``` math
+\frac{\partial \log P_{k_i}}{\partial \lambda_{k_i}} = (1 - P_{k_i})\!\left(\log I_{k_i} - \frac{\bar{V}_{k_i}}{\lambda_{k_i}}\right)
+```
+
+Combining:
+
+``` math
+\frac{\partial \ell_i}{\partial \lambda_{k_i}} = w_i \left[(1 - P_{k_i})\!\left(\log I_{k_i} - \frac{\bar{V}_{k_i}}{\lambda_{k_i}}\right) + \frac{\bar{V}_{k_i} - V_{ij_i}}{\lambda_{k_i}^2}\right]
+```
+
+**For a non-chosen nest ($`k \neq k_i`$).** The conditional probability
+$`P(j_i \mid k_i)`$ is independent of $`\lambda_k`$, so only the nest
+probability contributes:
+
+``` math
+\frac{\partial \log P_{k_i}}{\partial \lambda_k} = -P_k \!\left(\log I_k - \frac{\bar{V}_k}{\lambda_k}\right)
+```
+
+``` math
+\frac{\partial \ell_i}{\partial \lambda_k} = -w_i \, P_k \!\left(\log I_k - \frac{\bar{V}_k}{\lambda_k}\right)
+```
+
+The common factor $`\log I_k - \bar{V}_k / \lambda_k`$ is labeled
+`term_in_brackets` in the code.
+
+*Code reference:
+[nestlogit.cpp:314-342](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L314-L342)*
+
+------------------------------------------------------------------------
+
+## 4. Hessian Computation
+
+**This section documents the Hessian of the *negated* log-likelihood.**
+The function `nl_loglik_hessian_parallel` returns
+$`H(\theta) = -\nabla^2 \ell(\theta)`$, the same quantity that
+`invert_hessian()` expects (positive semi-definite at the MLE). The sign
+convention matches the numeric oracle `nl_loglik_numeric_hessian` (which
+differences the negated gradient), so both functions are interchangeable
+as inputs to `invert_hessian()`.
+
+Two implementations are available:
+
+- `nl_loglik_hessian_parallel` — **default** (`se_method = "hessian"`):
+  single-pass analytical Hessian derived below. Validated against the
+  numeric oracle at max absolute difference
+  $`\approx 2.6 \times 10^{-8}`$ across all test fixtures (Fixtures
+  A–I), well below the $`10^{-6}`$ equivalence gate. At extreme
+  $`\lambda_k < 0.1`$, the oracle’s own finite-difference accuracy
+  degrades; the analytical Hessian remains finite and symmetric
+  throughout.
+- `nl_loglik_numeric_hessian` — retained oracle
+  (`se_method = "numeric"`): central finite differences on the
+  analytical gradient with step
+  $`\epsilon_i = 10^{-6} \cdot \max(|\theta_i|, 1)`$. Use for diagnostic
+  comparison or whenever a direct verification of the analytical path is
+  required.
+
+------------------------------------------------------------------------
+
+### 4.1 Notation and Scope
+
+All notation follows §§0–3. Subscripts $`i`$ (individual), $`j/a/b`$
+(alternative local indices within $`i`$’s choice set, 0-based), and
+$`k`$/$`l`$ (nest indices, 0-based) are used throughout. Additional
+symbols specific to this section:
+
+| Symbol | Description |
+|----|----|
+| $`k_i`$ | 0-based index of the chosen nest ($`-1`$ when outside option is chosen) |
+| $`c_a`$ | 0-based local index of the chosen inside alternative |
+| $`\bar{V}_k`$ | $`\sum_{j \in B_k} P(j \mid k) \cdot V_{ij}`$ — $`P(\cdot \mid k)`$-weighted mean utility in nest $`k`$ |
+| $`T_k`$ | $`\log I_k - \bar{V}_k / \lambda_k`$ — the “bracket term” from §3.4 |
+| $`\widetilde{V}^2_k`$ | $`\sum_{j \in B_k} P(j \mid k) \cdot V_{ij}^2`$ — conditional second moment |
+| $`\mathrm{VarV}_k`$ | $`\widetilde{V}^2_k - \bar{V}_k^2`$ — $`P(\cdot\mid k)`$-weighted variance of $`V`$ in nest $`k`$ |
+| $`\mathbf{m}_k`$ | $`\sum_{j \in B_k} P_{ij} \cdot \mathbf{x}_{ij}`$ — $`P_{ij}`$-weighted mean of $`X`$ in nest $`k`$ ($`K`$-vector) |
+| $`\mathbf{c}_k`$ | $`\sum_{j \in B_k} P(j \mid k) \cdot \mathbf{x}_{ij}`$ — $`P(\cdot\mid k)`$-weighted mean of $`X`$ in nest $`k`$ ($`K`$-vector) |
+| $`\mathbf{S}^{(2)}_k`$ | $`\sum_{j \in B_k} P_{ij} \cdot \mathbf{x}_{ij} \mathbf{x}_{ij}^T`$ — $`P_{ij}`$-weighted second moment of $`X`$ ($`K \times K`$) |
+| $`\mathbf{Q}_k`$ | $`\sum_{j \in B_k} P(j \mid k) \cdot \mathbf{x}_{ij} \mathbf{x}_{ij}^T`$ — $`P(\cdot\mid k)`$-weighted second moment of $`X`$ ($`K \times K`$) |
+| $`\bar{\mathbf{x}}_i`$ | $`\sum_j P_{ij} \cdot \mathbf{x}_{ij}`$ — $`P_{ij}`$-weighted global mean of $`X`$ for individual $`i`$ ($`K`$-vector) |
+
+The negated per-individual log-likelihood contribution is
+$`f_i = -w_i \log P_{i,c_a}`$. The full Hessian is the sum
+$`H = \sum_{i=1}^N H^{(i)}`$ where
+$`H^{(i)} = -w_i \nabla^2 \log P_{i,c_a}`$.
+
+------------------------------------------------------------------------
+
+### 4.2 V-Space Hessian $`Q_i`$
+
+Because $`V_{ij} = \mathbf{x}_{ij} \beta + \delta_j`$ is linear in
+$`\beta`$ and $`\delta`$, the second derivatives with respect to these
+parameters factor through the $`m_i \times m_i`$ V-space Hessian.
+Define:
+
+``` math
+Q_i[a, b] = -\frac{\partial^2 \log P_{i,c_a}}{\partial V_{ia} \, \partial V_{ib}}
+```
+
+Starting from the gradient formula (§3.1):
+
+``` math
+g[a] = \frac{\partial \log P_{i,c_a}}{\partial V_{ia}}
+= -P_{ia} + \left(1 - \frac{1}{\lambda_{k_i}}\right) \mathbf{1}_{a \in B_{k_i}} P(a \mid k_i) + \frac{\mathbf{1}_{a = c_a}}{\lambda_{k_i}}
+```
+
+differentiating with respect to $`V_{ib}`$ yields:
+
+``` math
+\frac{\partial g[a]}{\partial V_{ib}} = -\frac{\partial P_{ia}}{\partial V_{ib}} + \left(1 - \frac{1}{\lambda_{k_i}}\right) \mathbf{1}_{a \in B_{k_i}} \frac{\partial P(a \mid k_i)}{\partial V_{ib}}
+```
+
+**Partial derivative of $`P_{ia}`$ with respect to $`V_{ib}`$.** Write
+$`k_a = k(a)`$, $`k_b = k(b)`$. Expanding
+$`P_{ia} = P(a \mid k_a) \cdot P_{k_a}`$ via the product rule and using
+$`\partial P_{k_a}/\partial V_{ib} = P_{k_a}[\mathbf{1}_{k_b=k_a} P(b\mid k_a) - P_{ib}]`$:
+
+``` math
+\frac{\partial P_{ia}}{\partial V_{ib}}
+= P_{ia} \left\{
+  \mathbf{1}_{k_a = k_b} \cdot P(b \mid k_a) \left[1 + \frac{\mathbf{1}_{a=b} - P(a \mid k_a)}{\lambda_{k_a}}\right]
+  - P_{ib}
+\right\}
+```
+
+**Partial derivative of $`P(a \mid k_i)`$ with respect to $`V_{ib}`$.**
+Non-zero only when $`a \in B_{k_i}`$:
+
+``` math
+\frac{\partial P(a \mid k_i)}{\partial V_{ib}}
+= \frac{1}{\lambda_{k_i}} \mathbf{1}_{k_b = k_i} P(b \mid k_i) \left(\mathbf{1}_{a=b} - P(a \mid k_i)\right)
+```
+
+**Combined V-space Hessian (correct formula).** Negating and combining:
+
+``` math
+\boxed{
+Q_i[a, b]
+= P_{ia} \left\{
+  \mathbf{1}_{k_a = k_b} P(b \mid k_a) \left[1 + \frac{\mathbf{1}_{a=b} - P(a \mid k_a)}{\lambda_{k_a}}\right]
+  - P_{ib}
+\right\}
+- \underbrace{\mathbf{1}_{k_a = k_i} \mathbf{1}_{k_b = k_i} \cdot \frac{1 - 1/\lambda_{k_i}}{\lambda_{k_i}} \cdot P(b \mid k_i)\bigl(\mathbf{1}_{a=b} - P(a \mid k_i)\bigr)}_{C_{a,b}: \text{ chosen-nest correction}}
+}
+```
+
+The chosen-nest correction $`C_{a,b}`$ is nonzero only when both $`a`$
+and $`b`$ are in the chosen nest $`k_i`$ (and $`k_i \geq 0`$). It arises
+from the $`(1 - 1/\lambda_{k_i})`$ factor in $`g[a]`$ coupling the
+conditional probability gradient back to $`V_{ib}`$.
+
+**Structural notes and MNL limit:**
+
+- For $`k_a \neq k_b`$: $`Q_i[a,b] = -P_{ia} P_{ib}`$ (cross-nest
+  entries equal the product of marginal probabilities, the familiar
+  multinomial variance term).
+- **MNL limit** ($`\lambda_k = 1`$ for all $`k`$):
+  $`Q_i[a,b] = P_{ia}(\mathbf{1}_{a=b} - P_{ib})`$, the standard
+  multinomial Hessian of $`-\log P_{c_a}`$. Own diagonal
+  $`= P_{ia}(1-P_{ia})`$; off-diagonal $`= -P_{ia}P_{ib}`$. The
+  chosen-nest correction vanishes because $`1 - 1/\lambda_{k_i} = 0`$.
+- When the outside option is chosen ($`k_i = -1`$) or when
+  $`\lambda_{k_i} = 1`$ (singleton chosen nest), $`C_{a,b} = 0`$ for all
+  pairs.
+
+*Implementation note:* The implementation materializes $`Q_i`$ as an
+explicit $`m_i \times m_i`$ matrix, which is efficient for typical
+choice set sizes ($`J \leq 20`$). The outer-product decomposition used
+for the beta-beta block (§4.3) avoids forming this matrix explicitly for
+the $`K \times K`$ accumulation.
+
+*Code reference:
+[nestlogit.cpp:563–601](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L563-L601)*
+
+------------------------------------------------------------------------
+
+### 4.3 Beta-Beta Block
+
+Since $`\partial V_{ij}/\partial \beta_r = x_{ij,r}`$:
+
+``` math
+H^{(i)}_{\beta_r, \beta_s} = w_i \sum_{a} \sum_{b} x_{ia,r} \cdot Q_i[a,b] \cdot x_{ib,s}
+= w_i \, \mathbf{X}_i^T \mathbf{Q}_i \mathbf{X}_i
+```
+
+The matrix product is decomposed into three terms that can be
+accumulated in a single nest-level pass, exploiting the outer-product
+structure of $`Q_i`$:
+
+**Term A — universal outer product (subtracted):**
+``` math
+-w_i \, \bar{\mathbf{x}}_i \, \bar{\mathbf{x}}_i^T
+```
+
+This arises from the $`-P_{ia} P_{ib}`$ term universal to all pairs:
+$`\sum_{a,b} x_{ia,r} P_{ia} P_{ib} x_{ib,s} = \bar{x}_{i,r} \bar{x}_{i,s}`$.
+
+**Term B — per-nest within-nest correction (added), summed over all
+nests $`k`$:**
+``` math
++w_i \sum_{k} \left[ \left(1 - \frac{1}{\lambda_k}\right) \mathbf{m}_k \mathbf{c}_k^T + \frac{1}{\lambda_k} \mathbf{S}^{(2)}_k \right]
+```
+
+For singleton nests ($`\lambda_k = 1`$): $`(1 - 1/\lambda_k) = 0`$, so
+the contribution reduces to $`\mathbf{S}^{(2)}_k`$.
+
+**Term C — chosen-nest correction (subtracted), only when
+$`k_i \geq 0`$:**
+``` math
+-w_i \cdot \frac{1 - 1/\lambda_{k_i}}{\lambda_{k_i}} \left( \mathbf{Q}_{k_i} - \mathbf{c}_{k_i} \mathbf{c}_{k_i}^T \right)
+```
+
+Here $`\mathbf{Q}_{k_i} - \mathbf{c}_{k_i}\mathbf{c}_{k_i}^T`$ is the
+$`P(\cdot\mid k_i)`$-weighted covariance of $`X`$ within the chosen
+nest.
+
+**Full beta-beta block (Hessian of the negated log-likelihood; positive
+semi-definite at the MLE):**
+``` math
+H^{(i)}_{\beta\beta}
+= w_i \left[
+  -\bar{\mathbf{x}}_i \bar{\mathbf{x}}_i^T
+  + \sum_k \!\left(\!\left(1-\frac{1}{\lambda_k}\right)\mathbf{m}_k \mathbf{c}_k^T + \frac{1}{\lambda_k}\mathbf{S}^{(2)}_k\right)
+  - \mathbf{1}_{k_i \geq 0} \cdot \frac{1-1/\lambda_{k_i}}{\lambda_{k_i}} \!\left(\mathbf{Q}_{k_i} - \mathbf{c}_{k_i}\mathbf{c}_{k_i}^T\right)
+\right]
+```
+
+**MNL limit check.** At $`\lambda_k = 1`$ for all $`k`$: Term B
+$`= \sum_k \mathbf{S}^{(2)}_k = \mathbf{X}_i^T \mathrm{diag}(P_i) \mathbf{X}_i`$;
+Term C vanishes; the formula yields the standard MNL expression
+$`w_i(\mathbf{X}_i^T \mathrm{diag}(P_i) \mathbf{X}_i - \bar{\mathbf{x}}_i \bar{\mathbf{x}}_i^T)`$.
+
+*Code reference:
+[nestlogit.cpp:651–682](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L651-L682)*
+
+------------------------------------------------------------------------
+
+### 4.4 Beta-Delta and Delta-Delta Blocks
+
+Since $`\partial V_{ij}/\partial \delta_a = \mathbf{1}_{j=a}`$, these
+blocks are direct projections of $`Q_i`$ onto free-ASC alternatives.
+
+**Delta-delta block** (for free-ASC alternatives $`a'`$ and $`b'`$):
+``` math
+H^{(i)}_{\delta_{a'}, \delta_{b'}} = w_i \cdot Q_i[a', b']
+```
+
+**Beta-delta block** (for covariate index $`r`$ and free-ASC alternative
+$`b'`$):
+``` math
+H^{(i)}_{\beta_r, \delta_{b'}} = w_i \sum_{a} x_{ia,r} \cdot Q_i[a, b']
+= w_i \, \bigl(\mathbf{X}_i^T \mathbf{Q}_i[:, b']\bigr)_r
+```
+
+Both blocks reuse the same $`Q_i`$ matrix computed in §4.2. No
+additional auxiliary quantities are required.
+
+**ASC normalization.** Without an outside option, the first inside
+alternative’s ASC is fixed to zero: free-ASC alternatives satisfy
+`alt_idx0[a] > 0`, mapped to theta positions
+`delta_start_idx + alt_idx0[a] - 1`.
+
+*Code reference:
+[nestlogit.cpp:604–648](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L604-L648)*
+
+------------------------------------------------------------------------
+
+### 4.5 Lambda-V Cross Derivative
+
+The lambda parameters enter nonlinearly through both $`\log I_k`$ and
+the nest probabilities, so cross-derivatives between $`\lambda_k`$ and
+$`\beta/\delta`$ must be computed via the chain rule. Define:
+
+``` math
+d^{(k)}_b = \frac{\partial g_{\lambda_k}}{\partial V_{ib}}, \qquad
+g_{\lambda_k} = \frac{\partial \log P_{i,c_a}}{\partial \lambda_k}
+```
+
+Key intermediates (derived from §3.4):
+
+``` math
+\frac{\partial T_k}{\partial V_{ib}} = -\mathbf{1}_{k(b)=k} P(b \mid k) \frac{V_{ib} - \bar{V}_k}{\lambda_k^2}, \qquad
+\frac{\partial P_k}{\partial V_{ib}} = P_k \bigl[\mathbf{1}_{k(b)=k} P(b \mid k) - P_{ib}\bigr]
+```
+
+**For non-chosen nests ($`k \neq k_i`$), using
+$`g_{\lambda_k} = -P_k T_k`$:**
+``` math
+d^{(k)}_b = P_k T_k P_{ib}
++ \mathbf{1}_{k(b)=k} P_k P(b \mid k) \left[\frac{V_{ib} - \bar{V}_k}{\lambda_k^2} - T_k\right]
+```
+
+The first term is a universal “shift” proportional to $`P_{ib}`$; the
+second is the within-nest correction active only for $`b \in B_k`$.
+
+**For the chosen nest ($`k = k_i`$, only when $`k_i \geq 0`$), using
+$`g_{\lambda_{k_i}} = (1-P_{k_i})T_{k_i} + (\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^2`$:**
+``` math
+d^{(k_i)}_b = P_{k_i} T_{k_i} P_{ib}
+- \frac{\mathbf{1}_{b = c_a}}{\lambda_{k_i}^2}
++ \mathbf{1}_{k(b)=k_i} P(b \mid k_i) \left[
+  -P_{k_i} T_{k_i}
+  + \frac{V_{ib} - \bar{V}_{k_i}}{\lambda_{k_i}^2} \left(P_{k_i} - 1 + \frac{1}{\lambda_{k_i}}\right)
+  + \frac{1}{\lambda_{k_i}^2}
+\right]
+```
+
+The extra $`-1/\lambda_{k_i}^2`$ term for $`b = c_a`$ arises from
+differentiating the $`(\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^2`$
+component of the chosen-nest gradient.
+
+------------------------------------------------------------------------
+
+### 4.6 Lambda-Beta and Lambda-Delta Blocks
+
+Using $`\partial V_{ib}/\partial \beta_r = x_{ib,r}`$ and
+$`\partial V_{ib}/\partial \delta_{b'} = \mathbf{1}_{b=b'}`$:
+
+``` math
+H^{(i)}_{\lambda_k, \beta_r} = -w_i \sum_{b} d^{(k)}_b \cdot x_{ib,r}
+= -w_i \, \bigl(\mathbf{X}_i^T \mathbf{d}^{(k)}\bigr)_r
+```
+
+``` math
+H^{(i)}_{\lambda_k, \delta_{b'}} = -w_i \, d^{(k)}_{b'}
+```
+
+Both are filled symmetrically. Singleton nests (theta index $`= -1`$)
+contribute no rows or columns to these blocks.
+
+*Code reference:
+[nestlogit.cpp:684–750](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L684-L750)*
+
+------------------------------------------------------------------------
+
+### 4.7 Lambda-Lambda Block
+
+Differentiating $`g_{\lambda_k}`$ with respect to $`\lambda_l`$, using:
+``` math
+\frac{\partial T_k}{\partial \lambda_k} = \frac{\mathrm{VarV}_k}{\lambda_k^3} \geq 0, \qquad
+\frac{\partial P_k}{\partial \lambda_k} = P_k (1 - P_k) T_k, \qquad
+\frac{\partial P_k}{\partial \lambda_l} = -P_k P_l T_l \;(l \neq k), \qquad
+\frac{\partial T_k}{\partial \lambda_l} = 0 \;(l \neq k)
+```
+
+**Off-diagonal $`k \neq l`$ (any combination of chosen/non-chosen
+nests):**
+``` math
+H^{(i)}_{\lambda_k, \lambda_l} = -w_i \, P_k P_l T_k T_l
+```
+
+This formula holds uniformly regardless of whether $`k`$ or $`l`$ equals
+$`k_i`$. It can be negative (whenever $`T_k`$ and $`T_l`$ share the same
+sign), reflecting correlation between nest-level inclusive values.
+
+**Diagonal $`k \neq k_i`$ (non-chosen nest):**
+``` math
+H^{(i)}_{\lambda_k, \lambda_k} = w_i \left[ P_k (1 - P_k) T_k^2 + \frac{P_k \, \mathrm{VarV}_k}{\lambda_k^3} \right]
+```
+
+The first term is a Fisher-information-type squared-gradient term; the
+second is positive and captures curvature from $`T_k`$’s dependence on
+$`\lambda_k`$ through the within-nest utility variance.
+
+**Diagonal $`k = k_i`$ (chosen nest, only when $`k_i \geq 0`$):**
+``` math
+H^{(i)}_{\lambda_{k_i}, \lambda_{k_i}} = w_i \left[
+  P_{k_i}(1 - P_{k_i}) T_{k_i}^2
+  - \frac{(1 - P_{k_i}) \mathrm{VarV}_{k_i}}{\lambda_{k_i}^3}
+  + \frac{\mathrm{VarV}_{k_i}}{\lambda_{k_i}^4}
+  + \frac{2(\bar{V}_{k_i} - V_{c_a})}{\lambda_{k_i}^3}
+\right]
+```
+
+The chosen-nest diagonal differs from the non-chosen formula because the
+$`(\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^2`$ term in
+$`g_{\lambda_{k_i}}`$ contributes
+$`-\mathrm{VarV}_{k_i}/\lambda_{k_i}^4 - 2(\bar{V}_{k_i} - V_{c_a})/\lambda_{k_i}^3`$
+when differentiated. Since the chosen alternative tends to have
+above-average utility within its nest ($`V_{c_a} \geq \bar{V}_{k_i}`$ in
+expectation), the last term is typically negative, making the
+chosen-nest diagonal somewhat smaller than the non-chosen counterpart.
+
+When the outside option is chosen ($`k_i = -1`$), all lambda diagonals
+use the non-chosen formula.
+
+*Code reference:
+[nestlogit.cpp:755–791](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L755-L791)*
+
+------------------------------------------------------------------------
+
+### 4.8 Single-Pass Implementation and Auxiliary Accumulations
+
+All six blocks are accumulated in a **single parallel pass** over
+individuals. The per-nest auxiliary quantities below are accumulated in
+an inner loop over alternatives at $`O(m_i)`$ cost before any block is
+computed.
+
+**Per-nest scalars** (zero-initialized per individual, indexed by nest
+$`k`$):
+
+| Quantity | Formula | Blocks that use it |
+|----|----|----|
+| $`\bar{V}_k`$ | $`\sum_{j \in B_k} P(j\mid k) V_j`$ | $`T_k`$, lambda-lambda, lambda-V cross |
+| $`\widetilde{V}^2_k`$ | $`\sum_{j \in B_k} P(j\mid k) V_j^2`$ | $`\mathrm{VarV}_k`$ for lambda-lambda diagonal |
+| $`T_k`$ | $`\log I_k - \bar{V}_k/\lambda_k`$ | lambda-lambda (all entries), lambda-V cross |
+| $`\mathrm{VarV}_k`$ | $`\widetilde{V}^2_k - \bar{V}_k^2`$ | lambda-lambda diagonal |
+
+**Per-nest K-vectors:**
+
+| Quantity | Formula | Blocks that use it |
+|----|----|----|
+| $`\mathbf{m}_k`$ | $`\sum_{j \in B_k} P_{ij} \mathbf{x}_j`$ | beta-beta Term B |
+| $`\mathbf{c}_k`$ | $`\sum_{j \in B_k} P(j\mid k) \mathbf{x}_j`$ | beta-beta Terms B and C |
+
+**Per-nest $`K \times K`$ matrices:**
+
+| Quantity | Formula | Blocks that use it |
+|----|----|----|
+| $`\mathbf{S}^{(2)}_k`$ | $`\sum_{j \in B_k} P_{ij} \mathbf{x}_j \mathbf{x}_j^T`$ | beta-beta Term B |
+| $`\mathbf{Q}_k`$ | $`\sum_{j \in B_k} P(j\mid k) \mathbf{x}_j \mathbf{x}_j^T`$ | beta-beta Term C (chosen nest $`k_i`$ only) |
+
+**Global per-individual:**
+$`\bar{\mathbf{x}}_i = \sum_j P_{ij} \mathbf{x}_j = \sum_k \mathbf{m}_k`$
+(beta-beta Term A).
+
+**OpenMP structure.** The outer loop over individuals is parallelized
+with dynamic scheduling. Each thread maintains a thread-local
+$`P \times P`$ accumulator `local_H`, merged into `global_H` via
+`#pragma omp critical` after the individual loop. The
+nest-to-theta-index map is copied thread-privately to avoid false
+sharing.
+
+**Symmetrization and sanitization.** After the parallel loop:
+$`H \leftarrow (H + H^T)/2`$ enforces exact symmetry; any remaining
+non-finite entries are zeroed.
+
+**Singleton-nest handling.** Singleton nests ($`\lambda_k = 1`$, theta
+index $`= -1`$) contribute nothing to the lambda-lambda, lambda-beta, or
+lambda-delta blocks. Their beta-beta contribution via Term B simplifies
+to $`\mathbf{S}^{(2)}_k`$ (since $`1 - 1/\lambda_k = 0`$).
+
+**Per-individual weights.** Every contribution is multiplied by $`w_i`$
+(WESML weight; equals 1 for unweighted data).
+
+*Code reference:
+[nestlogit.cpp:404–810](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L404-L810)*
+
+------------------------------------------------------------------------
+
+## 5. Implementation Details
+
+### 5.1 Parameter Vector Structure
+
+The full parameter vector $`\theta`$ is organized as:
+
+| Block | Indices | Length | Description |
+|----|----|----|----|
+| $`\beta`$ | $`[0, K)`$ | $`K`$ | Coefficients for design matrix $`X`$ |
+| $`\lambda`$ | $`[K, K + K_\lambda)`$ | $`K_\lambda`$ | Non-singleton nest dissimilarity parameters |
+| $`\delta`$ | $`[K + K_\lambda, K + K_\lambda + J_{\text{asc}})`$ | $`J-1`$ or $`J`$ | Alternative-specific constants |
+
+where $`K_\lambda`$ is the number of non-singleton nests and
+$`J_{\text{asc}} = J - 1`$ without outside option or $`J`$ with outside
+option.
+
+*Code reference:
+[nestlogit.cpp:57-135](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L57-L135)*
+
+### 5.2 Singleton Nest Handling
+
+At startup, the implementation identifies which nests are singletons
+(contain exactly one alternative). These nests: - Have their $`\lambda`$
+fixed to 1 (no contribution to the upper-level logit denominator beyond
+their single utility term). - Are excluded from the estimated parameter
+vector. - Are tracked via `nest_k_to_theta_idx`, an integer vector of
+length $`K`$ where entry $`k`$ holds the corresponding index in
+$`\theta`$ for non-singleton nests and $`-1`$ for singletons.
+
+This ensures that the NL model degenerates gracefully to MNL on a
+per-nest basis when nests are singletons.
+
+*Code reference:
+[nestlogit.cpp:61-104](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L61-L104)*
+
+### 5.3 Data Organization
+
+- **Design matrix $`X`$**: Stacked matrix of dimension
+  $`(\sum_i M_i) \times K`$, where $`M_i`$ is the number of inside
+  alternatives for individual $`i`$.
+- **`alt_idx`**: 1-based indices mapping rows of $`X`$ to global
+  alternative IDs.
+- **`nest_idx`**: 1-based nest assignment of length $`J`$ (number of
+  unique inside alternatives), not length $`\sum M_i`$. Accessed via
+  `nest_idx.elem(alt_idx0_i)` to handle varying choice sets.
+- **`choice_idx`**: 1-based index of the chosen inside alternative; 0
+  for outside option.
+- **Prefix sums $`S`$**: Used for efficient slicing into the stacked
+  data: $`S_i = \sum_{j < i} M_j`$.
+
+*Code reference:
+[nestlogit.cpp:137-146](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L137-L146)*
+
+### 5.4 Base Utility Pre-computation
+
+Prior to the parallel loop, all systematic utilities
+$`V_{ij} = X_{ij}\beta + \delta_j`$ are computed in a single pass:
+
+    base_util = X * beta                 // single BLAS dgemm
+    if use_asc: base_util += delta[alt_idx0]
+
+This avoids redundant matrix-vector products inside the per-individual
+loop.
+
+*Code reference:
+[nestlogit.cpp:144-146](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L144-L146)*
+
+### 5.5 OpenMP Parallelization
+
+The implementation parallelizes over individuals using OpenMP: - Each
+thread maintains local accumulators for log-likelihood and gradient. -
+`nest_k_to_theta_idx` is copied thread-privately to avoid false
+sharing. - Thread results are combined using `#pragma omp critical`
+sections. - Dynamic scheduling balances load across individuals with
+varying choice set sizes.
+
+*Code reference:
+[nestlogit.cpp:152-353](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L152-L353)*
+
+### 5.6 Negated Objectives
+
+The C++ function returns: - $`-\ell(\theta)`$ (negated log-likelihood) -
+$`-\nabla\ell(\theta)`$ (negated gradient)
+
+for compatibility with minimization routines (e.g., `nloptr`) that
+minimize a loss function rather than maximize a likelihood.
+
+*Code reference:
+[nestlogit.cpp:356-359](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L356-L359)*
+
+------------------------------------------------------------------------
+
+## 6. Post-Estimation Quantities
+
+### 6.1 Choice Probabilities (predict)
+
+The joint probability is the decomposition from §2.1:
+
+``` math
+P_{ij} = P(j \mid k(j)) \cdot P_{k(j)}
+```
+
+with $`P(j \mid k)`$ and $`P_k`$ given in §§2.3–2.4. `nl_predict`
+returns individual-level probabilities $`P_{ij}`$ and systematic
+utilities $`V_{ij}`$ for every observation row. `nl_predict_shares`
+aggregates over individuals to obtain weighted market shares:
+
+``` math
+\hat{s}_j = \frac{\sum_{i=1}^{N} w_i \, P_{ij}}{\sum_{i=1}^{N} w_i}
+```
+
+*Code reference:
+[nestlogit.cpp:521-708](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L521-L708)*
+
+------------------------------------------------------------------------
+
+### 6.2 Elasticities
+
+#### 6.2.1 Semi-elasticity with respect to utility
+
+Let $`r = k(j)`$ be the nest of the responding alternative $`j`$ and
+$`s = k(a)`$ be the nest of the perturbed alternative $`a`$. From §3.1,
+the derivative of $`\log P_{ij}`$ with respect to the systematic utility
+of any alternative $`a`$ is:
+
+``` math
+\frac{\partial \log P_{ij}}{\partial V_{ia}}
+= \frac{\mathbf{1}_{a=j}}{\lambda_r}
++ \left(1 - \frac{1}{\lambda_r}\right)\mathbf{1}_{s=r} \, P(a \mid r)
+- P_{ia}
+```
+
+This is the general expression; the gradient formula in §3.1 applies it
+only to the *chosen* alternative, whereas here we evaluate it for all
+pairs $`(j, a)`$ to construct the full elasticity matrix.
+
+#### 6.2.2 Elasticity of $`P_{ij}`$ with respect to covariate $`k`$ of alternative $`a`$
+
+Since $`\partial V_{ia} / \partial x_{ia,k} = \beta_k`$:
+
+``` math
+E_{ij,ia}^{k}
+= \frac{\partial P_{ij}}{\partial x_{ia,k}} \cdot \frac{x_{ia,k}}{P_{ij}}
+= \beta_k \, x_{ia,k} \cdot \frac{\partial \log P_{ij}}{\partial V_{ia}}
+```
+
+Substituting the three cases:
+
+| Case | Condition | Semi-elasticity $`\partial \log P_{ij}/\partial V_{ia}`$ |
+|----|----|----|
+| Own | $`a = j`$ | $`\dfrac{1}{\lambda_r} + \left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}`$ |
+| Cross, same nest | $`s = r,\; a \neq j`$ | $`\left(1 - \dfrac{1}{\lambda_r}\right) P(a \mid r) - P_{ia}`$ |
+| Cross, different nest | $`s \neq r`$ | $`-P_{ia}`$ |
+
+**Reduction to MNL.** When $`\lambda_k = 1`$ for all nests the
+within-nest term $`(1 - 1/\lambda_r)`$ vanishes and the conditional
+probability drops out, giving
+$`\partial \log P_{ij}/\partial V_{ia} = \mathbf{1}_{a=j} - P_{ia}`$,
+which is exactly the MNL semi-elasticity (§3.1 of the MNL document).
+
+**Outside option.** When an outside option is present it occupies its
+own singleton nest with $`\lambda_0 = 1`$ and $`x_{i0,k} = 0`$. Its row
+(responding = outside option) has semi-elasticity $`-P_{ia}`$ for every
+inside alternative $`a`$ (different nest, §3.1); its column (perturbed =
+outside option) is identically zero because $`\beta_k \cdot 0 = 0`$.
+
+The implementation accumulates $`w_i \cdot E_{ij,ia}^k`$ across
+individuals and divides by $`\sum_i w_i`$ to produce weighted average
+elasticities.
+
+*Code reference:
+[nestlogit.cpp:749-892](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L749-L892)*
+
+------------------------------------------------------------------------
+
+### 6.3 Diversion Ratios
+
+#### 6.3.1 Definition
+
+The diversion ratio from alternative $`k`$ to alternative $`j`$ is:
+
+``` math
+DR(k \to j) = -\frac{\partial Q_k / \partial V_{ij}}{\partial Q_j / \partial V_{ij}}
+```
+
+where $`Q_m = \sum_i w_i P_{im}`$ is aggregate demand and the
+perturbation is through the systematic utility of the *losing*
+alternative $`j`$.
+
+#### 6.3.2 Partial derivatives of demand
+
+Using
+$`\partial P_{im}/\partial V_{ij} = P_{im} \cdot (\partial \log P_{im}/\partial V_{ij})`$
+and the semi-elasticity from §6.2.1, the three cases with $`r = k(j)`$:
+
+``` math
+\frac{\partial P_{im}}{\partial V_{ij}} =
+\begin{cases}
+P_{ij}\!\left[\dfrac{1}{\lambda_r} + \left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}\right] & m = j \\[6pt]
+P_{im}\!\left[\left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}\right] & k(m) = r,\; m \neq j \\[6pt]
+-P_{im} \, P_{ij} & k(m) \neq r
+\end{cases}
+```
+
+#### 6.3.3 Covariate-independence of diversion ratios
+
+For a concrete attribute $`k`$ the perturbation is
+$`\partial V_{ij} = \beta_k \, \partial x_{ij,k}`$. Both numerator and
+denominator of $`DR(k \to j)`$ are proportional to the *same* factor
+$`\beta_k \, x_{ij,k}`$ (the same attribute of the same losing
+alternative $`j`$), so it cancels:
+
+``` math
+DR(k \to j)
+= -\frac{\beta_k \, x_{ij,k} \sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
+         {\beta_k \, x_{ij,k} \sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
+= -\frac{\sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
+         {\sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
+```
+
+The NL diversion ratio is therefore independent of which covariate is
+perturbed — a property it shares with MNL (see §6.2 of the MNL document)
+but which does **not** hold for mixed logit, where $`\beta_k`$ is
+individual-specific.
+
+#### 6.3.4 Population aggregation and column-sum property
+
+Define:
+
+``` math
+\text{num}(k, j) = \sum_{i=1}^{N} w_i \left(-\frac{\partial P_{ik}}{\partial V_{ij}}\right), \qquad
+\text{den}(j) = \sum_{i=1}^{N} w_i \frac{\partial P_{ij}}{\partial V_{ij}}
+```
+
+so that $`DR(k \to j) = \text{num}(k,j) \,/\, \text{den}(j)`$ for
+$`k \neq j`$.
+
+**Columns sum to 1.** The fundamental identity
+$`\sum_{m} \partial P_{im}/\partial V_{ij} = 0`$ (probabilities sum to 1
+for every individual and every perturbation direction, including the
+outside option when present) gives:
+
+``` math
+\sum_{k \neq j} \frac{\partial P_{ik}}{\partial V_{ij}} = -\frac{\partial P_{ij}}{\partial V_{ij}}
+\implies
+\sum_{k \neq j} \text{num}(k, j) = \text{den}(j)
+\implies
+\sum_{k \neq j} DR(k \to j) = 1
+```
+
+When an outside option is present it acts as both a source (it can lose
+demand) and a destination (it can receive diverted demand), so it
+appears in both the row index $`k`$ and the column index $`j`$ of the
+$`J_{\text{total}} \times J_{\text{total}}`$ diversion matrix, and the
+column sums still equal 1 over all alternatives including the outside
+option.
+
+#### 6.3.5 Reduction to MNL at $`\lambda = 1`$
+
+When all $`\lambda_k = 1`$ the cross-same-nest case collapses to the
+cross-different-nest case
+($`\partial P_{im}/\partial V_{ij} = -P_{im} P_{ij}`$ for $`m \neq j`$)
+and the own case gives
+$`\partial P_{ij}/\partial V_{ij} = P_{ij}(1 - P_{ij})`$. Substituting:
+
+``` math
+DR(k \to j)\big|_{\lambda=1}
+= \frac{\sum_i w_i \, P_{ij} \, P_{ik}}{\sum_i w_i \, P_{ij} (1 - P_{ij})}
+```
+
+which is the MNL diversion ratio (§6.3 of the MNL document).
+
+*Code reference:
+[nestlogit.cpp:927-1073](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L927-L1073)*
+
+------------------------------------------------------------------------
+
+### 6.4 BLP Share Inversion
+
+#### 6.4.1 Problem statement
+
+Given observed market shares $`s_j^*`$, find the ASC vector $`\delta`$
+such that the NL model reproduces those shares:
+
+``` math
+\hat{s}_j(\delta) = s_j^* \quad \forall j
+```
+
+#### 6.4.2 Damped contraction mapping
+
+Berry, Levinsohn, and Pakes (1995) establish that the fixed-point
+iteration
+
+``` math
+\delta^{(t+1)} = \delta^{(t)} + \kappa \bigl(\log s^* - \log \hat{s}(\delta^{(t)})\bigr)
+```
+
+converges to the unique solution. Setting $`\kappa = 1`$ reproduces the
+original BLP95 update. Predicted shares $`\hat{s}(\delta^{(t)})`$ are
+computed via the NL formula: for each alternative $`j`$,
+
+``` math
+\hat{s}_j(\delta^{(t)}) = \frac{\sum_{i=1}^{N} w_i \, P_{ij}(\delta^{(t)})}{\sum_{i=1}^{N} w_i}
+```
+
+where $`P_{ij}(\delta^{(t)}) = P(j \mid k(j)) \cdot P_{k(j)}`$ is
+evaluated at the current $`\delta^{(t)}`$ with $`\beta`$ and $`\lambda`$
+held fixed.
+
+#### 6.4.3 Damping for nested models
+
+For strongly nested data (small $`\lambda_k`$) the plain BLP update
+($`\kappa = 1`$) can overshoot. Setting $`\kappa < 1`$ improves
+contraction. A practical heuristic is:
+
+``` math
+\kappa \approx \min_k \lambda_k
+```
+
+since the curvature of the NL log-share map is sharpest in nests with
+small dissimilarity parameters. The function argument is called
+`damping`.
+
+#### 6.4.4 Baseline re-normalization
+
+After convergence the returned $`\delta`$ is re-centered so that the
+baseline is identified: $`\delta \leftarrow \delta - \delta_0`$
+(subtract the outside-option entry, or equivalently $`\delta_1`$ when
+there is no outside option). This matches the ASC identification
+convention from §1.4.
+
+**Note on the `lambda` argument.** `nl_blp_contraction` expects a *full*
+length-$`n_{\text{nests}}`$ vector where singleton nests have their
+entry set to 1. This differs from the estimated parameter block
+$`\lambda`$ in $`\theta`$, which contains only non-singleton entries.
+The caller is responsible for expanding the estimated lambdas into the
+full vector before invoking the contraction.
+
+*Code reference:
+[nestlogit.cpp:1115-1186](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp#L1115-L1186)*
+
+### 6.5 Willingness to Pay
+
+Utility is linear in covariates, so willingness to pay is the same
+marginal rate of substitution as in the MNL model: for attribute $`k`$
+and price coefficient $`\alpha = \beta_p`$,
+
+``` math
+\mathrm{WTP}_k = -\frac{\beta_k}{\alpha},
+\qquad
+\widehat{\mathrm{SE}} = \sqrt{\nabla g^T \, \hat{V}_{(k,p)} \, \nabla g},
+\quad
+\nabla g = \begin{pmatrix} -1/\alpha \\ \beta_k/\alpha^2 \end{pmatrix}
+```
+
+with $`\hat{V}_{(k,p)}`$ the $`2 \times 2`$ block of the coefficient
+covariance. The nest parameters $`\lambda`$ rescale within-nest
+substitution but do not enter the ratio of marginal utilities, so they
+affect WTP only through the estimated covariance of
+$`(\beta_k, \alpha)`$. ASCs may also be used as the numerator
+($`-\delta_j/\alpha`$). See §8 of the MNL document for the full
+derivation and caveats.
+
+*Code reference:
+[R/wtp.R](https://fpcordeiro.github.io/choicer/R/wtp.R)*
+
+### 6.6 Consumer Surplus and the Nested Logsum
+
+For the nested logit, the expected maximum utility (logsum) over
+individual $`i`$’s choice set replaces the flat MNL log-sum with the
+two-level structure of §2:
+
+``` math
+\mathrm{logsum}_i = \log D_i = \log\left( \sum_{l} \exp\big(\lambda_l \log I_l\big) \; [+\, 1] \right),
+\qquad
+\log I_l = \log \sum_{j \in B_l \cap C_i} \exp\!\left(\frac{V_{ij}}{\lambda_l}\right)
+```
+
+where the $`+1 = \exp(0)`$ term appears when an outside option is
+present and singleton nests have $`\lambda_l = 1`$ (§5.2). Both levels
+are computed with the max-subtraction trick (§2.7).
+
+Two useful identities:
+
+- **Reduction to MNL.** With all $`\lambda_l = 1`$,
+  $`\lambda_l \log I_l = \log \sum_{j \in B_l} \exp(V_{ij})`$ and the
+  nested logsum collapses to the MNL logsum
+  $`\log \sum_j \exp(V_{ij})`$.
+- **Outside-option link.** Since $`P_{i0} = 1 / D_i`$ (§2.5), the logsum
+  equals $`-\log P_{i0}`$ — a direct consistency check against the
+  probability kernel.
+
+Expected consumer surplus follows Train (2009, Ch. 3) exactly as in the
+MNL case:
+
+``` math
+\mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i}{-\alpha}
+```
+
+with the same caveats: no income effects, and CS levels inherit the ASC
+normalization, so only differences across scenarios (counterfactual
+`newdata` vs. baseline) are meaningful. The implementation reports point
+estimates for NL (the delta-method SE of the mean CS is currently
+provided for MNL only; Krinsky–Robb resampling of the coefficients is
+the practical interval method here).
+
+*Code reference:
+[R/surplus.R](https://fpcordeiro.github.io/choicer/R/surplus.R)*
+
+### 6.7 Goodness of Fit
+
+The measures are model-agnostic and identical to §10 of the MNL
+document, computed from the NL log-likelihood and predicted
+probabilities:
+
+- **McFadden pseudo R²**: $`R^2 = 1 - \ell(\hat\theta)/\ell_0`$ and
+  $`R^2_{\text{adj}} = 1 - (\ell(\hat\theta) - K)/\ell_0`$, with $`K`$
+  counting all estimated parameters including the $`\lambda`$ block.
+- **Equal-shares null** (default, exact for unbalanced sets and
+  weights):
+  $`\ell_0 = -\sum_i w_i \log(M_i + \mathbf{1}_{\text{outside}})`$.
+- **Market-shares null** (constants-only closed form):
+  $`\ell_0 = \sum_j N_j \log(s_j)`$; requires identical choice-set
+  composition across individuals and uniform weights. The constants-only
+  model is itself an MNL — at $`\beta = 0`$ and free ASCs the nest
+  structure is undetermined — so the same closed form applies.
+- **Hit rate**: weighted share of choice situations whose observed
+  choice has the highest predicted NL probability; with an outside
+  option the outside good competes with $`P_{i0} = 1 - \sum_j P_{ij}`$.
+
+*Code reference:
+[R/gof.R](https://fpcordeiro.github.io/choicer/R/gof.R)*
+
+------------------------------------------------------------------------
+
+## References
+
+- McFadden, D. (1978). Modelling the choice of residential location.
+  In A. Karlqvist et al. (Eds.), *Spatial Interaction Theory and
+  Planning Models* (pp. 75-96). North-Holland.
+- Ben-Akiva, M., & Lerman, S. R. (1985). *Discrete Choice Analysis:
+  Theory and Application to Travel Demand*. MIT Press.
+- Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in
+  market equilibrium. *Econometrica*, 63(4), 841–890.
+- Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd
+  ed.). Cambridge University Press. Chapter 4.

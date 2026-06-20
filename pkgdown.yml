@@ -1,0 +1,17 @@
+pandoc: 3.8.3
+pkgdown: 2.2.0
+pkgdown_sha: ~
+articles:
+  articles/bayesian_multinomial_probit_math: bayesian_multinomial_probit_math.html
+  choicer: choicer.html
+  articles/mixed_logit_math: mixed_logit_math.html
+  mnl: mnl.html
+  mnp: mnp.html
+  articles/multinomial_logit_math: multinomial_logit_math.html
+  mxl: mxl.html
+  articles/nested_logit_math: nested_logit_math.html
+  nl: nl.html
+last_built: 2026-06-20T22:16Z
+urls:
+  reference: https://fpcordeiro.github.io/choicer/reference
+  article: https://fpcordeiro.github.io/choicer/articles
