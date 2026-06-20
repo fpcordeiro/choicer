@@ -7,6 +7,7 @@ benchmark_git_value <- function(root, args) {
 }
 
 benchmark_capture_metadata <- function(root, model, config, packages,
+                                       choicer_thread_state = NULL,
                                        output_dir, output_files = character()) {
   pkg_versions <- stats::setNames(
     vapply(packages, bench_package_version, character(1L)),
@@ -37,6 +38,7 @@ benchmark_capture_metadata <- function(root, model, config, packages,
       blas = ext_value("BLAS"),
       lapack = ext_value("LAPACK")
     ),
+    choicer_threads = choicer_thread_state,
     config = config,
     packages = as.list(pkg_versions),
     missing_packages = as.list(missing_packages)
@@ -74,6 +76,22 @@ benchmark_write_metadata <- function(metadata, output_dir) {
   }
   if (length(metadata$missing_packages)) {
     writeLines(c("", "Missing packages:", paste(" ", unlist(metadata$missing_packages))), con)
+  }
+  if (!is.null(metadata$choicer_threads)) {
+    writeLines(c(
+      "",
+      "choicer thread state:",
+      paste("  OpenMP enabled:", metadata$choicer_threads$openmp_enabled %||% NA),
+      paste("  _OPENMP:", metadata$choicer_threads$`_OPENMP` %||% NA),
+      paste("  omp_get_num_threads:", metadata$choicer_threads$omp_get_num_threads %||% NA),
+      paste("  omp_get_max_threads:", metadata$choicer_threads$omp_get_max_threads %||% NA),
+      paste("  omp_get_num_procs:", metadata$choicer_threads$omp_get_num_procs %||% NA),
+      paste("  omp_get_thread_limit:", metadata$choicer_threads$omp_get_thread_limit %||% NA),
+      paste("  OMP_THREAD_LIMIT:", metadata$choicer_threads$OMP_THREAD_LIMIT %||% NA),
+      paste("  OMP_NUM_THREADS:", metadata$choicer_threads$OMP_NUM_THREADS %||% NA),
+      "  diagnostic output:",
+      paste0("    ", strsplit(metadata$choicer_threads$output %||% "", "\n", fixed = TRUE)[[1L]])
+    ), con)
   }
   if (nzchar(metadata$git$status_short %||% "")) {
     writeLines(c("", "Git status:", metadata$git$status_short), con)

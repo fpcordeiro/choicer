@@ -33,9 +33,11 @@ output_dir <- bench_output_dir(root, "mnlogit", config$tag)
 message("Writing benchmark outputs to: ", output_dir)
 
 bench_load_choicer(root, clean_dll = config$clean_dll)
-if (exists("set_num_threads", mode = "function")) {
-  set_num_threads(config$n_threads)
-}
+choicer_thread_state <- bench_set_choicer_threads(config$n_threads)
+message(
+  "choicer OpenMP threads: requested=", config$n_threads,
+  ", reported_max=", choicer_thread_state$omp_get_max_threads
+)
 
 specs <- bench_spec_grid(config)
 raw_rows <- vector("list", nrow(specs) * config$n_runs * length(config$packages))
@@ -88,6 +90,7 @@ metadata <- benchmark_capture_metadata(
   model = "mnlogit",
   config = config,
   packages = unique(c(config$packages, vapply(config$packages, mnlogit_dependency, character(1L)))),
+  choicer_thread_state = choicer_thread_state,
   output_dir = output_dir,
   output_files = c(raw_path, coef_path, summary_path, table_path, session_path, plot_paths)
 )
