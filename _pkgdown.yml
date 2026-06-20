@@ -1,0 +1,127 @@
+url: https://fpcordeiro.github.io/choicer/
+
+template:
+  bootstrap: 5
+
+home:
+  title: choicer • fast discrete-choice models for economics
+  description: >
+    Fast estimation of discrete-choice models for applied economics, with a C++
+    core and a consistent post-estimation toolkit: shares, elasticities,
+    diversion ratios, willingness-to-pay, consumer surplus and counterfactuals.
+
+navbar:
+  structure:
+    left: [intro, reference, articles, news]
+  components:
+    articles:
+      text: Articles
+      menu:
+        - text: "Models"
+        - text: Multinomial logit
+          href: articles/mnl.html
+        - text: Mixed logit
+          href: articles/mxl.html
+        - text: Nested logit
+          href: articles/nl.html
+        - text: Bayesian multinomial probit
+          href: articles/mnp.html
+        - text: -------
+        - text: "The math behind choicer"
+        - text: Multinomial logit (math)
+          href: articles/multinomial_logit_math.html
+        - text: Nested logit (math)
+          href: articles/nested_logit_math.html
+        - text: Mixed logit (math)
+          href: articles/mixed_logit_math.html
+        - text: Bayesian multinomial probit (math)
+          href: articles/bayesian_multinomial_probit_math.html
+
+articles:
+  - title: Models
+    navbar: Models
+    contents:
+      - mnl
+      - mxl
+      - nl
+      - mnp
+  - title: The math behind choicer
+    navbar: The math behind choicer
+    contents:
+      - articles/multinomial_logit_math
+      - articles/nested_logit_math
+      - articles/mixed_logit_math
+      - articles/bayesian_multinomial_probit_math
+
+reference:
+  - title: Model fitting
+    desc: Estimate a discrete-choice model.
+    contents:
+      - run_mnlogit
+      - run_mxlogit
+      - run_nestlogit
+      - run_mnprobit
+  - title: Data preparation
+    desc: Build design matrices and inputs for the estimators.
+    contents:
+      - prepare_mnl_data
+      - prepare_mxl_data
+      - prepare_nl_data
+      - prepare_mnp_data
+  - title: Demand and substitution
+    desc: Predicted shares, elasticities, diversion and share inversion.
+    contents:
+      - starts_with("predict")
+      - starts_with("elasticities")
+      - starts_with("diversion_ratios")
+      - starts_with("blp")
+  - title: Welfare
+    desc: Willingness-to-pay and consumer surplus.
+    contents:
+      - starts_with("wtp")
+      - starts_with("consumer_surplus")
+      - starts_with("logsum")
+  - title: Goodness of fit and methods
+    contents:
+      - starts_with("gof")
+      - starts_with("summary")
+      - starts_with("coef")
+      - starts_with("vcov")
+      - starts_with("logLik")
+      - starts_with("nobs")
+      - starts_with("print")
+  - title: Simulation and recovery
+    desc: Data-generating processes and parameter-recovery diagnostics.
+    contents:
+      - simulate_mnl_data
+      - simulate_mxl_data
+      - simulate_nl_data
+      - simulate_mnp_data
+      - starts_with("recovery_table")
+      - monte_carlo
+      - mc_asymptotics
+      - new_choicer_sim
+  - title: Choice-based sampling
+    contents:
+      - wesml_weights
+      - sample_by_choice
+      - starts_with("wesml_vcov")
+  - title: Configuration and helpers
+    contents:
+      - set_num_threads
+      - thread_info
+      - get_halton_normals
+      - build_var_mat
+      - jacobian_vech_Sigma
+  - title: Data
+    contents:
+      - mode_choice
+  - title: Low-level C++ kernels
+    desc: >
+      Direct access to the C++ likelihood, gradient, Hessian and post-estimation
+      kernels. Most users do not need these.
+    contents:
+      - starts_with("mnl_")
+      - starts_with("mxl_")
+      - starts_with("nl_")
+      - mnp_gibbs

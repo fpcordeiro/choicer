@@ -1,5 +1,16 @@
 # choicer (development version)
 
+## Documentation
+
+- Added five vignettes: a getting-started tour ("Discrete choice from data to
+  policy, in a dozen lines") plus one per model (multinomial logit, mixed logit,
+  nested logit, Bayesian multinomial probit).
+- Added the `mode_choice` data set: the classic Greene & Hensher intercity
+  travel-mode choice data (210 travellers x 4 modes), in choicer's long layout,
+  used by the getting-started vignette.
+- Added a pkgdown website configuration, including the model derivation notes as
+  "The math behind choicer" articles.
+
 ## Mixed logit — on-the-fly randomized Halton draws
 
 - `run_mxlogit()` gains three new arguments: `draws`, `seed`, and `scramble`.

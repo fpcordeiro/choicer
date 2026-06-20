@@ -1,0 +1,80 @@
+---
+title: "Bayesian multinomial probit"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Bayesian multinomial probit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5, fig.height = 4)
+options(digits = 4)
+```
+
+The multinomial probit (MNP) replaces logit's restrictive error structure with a
+*full multivariate-normal* covariance, so it can capture rich correlation
+between alternatives without imposing IIA. choicer estimates it the Bayesian way:
+a Gibbs sampler with data augmentation, written in C++ with a reproducible,
+thread-safe random number generator.
+
+```{r setup}
+library(choicer)
+set_num_threads(2)
+```
+
+## Simulate from a probit process
+
+`simulate_mnp_data()` draws choices with correlated normal errors and known
+parameters.
+
+```{r sim}
+sim <- simulate_mnp_data(N = 2000, J = 3, seed = 1)
+sim
+```
+
+## Run the sampler
+
+`run_mnprobit()` returns posterior draws. The settings below keep this vignette
+quick; for real work use a longer chain and inspect convergence carefully.
+
+```{r fit}
+set.seed(3)
+fit <- run_mnprobit(
+  data           = sim$data,
+  id_col         = "id",
+  alt_col        = "alt",
+  choice_col     = "choice",
+  covariate_cols = c("x1", "x2"),
+  mcmc           = list(R = 4000, burn = 1000, thin = 2)
+)
+summary(fit)
+```
+
+The `Sigma` entries are the error-covariance parameters — the flexibility that
+distinguishes probit from logit. They are identified only up to scale, so
+choicer reports them on the normalized scale where `Sigma_11 = 1`.
+
+## Posterior recovers the truth
+
+```{r recovery}
+recovery_table(fit, sim$true_params)
+```
+
+## A quick MCMC diagnostic
+
+Posterior draws are stored on the fit, so the usual diagnostics are a line away.
+A trace plot of the price coefficient should look like a stationary "fuzzy
+caterpillar":
+
+```{r trace}
+beta_draws <- fit$draws$beta
+plot(beta_draws[, "x2"], type = "l", col = "steelblue",
+     xlab = "iteration", ylab = expression(beta[x2]),
+     main = "Posterior trace: price coefficient")
+abline(h = sim$true_params$beta[2], col = "red", lwd = 2)
+```
+
+The red line marks the true value; the chain should hover around it. For a
+faster, frequentist alternative with the same post-estimation toolkit, see the
+[multinomial logit](mnl.html) and [mixed logit](mxl.html) vignettes.

@@ -1,4 +1,8 @@
-# Mathematical Documentation: Multinomial Logit Model
+---
+title: "The math behind choicer: multinomial logit"
+output: rmarkdown::html_vignette
+---
+
 
 This document provides a detailed mathematical description of the multinomial logit (MNL) model as implemented in `src/mnlogit.cpp`.
 
