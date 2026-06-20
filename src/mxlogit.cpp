@@ -604,6 +604,22 @@ arma::mat mxl_hessian_parallel(
     // Per-alt scratch for the continuous-block z vector
     arma::vec zc_a(Kc);
 
+    // O3: Per-individual block buffers — accumulate linear-in-P_s pieces across
+    // draws. These replace the per-draw H_is allocation and the running
+    // hess_term1_numerator += P_s*(g_is*g_isT + H_is) accumulation.
+    arma::mat buf_Pzz_cc(Kc, Kc);               // Identity C: Σ_s P_s sum_Pzz_cc_s
+    arma::mat buf_Pzz_cd(Kc, Jd > 0 ? Jd : 1); // Identity C: Σ_s P_s sum_Pzz_cd_s
+    arma::vec buf_Pzz_dd(Jd > 0 ? Jd : 1);      // Identity C: Σ_s P_s sum_Pzz_dd_s
+    arma::mat buf_diff_HV_cc(Kc, Kc);           // Identity C: Σ_s P_s sum_diff_H_V_cc_s
+    // O3: Column stashes for BLAS-3 batching.
+    // G_stash(:,s) = sqrt(P_s) * g_is          → G Gᵀ = Σ_s P_s g_is g_isᵀ (Identity A)
+    // F_stash(:,s) = sqrt(P_s) * [sum_Pz_c; sum_Pz_d]  → F Fᵀ = Σ_s P_s sum_Pz sum_PzT
+    //                                                     (Identity B)
+    // These are allocated once per thread at max size (n_params x Sdraw).
+    // Column s is fully written in draw s before being read in finalization.
+    arma::mat G_stash(n_params, Sdraw);
+    arma::mat F_stash(n_params, Sdraw);
+
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
@@ -630,7 +646,14 @@ arma::mat mxl_hessian_parallel(
       // Per-individual accumulators (over draws s)
       arma::vec P_s_vec = arma::zeros(Sdraw);
       arma::vec grad_numerator = arma::zeros(n_params);
-      arma::mat hess_term1_numerator = arma::zeros(n_params, n_params);
+
+      // O3: Initialize per-individual block buffers (replacing hess_term1_numerator).
+      buf_Pzz_cc.zeros();
+      buf_diff_HV_cc.zeros();
+      if (Jd > 0) {
+        buf_Pzz_cd.zeros();
+        buf_Pzz_dd.zeros();
+      }
 
       V_s.set_size(num_choices);
       inside_utils.set_size(m_i);
@@ -806,44 +829,89 @@ arma::mat mxl_hessian_parallel(
           }
         } // end alt loop
 
-        // === 5. Assemble full H_is from blocks (once per draw) ===
-        // H_is = -sum_Pzz + sum_Pz*sum_Pz^T + sum_diff_H_V
-        // Written into an n_params x n_params matrix via submatrix blocks.
-        arma::mat H_is(n_params, n_params, arma::fill::zeros);
+        // === 5. O3: Accumulate per-individual buffers (Identity C) and fill
+        //          column stashes G_stash/F_stash (Identities A + B). ===
+        //
+        // Instead of assembling H_is (n_params x n_params) and accumulating
+        //   hess_term1_numerator += P_choice_s * (g_is g_isT + H_is),
+        // we split the linear-in-P_s and the outer-product pieces:
+        //
+        //   Linear (Identity C): buf_Pzz_cc   += P_s * sum_Pzz_cc
+        //                        buf_diff_HV_cc += P_s * sum_diff_H_V_cc
+        //                        (and cd/dd variants)
+        //   Outer-product (Identity A): G_stash(:,s) = sqrt(P_s) * g_is
+        //     so that G * GT = Σ_s P_s g_is g_isT  after the S-loop.
+        //   Outer-product (Identity B): F_stash(:,s) = sqrt(P_s) * [sum_Pz_c; sum_Pz_d]
+        //     so that F * FT = Σ_s P_s sum_Pz sum_PzT  after the S-loop.
 
-        // cc block
-        H_is.submat(0, 0, Kc - 1, Kc - 1) =
-            -sum_Pzz_cc + sum_Pz_c * sum_Pz_c.t() + sum_diff_H_V_cc;
+        const double sqrt_Ps = std::sqrt(P_choice_s);
 
+        // Identity C — scalar-times-matrix accumulation into per-individual buffers.
+        buf_Pzz_cc    += P_choice_s * sum_Pzz_cc;
+        buf_diff_HV_cc += P_choice_s * sum_diff_H_V_cc;
         if (Jd > 0) {
-          // cd block (and its transpose dc)
-          arma::mat cd_block = -sum_Pzz_cd + sum_Pz_c * sum_Pz_d.t();
-          H_is.submat(0, Kc, Kc - 1, n_params - 1)         = cd_block;
-          H_is.submat(Kc, 0, n_params - 1, Kc - 1)         = cd_block.t();
-
-          // dd block: -diag(sum_Pzz_dd) + sum_Pz_d * sum_Pz_d^T
-          H_is.submat(Kc, Kc, n_params - 1, n_params - 1) =
-              -arma::diagmat(sum_Pzz_dd) + sum_Pz_d * sum_Pz_d.t();
+          buf_Pzz_cd += P_choice_s * sum_Pzz_cd;
+          buf_Pzz_dd += P_choice_s * sum_Pzz_dd;
         }
 
-        // Assemble gradient vector g_is from blocks for grad_numerator accumulation
-        arma::vec g_is(n_params);
-        g_is.subvec(0, Kc - 1) = g_c;
+        // Identity A — fill column s of G_stash with sqrt(P_s) * g_is.
+        G_stash.col(s).head(Kc) = sqrt_Ps * g_c;
         if (Jd > 0) {
-          g_is.subvec(Kc, n_params - 1) = g_d;
+          G_stash.col(s).tail(Jd) = sqrt_Ps * g_d;
+        } else {
+          // Kc == n_params; tail is empty — nothing to write.
+          // G_stash.col(s) already sized n_params (= Kc), head(Kc) covers all.
         }
 
-        // Accumulate for individual i
-        grad_numerator        += P_choice_s * g_is;
-        hess_term1_numerator  += P_choice_s * (g_is * g_is.t() + H_is);
+        // Identity B — fill column s of F_stash with sqrt(P_s) * [sum_Pz_c; sum_Pz_d].
+        F_stash.col(s).head(Kc) = sqrt_Ps * sum_Pz_c;
+        if (Jd > 0) {
+          F_stash.col(s).tail(Jd) = sqrt_Ps * sum_Pz_d;
+        }
+
+        // Accumulate gradient numerator (unchanged: g_is = [g_c; g_d]).
+        grad_numerator.head(Kc) += P_choice_s * g_c;
+        if (Jd > 0) {
+          grad_numerator.tail(Jd) += P_choice_s * g_d;
+        }
       } // end S loop
 
-      // === 6. Finalize Hessian for Individual i ===
+      // === 6. O3: Per-individual finalization — assemble Hessian once from buffers ===
       double P_i_hat = arma::sum(P_s_vec);
       if (P_i_hat > 1e-12) {
+        // 6a. Compute G Gᵀ + F Fᵀ via BLAS-3 gemm (Identities A + B combined).
+        //     Concatenate G_stash and F_stash into a single n_params x 2S matrix
+        //     and call one matrix multiply. This gives Σ_s P_s (g_is g_isT + sum_Pz_s sum_Pz_sT)
+        //     in one BLAS dgemm call.
+        arma::mat GF = arma::join_rows(G_stash, F_stash);  // n_params x 2S
+        arma::mat opg_pz = GF * GF.t();                     // n_params x n_params (symmetric)
+
+        // 6b. Assemble hess_term1_num block-by-block.
+        //     hess_term1 = (G Gᵀ + F Fᵀ) + (-buf_Pzz) + buf_diff_HV_cc (cc block only)
+        //     This is the batched equivalent of Σ_s P_s (g_is g_isT + H_is).
+        arma::mat hess_t1(n_params, n_params, arma::fill::zeros);
+
+        // cc block: contributions from OPG, sum-Pz outer product, -Pzz, and H_V.
+        hess_t1.submat(0, 0, Kc - 1, Kc - 1) =
+            opg_pz.submat(0, 0, Kc - 1, Kc - 1)
+            - buf_Pzz_cc
+            + buf_diff_HV_cc;
+
+        if (Jd > 0) {
+          // cd block: -buf_Pzz_cd + opg_pz cd block (NOT symmetric — full rectangular).
+          arma::mat cd = opg_pz.submat(0, Kc, Kc - 1, n_params - 1) - buf_Pzz_cd;
+          hess_t1.submat(0, Kc, Kc - 1, n_params - 1)     = cd;
+          hess_t1.submat(Kc, 0, n_params - 1, Kc - 1)     = cd.t();  // dc = (cd)ᵀ
+
+          // dd block: -diag(buf_Pzz_dd) + opg_pz dd block (sum_Pz_d outer products).
+          hess_t1.submat(Kc, Kc, n_params - 1, n_params - 1) =
+              opg_pz.submat(Kc, Kc, n_params - 1, n_params - 1)
+              - arma::diagmat(buf_Pzz_dd);
+        }
+
+        // 6c. Finalize g_i, H_i and accumulate into thread-local Hessian (unchanged).
         arma::vec g_i = grad_numerator / P_i_hat;
-        arma::mat H_i_term1 = hess_term1_numerator / P_i_hat;
-        arma::mat H_i = H_i_term1 - g_i * g_i.t();
+        arma::mat H_i = hess_t1 / P_i_hat - g_i * g_i.t();
         local_hess += w_i * H_i;
       }
     } // end N loop
