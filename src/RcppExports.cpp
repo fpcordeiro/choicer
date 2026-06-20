@@ -710,6 +710,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// thread_info
+Rcpp::List thread_info();
+RcppExport SEXP _choicer_thread_info() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    rcpp_result_gen = Rcpp::wrap(thread_info());
+    return rcpp_result_gen;
+END_RCPP
+}
 // get_num_threads
 void get_num_threads();
 RcppExport SEXP _choicer_get_num_threads() {
@@ -769,6 +779,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_nl_elasticities_parallel", (DL_FUNC) &_choicer_nl_elasticities_parallel, 10},
     {"_choicer_nl_diversion_ratios_parallel", (DL_FUNC) &_choicer_nl_diversion_ratios_parallel, 8},
     {"_choicer_nl_blp_contraction", (DL_FUNC) &_choicer_nl_blp_contraction, 13},
+    {"_choicer_thread_info", (DL_FUNC) &_choicer_thread_info, 0},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},
     {"_choicer_set_num_threads", (DL_FUNC) &_choicer_set_num_threads, 1},
     {NULL, NULL, 0}

@@ -40,9 +40,9 @@ halton_generate_uniform <- function(n, dim, seed, scramble) {
 #'
 #' Built via HaltonGen::fill_eta_i for i=1..N.
 #'
-#' Layout: columns [(i-1)*S, i*S) hold eta_i (K_w x S) for individual i.
+#' Layout: columns `[(i-1)*S, i*S)` hold eta_i (K_w x S) for individual i.
 #' Within individual i, column s holds the K_w variates for draw s (0-based),
-#' so out(k, (i-1)*S + s) = inv_normal_cdf(phi_{PRIMES[k]}((i-1)*S + s + 1)).
+#' so `out(k, (i-1)*S + s) = inv_normal_cdf(phi_{PRIMES[k]}((i-1)*S + s + 1))`.
 #'
 #' @param S   Number of draws per individual.
 #' @param N   Number of individuals.
@@ -1111,10 +1111,25 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, n
     .Call(`_choicer_nl_blp_contraction`, delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, damping, tol, max_iter)
 }
 
+#' Query choicer OpenMP thread settings
+#'
+#' @return A list with OpenMP availability, active/max thread settings, CPU
+#'   thread capacity reported by OpenMP, thread limits, and relevant
+#'   environment variables.
+#' @export
+thread_info <- function() {
+    .Call(`_choicer_thread_info`)
+}
+
 get_num_threads <- function() {
     invisible(.Call(`_choicer_get_num_threads`))
 }
 
+#' Set the number of OpenMP threads used by choicer
+#'
+#' @param n_threads Positive integer number of threads.
+#' @return Invisibly returns `NULL`.
+#' @export
 set_num_threads <- function(n_threads) {
     invisible(.Call(`_choicer_set_num_threads`, n_threads))
 }

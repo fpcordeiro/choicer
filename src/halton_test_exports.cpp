@@ -62,9 +62,9 @@ arma::mat halton_generate_uniform(int n, int dim, double seed, int scramble) {
 //'
 //' Built via HaltonGen::fill_eta_i for i=1..N.
 //'
-//' Layout: columns [(i-1)*S, i*S) hold eta_i (K_w x S) for individual i.
+//' Layout: columns `[(i-1)*S, i*S)` hold eta_i (K_w x S) for individual i.
 //' Within individual i, column s holds the K_w variates for draw s (0-based),
-//' so out(k, (i-1)*S + s) = inv_normal_cdf(phi_{PRIMES[k]}((i-1)*S + s + 1)).
+//' so `out(k, (i-1)*S + s) = inv_normal_cdf(phi_{PRIMES[k]}((i-1)*S + s + 1))`.
 //'
 //' @param S   Number of draws per individual.
 //' @param N   Number of individuals.

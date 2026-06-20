@@ -185,8 +185,52 @@ test_that("get_num_threads returns valid output", {
   expect_true(TRUE)
 })
 
+test_that("thread_info returns structured OpenMP state", {
+  info <- thread_info()
+
+  expect_type(info, "list")
+  expect_named(info, c(
+    "openmp_enabled", "_OPENMP", "omp_get_num_threads",
+    "omp_get_max_threads", "omp_get_num_procs", "omp_get_thread_limit",
+    "OMP_THREAD_LIMIT", "OMP_NUM_THREADS"
+  ))
+  expect_type(info$openmp_enabled, "logical")
+
+  if (isTRUE(info$openmp_enabled)) {
+    expect_type(info$`_OPENMP`, "integer")
+    expect_type(info$omp_get_num_threads, "integer")
+    expect_type(info$omp_get_max_threads, "integer")
+    expect_type(info$omp_get_num_procs, "integer")
+    expect_type(info$omp_get_thread_limit, "integer")
+    expect_gte(info$omp_get_num_threads, 1L)
+    expect_gte(info$omp_get_max_threads, 1L)
+    expect_gte(info$omp_get_num_procs, 1L)
+  } else {
+    expect_true(is.na(info$`_OPENMP`))
+    expect_true(is.na(info$omp_get_num_threads))
+  }
+})
+
 test_that("set_num_threads accepts valid input", {
   # Should not error
   expect_no_error(set_num_threads(1))
   expect_no_error(set_num_threads(2))
+})
+
+test_that("set_num_threads updates reported OpenMP max threads", {
+  info_before <- thread_info()
+  on.exit({
+    if (isTRUE(info_before$openmp_enabled)) {
+      set_num_threads(info_before$omp_get_max_threads)
+    }
+  }, add = TRUE)
+
+  expect_error(set_num_threads(0), "`n_threads` must be a positive integer", fixed = TRUE)
+  expect_no_error(set_num_threads(1))
+
+  info_after <- thread_info()
+  if (isTRUE(info_after$openmp_enabled)) {
+    expect_equal(info_after$omp_get_max_threads, 1L)
+    expect_equal(info_after$omp_get_num_threads, 1L)
+  }
 })
