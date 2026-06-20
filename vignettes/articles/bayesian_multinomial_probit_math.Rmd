@@ -1,4 +1,8 @@
-# Mathematical Documentation: Bayesian Multinomial Probit Model
+---
+title: "The math behind choicer: Bayesian multinomial probit"
+output: rmarkdown::html_vignette
+---
+
 
 This document provides a detailed mathematical description of the Bayesian multinomial probit (MNP) model as implemented in `src/mnprobit.cpp`, with sampling primitives in `src/bayes_samplers.h` and the RNG core in `src/rng.h`.
 

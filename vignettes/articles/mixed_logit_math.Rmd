@@ -1,4 +1,8 @@
-# Mathematical Documentation: Mixed Logit Model
+---
+title: "The math behind choicer: mixed logit"
+output: rmarkdown::html_vignette
+---
+
 
 This document provides a detailed mathematical description of the mixed logit (random coefficients logit) model as implemented in `src/mxlogit.cpp`.
 

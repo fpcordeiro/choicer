@@ -1,4 +1,8 @@
-# Mathematical Documentation: Nested Logit Model
+---
+title: "The math behind choicer: nested logit"
+output: rmarkdown::html_vignette
+---
+
 
 This document provides a detailed mathematical description of the nested logit (NL) model as implemented in `src/nestlogit.cpp`.
 

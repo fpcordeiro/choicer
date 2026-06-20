@@ -1,0 +1,91 @@
+---
+title: "Nested logit and relaxed IIA"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Nested logit and relaxed IIA}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+Nested logit groups alternatives into *nests* of close substitutes. Within a
+nest, alternatives share an unobserved component, so substitution is stronger
+inside a nest than across nests — the independence-of-irrelevant-alternatives
+(IIA) property holds within nests but not between them. Each nest has a
+dissimilarity parameter λ in (0, 1\]: smaller λ means tighter substitution
+inside the nest.
+
+```{r setup}
+library(choicer)
+set_num_threads(2)
+```
+
+## Simulate a nested process
+
+`simulate_nl_data()` builds two nests of inside goods plus an outside option,
+with known dissimilarity parameters.
+
+```{r sim}
+sim <- simulate_nl_data(N = 4000, seed = 1)
+sim
+```
+
+## Fit
+
+Supply the nest membership column; choicer estimates the coefficients, the
+alternative-specific constants and the nest dissimilarity parameters jointly,
+using an analytical gradient and Hessian.
+
+```{r fit}
+fit <- run_nestlogit(
+  data                   = sim$data,
+  id_col                 = "id",
+  alt_col                = "j",
+  choice_col             = "choice",
+  covariate_cols         = c("X", "W"),
+  nest_col               = "nest",
+  use_asc                = TRUE,
+  include_outside_option = TRUE,
+  outside_opt_label      = 0L
+)
+summary(fit)
+```
+
+## Parameter recovery
+
+The `lambda` rows are the nest dissimilarity parameters — the part that is
+unique to nested logit.
+
+```{r recovery}
+recovery_table(fit, sim$true_params)
+```
+
+## Nest-consistent elasticities
+
+This is the payoff of nesting: cross-elasticities are larger for alternatives in
+the *same* nest than for alternatives in different nests. choicer's
+`elasticities()` respects the nest structure automatically.
+
+```{r elast}
+elasticities(fit, elast_var = "W")
+diversion_ratios(fit)
+```
+
+## Share inversion with BLP
+
+`blp()` runs the Berry-Levinsohn-Pakes contraction to recover the mean utilities
+that reproduce a set of target shares — useful for calibration and demand
+estimation from aggregate data. For strongly-nested models a damping factor
+below 1 stabilizes the iteration.
+
+```{r blp}
+target_shares <- predict(fit, type = "shares")
+head(blp(fit, target_shares, damping = 0.5))
+```
+
+As always, `predict()`, `wtp()` and `consumer_surplus()` are available on the
+fitted object with the same syntax used throughout choicer.

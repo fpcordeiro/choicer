@@ -1,0 +1,90 @@
+---
+title: "Mixed logit and preference heterogeneity"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Mixed logit and preference heterogeneity}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+The mixed (random-coefficients) logit lets tastes vary across people. Instead of
+a single coefficient on each random attribute, choicer estimates a *distribution*
+of coefficients, which relaxes the IIA property and allows realistic substitution
+patterns. Estimation is by simulated maximum likelihood using Halton draws, with
+the likelihood, gradient and Hessian evaluated in parallel C++.
+
+```{r setup}
+library(choicer)
+set_num_threads(2)
+```
+
+## Simulate correlated random coefficients
+
+`simulate_mxl_data()` draws choices in which the coefficients on `w1` and `w2`
+are themselves random and *correlated* across the population.
+
+```{r sim}
+sim <- simulate_mxl_data(N = 2000, J = 4, seed = 1)
+sim
+```
+
+## Fit
+
+A robust recipe for mixed logit: warm-start from a plain MNL, scale the
+variables so the Hessian is well conditioned, and use enough Halton draws. Here
+we estimate a full (correlated) covariance of the random coefficients.
+
+```{r fit}
+fit <- run_mxlogit(
+  data            = sim$data,
+  id_col          = "id",
+  alt_col         = "alt",
+  choice_col      = "choice",
+  covariate_cols  = c("x1", "x2"),  # fixed coefficients
+  random_var_cols = c("w1", "w2"),  # random coefficients
+  rc_correlation  = TRUE,           # estimate their full covariance
+  S               = 100L,           # Halton draws per person
+  draws           = "generate",     # generate draws on the fly (low memory)
+  seed            = 7L,
+  scale_vars      = "sd",           # condition the Hessian across blocks
+  se_method       = "bhhh"
+)
+summary(fit)
+```
+
+> **Tip.** For real applications increase the number of draws (`S`) until your
+> estimates are stable, and keep `scale_vars = "sd"`. If the solver struggles,
+> pass an explicit `theta_init` (for example the MNL coefficients) and bounds on
+> the Cholesky diagonal. See `inst/simulations/mxl_simulation.R` for a fully
+> hardened example.
+
+## Parameter recovery
+
+```{r recovery}
+recovery_table(fit, sim$true_params)
+```
+
+The `beta` rows are the fixed coefficients, the `sigma` rows describe the
+covariance of the random coefficients (its Cholesky elements), and the `asc`
+rows are the alternative-specific constants.
+
+## Substitution is no longer share-proportional
+
+Because tastes are heterogeneous, mixed logit breaks IIA: people who like one
+alternative tend to like its close substitutes, so demand diverts to similar
+alternatives rather than in proportion to shares. Diversion therefore depends on
+*which* attribute is changing, so `diversion_ratios()` takes a `wrt_var`:
+
+```{r diversion}
+elasticities(fit, elast_var = "x2")
+diversion_ratios(fit, wrt_var = "x2")
+```
+
+The rest of the toolkit — `predict()`, `wtp()`, `consumer_surplus()`, `blp()` —
+behaves exactly as in the [getting-started vignette](choicer.html), integrating
+over the distribution of tastes automatically.

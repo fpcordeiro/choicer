@@ -1,0 +1,84 @@
+---
+title: "Multinomial logit"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Multinomial logit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+The multinomial logit (MNL) is the workhorse of discrete choice. choicer fits it
+by maximum likelihood with a C++ core, analytical gradients and an analytical
+Hessian, so estimation and standard errors are fast even with many
+alternative-specific constants.
+
+This vignette does two things: it shows the full MNL workflow, and — because the
+data are simulated from a known process — it checks that choicer **recovers the
+true parameters**.
+
+```{r setup}
+library(choicer)
+set_num_threads(2)
+```
+
+## Simulate a known data-generating process
+
+`simulate_mnl_data()` draws choices from a logit model with i.i.d. Gumbel
+errors. The returned object carries both the data and the true parameters.
+
+```{r sim}
+sim <- simulate_mnl_data(N = 2000, J = 4, seed = 1)
+sim
+```
+
+## Fit
+
+```{r fit}
+fit <- run_mnlogit(
+  data           = sim$data,
+  id_col         = "id",
+  alt_col        = "alt",
+  choice_col     = "choice",
+  covariate_cols = c("x1", "x2")
+)
+summary(fit)
+```
+
+## Did we recover the truth?
+
+`recovery_table()` lines up each estimate against the value that generated the
+data, with the bias, a z-score, and whether the 95% confidence interval covers
+the truth.
+
+```{r recovery}
+recovery_table(fit, sim$true_params)
+```
+
+Every interval should cover its true value — the estimator is doing its job.
+
+## Post-estimation
+
+The full demand and welfare toolkit is available on the fitted object. Treating
+`x2` as price:
+
+```{r post}
+predict(fit, type = "shares")        # predicted market shares
+elasticities(fit, elast_var = "x2")  # own- and cross-price elasticities
+diversion_ratios(fit)                # where demand goes
+wtp(fit, price_var = "x2")           # willingness to pay, with delta-method SEs
+gof(fit)                             # McFadden R2 and hit rate
+```
+
+## A note on IIA
+
+In the elasticity and diversion output above, substitution is
+share-proportional: this is the independence-of-irrelevant-alternatives (IIA)
+property of logit. It is a strong assumption. When it is implausible — close
+substitutes, or heterogeneous tastes — reach for the
+[nested logit](nl.html) or [mixed logit](mxl.html), which relax IIA while
+keeping the same `predict()` / `elasticities()` / `wtp()` interface.
