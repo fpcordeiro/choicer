@@ -76,9 +76,40 @@ gof(fit)                             # McFadden R2 and hit rate
 
 ## A note on IIA
 
-In the elasticity and diversion output above, substitution is
-share-proportional: this is the independence-of-irrelevant-alternatives (IIA)
-property of logit. It is a strong assumption. When it is implausible — close
-substitutes, or heterogeneous tastes — reach for the
-[nested logit](nl.html) or [mixed logit](mxl.html), which relax IIA while
-keeping the same `predict()` / `elasticities()` / `wtp()` interface.
+It is worth being precise about what IIA is and where it bites, because the
+usual one-liner ("logit assumes IIA, so it's wrong") obscures more than it
+explains.
+
+**IIA is a property of the *individual* choice probabilities.** For a single
+decision-maker, the ratio of any two choice probabilities,
+$P_{ij}/P_{ik} = \exp(V_{ij} - V_{ik})$, depends only on the attributes of $j$
+and $k$ — never on what other alternatives exist or what they look like. That is
+the independence-of-irrelevant-alternatives axiom, and the MNL satisfies it by
+construction.
+
+**At the aggregate level the picture is different.** The diversion ratios and
+cross-elasticities reported above are sample averages over individuals. The
+familiar share-proportional formula $DR(j\to k) = s_k / (1 - s_j)$ holds *only*
+when every individual faces the same covariates, so that $P_{ij}$ does not vary
+across $i$. As soon as covariates vary across choice situations — different
+attributes, demographics, or choice sets — the aggregate substitution patterns
+are **no longer share-proportional**, even though each individual still obeys
+IIA. (The diversion derivation in the
+[math companion](multinomial_logit_math.html) makes this explicit.)
+
+So the MNL is more flexible in aggregate than "IIA" suggests — but only along
+dimensions you have *observed*. Its genuine limitations are two. First, all of
+its substitution flexibility must be carried by observed covariates; it cannot
+represent substitution driven by *unobserved* correlation in tastes. Second, for
+a single decision-maker — and therefore for any individual-level
+counterfactual — substitution remains rigidly proportional. That second point
+matters most for counterfactuals (a new product, a removed alternative), where
+there is no data to discipline the substitution pattern and the model's
+structure does all the work.
+
+When those limitations bite — close substitutes, rich unobserved heterogeneity,
+counterfactuals that hinge on *who* substitutes to *what* — reach for the
+[nested logit](nl.html) or [mixed logit](mxl.html). They keep the same
+`predict()` / `elasticities()` / `wtp()` interface, and the
+[getting-started vignette](choicer.html#choosing-among-logit-models) lays out
+what each relaxation costs.

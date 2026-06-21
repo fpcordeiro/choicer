@@ -14,9 +14,21 @@ options(digits = 4)
 
 The mixed (random-coefficients) logit lets tastes vary across people. Instead of
 a single coefficient on each random attribute, choicer estimates a *distribution*
-of coefficients, which relaxes the IIA property and allows realistic substitution
+of coefficients, which relaxes IIA and allows realistic substitution
 patterns. Estimation is by simulated maximum likelihood using Halton draws, with
 the likelihood, gradient and Hessian evaluated in parallel C++.
+
+A useful way to see *how* it relaxes IIA: the mixed-logit probability is a
+logit kernel averaged over the taste distribution,
+$P_{ij} = \int L_{ij}(\beta)\, f(\beta)\, d\beta$, where
+$L_{ij}(\beta) = \exp(X_{ij}\beta) / \sum_k \exp(X_{ik}\beta)$. *Conditional on a
+draw* $\beta$, the kernel $L_{ij}(\beta)$ is an ordinary logit and obeys IIA. It
+is the **mixing** — integrating over $\beta$ — that breaks IIA in the
+unconditional probabilities. This is the mirror image of the multinomial logit,
+which mixes a logit kernel over *observed* heterogeneity; the mixed logit mixes
+it over *unobserved* heterogeneity. Either way, flexible substitution comes from
+averaging logit kernels across heterogeneity — the only question is whether that
+heterogeneity is in the data or in the assumed distribution.
 
 ```{r setup}
 library(choicer)
@@ -88,3 +100,41 @@ diversion_ratios(fit, wrt_var = "x2")
 The rest of the toolkit — `predict()`, `wtp()`, `consumer_surplus()`, `blp()` —
 behaves exactly as in the [getting-started vignette](choicer.html), integrating
 over the distribution of tastes automatically.
+
+## No free lunch: the flexibility lives in the tails
+
+The mixed logit is a genuine generalization of the MNL — if tastes are in fact
+homogeneous, the estimator simply returns a near-zero variance and you are back
+to a logit. So the issue is not that the random coefficients *impose* substitution
+patterns. The issue is **identification**: all of the model's extra flexibility
+is carried by the mixing distribution $f(\beta)$, and $f(\beta)$ is hardest to
+pin down exactly where it matters most for substitution and welfare — in the
+**tails**.
+
+Two consequences are worth keeping in front of you:
+
+- **The tails drive the economics you report.** A lognormal price coefficient
+  puts a slice of the population at near-zero price sensitivity, which can give a
+  willingness-to-pay distribution with *no finite mean* and explosive welfare
+  numbers. An unbounded normal coefficient implies a fraction of consumers with
+  the *wrong sign* (who prefer paying more). These artifacts come from the
+  assumed shape of $f$, not from the data, and the estimator will happily contort
+  a tail to match an aggregate moment.
+
+- **$f(\beta)$ is hard to identify and estimate in practice.** A single
+  cross-section of choices — one decision per person, a fixed menu — carries
+  little information about the spread of tastes. Reliable estimation typically
+  needs **repeated choices from the same individual** (panel data), **substantial
+  variation in choice sets or attributes across markets** (the BLP setting), or
+  the rich, designed attribute variation of a stated-preference experiment.
+  Without one of these, the random-coefficient variances are weakly identified
+  and the estimates can be fragile.
+
+Practical defenses follow directly: prefer **bounded or sign-constrained mixing
+distributions** (triangular, censored normal) so a tail cannot run away;
+**estimate in WTP-space** (Train & Weeks, 2005) to sidestep the ratio-of-normals
+pathology; or use a **latent-class** specification when a handful of discrete
+types is more credible than a continuous distribution. None of these is free —
+each trades one assumption for another — but each spends the assumption where you
+can defend it. The broader tradeoff is laid out in
+[Choosing among logit models](choicer.html#choosing-among-logit-models).

@@ -19,6 +19,18 @@ inside a nest than across nests — the independence-of-irrelevant-alternatives
 dissimilarity parameter λ in (0, 1\]: smaller λ means tighter substitution
 inside the nest.
 
+Think of nested logit as the **parsimonious middle ground** between the
+multinomial and mixed logits. It buys a controlled departure from IIA — genuine
+within-nest correlation in the unobserved utility — at the cost of just one extra
+parameter per nest, and it stays globally well-behaved and cheap to estimate (a
+closed-form GEV likelihood, no simulation). The price you pay is a strong prior:
+*you* must specify the nesting tree in advance, and the model only permits
+correlation within the nests you draw. When the right grouping is obvious from
+the application (travel modes, product categories), that is a small price; when
+it is not, the result can be sensitive to how you nest. See
+[Choosing among logit models](choicer.html#choosing-among-logit-models) for how
+this tradeoff compares with the alternatives.
+
 ```{r setup}
 library(choicer)
 set_num_threads(2)
