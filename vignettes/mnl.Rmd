@@ -59,7 +59,10 @@ the truth.
 recovery_table(fit, sim$true_params)
 ```
 
-Every interval should cover its true value — the estimator is doing its job.
+In this run the intervals cover their true values, which is indicative of
+correct behavior. What matters formally, though, is coverage over repeated
+simulations; a full Monte Carlo exercise is left outside this vignette for
+brevity.
 
 ## Post-estimation
 

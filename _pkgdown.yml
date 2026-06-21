@@ -26,6 +26,8 @@ navbar:
           href: articles/nl.html
         - text: Bayesian multinomial probit
           href: articles/mnp.html
+        - text: Choice-based sampling and WESML
+          href: articles/wesml.html
         - text: -------
         - text: "The math behind choicer"
         - text: Multinomial logit (math)
@@ -45,6 +47,7 @@ articles:
       - mxl
       - nl
       - mnp
+      - wesml
   - title: The math behind choicer
     navbar: The math behind choicer
     contents:

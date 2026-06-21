@@ -36,7 +36,8 @@ sim
 ## Run the sampler
 
 `run_mnprobit()` returns posterior draws. The settings below keep this vignette
-quick; for real work use a longer chain and inspect convergence carefully.
+quick; for real work use longer chains, multiple starting values, and convergence
+diagnostics before interpreting posterior summaries.
 
 ```{r fit}
 set.seed(3)
@@ -53,13 +54,20 @@ summary(fit)
 
 The `Sigma` entries are the error-covariance parameters — the flexibility that
 distinguishes probit from logit. They are identified only up to scale, so
-choicer reports them on the normalized scale where `Sigma_11 = 1`.
+choicer reports them on the normalized scale where `Sigma_11 = 1`. The prior is
+placed on the unrestricted covariance used inside the Gibbs sampler; the reported
+posterior summaries are computed after normalizing each kept draw.
 
-## Posterior recovers the truth
+## Compare posterior summaries with the truth
 
 ```{r recovery}
 recovery_table(fit, sim$true_params)
 ```
+
+In this simulated example the posterior summaries line up with the parameters
+that generated the data. As with the frequentist recovery vignettes, this is an
+illustration rather than a proof: what matters in repeated use is posterior
+coverage, mixing, and sensitivity to prior and normalization choices.
 
 ## A quick MCMC diagnostic
 

@@ -581,7 +581,7 @@ With an outside option, the outside good competes for the maximum with probabili
 
 ## 11. Implementation Details
 
-### 8.1 Parameter Vector Structure
+### 11.1 Parameter Vector Structure
 
 The full parameter vector $\theta$ is organized as:
 
@@ -594,14 +594,14 @@ where $J_{asc} = J - 1$ without outside option (first ASC normalized to 0), or $
 
 *Code reference: [mnlogit.cpp:50-70](../src/mnlogit.cpp#L50-L70)*
 
-### 8.2 Data Organization
+### 11.2 Data Organization
 
 - **Design matrix $X$**: Stacked matrix of dimension $(\sum_i M_i) \times K$, where $M_i$ is the number of (inside) alternatives for individual $i$
 - **Alternative indices**: 1-based indexing in R, converted to 0-based in C++
 - **Choice indices**: 1-based for inside alternatives, 0 for outside option when included
 - **Prefix sums $S$**: Used for efficient indexing into the stacked data: $S_i = \sum_{j < i} M_j$
 
-### 8.3 OpenMP Parallelization
+### 11.3 OpenMP Parallelization
 
 The implementation parallelizes over individuals using OpenMP:
 - Each thread maintains local accumulators for log-likelihood, gradient, and Hessian
@@ -610,7 +610,7 @@ The implementation parallelizes over individuals using OpenMP:
 
 *Code reference: [mnlogit.cpp:85-183](../src/mnlogit.cpp#L85-L183)*
 
-### 8.4 Negated Objectives
+### 11.4 Negated Objectives
 
 The C++ functions return:
 - $-\ell(\theta)$ (negated log-likelihood)
