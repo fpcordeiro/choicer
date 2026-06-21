@@ -32,11 +32,12 @@
 #'   or a custom function. See \code{\link{run_mnlogit}} for details.
 #' @param control List of optimizer-specific control parameters.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
-#'   equal weights are used.
+#'   equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
 #'   weights (convenience workflow only). The column must be constant within each
 #'   \code{id_col} (one weight per choice situation) and is collapsed accordingly.
-#'   Mutually exclusive with \code{weights}. Used for choice-based / WESML
+#'   Mutually exclusive with \code{weights}. All weights must be finite and strictly
+#'   positive. Used for choice-based / WESML
 #'   weighting; pair with \code{se_method = "sandwich"} for valid inference.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
 #' @param include_outside_option Logical whether to include an outside option
@@ -251,6 +252,16 @@ run_nestlogit <- function(
     NULL
   }
   if (!is.null(cs_meta) && !weights_nonuniform) {
+    if (has_input) {
+      stop("`input_data` is flagged as a WESML choice-based sample (it carries ",
+           "`choice_sampling` provenance), but the resolved weights are uniform. ",
+           "Fitting would produce an invalid unweighted estimator mislabeled as ",
+           "WESML. To proceed, either bake the non-uniform WESML weights into ",
+           "`input_data` via prepare_nl_data(weights = ) / prepare_nl_data(weights_col = ), ",
+           "or, if you deliberately want an unweighted fit, strip the provenance with ",
+           "`attr(input_data, \"choice_sampling\") <- NULL`.",
+           call. = FALSE)
+    }
     warning("WESML provenance is present but the applied weights are uniform; the fit ",
             "is effectively unweighted and is NOT a WESML-corrected estimator.",
             call. = FALSE)
@@ -357,11 +368,11 @@ run_nestlogit <- function(
 #' @param covariate_cols Vector of names of columns to be used as covariates.
 #' @param nest_col Name of the column mapping each alternative to its nest.
 #'   Every alternative must belong to exactly one nest.
-#' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.
+#' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
 #'   weights. The column must be constant within each \code{id_col} (one weight
 #'   per choice situation) and is collapsed accordingly. Mutually exclusive with
-#'   \code{weights}.
+#'   \code{weights}. All weights must be finite and strictly positive.
 #' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @returns A \code{choicer_data_nl} object (list) containing:

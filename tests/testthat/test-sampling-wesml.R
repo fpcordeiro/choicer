@@ -743,3 +743,145 @@ test_that("MNL/NL provenance recorded and summary prints sandwich + WESML labels
   expect_true(any(grepl("Sandwich \\(robust\\)", out_nl)))
   expect_true(any(grepl("WESML choice-based", out_nl)))
 })
+
+# --- (g) Fix A: weights must be finite and strictly positive -----------------
+
+test_that("prepare_*_data reject non-positive and non-finite weights", {
+  mnl <- data.table(
+    id     = rep(1:4, each = 2),
+    alt    = rep(c(1L, 2L), 4),
+    x1     = rnorm(8),
+    choice = c(1, 0, 1, 0, 0, 1, 0, 1)
+  )
+  nl <- data.table::copy(mnl)
+  nl[, nest := ifelse(alt <= 1, "A", "B")]
+  mxl <- data.table::copy(mnl)
+  mxl[, w1 := rnorm(8)]
+
+  # Zero weight.
+  expect_error(
+    prepare_mnl_data(mnl, "id", "alt", "choice", "x1", weights = c(1, 0, 1, 1)),
+    "strictly positive"
+  )
+  expect_error(
+    prepare_nl_data(nl, "id", "alt", "choice", "x1", "nest",
+                    weights = c(1, 0, 1, 1)),
+    "strictly positive"
+  )
+  expect_error(
+    prepare_mxl_data(mxl, "id", "alt", "choice", "x1", "w1",
+                     weights = c(1, 0, 1, 1)),
+    "strictly positive"
+  )
+
+  # Negative weight.
+  expect_error(
+    prepare_mnl_data(mnl, "id", "alt", "choice", "x1", weights = c(1, -2, 1, 1)),
+    "strictly positive"
+  )
+  expect_error(
+    prepare_nl_data(nl, "id", "alt", "choice", "x1", "nest",
+                    weights = c(1, -2, 1, 1)),
+    "strictly positive"
+  )
+  expect_error(
+    prepare_mxl_data(mxl, "id", "alt", "choice", "x1", "w1",
+                     weights = c(1, -2, 1, 1)),
+    "strictly positive"
+  )
+
+  # Non-finite weight (NA and Inf).
+  expect_error(
+    prepare_mnl_data(mnl, "id", "alt", "choice", "x1", weights = c(1, NA, 1, 1)),
+    "finite"
+  )
+  expect_error(
+    prepare_nl_data(nl, "id", "alt", "choice", "x1", "nest",
+                    weights = c(1, Inf, 1, 1)),
+    "finite"
+  )
+  expect_error(
+    prepare_mxl_data(mxl, "id", "alt", "choice", "x1", "w1",
+                     weights = c(1, NA, 1, 1)),
+    "finite"
+  )
+
+  # Uniform default weights are accepted.
+  expect_silent(prepare_mnl_data(mnl, "id", "alt", "choice", "x1"))
+})
+
+# --- (h) Fix B: advanced input_data + WESML provenance + uniform weights errors
+
+test_that("advanced-mode WESML provenance with uniform weights errors (MNL/NL/MXL)", {
+  skip_on_cran()
+  skip_on_ci()
+
+  # MNL: prepare WITHOUT weights (uniform), then attach WESML provenance.
+  s_mnl <- make_cb_mnl(seed = 84)
+  cs_mnl <- attr(s_mnl, "choice_sampling")
+  prep_mnl <- prepare_mnl_data(s_mnl, "id", "alt", "choice", c("x1", "x2"))
+  attr(prep_mnl, "choice_sampling") <- cs_mnl
+  expect_error(
+    run_mnlogit(input_data = prep_mnl, se_method = "sandwich"),
+    "choice_sampling"
+  )
+  # Stripping the provenance lets the unweighted fit proceed.
+  attr(prep_mnl, "choice_sampling") <- NULL
+  expect_silent(suppressMessages(
+    run_mnlogit(input_data = prep_mnl, se_method = "hessian")
+  ))
+
+  # NL.
+  s_nl <- make_cb_nl(seed = 94)
+  cs_nl <- attr(s_nl, "choice_sampling")
+  prep_nl <- prepare_nl_data(s_nl, "id", "alt", "choice", c("x1", "x2"), "nest")
+  attr(prep_nl, "choice_sampling") <- cs_nl
+  expect_error(
+    run_nestlogit(input_data = prep_nl, se_method = "sandwich"),
+    "choice_sampling"
+  )
+  attr(prep_nl, "choice_sampling") <- NULL
+  expect_silent(suppressMessages(
+    run_nestlogit(input_data = prep_nl, se_method = "hessian")
+  ))
+
+  # MXL.
+  s_mxl <- make_cb_sample(seed = 76)
+  cs_mxl <- attr(s_mxl, "choice_sampling")
+  prep_mxl <- prepare_mxl_data(s_mxl, "id", "alt", "choice", "x1", "w1")
+  attr(prep_mxl, "choice_sampling") <- cs_mxl
+  ed <- get_halton_normals(20L, prep_mxl$N, ncol(prep_mxl$W))
+  expect_error(
+    run_mxlogit(input_data = prep_mxl, eta_draws = ed, se_method = "sandwich"),
+    "choice_sampling"
+  )
+  attr(prep_mxl, "choice_sampling") <- NULL
+  expect_silent(suppressMessages(
+    run_mxlogit(input_data = prep_mxl, eta_draws = ed, se_method = "hessian")
+  ))
+})
+
+test_that("advanced-mode WESML provenance with non-uniform weights still fits", {
+  skip_on_cran()
+  skip_on_ci()
+
+  # Weights baked into input_data (non-uniform) + provenance => valid WESML fit.
+  s_mnl <- make_cb_mnl(seed = 85)
+  prep_mnl <- prepare_mnl_data(s_mnl, "id", "alt", "choice", c("x1", "x2"),
+                               weights_col = ".wesml_weight")
+  expect_false(is.null(attr(prep_mnl, "choice_sampling")))
+  fit_mnl <- suppressWarnings(suppressMessages(
+    run_mnlogit(input_data = prep_mnl, se_method = "sandwich")
+  ))
+  expect_equal(fit_mnl$choice_sampling$scheme, "wesml")
+  expect_true(isTRUE(fit_mnl$choice_sampling$weights_applied))
+
+  s_nl <- make_cb_nl(seed = 95)
+  prep_nl <- prepare_nl_data(s_nl, "id", "alt", "choice", c("x1", "x2"), "nest",
+                             weights_col = ".wesml_weight")
+  fit_nl <- suppressWarnings(suppressMessages(
+    run_nestlogit(input_data = prep_nl, se_method = "sandwich")
+  ))
+  expect_equal(fit_nl$choice_sampling$scheme, "wesml")
+  expect_true(isTRUE(fit_nl$choice_sampling$weights_applied))
+})

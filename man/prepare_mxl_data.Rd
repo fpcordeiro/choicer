@@ -31,7 +31,7 @@ prepare_mxl_data(
 
 \item{random_var_cols}{Vector of names of columns to be used as random variables}
 
-\item{weights}{Optional vector of weights for each choice situation. If NULL, equal weights are used.}
+\item{weights}{Optional vector of weights for each choice situation. If NULL, equal weights are used. All weights must be finite and strictly positive.}
 
 \item{outside_opt_label}{Label for the outside option (if any). If NULL, no outside option is assumed.}
 
@@ -39,7 +39,7 @@ prepare_mxl_data(
 
 \item{rc_correlation}{Logical indicating whether random coefficients are correlated. Default is FALSE.}
 
-\item{weights_col}{Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation). Mutually exclusive with \code{weights}.}
+\item{weights_col}{Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation, finite and strictly positive). Mutually exclusive with \code{weights}.}
 }
 \value{
 A \code{choicer_data_mxl} object (list) containing:

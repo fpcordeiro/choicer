@@ -134,7 +134,7 @@ log-normal parameterization does not admit a closed-form back-transform
 under multiplicative scaling.}
 
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
-equal weights are used.}
+equal weights are used. All weights must be finite and strictly positive.}
 
 \item{outside_opt_label}{Label for the outside option (convenience workflow).}
 
@@ -168,7 +168,8 @@ the returned object for post-estimation functions.}
 instead.}
 
 \item{weights_col}{Optional name of a column in \code{data} holding a per-row
-weight (constant within each choice situation). Mutually exclusive with
+weight (constant within each choice situation, finite and strictly positive).
+Mutually exclusive with
 \code{weights}; the recommended way to pass WESML weights from
 \code{\link{sample_by_choice}} / \code{\link{wesml_weights}}, since
 alignment is by id rather than by position. Convenience workflow only. If
