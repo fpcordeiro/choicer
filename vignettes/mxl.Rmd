@@ -69,6 +69,13 @@ fit <- run_mxlogit(
 summary(fit)
 ```
 
+This vignette uses `se_method = "bhhh"` because the outer-product calculation is
+fast and keeps package-build time short. For final empirical work, compare it
+with the default analytical-Hessian standard errors; when the data come from a
+choice-based or otherwise weighted sample, use `se_method = "sandwich"` so the
+reported covariance is the robust WESML sandwich rather than the inverse weighted
+Hessian.
+
 > **Tip.** For real applications increase the number of draws (`S`) until your
 > estimates are stable, and keep `scale_vars = "sd"`. If the solver struggles,
 > pass an explicit `theta_init` (for example the MNL coefficients) and bounds on

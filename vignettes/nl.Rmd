@@ -16,8 +16,12 @@ Nested logit groups alternatives into *nests* of close substitutes. Within a
 nest, alternatives share an unobserved component, so substitution is stronger
 inside a nest than across nests — the independence-of-irrelevant-alternatives
 (IIA) property holds within nests but not between them. Each nest has a
-dissimilarity parameter λ in (0, 1\]: smaller λ means tighter substitution
-inside the nest.
+positive dissimilarity parameter λ. The usual random-utility interpretation of
+nested logit focuses on `0 < λ <= 1`: λ = 1 gives the MNL limit, and smaller λ
+means tighter substitution inside the nest. choicer imposes λ > 0 rather than an
+upper bound. Estimates above one are mathematically computable but imply negative
+within-nest correlation and should be treated as evidence against the proposed
+nesting structure, not as the usual "close substitutes" interpretation.
 
 Think of nested logit as the **parsimonious middle ground** between the
 multinomial and mixed logits. It buys a controlled departure from IIA — genuine

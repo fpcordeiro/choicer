@@ -1,0 +1,217 @@
+---
+title: "Choice-based sampling and WESML weights"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Choice-based sampling and WESML weights}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+Choice data are often sampled by outcome. A hospital-choice researcher may
+oversample rare hospitals; a school-choice researcher may sample the same number
+of students from each enrolled school; a stated-preference analyst may balance
+observed choices by design. In these data the sample choice shares are not the
+population choice shares. Treating the sample as random therefore changes the
+likelihood target.
+
+Manski and Lerman's (1977) weighted exogenous sample maximum likelihood (WESML)
+correction weights each choice situation by
+
+$$
+w_i = \frac{Q_{j(i)}}{H_{j(i)}},
+$$
+
+where $j(i)$ is the alternative chosen by situation $i$, $Q_j$ is the population
+share choosing alternative $j$, and $H_j$ is the corresponding sample share.
+choicer provides two helpers:
+
+- `sample_by_choice()` draws a choice-based sample from a population frame and
+  attaches WESML weights.
+- `wesml_weights()` computes the same weights when you already have a sample and
+  know the population shares `Q`.
+
+```{r setup}
+library(choicer)
+library(data.table)
+set_num_threads(2)
+```
+
+## Build a population
+
+For exposition, start from a simulated population. In empirical work, the
+population shares `Q` usually come from administrative totals, market shares, or
+survey weights external to the choice-based estimation sample.
+
+```{r population}
+sim <- simulate_mnl_data(
+  N = 4000,
+  J = 4,
+  seed = 11,
+  outside_option = FALSE,
+  vary_choice_set = FALSE
+)
+
+pop <- as.data.table(sim$data)
+Q <- prop.table(table(pop[choice == 1, alt]))
+round(Q, 3)
+```
+
+## Draw a choice-based sample
+
+Now sample the same number of choice situations from each chosen alternative.
+This keeps whole choice situations together: if an id is sampled, all of its
+alternative rows are retained.
+
+```{r sample}
+cb <- sample_by_choice(
+  pop,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice",
+  n_per_alt = 400L,
+  seed = 12L
+)
+
+strata <- sort(names(attr(cb, "Q")))
+rbind(
+  population = attr(cb, "Q")[strata],
+  sample     = attr(cb, "H")[strata]
+) |> round(3)
+
+cb[choice == 1, .(id, chosen_alt = alt, .wesml_weight)][1:8]
+```
+
+The sample choice shares are deliberately equalized, but the attached weights
+restore the population shares in the weighted likelihood. The weights are
+constant within id and repeated across that id's alternative rows.
+
+## Weighted point estimates
+
+The difference between an unweighted fit and a WESML fit is easiest to see with a
+fast MNL example. The population fit is not available in ordinary applications;
+it is included here only as a benchmark because this vignette simulated the full
+population.
+
+```{r fit-mnl}
+fit_pop <- run_mnlogit(
+  data = pop,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice",
+  covariate_cols = c("x1", "x2")
+)
+
+fit_unweighted <- run_mnlogit(
+  data = cb,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice",
+  covariate_cols = c("x1", "x2")
+)
+
+id_weights <- unique(cb[, .(id, .wesml_weight)])[order(id)]
+
+fit_wesml <- run_mnlogit(
+  data = cb,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice",
+  covariate_cols = c("x1", "x2"),
+  weights = id_weights$.wesml_weight
+)
+
+coef_compare <- cbind(
+  population_sample = coef(fit_pop),
+  choice_sample_unweighted = coef(fit_unweighted),
+  choice_sample_wesml = coef(fit_wesml)
+)
+
+round(coef_compare, 3)
+
+share_compare <- rbind(
+  population_sample = drop(predict(fit_pop, type = "shares")),
+  choice_sample_unweighted = drop(predict(fit_unweighted, type = "shares")),
+  choice_sample_wesml = drop(predict(fit_wesml, type = "shares"))
+)
+colnames(share_compare) <- as.character(fit_pop$alt_mapping[[2]])
+round(share_compare, 3)
+```
+
+The unweighted estimator treats the equalized sample shares as population
+shares. WESML reweights the sampled choice situations back to the population
+choice shares; with ASCs in the model, the correction is especially visible in
+the alternative-specific constants and fitted shares. In a single finite sample
+the WESML estimates need not be closer to the population benchmark parameter by
+parameter, but they target the population likelihood under the choice-based
+sampling design.
+
+`run_mnlogit()` accepts WESML weights through the `weights` argument. The example
+above sorts the id-level weights because `prepare_mnl_data()` sorts choice
+situations by id before estimation.
+
+## Mixed logit inference
+
+For mixed logit, pass the row-level weight column directly and request the
+robust sandwich covariance:
+
+```{r mxl-template, eval = FALSE}
+fit_mxl <- run_mxlogit(
+  data = cb,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice",
+  covariate_cols = "x1",
+  random_var_cols = "x2",
+  weights_col = ".wesml_weight",
+  se_method = "sandwich",
+  S = 200L
+)
+```
+
+The distinction matters. With non-uniform WESML weights, the inverse weighted
+Hessian is not the appropriate covariance estimator. The sandwich uses the
+weighted Hessian as bread and the squared-weight outer product of scores as
+meat; it is invariant to arbitrary rescaling of the weights.
+
+If the data came from `sample_by_choice()`, choicer records a
+`choice_sampling` attribute and the weight column name. The explicit
+`weights_col` argument is still recommended in scripts because it makes the
+estimation target visible.
+
+## Starting from an existing sample
+
+When the choice-based sample already exists, provide the population shares `Q`
+directly:
+
+```{r attach}
+cb2 <- copy(cb)
+cb2[, .wesml_weight := NULL]
+
+cb2 <- wesml_weights(
+  cb2,
+  id_col = "id",
+  alt_col = "alt",
+  choice_col = "choice",
+  Q = attr(cb, "Q"),
+  attach = TRUE
+)
+
+attr(cb2, "choice_sampling")
+```
+
+The names of `Q` must match the chosen-alternative strata exactly after coercion
+to character. This strict matching is intentional: silently dropping a realized
+stratum would change the target population.
+
+## References
+
+Manski, C. F. and Lerman, S. R. (1977). The estimation of choice probabilities
+from choice based samples. *Econometrica*, 45(8), 1977-1988.
+
+Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
+Cambridge University Press, Section 3.7.
