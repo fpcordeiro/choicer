@@ -39,6 +39,7 @@
     <li><a class="dropdown-item" href="../articles/mxl.html">Mixed logit</a></li>
     <li><a class="dropdown-item" href="../articles/nl.html">Nested logit</a></li>
     <li><a class="dropdown-item" href="../articles/mnp.html">Bayesian multinomial probit</a></li>
+    <li><a class="dropdown-item" href="../articles/wesml.html">Choice-based sampling and WESML</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>The math behind choicer</h6></li>
     <li><a class="dropdown-item" href="../articles/multinomial_logit_math.html">Multinomial logit (math)</a></li>
@@ -76,10 +77,12 @@
 
     
     
-<p>The multinomial probit (MNP) replaces logit’s restrictive error
-structure with a <em>full multivariate-normal</em> covariance, so it can
-capture rich correlation between alternatives without imposing IIA.
-choicer estimates it the Bayesian way: a Gibbs sampler with data
+<p>The multinomial probit (MNP) replaces logit’s Type-I extreme-value
+error structure with a multivariate-normal covariance for utility
+differences. That covariance can encode rich substitution patterns
+across alternatives, but the extra flexibility is bought with scale
+normalization, covariance parameters, and MCMC diagnostics. choicer
+estimates the model the Bayesian way: a Gibbs sampler with data
 augmentation, written in C++ with a reproducible, thread-safe random
 number generator.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
@@ -106,8 +109,9 @@ errors and known parameters.</p>
 <h2 id="run-the-sampler">Run the sampler<a class="anchor" aria-label="anchor" href="#run-the-sampler"></a>
 </h2>
 <p><code><a href="../reference/run_mnprobit.html">run_mnprobit()</a></code> returns posterior draws. The settings
-below keep this vignette quick; for real work use a longer chain and
-inspect convergence carefully.</p>
+below keep this vignette quick; for real work use longer chains,
+multiple starting values, and convergence diagnostics before
+interpreting posterior summaries.</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/base/Random.html" class="external-link">set.seed</a></span><span class="op">(</span><span class="fl">3</span><span class="op">)</span></span>
 <span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/run_mnprobit.html">run_mnprobit</a></span><span class="op">(</span></span>
@@ -118,7 +122,7 @@ inspect convergence carefully.</p>
 <span>  covariate_cols <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x1"</span>, <span class="st">"x2"</span><span class="op">)</span>,</span>
 <span>  mcmc           <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>R <span class="op">=</span> <span class="fl">4000</span>, burn <span class="op">=</span> <span class="fl">1000</span>, thin <span class="op">=</span> <span class="fl">2</span><span class="op">)</span></span>
 <span><span class="op">)</span></span>
-<span><span class="co">#&gt; MCMC run time 0h:0m:0.68s</span></span>
+<span><span class="co">#&gt; MCMC run time 0h:0m:0.69s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/summary.html" class="external-link">summary</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Bayesian Multinomial Probit (MNP) model</span></span>
 <span><span class="co">#&gt; </span></span>
@@ -142,15 +146,22 @@ inspect convergence carefully.</p>
 <span><span class="co">#&gt; Base alternative: 1 </span></span>
 <span><span class="co">#&gt; Draws kept: 1500 (R = 4000, burn = 1000, thin = 2, seed = 721735354)</span></span>
 <span><span class="co">#&gt; N: 2000  | Parameters: 4 </span></span>
-<span><span class="co">#&gt; Sampling time: 0.68 s</span></span>
+<span><span class="co">#&gt; Sampling time: 0.69 s</span></span>
 <span><span class="co">#&gt; Identification: per-draw normalization by sigma_11 (McCulloch-Rossi 1994).</span></span></code></pre></div>
 <p>The <code>Sigma</code> entries are the error-covariance parameters —
 the flexibility that distinguishes probit from logit. They are
 identified only up to scale, so choicer reports them on the normalized
-scale where <code>Sigma_11 = 1</code>.</p>
+scale where <code>Sigma_11 = 1</code>. The prior is placed on the
+unrestricted covariance used inside the Gibbs sampler; the reported
+posterior summaries are computed after normalizing each kept draw.</p>
+<p>For empirical work, the covariance matrix should be read as a
+maintained substitution structure unless the data contain enough
+variation to discipline it. The MNP is attractive when flexible error
+correlation is the central object, but with many alternatives its
+parameter count rises quickly.</p>
 </div>
 <div class="section level2">
-<h2 id="posterior-recovers-the-truth">Posterior recovers the truth<a class="anchor" aria-label="anchor" href="#posterior-recovers-the-truth"></a>
+<h2 id="compare-posterior-summaries-with-the-truth">Compare posterior summaries with the truth<a class="anchor" aria-label="anchor" href="#compare-posterior-summaries-with-the-truth"></a>
 </h2>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/recovery_table.html">recovery_table</a></span><span class="op">(</span><span class="va">fit</span>, <span class="va">sim</span><span class="op">$</span><span class="va">true_params</span><span class="op">)</span></span>
@@ -173,6 +184,11 @@ scale where <code>Sigma_11 = 1</code>.</p>
 <span><span class="co">#&gt; 5:   1.0000   1.0000   TRUE</span></span>
 <span><span class="co">#&gt; 6:   0.1561   0.6869   TRUE</span></span>
 <span><span class="co">#&gt; 7:   0.8730   1.9691   TRUE</span></span></code></pre></div>
+<p>In this simulated example the posterior summaries line up with the
+parameters that generated the data. As with the frequentist recovery
+vignettes, this is an illustration rather than a proof: what matters in
+repeated use is posterior coverage, mixing, and sensitivity to prior and
+normalization choices.</p>
 </div>
 <div class="section level2">
 <h2 id="a-quick-mcmc-diagnostic">A quick MCMC diagnostic<a class="anchor" aria-label="anchor" href="#a-quick-mcmc-diagnostic"></a>

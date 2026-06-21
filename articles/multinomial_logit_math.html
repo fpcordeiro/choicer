@@ -39,6 +39,7 @@
     <li><a class="dropdown-item" href="../articles/mxl.html">Mixed logit</a></li>
     <li><a class="dropdown-item" href="../articles/nl.html">Nested logit</a></li>
     <li><a class="dropdown-item" href="../articles/mnp.html">Bayesian multinomial probit</a></li>
+    <li><a class="dropdown-item" href="../articles/wesml.html">Choice-based sampling and WESML</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>The math behind choicer</h6></li>
     <li><a class="dropdown-item" href="../articles/multinomial_logit_math.html">Multinomial logit (math)</a></li>
@@ -1059,7 +1060,7 @@ fact chosen
 <h2 id="implementation-details-1">11. Implementation Details<a class="anchor" aria-label="anchor" href="#implementation-details-1"></a>
 </h2>
 <div class="section level3">
-<h3 id="parameter-vector-structure">8.1 Parameter Vector Structure<a class="anchor" aria-label="anchor" href="#parameter-vector-structure"></a>
+<h3 id="parameter-vector-structure">11.1 Parameter Vector Structure<a class="anchor" aria-label="anchor" href="#parameter-vector-structure"></a>
 </h3>
 <p>The full parameter vector
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mi>θ</mi><annotation encoding="application/x-tex">\theta</annotation></semantics></math>
@@ -1106,7 +1107,7 @@ with outside option.</p>
 <p><em>Code reference: <a href="../src/mnlogit.cpp#L50-L70">mnlogit.cpp:50-70</a></em></p>
 </div>
 <div class="section level3">
-<h3 id="data-organization">8.2 Data Organization<a class="anchor" aria-label="anchor" href="#data-organization"></a>
+<h3 id="data-organization">11.2 Data Organization<a class="anchor" aria-label="anchor" href="#data-organization"></a>
 </h3>
 <ul>
 <li>
@@ -1134,7 +1135,7 @@ Used for efficient indexing into the stacked data:
 </ul>
 </div>
 <div class="section level3">
-<h3 id="openmp-parallelization">8.3 OpenMP Parallelization<a class="anchor" aria-label="anchor" href="#openmp-parallelization"></a>
+<h3 id="openmp-parallelization">11.3 OpenMP Parallelization<a class="anchor" aria-label="anchor" href="#openmp-parallelization"></a>
 </h3>
 <p>The implementation parallelizes over individuals using OpenMP: - Each
 thread maintains local accumulators for log-likelihood, gradient, and
@@ -1144,7 +1145,7 @@ for load balancing: <code>#pragma omp for schedule(dynamic)</code></p>
 <p><em>Code reference: <a href="../src/mnlogit.cpp#L85-L183">mnlogit.cpp:85-183</a></em></p>
 </div>
 <div class="section level3">
-<h3 id="negated-objectives">8.4 Negated Objectives<a class="anchor" aria-label="anchor" href="#negated-objectives"></a>
+<h3 id="negated-objectives">11.4 Negated Objectives<a class="anchor" aria-label="anchor" href="#negated-objectives"></a>
 </h3>
 <p>The C++ functions return: -
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>−</mi><mi>ℓ</mi><mo stretchy="false" form="prefix">(</mo><mi>θ</mi><mo stretchy="false" form="postfix">)</mo></mrow><annotation encoding="application/x-tex">-\ell(\theta)</annotation></semantics></math>

@@ -122,7 +122,7 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 199:    50     3  1.8152284 -0.2556077      B      0
 #> 200:    50     4  0.1288214  0.9310329      B      1
 fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 shares <- nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
   fit$data$M, fit$data$weights, fit$data$nest_idx, use_asc = TRUE)
 shares

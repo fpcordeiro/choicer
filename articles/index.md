@@ -10,6 +10,8 @@
   IIA](https://fpcordeiro.github.io/choicer/articles/nl.md):
 - [Bayesian multinomial
   probit](https://fpcordeiro.github.io/choicer/articles/mnp.md):
+- [Choice-based sampling and WESML
+  weights](https://fpcordeiro.github.io/choicer/articles/wesml.md):
 
 ### The math behind choicer
 

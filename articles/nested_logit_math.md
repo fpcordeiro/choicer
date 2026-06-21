@@ -83,8 +83,18 @@ governs within-nest substitution:
   within the nest.
 - $`0 < \lambda_k < 1`$ indicates positive within-nest correlation (the
   typical case).
-- $`\lambda_k > 1`$ is theoretically permissible but implies negative
-  correlation.
+- $`\lambda_k > 1`$ is mathematically evaluable in the implemented
+  likelihood but lies outside the usual positive-correlation
+  nested-logit interpretation; it implies negative within-nest
+  correlation and raises the standard random-utility regularity concerns
+  that motivate the common $`0 < \lambda_k \leq 1`$ restriction.
+
+The optimizer in
+[`run_nestlogit()`](https://fpcordeiro.github.io/choicer/reference/run_nestlogit.md)
+currently imposes the lower bound $`\lambda_k > 0`$ but does not impose
+$`\lambda_k \leq 1`$. An estimate above one should therefore be read as
+a diagnostic about the nesting tree or maintained assumptions, not as
+evidence of especially strong within-nest substitution.
 
 **Singleton nests** (nests with exactly one alternative) have
 $`\lambda_k`$ fixed to 1 and are not estimated. Only non-singleton nests

@@ -120,12 +120,24 @@ diversion_ratios(fit)
 ```
 
 The own-cost elasticities sit on the diagonal; off-diagonal entries are
-the cross-elasticities. Because this is a plain logit, substitution
-follows the independence-of-irrelevant-alternatives (IIA) property —
-diversion is share-proportional. (Relaxing IIA is exactly what the
-[nested logit](https://fpcordeiro.github.io/choicer/articles/nl.md) and
-[mixed logit](https://fpcordeiro.github.io/choicer/articles/mxl.md)
-vignettes are about.)
+the cross-elasticities. In this small example every traveller faces the
+same set of modes, so diversion is close to share-proportional — the
+textbook independence-of-irrelevant-alternatives (IIA) pattern of logit.
+That proportionality is an *individual-level* property, though, not a
+law of the model in aggregate: once covariates vary across choice
+situations the averaged diversion patterns move away from it (see the
+[MNL
+vignette](https://fpcordeiro.github.io/choicer/articles/mnl.html#a-note-on-iia)).
+Where the remaining limitations bite — substitution driven by
+*unobserved* tastes, within-group correlation, or individual-level
+counterfactuals — the [nested
+logit](https://fpcordeiro.github.io/choicer/articles/nl.md), [mixed
+logit](https://fpcordeiro.github.io/choicer/articles/mxl.md), and
+[multinomial
+probit](https://fpcordeiro.github.io/choicer/articles/mnp.md) change the
+source of substitution flexibility in different ways. Those mechanisms,
+and their identification costs, are summarized in [Choosing among logit
+models](#choosing-among-logit-models) below.
 
 ## Willingness to pay
 
@@ -179,6 +191,10 @@ cs1$mean_cs - cs0$mean_cs # change in mean consumer surplus
 ```
 
 The cheaper train fare raises expected consumer surplus, as it should.
+The number is a model-based demand calculation, not a causal estimate by
+itself: it inherits the maintained utility specification, the price
+coefficient, and the assumption that the counterfactual changes only the
+variables you changed in `newdata`.
 
 ## One interface, every model
 
@@ -206,6 +222,78 @@ Learn each model in its own vignette:
 - [Bayesian multinomial
   probit](https://fpcordeiro.github.io/choicer/articles/mnp.md) —
   flexible error covariance via MCMC
+
+## Choosing among logit models
+
+It is tempting to choose a model by asking “does it satisfy IIA?” — but
+that is the wrong first question. IIA can be defined for any
+choice-probability system, including market-wide shares. In
+microeconometric MNL, however, the primitive restriction is on
+**individual choice probabilities conditional on covariates**: a single
+decision-maker’s odds between two alternatives ignore all others.
+Aggregate shares need not satisfy the analogous market-level IIA
+property after averaging over heterogeneous consumers or choice
+situations. The mixed logit, for example, is built entirely from
+IIA-obeying logit kernels; its non-IIA aggregate behavior comes from
+averaging those kernels over heterogeneity.
+
+The mature econometric question is: **what variation identifies the
+substitution pattern needed for the object I want to report?** A demand
+model should be parsimonious and tractable, should match the
+substitution patterns disciplined by the data, and — hardest of all —
+should deliver credible substitution in counterfactuals you do not
+observe (a new product, a merger, a removed alternative). In a
+counterfactual there is no data to discipline who substitutes to what;
+the model’s structure does all the work, which is exactly why the choice
+of structure matters.
+
+The useful way to compare the models is to ask **where each one spends
+its assumptions** to generate flexible substitution:
+
+| Model | Source of flexible substitution | Cost / where it can bite |
+|----|----|----|
+| **Multinomial logit** | Observed heterogeneity in covariates $`X`$ | Maximally disciplined by data, but rigid: cannot represent substitution from *unobserved* taste correlation, and stays share-proportional for any individual-level counterfactual. |
+| **Nested logit** | Within-nest correlation in unobservables (one λ per nest) | Cheap, closed-form, globally well-behaved — but *you* must defend the nesting tree, and the model only allows correlation within the nests you draw. |
+| **Mixed logit** | A distribution $`f(\beta)`$ of tastes (unobserved heterogeneity) | Very flexible, but the flexibility is only useful where $`f`$ is identified — typically through panel choices, variation in choice sets and attributes across markets (BLP), or designed experiments. |
+| **Multinomial probit** | A covariance matrix for utility-difference errors | Flexible error correlation, but many covariance parameters, scale normalization, MCMC diagnostics, and substantial data demands. |
+
+A few principles fall out of this table:
+
+- **There is no free lunch.** Every relaxation of IIA buys flexibility
+  by spending an assumption somewhere — a nesting tree, a taste
+  distribution, an error covariance. You either pay with data (and
+  accept the MNL’s rigidity) or pay with structure (and own that
+  structure’s failure modes).
+
+- **Start from the estimand.** Own-price elasticities, diversion ratios,
+  WTP, logsum welfare, merger substitution and entry effects put
+  different burdens on the model. A specification that fits observed
+  shares can still deliver poor counterfactual diversion if the relevant
+  substitution margin is supplied by functional form rather than
+  empirical variation.
+
+- **Match the model to your variation.** The mixed logit’s random
+  coefficients and the probit’s covariance matrix are only as good as
+  the data that identify them. With a thin cross-section — one choice
+  per person, a fixed menu — prefer the MNL or a substantively motivated
+  nested logit; reserve richer heterogeneity for settings with repeated
+  choices, rich variation in choice sets and attributes across markets,
+  or experimental designs.
+
+- **Let the counterfactual drive the choice.** If your question hinges
+  on *who* substitutes to *what* (merger simulation, a differentiated
+  new entrant), the MNL’s proportional substitution is a liability and
+  the extra structure earns its keep. If you mainly need own-price
+  responses and clean welfare numbers on the observed menu, the MNL is
+  often the honest, robust baseline. The dangerous model is not always
+  the simple one; it is the flexible one whose flexibility is supplied
+  by assumptions the data cannot discipline.
+
+Each model’s own vignette develops these tradeoffs in detail:
+[MNL](https://fpcordeiro.github.io/choicer/articles/mnl.html#a-note-on-iia),
+[nested logit](https://fpcordeiro.github.io/choicer/articles/nl.md),
+[mixed
+logit](https://fpcordeiro.github.io/choicer/articles/mxl.html#no-free-lunch-the-flexibility-lives-in-the-tails).
 
 ## How choicer compares
 

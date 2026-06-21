@@ -39,6 +39,7 @@
     <li><a class="dropdown-item" href="../articles/mxl.html">Mixed logit</a></li>
     <li><a class="dropdown-item" href="../articles/nl.html">Nested logit</a></li>
     <li><a class="dropdown-item" href="../articles/mnp.html">Bayesian multinomial probit</a></li>
+    <li><a class="dropdown-item" href="../articles/wesml.html">Choice-based sampling and WESML</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>The math behind choicer</h6></li>
     <li><a class="dropdown-item" href="../articles/multinomial_logit_math.html">Multinomial logit (math)</a></li>
@@ -80,8 +81,28 @@
 substitutes. Within a nest, alternatives share an unobserved component,
 so substitution is stronger inside a nest than across nests — the
 independence-of-irrelevant-alternatives (IIA) property holds within
-nests but not between them. Each nest has a dissimilarity parameter λ in
-(0, 1]: smaller λ means tighter substitution inside the nest.</p>
+nests but not between them. Each nest has a positive dissimilarity
+parameter λ. The usual random-utility interpretation of nested logit
+focuses on <code>0 &lt; λ &lt;= 1</code>: λ = 1 gives the MNL limit, and
+smaller λ means tighter substitution inside the nest. choicer imposes λ
+&gt; 0 rather than an upper bound. Estimates above one are
+mathematically computable but imply negative within-nest correlation and
+should be treated as evidence against the proposed nesting structure,
+not as the usual “close substitutes” interpretation.</p>
+<p>Think of nested logit as the <strong>parsimonious middle
+ground</strong> between the multinomial and mixed logits. It buys a
+controlled departure from IIA — genuine within-nest correlation in the
+unobserved utility — at the cost of just one extra parameter per nest,
+and it stays globally well-behaved and cheap to estimate (a closed-form
+GEV likelihood, no simulation). The price you pay is a strong prior:
+<em>you</em> must specify the nesting tree in advance, and the model
+only permits correlation within the nests you draw. When the right
+grouping is obvious from the application (travel modes, product
+categories), that is a defensible restriction; when it is not, the
+result can be sensitive to how you nest. A good nested-logit application
+therefore treats the tree as an economic assumption, not as a tuning
+parameter chosen after looking at fit statistics. See <a href="choicer.html#choosing-among-logit-models">Choosing among logit
+models</a> for how this tradeoff compares with the alternatives.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/fpcordeiro/choicer" class="external-link">choicer</a></span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/set_num_threads.html">set_num_threads</a></span><span class="op">(</span><span class="fl">2</span><span class="op">)</span></span></code></pre></div>
@@ -199,6 +220,10 @@ structure automatically.</p>
 <span><span class="co">#&gt; 3 0.1533 0.1826 0.17416 0.00000 0.24129 0.24856</span></span>
 <span><span class="co">#&gt; 4 0.1319 0.1463 0.15263 0.20418 0.00000 0.18852</span></span>
 <span><span class="co">#&gt; 5 0.2123 0.2780 0.25917 0.31661 0.28378 0.00000</span></span></code></pre></div>
+<p>Those substitution patterns are credible only to the extent that the
+nesting tree is credible. If plausible alternative trees imply
+materially different diversion or welfare conclusions, that sensitivity
+is part of the empirical result rather than a nuisance to hide.</p>
 </div>
 <div class="section level2">
 <h2 id="share-inversion-with-blp">Share inversion with BLP<a class="anchor" aria-label="anchor" href="#share-inversion-with-blp"></a>

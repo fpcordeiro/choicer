@@ -26,6 +26,7 @@ draws (computed eagerly at fit time; no Hessian is involved)."></head><body>
     <li><a class="dropdown-item" href="../articles/mxl.html">Mixed logit</a></li>
     <li><a class="dropdown-item" href="../articles/nl.html">Nested logit</a></li>
     <li><a class="dropdown-item" href="../articles/mnp.html">Bayesian multinomial probit</a></li>
+    <li><a class="dropdown-item" href="../articles/wesml.html">Choice-based sampling and WESML</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>The math behind choicer</h6></li>
     <li><a class="dropdown-item" href="../articles/multinomial_logit_math.html">Multinomial logit (math)</a></li>
@@ -129,7 +130,7 @@ draws (computed eagerly at fit time; no Hessian is involved).</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 300:   100     3 -1.62561674  1.027004619      1</span>
 <span class="r-in"><span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="run_mnprobit.html">run_mnprobit</a></span><span class="op">(</span><span class="va">dt</span>, <span class="st">"id"</span>, <span class="st">"alt"</span>, <span class="st">"choice"</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x1"</span>, <span class="st">"x2"</span><span class="op">)</span>,</span></span>
 <span class="r-in"><span>                    mcmc <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>R <span class="op">=</span> <span class="fl">300</span>, burn <span class="op">=</span> <span class="fl">100</span><span class="op">)</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> MCMC run time 0h:0m:0.01s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> MCMC run time 0h:0m:0s</span>
 <span class="r-in"><span><span class="fu"><a href="https://rdrr.io/r/stats/vcov.html" class="external-link">vcov</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>                  x1            x2        ASC_2        ASC_3</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> x1     0.0073853773 -0.0007582553  0.002509169 -0.003137150</span>

@@ -1,9 +1,11 @@
 # Bayesian multinomial probit
 
-The multinomial probit (MNP) replaces logit’s restrictive error
-structure with a *full multivariate-normal* covariance, so it can
-capture rich correlation between alternatives without imposing IIA.
-choicer estimates it the Bayesian way: a Gibbs sampler with data
+The multinomial probit (MNP) replaces logit’s Type-I extreme-value error
+structure with a multivariate-normal covariance for utility differences.
+That covariance can encode rich substitution patterns across
+alternatives, but the extra flexibility is bought with scale
+normalization, covariance parameters, and MCMC diagnostics. choicer
+estimates the model the Bayesian way: a Gibbs sampler with data
 augmentation, written in C++ with a reproducible, thread-safe random
 number generator.
 
@@ -36,7 +38,8 @@ sim
 
 [`run_mnprobit()`](https://fpcordeiro.github.io/choicer/reference/run_mnprobit.md)
 returns posterior draws. The settings below keep this vignette quick;
-for real work use a longer chain and inspect convergence carefully.
+for real work use longer chains, multiple starting values, and
+convergence diagnostics before interpreting posterior summaries.
 
 ``` r
 
@@ -49,7 +52,7 @@ fit <- run_mnprobit(
   covariate_cols = c("x1", "x2"),
   mcmc           = list(R = 4000, burn = 1000, thin = 2)
 )
-#> MCMC run time 0h:0m:0.68s
+#> MCMC run time 0h:0m:0.69s
 summary(fit)
 #> Bayesian Multinomial Probit (MNP) model
 #> 
@@ -73,16 +76,24 @@ summary(fit)
 #> Base alternative: 1 
 #> Draws kept: 1500 (R = 4000, burn = 1000, thin = 2, seed = 721735354)
 #> N: 2000  | Parameters: 4 
-#> Sampling time: 0.68 s
+#> Sampling time: 0.69 s
 #> Identification: per-draw normalization by sigma_11 (McCulloch-Rossi 1994).
 ```
 
 The `Sigma` entries are the error-covariance parameters — the
 flexibility that distinguishes probit from logit. They are identified
 only up to scale, so choicer reports them on the normalized scale where
-`Sigma_11 = 1`.
+`Sigma_11 = 1`. The prior is placed on the unrestricted covariance used
+inside the Gibbs sampler; the reported posterior summaries are computed
+after normalizing each kept draw.
 
-## Posterior recovers the truth
+For empirical work, the covariance matrix should be read as a maintained
+substitution structure unless the data contain enough variation to
+discipline it. The MNP is attractive when flexible error correlation is
+the central object, but with many alternatives its parameter count rises
+quickly.
+
+## Compare posterior summaries with the truth
 
 ``` r
 
@@ -107,6 +118,12 @@ recovery_table(fit, sim$true_params)
 #> 6:   0.1561   0.6869   TRUE
 #> 7:   0.8730   1.9691   TRUE
 ```
+
+In this simulated example the posterior summaries line up with the
+parameters that generated the data. As with the frequentist recovery
+vignettes, this is an illustration rather than a proof: what matters in
+repeated use is posterior coverage, mixing, and sensitivity to prior and
+normalization choices.
 
 ## A quick MCMC diagnostic
 

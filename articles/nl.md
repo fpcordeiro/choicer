@@ -4,8 +4,30 @@ Nested logit groups alternatives into *nests* of close substitutes.
 Within a nest, alternatives share an unobserved component, so
 substitution is stronger inside a nest than across nests — the
 independence-of-irrelevant-alternatives (IIA) property holds within
-nests but not between them. Each nest has a dissimilarity parameter λ in
-(0, 1\]: smaller λ means tighter substitution inside the nest.
+nests but not between them. Each nest has a positive dissimilarity
+parameter λ. The usual random-utility interpretation of nested logit
+focuses on `0 < λ <= 1`: λ = 1 gives the MNL limit, and smaller λ means
+tighter substitution inside the nest. choicer imposes λ \> 0 rather than
+an upper bound. Estimates above one are mathematically computable but
+imply negative within-nest correlation and should be treated as evidence
+against the proposed nesting structure, not as the usual “close
+substitutes” interpretation.
+
+Think of nested logit as the **parsimonious middle ground** between the
+multinomial and mixed logits. It buys a controlled departure from IIA —
+genuine within-nest correlation in the unobserved utility — at the cost
+of just one extra parameter per nest, and it stays globally well-behaved
+and cheap to estimate (a closed-form GEV likelihood, no simulation). The
+price you pay is a strong prior: *you* must specify the nesting tree in
+advance, and the model only permits correlation within the nests you
+draw. When the right grouping is obvious from the application (travel
+modes, product categories), that is a defensible restriction; when it is
+not, the result can be sensitive to how you nest. A good nested-logit
+application therefore treats the tree as an economic assumption, not as
+a tuning parameter chosen after looking at fit statistics. See [Choosing
+among logit
+models](https://fpcordeiro.github.io/choicer/articles/choicer.html#choosing-among-logit-models)
+for how this tradeoff compares with the alternatives.
 
 ``` r
 
@@ -136,6 +158,11 @@ diversion_ratios(fit)
 #> 4 0.1319 0.1463 0.15263 0.20418 0.00000 0.18852
 #> 5 0.2123 0.2780 0.25917 0.31661 0.28378 0.00000
 ```
+
+Those substitution patterns are credible only to the extent that the
+nesting tree is credible. If plausible alternative trees imply
+materially different diversion or welfare conclusions, that sensitivity
+is part of the empirical result rather than a nuisance to hide.
 
 ## Share inversion with BLP
 

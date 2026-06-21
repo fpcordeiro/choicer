@@ -2,10 +2,28 @@
 
 The mixed (random-coefficients) logit lets tastes vary across people.
 Instead of a single coefficient on each random attribute, choicer
-estimates a *distribution* of coefficients, which relaxes the IIA
-property and allows realistic substitution patterns. Estimation is by
+estimates a *distribution* of coefficients. This can generate non-IIA
+unconditional substitution patterns, but only through the mixing
+distribution you specify and the data identify. Estimation is by
 simulated maximum likelihood using Halton draws, with the likelihood,
 gradient and Hessian evaluated in parallel C++.
+
+A useful way to see the mechanism: the mixed-logit probability is a
+logit kernel averaged over the taste distribution,
+$`P_{ij} = \int L_{ij}(\beta)\, f(\beta)\, d\beta`$, where
+$`L_{ij}(\beta) = \exp(X_{ij}\beta) / \sum_k \exp(X_{ik}\beta)`$.
+*Conditional on a draw* $`\beta`$, the kernel $`L_{ij}(\beta)`$ is an
+ordinary logit and obeys IIA. It is the **mixing** — integrating over
+$`\beta`$ — that removes the MNL’s IIA restriction from the
+unconditional probabilities. This is the mirror image of the multinomial
+logit, which mixes a logit kernel over *observed* heterogeneity; the
+mixed logit mixes it over *unobserved* heterogeneity. Either way,
+flexible substitution comes from averaging logit kernels across
+heterogeneity — the only question is whether that heterogeneity is
+observed in the data or inferred through an assumed distribution. For
+counterfactual work, that distinction is central: flexibility that is
+not identified by the available variation is flexibility supplied by
+functional form.
 
 ``` r
 
@@ -58,7 +76,7 @@ fit <- run_mxlogit(
   scale_vars      = "sd",           # condition the Hessian across blocks
   se_method       = "bhhh"
 )
-#> Optimization run time 0h:0m:1s
+#> Optimization run time 0h:0m:2s
 summary(fit)
 #> Mixed Logit (MXL) model
 #> 
@@ -85,9 +103,16 @@ summary(fit)
 #> AIC: 4889.67  | BIC: 4940.08 
 #> McFadden R2: 0.106 (adj: 0.102) | Hit rate: 0.452 
 #> N: 2000  | Parameters: 9 
-#> Optimization time: 1.43 s
+#> Optimization time: 1.51 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 ```
+
+This vignette uses `se_method = "bhhh"` because the outer-product
+calculation is fast and keeps package-build time short. For final
+empirical work, compare it with the default analytical-Hessian standard
+errors; when the data come from a choice-based or otherwise weighted
+sample, use `se_method = "sandwich"` so the reported covariance is the
+robust WESML sandwich rather than the inverse weighted Hessian.
 
 > **Tip.** For real applications increase the number of draws (`S`)
 > until your estimates are stable, and keep `scale_vars = "sd"`. If the
@@ -131,10 +156,13 @@ the `asc` rows are the alternative-specific constants.
 
 ## Substitution is no longer share-proportional
 
-Because tastes are heterogeneous, mixed logit breaks IIA: people who
-like one alternative tend to like its close substitutes, so demand
-diverts to similar alternatives rather than in proportion to shares.
-Diversion therefore depends on *which* attribute is changing, so
+Because tastes are heterogeneous, the unconditional mixed-logit
+probabilities no longer inherit the MNL’s share-proportional diversion
+formula. If the estimated mixing distribution captures economically
+meaningful unobserved tastes, people who value one alternative tend to
+value nearby substitutes, so demand diverts toward alternatives close on
+that latent margin. Diversion therefore depends on *which* attribute is
+changing, so
 [`diversion_ratios()`](https://fpcordeiro.github.io/choicer/reference/diversion_ratios.md)
 takes a `wrt_var`:
 
@@ -164,3 +192,48 @@ The rest of the toolkit —
 behaves exactly as in the [getting-started
 vignette](https://fpcordeiro.github.io/choicer/articles/choicer.md),
 integrating over the distribution of tastes automatically.
+
+## No free lunch: the flexibility lives in the tails
+
+The mixed logit is a genuine generalization of the MNL — if tastes are
+in fact homogeneous, the estimator simply returns a near-zero variance
+and you are back to a logit. So the issue is not that the random
+coefficients *impose* substitution patterns. The issue is
+**identification**: all of the model’s extra flexibility is carried by
+the mixing distribution $`f(\beta)`$, and $`f(\beta)`$ is hardest to pin
+down exactly where it matters most for substitution and welfare — in the
+**tails**.
+
+Two consequences are worth keeping in front of you:
+
+- **The tails drive the economics you report.** A lognormal price
+  coefficient puts a slice of the population at near-zero price
+  sensitivity, which can give a willingness-to-pay distribution with *no
+  finite mean* and explosive welfare numbers. An unbounded normal
+  coefficient implies a fraction of consumers with the *wrong sign* (who
+  prefer paying more). These artifacts come from the assumed shape of
+  $`f`$, not from the data, and the estimator will happily contort a
+  tail to match an aggregate moment.
+
+- **$`f(\beta)`$ is hard to identify and estimate in practice.** A
+  single cross-section of choices — one decision per person, a fixed
+  menu — carries little information about the spread of tastes. Reliable
+  estimation typically needs **repeated choices from the same
+  individual** (panel data), **substantial variation in choice sets or
+  attributes across markets** (the BLP setting), or the rich, designed
+  attribute variation of a stated-preference experiment. Without one of
+  these, the random-coefficient variances are weakly identified and the
+  estimates can be fragile.
+
+Practical defenses follow directly: report sensitivity to the number of
+draws, starting values, and distributional assumptions; compare
+substitution and welfare under a simpler baseline; and prefer **bounded
+or sign-constrained mixing distributions** (triangular, censored normal)
+so a tail cannot run away; **estimate in WTP-space** (Train & Weeks,
+2005) to sidestep the ratio-of-normals pathology; or use a
+**latent-class** specification when a handful of discrete types is more
+credible than a continuous distribution. None of these is free — each
+trades one assumption for another — but each spends the assumption where
+you can defend it. The broader tradeoff is laid out in [Choosing among
+logit
+models](https://fpcordeiro.github.io/choicer/articles/choicer.html#choosing-among-logit-models).

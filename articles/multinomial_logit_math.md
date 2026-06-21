@@ -778,7 +778,7 @@ choice is a hit when the outside good was in fact chosen ($`j_i = 0`$).
 
 ## 11. Implementation Details
 
-### 8.1 Parameter Vector Structure
+### 11.1 Parameter Vector Structure
 
 The full parameter vector $`\theta`$ is organized as:
 
@@ -793,7 +793,7 @@ to 0), or $`J_{asc} = J`$ with outside option.
 *Code reference:
 [mnlogit.cpp:50-70](https://fpcordeiro.github.io/choicer/src/mnlogit.cpp#L50-L70)*
 
-### 8.2 Data Organization
+### 11.2 Data Organization
 
 - **Design matrix $`X`$**: Stacked matrix of dimension
   $`(\sum_i M_i) \times K`$, where $`M_i`$ is the number of (inside)
@@ -805,7 +805,7 @@ to 0), or $`J_{asc} = J`$ with outside option.
 - **Prefix sums $`S`$**: Used for efficient indexing into the stacked
   data: $`S_i = \sum_{j < i} M_j`$
 
-### 8.3 OpenMP Parallelization
+### 11.3 OpenMP Parallelization
 
 The implementation parallelizes over individuals using OpenMP: - Each
 thread maintains local accumulators for log-likelihood, gradient, and
@@ -816,7 +816,7 @@ sections - Dynamic scheduling is used for load balancing:
 *Code reference:
 [mnlogit.cpp:85-183](https://fpcordeiro.github.io/choicer/src/mnlogit.cpp#L85-L183)*
 
-### 8.4 Negated Objectives
+### 11.4 Negated Objectives
 
 The C++ functions return: - $`-\ell(\theta)`$ (negated log-likelihood) -
 $`-\nabla\ell(\theta)`$ (negated gradient) - $`-\nabla^2\ell(\theta)`$

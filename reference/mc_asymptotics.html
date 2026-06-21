@@ -40,6 +40,7 @@ N(0, 1))."></head><body>
     <li><a class="dropdown-item" href="../articles/mxl.html">Mixed logit</a></li>
     <li><a class="dropdown-item" href="../articles/nl.html">Nested logit</a></li>
     <li><a class="dropdown-item" href="../articles/mnp.html">Bayesian multinomial probit</a></li>
+    <li><a class="dropdown-item" href="../articles/wesml.html">Choice-based sampling and WESML</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>The math behind choicer</h6></li>
     <li><a class="dropdown-item" href="../articles/multinomial_logit_math.html">Multinomial logit (math)</a></li>
@@ -188,15 +189,11 @@ raw z-moments without indicating an estimator defect.</p>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
@@ -206,16 +203,6 @@ raw z-moments without indicating an estimator defect.</p>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
@@ -224,6 +211,20 @@ raw z-moments without indicating an estimator defect.</p>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
 <span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>

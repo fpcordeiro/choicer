@@ -39,6 +39,7 @@
     <li><a class="dropdown-item" href="../articles/mxl.html">Mixed logit</a></li>
     <li><a class="dropdown-item" href="../articles/nl.html">Nested logit</a></li>
     <li><a class="dropdown-item" href="../articles/mnp.html">Bayesian multinomial probit</a></li>
+    <li><a class="dropdown-item" href="../articles/wesml.html">Choice-based sampling and WESML</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>The math behind choicer</h6></li>
     <li><a class="dropdown-item" href="../articles/multinomial_logit_math.html">Multinomial logit (math)</a></li>
@@ -277,8 +278,21 @@ corresponds to independent (MNL-like) alternatives within the nest.</li>
 indicates positive within-nest correlation (the typical case).</li>
 <li>
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>λ</mi><mi>k</mi></msub><mo>&gt;</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\lambda_k &gt; 1</annotation></semantics></math>
-is theoretically permissible but implies negative correlation.</li>
+is mathematically evaluable in the implemented likelihood but lies
+outside the usual positive-correlation nested-logit interpretation; it
+implies negative within-nest correlation and raises the standard
+random-utility regularity concerns that motivate the common
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0</mn><mo>&lt;</mo><msub><mi>λ</mi><mi>k</mi></msub><mo>≤</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">0 &lt; \lambda_k \leq 1</annotation></semantics></math>
+restriction.</li>
 </ul>
+<p>The optimizer in <code><a href="../reference/run_nestlogit.html">run_nestlogit()</a></code> currently imposes the
+lower bound
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>λ</mi><mi>k</mi></msub><mo>&gt;</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">\lambda_k &gt; 0</annotation></semantics></math>
+but does not impose
+<math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>λ</mi><mi>k</mi></msub><mo>≤</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\lambda_k \leq 1</annotation></semantics></math>.
+An estimate above one should therefore be read as a diagnostic about the
+nesting tree or maintained assumptions, not as evidence of especially
+strong within-nest substitution.</p>
 <p><strong>Singleton nests</strong> (nests with exactly one alternative)
 have
 <math display="inline" xmlns="http://www.w3.org/1998/Math/MathML"><semantics><msub><mi>λ</mi><mi>k</mi></msub><annotation encoding="application/x-tex">\lambda_k</annotation></semantics></math>
