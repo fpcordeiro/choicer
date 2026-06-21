@@ -83,12 +83,14 @@ It is worth being precise about what IIA is and where it bites, because the
 usual one-liner ("logit assumes IIA, so it's wrong") obscures more than it
 explains.
 
-**IIA is a property of the *individual* choice probabilities.** For a single
+**In micro MNL, IIA is imposed on individual conditional choice probabilities.**
+IIA can also be defined for aggregate shares or other choice-probability systems,
+but the logit restriction starts at the individual level. For a single
 decision-maker, the ratio of any two choice probabilities,
 $P_{ij}/P_{ik} = \exp(V_{ij} - V_{ik})$, depends only on the attributes of $j$
 and $k$ — never on what other alternatives exist or what they look like. That is
-the independence-of-irrelevant-alternatives axiom, and the MNL satisfies it by
-construction.
+the individual-level independence-of-irrelevant-alternatives restriction, and the
+MNL satisfies it by construction.
 
 **At the aggregate level the picture is different.** The diversion ratios and
 cross-elasticities reported above are sample averages over individuals. The
@@ -96,8 +98,9 @@ familiar share-proportional formula $DR(j\to k) = s_k / (1 - s_j)$ holds *only*
 when every individual faces the same covariates, so that $P_{ij}$ does not vary
 across $i$. As soon as covariates vary across choice situations — different
 attributes, demographics, or choice sets — the aggregate substitution patterns
-are **no longer share-proportional**, even though each individual still obeys
-IIA. (The diversion derivation in the
+are **no longer share-proportional** and need not satisfy a market-level IIA
+property, even though each individual conditional probability still obeys IIA.
+(The diversion derivation in the
 [math companion](multinomial_logit_math.html) makes this explicit.)
 
 So the MNL is more flexible in aggregate than "IIA" suggests — but only along
@@ -109,6 +112,13 @@ counterfactual — substitution remains rigidly proportional. That second point
 matters most for counterfactuals (a new product, a removed alternative), where
 there is no data to discipline the substitution pattern and the model's
 structure does all the work.
+
+That is why the MNL is best treated as a disciplined baseline rather than a straw
+man. If the variation in the data is rich enough to explain the substitution
+margin through observed attributes, the MNL can be the most transparent model. If
+the economics turns on unobserved closeness — products that share latent tastes,
+schools with unmeasured peer groups, hospitals with unobserved networks — a more
+structured model is doing substantive work, and that work needs to be defended.
 
 When those limitations bite — close substitutes, rich unobserved heterogeneity,
 counterfactuals that hinge on *who* substitutes to *what* — reach for the

@@ -20,6 +20,11 @@ the unit is drawn *conditional on the alternative it chose*, so the sample
 choice shares are not the population choice shares. Treating such a sample as
 random changes the likelihood target and, in general, biases the estimates.
 
+WESML fixes that sampling problem; it does not fix every econometric problem.
+The weighted likelihood still relies on the maintained utility specification and
+on whatever exogeneity assumptions justify interpreting the covariates,
+especially prices, as demand shifters rather than equilibrium outcomes.
+
 Manski and Lerman's (1977) weighted exogenous sample maximum likelihood (WESML)
 correction weights each choice situation by
 
