@@ -36,11 +36,21 @@
 #'   to the user's natural units via the delta method, so reported quantities
 #'   are invariant to this choice.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.
+#' @param weights_col Optional name of a column in \code{data} holding per-row
+#'   weights (convenience workflow only). The column must be constant within each
+#'   \code{id_col} (one weight per choice situation) and is collapsed accordingly.
+#'   Mutually exclusive with \code{weights}. Used for choice-based / WESML
+#'   weighting; pair with \code{se_method = "sandwich"} for valid inference.
 #' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param use_asc Logical indicating whether to include alternative-specific constants (ASCs) in the model.
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in the
 #'   returned object for \code{predict()} and post-estimation functions.
+#' @param se_method Method for computing standard errors: \code{"hessian"}
+#'   (default, analytical Hessian), \code{"bhhh"} (outer product of gradients),
+#'   or \code{"sandwich"} (robust Huber--White / WESML variance
+#'   \eqn{A^{-1} B A^{-1}}). Use \code{"sandwich"} under choice-based / WESML
+#'   weighting.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control} instead.
 #' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
@@ -74,11 +84,13 @@ run_mnlogit <- function(
     optimizer = NULL,
     control = list(),
     weights = NULL,
+    weights_col = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
     use_asc = TRUE,
     keep_data = TRUE,
     scale_vars = c("none", "sd", "mad", "iqr"),
+    se_method = c("hessian", "bhhh", "sandwich"),
     nloptr_opts = NULL
 ) {
   cl <- match.call()
@@ -91,16 +103,23 @@ run_mnlogit <- function(
   }
 
   scale_vars <- match.arg(scale_vars)
+  se_method <- match.arg(se_method)
 
   # --- Resolve input pathway --------------------------------------------------
   has_data <- !is.null(data)
   has_input <- !is.null(input_data)
+  cs_meta <- if (has_data) attr(data, "choice_sampling") else attr(input_data, "choice_sampling")
 
   if (has_data && has_input) {
     stop("Supply either 'data' (convenience) or 'input_data' (advanced), not both.")
   }
   if (!has_data && !has_input) {
     stop("Supply either 'data' (convenience) or 'input_data' (advanced).")
+  }
+  if (has_input && !is.null(weights_col)) {
+    stop("`weights_col` is only supported in the convenience (data) workflow. ",
+         "Bake weights into `input_data` via prepare_mnl_data(weights_col = ) ",
+         "or supply `weights` to prepare_mnl_data().")
   }
 
   if (has_data) {
@@ -110,9 +129,26 @@ run_mnlogit <- function(
       stop("Convenience workflow requires: id_col, alt_col, choice_col, ",
            "and covariate_cols.")
     }
+    # WESML provenance present but no weights supplied: auto-adopt the recorded
+    # weight column, or error -- never silently fit unweighted under a WESML label.
+    if (!is.null(cs_meta) && is.null(weights) && is.null(weights_col)) {
+      wn <- cs_meta$weight_name
+      if (!is.null(wn) && wn %in% names(data)) {
+        weights_col <- wn
+        message("Detected WESML choice-based-sampling provenance; applying attached ",
+                "weights from column '", wn, "'.")
+      } else {
+        stop("Data carries WESML choice-based-sampling provenance but no weights were ",
+             "supplied, and the recorded weight column (",
+             if (is.null(wn)) "unknown" else paste0("'", wn, "'"),
+             ") is not present in `data`. Pass `weights_col=` or `weights=` explicitly.",
+             call. = FALSE)
+      }
+    }
     input_list <- prepare_mnl_data(
       data, id_col, alt_col, choice_col, covariate_cols,
       weights = weights,
+      weights_col = weights_col,
       outside_opt_label = outside_opt_label,
       include_outside_option = include_outside_option
     )
@@ -187,18 +223,70 @@ run_mnlogit <- function(
   theta_hat <- opt$par
   names(theta_hat) <- param_names
 
-  # Compute vcov eagerly
-  hess <- mnl_loglik_hessian_parallel(
-    theta = theta_hat,
-    X = input_list$X,
-    alt_idx = input_list$alt_idx,
-    choice_idx = input_list$choice_idx,
-    M = input_list$M,
-    weights = input_list$weights,
-    use_asc = use_asc,
-    include_outside_option = input_list$include_outside_option
-  )
-  vcov_result <- invert_hessian(hess)
+  # Choice-based-sampling provenance and a guardrail for weighted inference.
+  weights_nonuniform <- length(unique(input_list$weights)) > 1
+  if (weights_nonuniform && se_method == "bhhh") {
+    warning("Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG ",
+            "standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is ",
+            "NOT a valid choice-based-sampling (WESML) correction; the correct ",
+            "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
+            "inference.",
+            call. = FALSE)
+  } else if (weights_nonuniform && se_method != "sandwich") {
+    warning("Non-uniform weights detected. If these are sampling/WESML ",
+            "weights, use se_method = 'sandwich' for valid inference.",
+            call. = FALSE)
+  }
+  choice_sampling <- if (!is.null(cs_meta)) {
+    utils::modifyList(as.list(cs_meta),
+                      list(se_method = se_method, weights_applied = weights_nonuniform))
+  } else if (weights_nonuniform) {
+    list(scheme = "user", se_method = se_method, weights_applied = TRUE)
+  } else {
+    NULL
+  }
+  if (!is.null(cs_meta) && !weights_nonuniform) {
+    warning("WESML provenance is present but the applied weights are uniform; the fit ",
+            "is effectively unweighted and is NOT a WESML-corrected estimator.",
+            call. = FALSE)
+  }
+
+  # Compute vcov eagerly using the selected SE method. For "sandwich"
+  # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
+  # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
+  # weight-free BHHH routine). Computed in scaled space; back-transform applies.
+  if (se_method == "sandwich") {
+    A_bread <- mnl_loglik_hessian_parallel(
+      theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+      choice_idx = input_list$choice_idx, M = input_list$M,
+      weights = input_list$weights, use_asc = use_asc,
+      include_outside_option = input_list$include_outside_option
+    )
+    B_meat <- mnl_bhhh_parallel(
+      theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+      choice_idx = input_list$choice_idx, M = input_list$M,
+      weights = input_list$weights^2, use_asc = use_asc,
+      include_outside_option = input_list$include_outside_option
+    )
+    vcov_result <- .sandwich_combine(A_bread, B_meat)
+  } else {
+    hess <- switch(
+      se_method,
+      hessian = mnl_loglik_hessian_parallel(
+        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+        choice_idx = input_list$choice_idx, M = input_list$M,
+        weights = input_list$weights, use_asc = use_asc,
+        include_outside_option = input_list$include_outside_option
+      ),
+      bhhh = mnl_bhhh_parallel(
+        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+        choice_idx = input_list$choice_idx, M = input_list$M,
+        weights = input_list$weights, use_asc = use_asc,
+        include_outside_option = input_list$include_outside_option
+      )
+    )
+    vcov_result <- invert_hessian(hess)
+  }
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
@@ -251,7 +339,9 @@ run_mnlogit <- function(
       )
     },
     scale_vars = scale_vars,
-    sX = sX
+    sX = sX,
+    se_method = se_method,
+    choice_sampling = choice_sampling
   )
 }
 
@@ -265,6 +355,10 @@ run_mnlogit <- function(
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen).
 #' @param covariate_cols Vector of names of columns to be used as covariates.
 #' @param weights Optional vector of weights for each choice situation. If `NULL`, equal weights are used.
+#' @param weights_col Optional name of a column in `data` holding per-row
+#'   weights. The column must be constant within each `id_col` (one weight per
+#'   choice situation) and is collapsed accordingly. Mutually exclusive with
+#'   `weights`.
 #' @param outside_opt_label Label for the outside option (if any). If `NULL`, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @returns A list containing:
@@ -299,13 +393,21 @@ prepare_mnl_data <- function(
     covariate_cols,
     weights = NULL,
     outside_opt_label = NULL,
-    include_outside_option = FALSE
+    include_outside_option = FALSE,
+    weights_col = NULL
 ) {
   ## Preliminary housekeeping --------------------------------------------------
+  # Capture any choice-based-sampling provenance before column drops / coercion,
+  # so it can be carried onto the returned object for the advanced pathway.
+  cs_provenance <- attr(data, "choice_sampling")
   dt <- data.table::as.data.table(data)[]
 
   # Check if all relevant variables are available
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
+  if (!is.null(weights) && !is.null(weights_col)) {
+    stop("Supply only one of `weights` or `weights_col`.")
+  }
+  if (!is.null(weights_col)) needed <- c(needed, weights_col)
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
@@ -394,6 +496,24 @@ prepare_mnl_data <- function(
   ids <- dt[, get(id_col)][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
   N   <- length(ids)
 
+  ## Collapse a row-level weight column to one weight per choice situation.
+  ## Done AFTER ordering/filtering so alignment is by id, never by position.
+  if (!is.null(weights_col)) {
+    if (!is.numeric(dt[[weights_col]])) {
+      stop("`", weights_col, "` must be numeric.")
+    }
+    nuniq <- dt[, data.table::uniqueN(get(weights_col)), by = id_col][["V1"]]
+    if (any(nuniq != 1L)) {
+      stop("`", weights_col, "` must be constant within each '", id_col,
+           "' (one weight per choice situation).")
+    }
+    wmap <- dt[, get(weights_col)[1L], by = id_col]
+    weights <- wmap[["V1"]][match(ids, wmap[[id_col]])]
+    if (any(!is.finite(weights))) {
+      stop("`", weights_col, "` produced non-finite weights.")
+    }
+  }
+
   ## choice_idx[i] - 1-based index *within* the choice set data
   ## 0 == outside option (only if chosen = 0 for all inside options & include_outside_option == TRUE)
   if (include_outside_option) {
@@ -445,7 +565,7 @@ prepare_mnl_data <- function(
   )
 
   ## return output -------------------------------------------------------------
-  structure(
+  out <- structure(
     list(
       X           = X,
       alt_idx     = alt_idx,
@@ -466,5 +586,9 @@ prepare_mnl_data <- function(
     ),
     class = "choicer_data_mnl"
   )
+  if (!is.null(cs_provenance)) {
+    attr(out, "choice_sampling") <- cs_provenance
+  }
+  out
 }
 

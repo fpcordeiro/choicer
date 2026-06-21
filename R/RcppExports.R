@@ -89,6 +89,46 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
     .Call(`_choicer_mnl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
 
+#' BHHH/OPG information matrix for multinomial logit model
+#'
+#' Computes the weighted outer product of per-individual scores
+#' \eqn{\sum_i w_i\, s_i s_i^\top} for the Multinomial Logit model. The
+#' per-individual score \eqn{s_i} is the (positive) gradient of individual
+#' \eqn{i}'s log-likelihood contribution and is weight-free; the supplied
+#' \code{weights} enter only as the leading multiplier. Passing
+#' \code{weights = w} yields the ordinary weighted BHHH/OPG information; passing
+#' \code{weights = w^2} yields the sandwich \emph{meat}
+#' \eqn{B = \sum_i w_i^2 s_i s_i^\top} used for robust (WESML) inference.
+#'
+#' @param theta K + J - 1 or K + J vector with model parameters
+#' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+#' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+#' @param M N x 1 vector with number of alternatives for each individual
+#' @param weights N x 1 vector with weights for each observation
+#' @param use_asc whether to use alternative-specific constants
+#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @returns A symmetric positive-semidefinite information matrix
+#'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 3
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+#' B <- mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#'   fit$data$choice_idx, fit$data$M, fit$data$weights)
+#' dim(B)
+#' }
+#' @export
+mnl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mnl_bhhh_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
+}
+
 #' Prediction of choice probabilities and utilities based on fitted model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
@@ -843,6 +883,54 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #' @export
 nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
+}
+
+#' BHHH/OPG information matrix for the Nested Logit model
+#'
+#' Computes the weighted outer product of per-individual scores
+#' \eqn{\sum_i w_i\, s_i s_i^\top} for the Nested Logit model. The
+#' per-individual score \eqn{s_i} (over the beta, lambda and delta/ASC blocks)
+#' is the (positive) gradient of individual \eqn{i}'s log-likelihood
+#' contribution and is weight-free; the supplied \code{weights} enter only as
+#' the leading multiplier. Passing \code{weights = w} yields the ordinary
+#' weighted BHHH/OPG information; passing \code{weights = w^2} yields the
+#' sandwich \emph{meat} \eqn{B = \sum_i w_i^2 s_i s_i^\top} for robust (WESML)
+#' inference. Singleton-nest lambdas are fixed to 1 and contribute no score
+#' (mirroring the gradient kernel).
+#'
+#' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
+#'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
+#' @param X sum(M) x K design matrix with covariates.
+#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+#' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
+#'        1-based index relative to rows in X_i otherwise.
+#' @param nest_idx J x 1 vector with indices of nests for each alternative; 1-based indexing (1 to n_nests).
+#' @param M N x 1 vector with number of alternatives for each individual.
+#' @param weights N x 1 vector with weights for each observation.
+#' @param use_asc whether to use alternative-specific constants.
+#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @returns A symmetric positive-semidefinite information matrix
+#'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
+#' @examples
+#' \donttest{
+#' library(data.table)
+#' set.seed(42)
+#' N <- 50; J <- 4
+#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, nest := ifelse(alt <= 2, "A", "B")]
+#' dt[, choice := 0L]
+#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+#' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+#' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+#' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+#' B <- nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+#'   d$nest_idx, d$M, d$weights)
+#' dim(B)
+#' }
+#' @export
+nl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_bhhh_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
 }
 
 #' Numerical Hessian of the log-likelihood via finite differences

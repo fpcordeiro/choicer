@@ -525,10 +525,12 @@ test_that("Scenario 4 — SE equivalence via vcov(): well-identified Fixture F (
   chosen_alts <- dt[choice == 1L, alt]
   w_i <- pop_shares[chosen_alts] / emp_shares[chosen_alts]
 
-  fit_an <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest",
-                          use_asc = TRUE, weights = w_i, se_method = "hessian")
-  fit_nu <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest",
-                          use_asc = TRUE, weights = w_i, se_method = "numeric")
+  # Non-uniform weights under a non-sandwich SE now warn; expected here since
+  # this fixture deliberately compares the hessian and numeric SE machinery.
+  fit_an <- suppressWarnings(run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest",
+                          use_asc = TRUE, weights = w_i, se_method = "hessian"))
+  fit_nu <- suppressWarnings(run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest",
+                          use_asc = TRUE, weights = w_i, se_method = "numeric"))
   se_an <- sqrt(diag(vcov(fit_an)))
   se_nu <- sqrt(diag(vcov(fit_nu)))
   diff  <- max(abs(se_an - se_nu), na.rm = TRUE)
@@ -605,7 +607,7 @@ test_that("Scenario 6 — Default se_method is 'hessian'", {
 # Scenario 7: Invalid se_method rejected
 # ============================================================
 
-test_that("Scenario 7 — Invalid se_method 'bhhh' is rejected", {
+test_that("Scenario 7 — Unknown se_method is rejected; bhhh/sandwich accepted", {
   set.seed(2024)
   N <- 60; J <- 4
   dt <- data.table::data.table(
@@ -618,27 +620,18 @@ test_that("Scenario 7 — Invalid se_method 'bhhh' is rejected", {
     as.integer(alt == sample(1:J, 1))
   }, by = id]
   expect_error(
-    run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "bhhh"),
+    run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "nonsense"),
     regexp = "arg"
   )
-})
-
-test_that("Scenario 7 — Invalid se_method 'sandwich' is rejected", {
-  set.seed(2024)
-  N <- 60; J <- 4
-  dt <- data.table::data.table(
-    id   = rep(1:N, each = J),
-    alt  = rep(1:J, N),
-    x1   = rnorm(N * J),
-    nest = ifelse(rep(1:J, N) <= 2, "A", "B")
+  # bhhh and sandwich are now valid SE methods for NL.
+  fit_b <- suppressMessages(
+    run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "bhhh")
   )
-  dt[, choice := {
-    as.integer(alt == sample(1:J, 1))
-  }, by = id]
-  expect_error(
-    run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "sandwich"),
-    regexp = "arg"
+  expect_equal(fit_b$se_method, "bhhh")
+  fit_s <- suppressMessages(
+    run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "sandwich")
   )
+  expect_equal(fit_s$se_method, "sandwich")
 })
 
 # ============================================================

@@ -257,6 +257,213 @@ Rcpp::List nl_loglik_gradient_parallel(
   );
 }
 
+//' BHHH/OPG information matrix for the Nested Logit model
+//'
+//' Computes the weighted outer product of per-individual scores
+//' \eqn{\sum_i w_i\, s_i s_i^\top} for the Nested Logit model. The
+//' per-individual score \eqn{s_i} (over the beta, lambda and delta/ASC blocks)
+//' is the (positive) gradient of individual \eqn{i}'s log-likelihood
+//' contribution and is weight-free; the supplied \code{weights} enter only as
+//' the leading multiplier. Passing \code{weights = w} yields the ordinary
+//' weighted BHHH/OPG information; passing \code{weights = w^2} yields the
+//' sandwich \emph{meat} \eqn{B = \sum_i w_i^2 s_i s_i^\top} for robust (WESML)
+//' inference. Singleton-nest lambdas are fixed to 1 and contribute no score
+//' (mirroring the gradient kernel).
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
+//'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
+//'        1-based index relative to rows in X_i otherwise.
+//' @param nest_idx J x 1 vector with indices of nests for each alternative; 1-based indexing (1 to n_nests).
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @returns A symmetric positive-semidefinite information matrix
+//'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+//' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+//' B <- nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+//'   d$nest_idx, d$M, d$weights)
+//' dim(B)
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::mat nl_bhhh_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx,
+    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+  const int n_nests = arma::max(nest_idx);
+
+  // Parameter parsing (shared helper; also returns nest-k -> theta index map)
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  arma::ivec nest_k_to_theta_idx;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length,
+                 &nest_k_to_theta_idx);
+  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
+                     &weights, &choice_idx);
+
+  // 0-based indexing for inputs
+  arma::uvec alt_idx0 = alt_idx - 1;
+  arma::uvec nest_idx0 = nest_idx - 1;
+
+  // Compute prefix sums for indexing
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+
+  // --- Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    const int chosen_alt_idx_check = choice_idx[i];
+    if (include_outside_option && chosen_alt_idx_check == 0) continue;
+    const int chosen_inside = chosen_alt_idx_check - 1;
+    if (chosen_inside < 0 || chosen_inside >= M[i]) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (nl_bhhh_parallel)", i);
+    }
+  }
+
+  // Global BHHH accumulator
+  arma::mat global_bhhh = arma::zeros(n_params, n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulators
+    arma::mat local_bhhh = arma::zeros(n_params, n_params);
+    arma::vec grad_vec; // resized per individual
+    arma::vec s_i;      // per-individual score
+
+    // Make the index map thread-private
+    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i         = M[i];
+      const int start_idx   = S[i];
+      const int end_idx     = start_idx + m_i - 1;
+      const double w_i      = weights[i];
+
+      const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
+      arma::uvec nest_idx0_i= nest_idx0.elem(alt_idx0_i); // m_i
+
+      // V_ij = X_ij * beta + delta_j (pre-computed)
+      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+
+      // Per-individual probability block (shared helper)
+      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
+      double log_P_outside;
+      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
+                          include_outside_option,
+                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+
+      const int chosen_alt_idx = choice_idx[i];
+      int chosen_nest_k = -1;
+      int chosen_inside_idx = -1;
+      if (!(include_outside_option && chosen_alt_idx == 0)) {
+        chosen_inside_idx = chosen_alt_idx - 1;
+        chosen_nest_k = nest_idx0_i[chosen_inside_idx];
+      }
+
+      // Assemble the (weight-free) per-individual score s_i.
+      s_i.zeros(n_params);
+
+      // --- beta / delta blocks: build grad_vec exactly as in the gradient ---
+      // grad_vec[j] = -P_i[j]
+      //             + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
+      //             + 1/lambda_k                          if j == chosen alt
+      grad_vec.set_size(m_i);
+      grad_vec = -P_i;
+      if (chosen_nest_k >= 0) { // not outside option
+        const double lambda_chosen = lambda[chosen_nest_k];
+        const double term_scale = 1.0 - 1.0 / lambda_chosen;
+        for (int j = 0; j < m_i; ++j) {
+          if ((int)nest_idx0_i[j] == chosen_nest_k) {
+            grad_vec[j] += P_j_given_k[j] * term_scale;
+          }
+        }
+        grad_vec[chosen_inside_idx] += 1.0 / lambda_chosen;
+      }
+
+      // Beta block (scale = 1; weight applied to outer product)
+      s_i.subvec(0, K - 1) = X_i.t() * grad_vec;
+
+      // Delta block: scatter
+      if (use_asc && delta_length > 0) {
+        scatter_delta_grad(s_i, delta_start_idx, grad_vec, alt_idx0_i,
+                           m_i, include_outside_option, 1.0);
+      }
+
+      // --- lambda blocks: same expression as the gradient kernel ---
+      // sum_{j in B_k} P(j|B_k) * V_ij
+      arma::vec sum_P_V_k = arma::zeros(n_nests);
+      for (int j = 0; j < m_i; ++j) {
+        sum_P_V_k[nest_idx0_i[j]] += P_j_given_k[j] * V_inside[j];
+      }
+      for (int k = 0; k < n_nests; ++k) {
+        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
+        if (theta_idx_k == -1) continue;
+        if (!std::isfinite(log_I_k[k])) continue;
+
+        const double lambda_k = lambda[k];
+        double grad_lambda_k = 0.0;
+        double term_in_brackets = log_I_k[k] - (1.0 / lambda_k) * sum_P_V_k[k];
+        double P_k_k = P_k[k];
+
+        if (k == chosen_nest_k) {
+          grad_lambda_k += (1.0 - P_k_k) * term_in_brackets;
+          double V_chosen = V_inside[chosen_inside_idx];
+          grad_lambda_k += (1.0 / (lambda_k * lambda_k)) * (sum_P_V_k[k] - V_chosen);
+        } else {
+          grad_lambda_k += -P_k_k * term_in_brackets;
+        }
+        s_i[theta_idx_k] += grad_lambda_k;
+      }
+
+      local_bhhh += w_i * s_i * s_i.t();
+    } // end of i loop
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_bhhh += local_bhhh;
+    }
+  } // end parallel region
+
+  // Return PSD information matrix (same sign convention as negated Hessian).
+  return global_bhhh;
+}
+
 //' Numerical Hessian of the log-likelihood via finite differences
 //'
 //' @param theta (K + n_delta + n_nests) vector with model parameters.

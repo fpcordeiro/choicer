@@ -31,6 +31,11 @@
 #'   matrix: \code{"none"} (default), \code{"sd"}, \code{"mad"}, or \code{"iqr"}.
 #' @param sX Named numeric vector of column scales used to standardize X during
 #'   optimization. Defaults to a vector of 1s when scale_vars = 'none'.
+#' @param se_method Character. Method used for standard errors: \code{"hessian"}
+#'   (analytical Hessian, default), \code{"bhhh"} (outer product of gradients),
+#'   or \code{"sandwich"} (robust Huber--White / WESML variance).
+#' @param choice_sampling Optional list recording choice-based-sampling
+#'   provenance (scheme, population/sample shares, meat type), or NULL.
 #' @returns A choicer_mnl object (S3 class)
 #' @noRd
 new_choicer_mnl <- function(call, coefficients, loglik,
@@ -39,7 +44,9 @@ new_choicer_mnl <- function(call, coefficients, loglik,
                             use_asc, include_outside_option,
                             optimizer,
                             vcov = NULL, se = NULL, data = NULL,
-                            scale_vars = "none", sX = NULL) {
+                            scale_vars = "none", sX = NULL,
+                            se_method = "hessian",
+                            choice_sampling = NULL) {
   structure(
     list(
       call = call,
@@ -60,7 +67,9 @@ new_choicer_mnl <- function(call, coefficients, loglik,
       optimizer = optimizer,
       data = data,
       scale_vars = scale_vars,
-      sX = sX
+      sX = sX,
+      se_method = se_method,
+      choice_sampling = choice_sampling
     ),
     class = c("choicer_mnl", "choicer_fit")
   )
@@ -144,7 +153,11 @@ new_choicer_mxl <- function(call, coefficients, loglik,
 #'   in alt_mapping row order, to its 1-based nest index. Stored top-level so
 #'   newdata prediction works even when data = NULL (keep_data = FALSE).
 #' @param se_method Character. Method used for standard errors: \code{"hessian"}
-#'   (analytical Hessian, default) or \code{"numeric"} (finite-difference oracle).
+#'   (analytical Hessian, default), \code{"numeric"} (finite-difference oracle),
+#'   \code{"bhhh"} (outer product of gradients), or \code{"sandwich"} (robust
+#'   Huber--White / WESML variance).
+#' @param choice_sampling Optional list recording choice-based-sampling
+#'   provenance (scheme, population/sample shares, meat type), or NULL.
 #' @returns A choicer_nl object (S3 class)
 #' @noRd
 new_choicer_nl <- function(call, coefficients, loglik,
@@ -154,7 +167,8 @@ new_choicer_nl <- function(call, coefficients, loglik,
                            optimizer,
                            vcov = NULL, se = NULL, data = NULL,
                            lambda = NULL, nest_idx = NULL,
-                           se_method = "hessian") {
+                           se_method = "hessian",
+                           choice_sampling = NULL) {
   structure(
     list(
       call = call,
@@ -176,7 +190,8 @@ new_choicer_nl <- function(call, coefficients, loglik,
       data = data,
       lambda = lambda,
       nest_idx = nest_idx,
-      se_method = se_method
+      se_method = se_method,
+      choice_sampling = choice_sampling
     ),
     class = c("choicer_nl", "choicer_fit")
   )
@@ -430,16 +445,32 @@ compute_hessian <- function(object) {
   theta <- object$coefficients
 
   switch(object$model,
-    mnl = mnl_loglik_hessian_parallel(
-      theta = theta,
-      X = object[["data"]]$X,
-      alt_idx = object[["data"]]$alt_idx,
-      choice_idx = object[["data"]]$choice_idx,
-      M = object[["data"]]$M,
-      weights = object[["data"]]$weights,
-      use_asc = object$use_asc,
-      include_outside_option = object$include_outside_option
-    ),
+    mnl = {
+      se_method_mnl <- object$se_method %||% "hessian"
+      if (identical(se_method_mnl, "bhhh")) {
+        mnl_bhhh_parallel(
+          theta = theta,
+          X = object[["data"]]$X,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      } else {
+        mnl_loglik_hessian_parallel(
+          theta = theta,
+          X = object[["data"]]$X,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      }
+    },
     mxl = {
       gp <- .mxl_gen_params(object$draws_info)
       se_method <- object$se_method %||% "hessian"
@@ -483,6 +514,18 @@ compute_hessian <- function(object) {
       se_method_nl <- object$se_method %||% "hessian"
       if (identical(se_method_nl, "numeric")) {
         nl_loglik_numeric_hessian(
+          theta = theta,
+          X = object[["data"]]$X,
+          alt_idx = object[["data"]]$alt_idx,
+          choice_idx = object[["data"]]$choice_idx,
+          nest_idx = object[["data"]]$nest_idx,
+          M = object[["data"]]$M,
+          weights = object[["data"]]$weights,
+          use_asc = object$use_asc,
+          include_outside_option = object$include_outside_option
+        )
+      } else if (identical(se_method_nl, "bhhh")) {
+        nl_bhhh_parallel(
           theta = theta,
           X = object[["data"]]$X,
           alt_idx = object[["data"]]$alt_idx,
@@ -597,7 +640,7 @@ invert_hessian <- function(hess) {
   list(vcov = vcov_mat, se = se)
 }
 
-#' Robust (Huber-White) sandwich vcov for a fitted mixed logit
+#' Robust (Huber-White) sandwich vcov for a fitted logit model
 #'
 #' Computes \code{V = A^{-1} B A^{-1}} from stored (natural-scale) data, where
 #' \code{A = sum_i w_i (-H_i)} is the weighted negated Hessian and
@@ -605,9 +648,10 @@ invert_hessian <- function(hess) {
 #' per-individual scores. \code{B} is obtained with zero extra C++ by calling
 #' the BHHH routine with squared weights (its per-individual score is
 #' weight-free). Valid under choice-based / WESML weighting, where the plain
-#' inverse-Hessian is not.
+#' inverse-Hessian is not. Supported for MNL, MXL and NL fits.
 #'
-#' @param object A fitted \code{choicer_mxl} object with \code{keep_data = TRUE}.
+#' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
+#'   \code{keep_data = TRUE}.
 #' @returns List with \code{vcov} and \code{se}.
 #' @noRd
 compute_sandwich_vcov <- function(object) {
@@ -615,9 +659,9 @@ compute_sandwich_vcov <- function(object) {
     stop("Cannot compute sandwich vcov: no data stored. ",
          "Refit with keep_data = TRUE.")
   }
-  if (!identical(object$model, "mxl")) {
-    stop("Sandwich standard errors are currently implemented for ",
-         "mixed logit (MXL) only.")
+  if (!object$model %in% c("mnl", "mxl", "nl")) {
+    stop("Sandwich standard errors are implemented for multinomial (MNL), ",
+         "mixed (MXL) and nested (NL) logit only.")
   }
 
   # Recomputes A (bread) and B (meat) from the stored NATURAL-scale data and
@@ -625,26 +669,58 @@ compute_sandwich_vcov <- function(object) {
   # operates entirely in natural space (unlike the eager run_mxlogit() path,
   # which works in scaled space and then back-transforms the result).
   theta <- object$coefficients
-  gp_sw <- .mxl_gen_params(object$draws_info)
-  w <- object[["data"]]$weights
+  d <- object[["data"]]
+  w <- d$weights
 
-  A <- mxl_hessian_parallel(
-    theta = theta, X = object[["data"]]$X, W = object[["data"]]$W,
-    alt_idx = object[["data"]]$alt_idx, choice_idx = object[["data"]]$choice_idx,
-    M = object[["data"]]$M, weights = w, eta_draws = gp_sw$eta_draws,
-    rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
-    rc_mean = object$rc_mean, use_asc = object$use_asc,
-    include_outside_option = object$include_outside_option,
-    gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
+  res <- switch(object$model,
+    mnl = {
+      A <- mnl_loglik_hessian_parallel(
+        theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        M = d$M, weights = w, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option
+      )
+      B <- mnl_bhhh_parallel(
+        theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        M = d$M, weights = w^2, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option
+      )
+      list(A = A, B = B)
+    },
+    nl = {
+      A <- nl_loglik_hessian_parallel(
+        theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        nest_idx = d$nest_idx, M = d$M, weights = w, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option
+      )
+      B <- nl_bhhh_parallel(
+        theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        nest_idx = d$nest_idx, M = d$M, weights = w^2, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option
+      )
+      list(A = A, B = B)
+    },
+    mxl = {
+      gp_sw <- .mxl_gen_params(object$draws_info)
+      A <- mxl_hessian_parallel(
+        theta = theta, X = d$X, W = d$W,
+        alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        M = d$M, weights = w, eta_draws = gp_sw$eta_draws,
+        rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+        rc_mean = object$rc_mean, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option,
+        gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
+      )
+      B <- mxl_bhhh_parallel(
+        theta = theta, X = d$X, W = d$W,
+        alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        M = d$M, weights = w^2, eta_draws = gp_sw$eta_draws,
+        rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+        rc_mean = object$rc_mean, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option,
+        gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
+      )
+      list(A = A, B = B)
+    }
   )
-  B <- mxl_bhhh_parallel(
-    theta = theta, X = object[["data"]]$X, W = object[["data"]]$W,
-    alt_idx = object[["data"]]$alt_idx, choice_idx = object[["data"]]$choice_idx,
-    M = object[["data"]]$M, weights = w^2, eta_draws = gp_sw$eta_draws,
-    rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
-    rc_mean = object$rc_mean, use_asc = object$use_asc,
-    include_outside_option = object$include_outside_option,
-    gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
-  )
-  .sandwich_combine(A, B)
+  .sandwich_combine(res$A, res$B)
 }

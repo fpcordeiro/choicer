@@ -456,3 +456,290 @@ test_that("shares must be strictly positive and fixed quotas must be whole numbe
     sample_by_choice(pop, "id", "alt", "choice", n_per_alt = 5, seed = 1L)
   )
 })
+
+# =============================================================================
+# MNL + NL WESML sandwich inference (parity with the MXL implementation).
+# =============================================================================
+
+# Choice-based MNL sample: alt 3 oversampled relative to its population share.
+make_cb_mnl <- function(seed = 81, N = 1200L, J = 3L, n_per = 90L) {
+  set.seed(seed)
+  pop <- data.table(id = rep(seq_len(N), each = J), alt = rep(seq_len(J), N))
+  pop[, x1 := rnorm(.N)]
+  pop[, x2 := rnorm(.N)]
+  beta <- c(1.0, -0.6)
+  pop[, V := drop(as.matrix(.SD) %*% beta), .SDcols = c("x1", "x2")]
+  pop[, prob := exp(V) / sum(exp(V)), by = id]
+  pop[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L, prob = prob)), by = id]
+  pop[, c("V", "prob") := NULL]
+  sample_by_choice(pop, "id", "alt", "choice", n_per_alt = n_per, seed = seed + 1L)
+}
+
+# Choice-based NL sample (4 alts, 2 nests), alt 4 oversampled.
+make_cb_nl <- function(seed = 91, N = 1400L, J = 4L, n_per = 120L) {
+  set.seed(seed)
+  pop <- data.table(id = rep(seq_len(N), each = J), alt = rep(seq_len(J), N))
+  pop[, x1 := rnorm(.N)]
+  pop[, x2 := rnorm(.N)]
+  pop[, nest := ifelse(alt <= 2, "A", "B")]
+  beta <- c(0.8, -0.5)
+  pop[, V := drop(as.matrix(.SD) %*% beta), .SDcols = c("x1", "x2")]
+  pop[, prob := exp(V) / sum(exp(V)), by = id]
+  pop[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L, prob = prob)), by = id]
+  pop[, c("V", "prob") := NULL]
+  sample_by_choice(pop, "id", "alt", "choice", n_per_alt = n_per, seed = seed + 1L)
+}
+
+# --- (e) numeric: BHHH(weights=1) == R-side sum of outer products of scores,
+#         and summed per-individual scores == negated total gradient -----------
+
+test_that("mnl_bhhh_parallel matches outer products and scores sum to -gradient", {
+  set.seed(101)
+  N <- 40L; J <- 3L
+  dt <- data.table(id = rep(seq_len(N), each = J), alt = rep(seq_len(J), N),
+                   x1 = rnorm(N * J), x2 = rnorm(N * J))
+  dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+  d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+  th <- c(0.3, -0.2, 0.1, -0.1)        # 2 beta + 2 ASC
+
+  B <- mnl_bhhh_parallel(th, d$X, d$alt_idx, d$choice_idx, d$M, d$weights)
+  g <- mnl_loglik_gradient_parallel(th, d$X, d$alt_idx, d$choice_idx, d$M, d$weights)
+
+  np <- length(th); Bman <- matrix(0, np, np); gsum <- rep(0, np)
+  for (i in seq_len(N)) {
+    w <- numeric(N); w[i] <- 1
+    gi <- -mnl_loglik_gradient_parallel(th, d$X, d$alt_idx, d$choice_idx,
+                                        d$M, w)$gradient
+    Bman <- Bman + gi %*% t(gi)
+    gsum <- gsum + gi
+  }
+  expect_equal(B, Bman, tolerance = 1e-10)
+  expect_equal(gsum, -g$gradient, tolerance = 1e-10)
+})
+
+test_that("nl_bhhh_parallel matches outer products and scores sum to -gradient", {
+  set.seed(107)
+  N <- 50L; J <- 4L
+  dt <- data.table(id = rep(seq_len(N), each = J), alt = rep(seq_len(J), N),
+                   x1 = rnorm(N * J), x2 = rnorm(N * J))
+  dt[, nest := ifelse(alt <= 2, "A", "B")]
+  dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+  d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+  Kl <- sum(table(d$nest_idx) > 1)
+  th <- c(0.4, -0.3, rep(0.7, Kl), 0.1, -0.2, 0.05)   # 2 beta, lambda, 3 ASC
+
+  B <- nl_bhhh_parallel(th, d$X, d$alt_idx, d$choice_idx, d$nest_idx, d$M, d$weights)
+  g <- nl_loglik_gradient_parallel(th, d$X, d$alt_idx, d$choice_idx, d$nest_idx,
+                                   d$M, d$weights)
+
+  np <- length(th); Bman <- matrix(0, np, np); gsum <- rep(0, np)
+  for (i in seq_len(N)) {
+    w <- numeric(N); w[i] <- 1
+    gi <- -nl_loglik_gradient_parallel(th, d$X, d$alt_idx, d$choice_idx,
+                                       d$nest_idx, d$M, w)$gradient
+    Bman <- Bman + gi %*% t(gi)
+    gsum <- gsum + gi
+  }
+  expect_equal(B, Bman, tolerance = 1e-9)
+  expect_equal(gsum, -g$gradient, tolerance = 1e-9)
+})
+
+# --- (a) sandwich runs and differs from hessian under non-uniform weights -----
+
+test_that("MNL sandwich SEs run and differ from hessian under WESML weights", {
+  skip_on_cran()
+  s <- make_cb_mnl(seed = 81)
+
+  fit_s <- suppressWarnings(suppressMessages(
+    run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                weights_col = ".wesml_weight", se_method = "sandwich")
+  ))
+  fit_h <- suppressWarnings(suppressMessages(
+    run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                weights_col = ".wesml_weight", se_method = "hessian")
+  ))
+  expect_false(is.null(fit_s$vcov))
+  expect_true(all(is.finite(fit_s$se)))
+  # Same point estimates, different SEs.
+  expect_equal(unname(fit_s$coefficients), unname(fit_h$coefficients),
+               tolerance = 1e-8)
+  expect_false(isTRUE(all.equal(unname(fit_s$se), unname(fit_h$se),
+                                tolerance = 1e-3)))
+})
+
+test_that("NL sandwich SEs run and differ from hessian under WESML weights", {
+  skip_on_cran()
+  s <- make_cb_nl(seed = 91)
+
+  fit_s <- suppressWarnings(suppressMessages(
+    run_nestlogit(s, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest",
+                  weights_col = ".wesml_weight", se_method = "sandwich")
+  ))
+  fit_h <- suppressWarnings(suppressMessages(
+    run_nestlogit(s, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest",
+                  weights_col = ".wesml_weight", se_method = "hessian")
+  ))
+  expect_false(is.null(fit_s$vcov))
+  expect_true(all(is.finite(fit_s$se)))
+  expect_equal(unname(fit_s$coefficients), unname(fit_h$coefficients),
+               tolerance = 1e-8)
+  expect_false(isTRUE(all.equal(unname(fit_s$se), unname(fit_h$se),
+                                tolerance = 1e-3)))
+})
+
+# --- (b) provenance guard errors when WESML data passed without weights -------
+
+test_that("MNL/NL provenance guard errors when the weight column is missing", {
+  skip_on_cran()
+  s <- make_cb_mnl(seed = 82)
+  cs <- attr(s, "choice_sampling")
+  dt2 <- data.table::copy(s)
+  dt2[, (".wesml_weight") := NULL]
+  data.table::setattr(dt2, "choice_sampling", cs)
+
+  expect_error(
+    run_mnlogit(dt2, "id", "alt", "choice", c("x1", "x2"), se_method = "sandwich"),
+    "provenance"
+  )
+
+  s_nl <- make_cb_nl(seed = 92)
+  cs_nl <- attr(s_nl, "choice_sampling")
+  dt3 <- data.table::copy(s_nl)
+  dt3[, (".wesml_weight") := NULL]
+  data.table::setattr(dt3, "choice_sampling", cs_nl)
+
+  expect_error(
+    run_nestlogit(dt3, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest",
+                  se_method = "sandwich"),
+    "provenance"
+  )
+})
+
+# --- (c) uniform-weight warning fires (non-sandwich) --------------------------
+
+test_that("MNL/NL non-uniform weights warn under hessian but not sandwich", {
+  skip_on_cran()
+  s <- make_cb_mnl(seed = 83)
+  expect_warning(
+    suppressMessages(run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                                 weights_col = ".wesml_weight", se_method = "hessian")),
+    "sandwich"
+  )
+  expect_no_warning(
+    suppressMessages(run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                                 weights_col = ".wesml_weight", se_method = "sandwich"))
+  )
+
+  s_nl <- make_cb_nl(seed = 93)
+  expect_warning(
+    suppressMessages(run_nestlogit(s_nl, "id", "alt", "choice", c("x1", "x2"),
+                                   nest_col = "nest", weights_col = ".wesml_weight",
+                                   se_method = "hessian")),
+    "sandwich"
+  )
+})
+
+test_that("MNL/NL bhhh + non-uniform weights warn that BHHH is not a WESML correction", {
+  skip_on_cran()
+  s <- make_cb_mnl(seed = 87)
+  mnl_warn <- NULL
+  withCallingHandlers(
+    suppressMessages(run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                                 weights_col = ".wesml_weight", se_method = "bhhh")),
+    warning = function(w) {
+      mnl_warn <<- c(mnl_warn, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  # The bhhh-specific message fires (mentions BHHH/OPG and the w^1 vs w^2 meat).
+  expect_true(any(grepl("BHHH/OPG", mnl_warn)))
+  expect_true(any(grepl("w\\^2", mnl_warn)))
+  expect_true(any(grepl("sandwich", mnl_warn)))
+  # The generic steering message does NOT fire redundantly alongside it.
+  expect_false(any(grepl("If these are sampling/WESML", mnl_warn)))
+
+  s_nl <- make_cb_nl(seed = 97)
+  nl_warn <- NULL
+  withCallingHandlers(
+    suppressMessages(run_nestlogit(s_nl, "id", "alt", "choice", c("x1", "x2"),
+                                   nest_col = "nest", weights_col = ".wesml_weight",
+                                   se_method = "bhhh")),
+    warning = function(w) {
+      nl_warn <<- c(nl_warn, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_true(any(grepl("BHHH/OPG", nl_warn)))
+  expect_true(any(grepl("w\\^2", nl_warn)))
+  expect_true(any(grepl("sandwich", nl_warn)))
+  expect_false(any(grepl("If these are sampling/WESML", nl_warn)))
+})
+
+test_that("MNL/NL wesml_vcov warns under uniform weights", {
+  skip_on_cran()
+  dt <- create_small_mnl_data(seed = 84)
+  fit <- suppressMessages(run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2")))
+  expect_warning(wesml_vcov(fit), "uniform")
+
+  dnl <- create_small_nl_data(seed = 94)
+  fit_nl <- suppressMessages(suppressWarnings(
+    run_nestlogit(dnl, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest")
+  ))
+  expect_warning(wesml_vcov(fit_nl), "uniform")
+})
+
+# --- (d) wesml_vcov() round-trips and equals the eager sandwich vcov ----------
+
+test_that("MNL wesml_vcov() equals the eager fit-path sandwich vcov", {
+  skip_on_cran()
+  s <- make_cb_mnl(seed = 85)
+  fit <- suppressWarnings(suppressMessages(
+    run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                weights_col = ".wesml_weight", se_method = "sandwich",
+                keep_data = TRUE)
+  ))
+  expect_equal(unname(wesml_vcov(fit, "vcov")), unname(fit$vcov), tolerance = 1e-8)
+  # Scale-invariance: rescale stored weights -> sandwich vcov unchanged.
+  fit10 <- fit
+  fit10$data$weights <- 10 * fit$data$weights
+  expect_equal(wesml_vcov(fit, "vcov"), wesml_vcov(fit10, "vcov"), tolerance = 1e-7)
+})
+
+test_that("NL wesml_vcov() equals the eager fit-path sandwich vcov", {
+  skip_on_cran()
+  s <- make_cb_nl(seed = 95)
+  fit <- suppressWarnings(suppressMessages(
+    run_nestlogit(s, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest",
+                  weights_col = ".wesml_weight", se_method = "sandwich",
+                  keep_data = TRUE)
+  ))
+  expect_equal(unname(wesml_vcov(fit, "vcov")), unname(fit$vcov), tolerance = 1e-8)
+  fit10 <- fit
+  fit10$data$weights <- 10 * fit$data$weights
+  expect_equal(wesml_vcov(fit, "vcov"), wesml_vcov(fit10, "vcov"), tolerance = 1e-7)
+})
+
+# --- provenance / print labels -----------------------------------------------
+
+test_that("MNL/NL provenance recorded and summary prints sandwich + WESML labels", {
+  skip_on_cran()
+  s <- make_cb_mnl(seed = 86)
+  fit <- suppressWarnings(suppressMessages(
+    run_mnlogit(s, "id", "alt", "choice", c("x1", "x2"),
+                weights_col = ".wesml_weight", se_method = "sandwich")
+  ))
+  expect_equal(fit$choice_sampling$scheme, "wesml")
+  out <- capture.output(print(summary(fit)))
+  expect_true(any(grepl("Sandwich \\(robust\\)", out)))
+  expect_true(any(grepl("WESML choice-based", out)))
+
+  s_nl <- make_cb_nl(seed = 96)
+  fit_nl <- suppressWarnings(suppressMessages(
+    run_nestlogit(s_nl, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest",
+                  weights_col = ".wesml_weight", se_method = "sandwich")
+  ))
+  expect_equal(fit_nl$choice_sampling$scheme, "wesml")
+  out_nl <- capture.output(print(summary(fit_nl)))
+  expect_true(any(grepl("Sandwich \\(robust\\)", out_nl)))
+  expect_true(any(grepl("WESML choice-based", out_nl)))
+})

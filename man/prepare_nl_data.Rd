@@ -13,7 +13,8 @@ prepare_nl_data(
   nest_col,
   weights = NULL,
   outside_opt_label = NULL,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  weights_col = NULL
 )
 }
 \arguments{
@@ -35,6 +36,11 @@ Every alternative must belong to exactly one nest.}
 \item{outside_opt_label}{Label for the outside option (if any). If \code{NULL}, no outside option is assumed.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
+
+\item{weights_col}{Optional name of a column in \code{data} holding per-row
+weights. The column must be constant within each \code{id_col} (one weight
+per choice situation) and is collapsed accordingly. Mutually exclusive with
+\code{weights}.}
 }
 \value{
 A \code{choicer_data_nl} object (list) containing:

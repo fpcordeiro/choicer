@@ -183,6 +183,158 @@ Rcpp::List mnl_loglik_gradient_parallel(
   );
 }
 
+//' BHHH/OPG information matrix for multinomial logit model
+//'
+//' Computes the weighted outer product of per-individual scores
+//' \eqn{\sum_i w_i\, s_i s_i^\top} for the Multinomial Logit model. The
+//' per-individual score \eqn{s_i} is the (positive) gradient of individual
+//' \eqn{i}'s log-likelihood contribution and is weight-free; the supplied
+//' \code{weights} enter only as the leading multiplier. Passing
+//' \code{weights = w} yields the ordinary weighted BHHH/OPG information; passing
+//' \code{weights = w^2} yields the sandwich \emph{meat}
+//' \eqn{B = \sum_i w_i^2 s_i s_i^\top} used for robust (WESML) inference.
+//'
+//' @param theta K + J - 1 or K + J vector with model parameters
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param use_asc whether to use alternative-specific constants
+//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @returns A symmetric positive-semidefinite information matrix
+//'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
+//' B <- mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$choice_idx, fit$data$M, fit$data$weights)
+//' dim(B)
+//' }
+//' @export
+// [[Rcpp::export]]
+arma::mat mnl_bhhh_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+
+  const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
+
+  // alt_idx is 1-based indexing => shift to 0-based indexing
+  arma::uvec alt_idx0 = alt_idx - 1;
+
+  // Compute prefix sums for indexing
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+
+  // --- Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (mnl_bhhh_parallel)", i);
+    }
+  }
+
+  // Global BHHH accumulator
+  arma::mat global_bhhh = arma::zeros(n_params, n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulator
+    arma::mat local_bhhh = arma::zeros(n_params, n_params);
+    arma::vec diff_vec; // resized per individual
+    arma::vec s_i;      // per-individual score
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i         = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx   = S[i];
+      const int end_idx     = start_idx + m_i - 1;
+      const double w_i      = weights[i];
+      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+
+      // Build utility vector V_i
+      arma::vec V_i(num_choices);
+      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
+      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
+
+      // Probabilities
+      arma::vec P_i;
+      stable_softmax(V_i, P_i);
+
+      // Chosen alternative (validated serially above)
+      int chosen_alt = choice_idx[i];
+      if (!include_outside_option) chosen_alt -= 1;
+
+      // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
+      diff_vec.set_size(num_choices);
+      diff_vec = -P_i;
+      diff_vec(chosen_alt) += 1.0;
+
+      // Assemble the (weight-free) per-individual score s_i.
+      s_i.zeros(n_params);
+
+      // Beta block
+      if (include_outside_option) {
+        const auto diff_inside = diff_vec.subvec(1, m_i); // m_i elements
+        s_i.subvec(0, K - 1) = X_i.t() * diff_inside;
+      } else {
+        s_i.subvec(0, K - 1) = X_i.t() * diff_vec;
+      }
+
+      // Delta block (scatter; scale = 1, weight applied to the outer product)
+      if (use_asc) {
+        if (include_outside_option) {
+          scatter_delta_grad(s_i, K, diff_vec.subvec(1, m_i), alt_idx0_i,
+                             m_i, include_outside_option, 1.0);
+        } else {
+          scatter_delta_grad(s_i, K, diff_vec, alt_idx0_i,
+                             m_i, include_outside_option, 1.0);
+        }
+      }
+
+      local_bhhh += w_i * s_i * s_i.t();
+    } // end of i loop
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_bhhh += local_bhhh;
+    }
+  } // end parallel region
+
+  // Return PSD information matrix (same sign convention as negated Hessian).
+  return global_bhhh;
+}
+
 //' Prediction of choice probabilities and utilities based on fitted model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters

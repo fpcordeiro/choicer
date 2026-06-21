@@ -18,10 +18,11 @@ run_nestlogit(
   optimizer = NULL,
   control = list(),
   weights = NULL,
+  weights_col = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   keep_data = TRUE,
-  se_method = c("hessian", "numeric"),
+  se_method = c("hessian", "numeric", "bhhh", "sandwich"),
   nloptr_opts = NULL
 )
 }
@@ -60,6 +61,12 @@ or a custom function. See \code{\link{run_mnlogit}} for details.}
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
 equal weights are used.}
 
+\item{weights_col}{Optional name of a column in \code{data} holding per-row
+weights (convenience workflow only). The column must be constant within each
+\code{id_col} (one weight per choice situation) and is collapsed accordingly.
+Mutually exclusive with \code{weights}. Used for choice-based / WESML
+weighting; pair with \code{se_method = "sandwich"} for valid inference.}
+
 \item{outside_opt_label}{Label for the outside option (convenience workflow).}
 
 \item{include_outside_option}{Logical whether to include an outside option
@@ -69,9 +76,12 @@ equal weights are used.}
 the returned object for post-estimation functions.}
 
 \item{se_method}{Method for computing standard errors: \code{"hessian"}
-(default, analytical Hessian via \code{nl_loglik_hessian_parallel}) or
+(default, analytical Hessian via \code{nl_loglik_hessian_parallel}),
 \code{"numeric"} (finite-difference oracle via
-\code{nl_loglik_numeric_hessian}).}
+\code{nl_loglik_numeric_hessian}), \code{"bhhh"} (outer product of
+gradients via \code{nl_bhhh_parallel}), or \code{"sandwich"} (robust
+Huber--White / WESML variance \eqn{A^{-1} B A^{-1}}). Use \code{"sandwich"}
+under choice-based / WESML weighting.}
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control}
 instead.}
