@@ -52,7 +52,7 @@ fit <- run_mnprobit(
   covariate_cols = c("x1", "x2"),
   mcmc           = list(R = 4000, burn = 1000, thin = 2)
 )
-#> MCMC run time 0h:0m:0.69s
+#> MCMC run time 0h:0m:0.68s
 summary(fit)
 #> Bayesian Multinomial Probit (MNP) model
 #> 
@@ -76,7 +76,7 @@ summary(fit)
 #> Base alternative: 1 
 #> Draws kept: 1500 (R = 4000, burn = 1000, thin = 2, seed = 721735354)
 #> N: 2000  | Parameters: 4 
-#> Sampling time: 0.69 s
+#> Sampling time: 0.68 s
 #> Identification: per-draw normalization by sigma_11 (McCulloch-Rossi 1994).
 ```
 

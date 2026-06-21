@@ -103,7 +103,7 @@ fit <- run_mxlogit(
   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
   covariate_cols = "x1", random_var_cols = "w1", S = 50L
 )
-#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 blp(fit, target_shares = rep(1/J, J))
 #>             [,1]
 #> [1,]  0.00000000

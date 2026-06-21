@@ -102,7 +102,7 @@ fit <- run_mxlogit(
   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
   covariate_cols = "x1", random_var_cols = "w1", S = 50L
 )
-#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 diversion_ratios(fit, "x1")
 #>           1         2         3
 #> 1 0.0000000 0.6361155 0.4677707

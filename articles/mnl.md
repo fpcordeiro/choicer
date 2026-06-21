@@ -47,7 +47,7 @@ fit <- run_mnlogit(
   choice_col     = "choice",
   covariate_cols = c("x1", "x2")
 )
-#> Optimization run time 0h:0m:0.05s
+#> Optimization run time 0h:0m:0.01s
 summary(fit)
 #> Multinomial Logit (MNL) model
 #> 
@@ -66,7 +66,7 @@ summary(fit)
 #> AIC: 4886.2  | BIC: 4919.8 
 #> McFadden R2: 0.104 (adj: 0.102) | Hit rate: 0.447 
 #> N: 2000  | Parameters: 6 
-#> Optimization time: 0.05 s
+#> Optimization time: 0.01 s
 #> Convergence: 1 ( NLOPT_SUCCESS: Generic success return value. )
 ```
 

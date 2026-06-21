@@ -97,7 +97,7 @@ dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
 #> 599:   200     2  0.9047050 -1.63800773      0
 #> 600:   200     3 -0.7630863 -0.64140116      0
 fit <- run_mxlogit(dt, "id", "alt", "choice", "x1", "w1", S = 50L)
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0.02s
 wesml_vcov(fit, "se")
 #> Warning: Stored weights are uniform; wesml_vcov() returns the ordinary robust (Huber-White) variance, not a WESML-weighted variance. Refit with WESML weights for a choice-based-sampling correction.
 #>         x1       L_11      ASC_2      ASC_3 

@@ -155,7 +155,7 @@ common <- list(
 
 fit_unweighted <- do.call(run_mxlogit, c(common, list(se_method = "bhhh")))
 #> Detected WESML choice-based-sampling provenance; applying attached weights from column '.wesml_weight'.
-#> Optimization run time 0h:0m:0.66s
+#> Optimization run time 0h:0m:0.67s
 #> Warning: Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG
 #> standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is NOT a valid
 #> choice-based-sampling (WESML) correction; the correct sandwich meat is w^2. Use
