@@ -65,11 +65,13 @@
 <span>  optimizer <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  control <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="op">)</span>,</span>
 <span>  weights <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  weights_col <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  outside_opt_label <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  include_outside_option <span class="op">=</span> <span class="cn">FALSE</span>,</span>
 <span>  use_asc <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  keep_data <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  scale_vars <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"none"</span>, <span class="st">"sd"</span>, <span class="st">"mad"</span>, <span class="st">"iqr"</span><span class="op">)</span>,</span>
+<span>  se_method <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"hessian"</span>, <span class="st">"bhhh"</span>, <span class="st">"sandwich"</span><span class="op">)</span>,</span>
 <span>  nloptr_opts <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
@@ -119,7 +121,16 @@ chosen optimizer (e.g., <code>list(maxeval = 2000)</code> for nloptr).</p></dd>
 
 
 <dt id="arg-weights">weights<a class="anchor" aria-label="anchor" href="#arg-weights"></a></dt>
-<dd><p>Optional vector of weights for each choice situation. If <code>NULL</code>, equal weights are used.</p></dd>
+<dd><p>Optional vector of weights for each choice situation. If <code>NULL</code>, equal weights are used. All weights must be finite and strictly positive.</p></dd>
+
+
+<dt id="arg-weights-col">weights_col<a class="anchor" aria-label="anchor" href="#arg-weights-col"></a></dt>
+<dd><p>Optional name of a column in <code>data</code> holding per-row
+weights (convenience workflow only). The column must be constant within each
+<code>id_col</code> (one weight per choice situation) and is collapsed accordingly.
+Mutually exclusive with <code>weights</code>. All weights must be finite and strictly
+positive. Used for choice-based / WESML
+weighting; pair with <code>se_method = "sandwich"</code> for valid inference.</p></dd>
 
 
 <dt id="arg-outside-opt-label">outside_opt_label<a class="anchor" aria-label="anchor" href="#arg-outside-opt-label"></a></dt>
@@ -148,6 +159,14 @@ returned object for <code><a href="https://rdrr.io/r/stats/predict.html" class="
 Hessian conditioning. Coefficients and standard errors are back-transformed
 to the user's natural units via the delta method, so reported quantities
 are invariant to this choice.</p></dd>
+
+
+<dt id="arg-se-method">se_method<a class="anchor" aria-label="anchor" href="#arg-se-method"></a></dt>
+<dd><p>Method for computing standard errors: <code>"hessian"</code>
+(default, analytical Hessian), <code>"bhhh"</code> (outer product of gradients),
+or <code>"sandwich"</code> (robust Huber–White / WESML variance
+\(A^{-1} B A^{-1}\)). Use <code>"sandwich"</code> under choice-based / WESML
+weighting.</p></dd>
 
 
 <dt id="arg-nloptr-opts">nloptr_opts<a class="anchor" aria-label="anchor" href="#arg-nloptr-opts"></a></dt>
@@ -250,6 +269,7 @@ result via <code>input_data</code>.</p></dd>
 <span class="r-out co"><span class="r-pr">#&gt;</span> ---</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> Signif. codes:  '***' 0.001 '**' 0.01 '*' 0.05</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> Std. Errors: Analytical Hessian </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> Log-likelihood: -81.2408 </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> AIC: 170.482  | BIC: 180.902 </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> McFadden R2: 0.261 (adj: 0.224) | Hit rate: 0.590 </span>

@@ -90,7 +90,7 @@ fit <- run_mnlogit(
   covariate_cols = c("x1", "x2"),
   outside_opt_label = 0L, include_outside_option = FALSE, use_asc = TRUE
 )
-#> Optimization run time 0h:0m:0.17s
+#> Optimization run time 0h:0m:0.16s
 recovery_table(fit, sim)
 #> <choicer_recovery> model=choicer_mnl level=0.95
 #>    parameter  group  true estimate     se    bias rel_bias_pct z_vs_true

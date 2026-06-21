@@ -81,9 +81,9 @@ fit_fun <- function(sim) run_mnlogit(
 mc <- monte_carlo(sim_fun, fit_fun, R = 5, seed = 1L, progress = FALSE)
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 summary(mc)
 #> <choicer_mc_summary> R=5 convergence_rate=1 coverage_level=0.95
 #>    parameter  group  true R_success mean_est median_est sd_est mean_se    bias

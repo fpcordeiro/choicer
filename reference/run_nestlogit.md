@@ -19,10 +19,11 @@ run_nestlogit(
   optimizer = NULL,
   control = list(),
   weights = NULL,
+  weights_col = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   keep_data = TRUE,
-  se_method = c("hessian", "numeric"),
+  se_method = c("hessian", "numeric", "bhhh", "sandwich"),
   nloptr_opts = NULL
 )
 ```
@@ -89,7 +90,16 @@ run_nestlogit(
 - weights:
 
   Optional weight vector (convenience workflow). If `NULL`, equal
-  weights are used.
+  weights are used. All weights must be finite and strictly positive.
+
+- weights_col:
+
+  Optional name of a column in `data` holding per-row weights
+  (convenience workflow only). The column must be constant within each
+  `id_col` (one weight per choice situation) and is collapsed
+  accordingly. Mutually exclusive with `weights`. All weights must be
+  finite and strictly positive. Used for choice-based / WESML weighting;
+  pair with `se_method = "sandwich"` for valid inference.
 
 - outside_opt_label:
 
@@ -107,8 +117,11 @@ run_nestlogit(
 - se_method:
 
   Method for computing standard errors: `"hessian"` (default, analytical
-  Hessian via `nl_loglik_hessian_parallel`) or `"numeric"`
-  (finite-difference oracle via `nl_loglik_numeric_hessian`).
+  Hessian via `nl_loglik_hessian_parallel`), `"numeric"`
+  (finite-difference oracle via `nl_loglik_numeric_hessian`), `"bhhh"`
+  (outer product of gradients via `nl_bhhh_parallel`), or `"sandwich"`
+  (robust Huber–White / WESML variance \\A^{-1} B A^{-1}\\). Use
+  `"sandwich"` under choice-based / WESML weighting.
 
 - nloptr_opts:
 
@@ -211,7 +224,7 @@ fit <- run_nestlogit(
   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
   covariate_cols = c("x1", "x2"), nest_col = "nest"
 )
-#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 summary(fit)
 #> Nested Logit (NL) model
 #> 
@@ -226,11 +239,12 @@ summary(fit)
 #> ---
 #> Signif. codes:  '***' 0.001 '**' 0.01 '*' 0.05
 #> 
+#> Std. Errors: Analytical Hessian 
 #> Log-likelihood: -134.492 
 #> AIC: 282.983  | BIC: 301.219 
 #> McFadden R2: 0.030 (adj: -0.021) | Hit rate: 0.380 
 #> N: 100  | Parameters: 7 
-#> Optimization time: 0 s
+#> Optimization time: 0.01 s
 #> Convergence: 1 ( NLOPT_SUCCESS: Generic success return value. )
 # }
 ```

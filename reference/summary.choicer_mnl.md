@@ -97,6 +97,7 @@ summary(fit)
 #> ---
 #> Signif. codes:  '***' 0.001 '**' 0.01 '*' 0.05
 #> 
+#> Std. Errors: Analytical Hessian 
 #> Log-likelihood: -52.4423 
 #> AIC: 112.885  | BIC: 120.533 
 #> McFadden R2: 0.045 (adj: -0.028) | Hit rate: 0.460 

@@ -159,7 +159,7 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 eta <- get_halton_normals(50, d$N, ncol(d$W))
 fit <- run_mxlogit(input_data = d, eta_draws = eta)
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 ls <- mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
   rc_dist = rep(0L, ncol(d$W)), rc_correlation = FALSE, rc_mean = FALSE)
 head(ls)

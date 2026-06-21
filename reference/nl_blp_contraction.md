@@ -147,7 +147,7 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 199:    50     3  1.8152284 -0.2556077      B      0
 #> 200:    50     4  0.1288214  0.9310329      B      1
 fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 beta <- coef(fit)[fit$param_map$beta]
 lambda <- rep(1, length(unique(fit$data$nest_idx)))
 lambda[as.integer(names(which(table(fit$data$nest_idx) > 1)))] <-
@@ -159,7 +159,7 @@ delta
 #>             [,1]
 #> [1,]   0.0000000
 #> [2,]  -0.1201658
-#> [3,] 108.3181893
-#> [4,] 108.3827097
+#> [3,] 108.3182804
+#> [4,] 108.3828008
 # }
 ```

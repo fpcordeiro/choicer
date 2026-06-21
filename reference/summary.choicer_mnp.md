@@ -81,7 +81,7 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 300:   100     3 -1.62561674  1.027004619      1
 fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
                     mcmc = list(R = 300, burn = 100))
-#> MCMC run time 0h:0m:0.01s
+#> MCMC run time 0h:0m:0s
 summary(fit)
 #> Bayesian Multinomial Probit (MNP) model
 #> 
@@ -105,7 +105,7 @@ summary(fit)
 #> Base alternative: 1 
 #> Draws kept: 200 (R = 300, burn = 100, thin = 1, seed = 726215586)
 #> N: 100  | Parameters: 4 
-#> Sampling time: 0.01 s
+#> Sampling time: 0 s
 #> Identification: per-draw normalization by sigma_11 (McCulloch-Rossi 1994).
 # }
 ```

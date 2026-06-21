@@ -2,6 +2,82 @@
 
 ## choicer (development version)
 
+### WESML sandwich inference for MNL and nested logit
+
+- [`run_mnlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mnlogit.md)
+  and
+  [`run_nestlogit()`](https://fpcordeiro.github.io/choicer/reference/run_nestlogit.md)
+  now compute the robust (Huber–White / WESML) sandwich variance
+  `V = A^{-1} B A^{-1}`, at full feature parity with
+  [`run_mxlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mxlogit.md).
+  Both gain `se_method = "sandwich"` (bread = weighted negated Hessian,
+  meat = weight-squared OPG) and `se_method = "bhhh"` (ordinary
+  outer-product-of-gradients).
+  [`run_mnlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mnlogit.md)’s
+  `se_method` therefore now accepts `"hessian"` (default), `"bhhh"`, or
+  `"sandwich"`;
+  [`run_nestlogit()`](https://fpcordeiro.github.io/choicer/reference/run_nestlogit.md)’s
+  accepts `"hessian"` (default), `"numeric"`, `"bhhh"`, or `"sandwich"`.
+- New C++ kernels
+  [`mnl_bhhh_parallel()`](https://fpcordeiro.github.io/choicer/reference/mnl_bhhh_parallel.md)
+  and
+  [`nl_bhhh_parallel()`](https://fpcordeiro.github.io/choicer/reference/nl_bhhh_parallel.md)
+  accumulate the weighted outer product of per-individual scores. Their
+  per-individual score is weight-free, so passing `weights = w` yields
+  the BHHH information and `weights = w^2` yields the sandwich meat. The
+  NL kernel includes the full beta/lambda/delta score blocks
+  (singleton-nest lambdas fixed to 1 contribute no score).
+- [`run_mnlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mnlogit.md),
+  [`run_nestlogit()`](https://fpcordeiro.github.io/choicer/reference/run_nestlogit.md),
+  [`prepare_mnl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_mnl_data.md)
+  and
+  [`prepare_nl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_nl_data.md)
+  gain a `weights_col` argument: a row-level weight column is collapsed
+  to one weight per choice situation (validated constant within `id`). A
+  choice-based-sampling provenance guard auto-adopts the recorded WESML
+  weight column and errors rather than silently fitting unweighted under
+  a WESML label; non-uniform weights under a non-sandwich `se_method`
+  emit a warning.
+- Behavior change: weighted fits now emit a steering warning
+  recommending `se_method = "sandwich"` when non-uniform weights are
+  supplied with the default (`"hessian"`) or `"bhhh"` method; the
+  `"bhhh"` case gets a sharper message explaining that BHHH/OPG is not a
+  valid WESML correction (its meat is `w^1`, not `w^2`). Point estimates
+  and standard errors are unchanged.
+- [`wesml_vcov()`](https://fpcordeiro.github.io/choicer/reference/wesml_vcov.md)
+  now dispatches on `choicer_mnl` and `choicer_nl` (in addition to
+  `choicer_mxl`), returning the post-hoc sandwich variance from a fit
+  stored with `keep_data = TRUE`.
+- [`summary()`](https://rdrr.io/r/base/summary.html) for MNL and NL fits
+  now reports the standard-error method and any WESML weighting in the
+  printed footer.
+- Added “Choice-Based Sampling and WESML Weighting” sections to the
+  multinomial logit and nested logit derivation vignettes.
+
+### Weighting safety hardening
+
+- Weights are now validated to be finite and strictly positive in
+  [`prepare_mnl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_mnl_data.md),
+  [`prepare_nl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_nl_data.md),
+  and
+  [`prepare_mxl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_mxl_data.md)
+  (covering both the `weights=` and `weights_col=` paths). Zero,
+  negative, or non-finite weights previously could slip through and
+  silently invalidate weighted and WESML sandwich inference (weight `w`
+  enters the bread, `w^2` the meat); they now error with an actionable
+  message.
+- Advanced-mode fits (`input_data=` passed directly to
+  [`run_mnlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mnlogit.md),
+  [`run_nestlogit()`](https://fpcordeiro.github.io/choicer/reference/run_nestlogit.md),
+  or
+  [`run_mxlogit()`](https://fpcordeiro.github.io/choicer/reference/run_mxlogit.md))
+  that carry WESML `choice_sampling` provenance but resolve to uniform
+  weights now error instead of warning. The message explains how to
+  proceed: bake the non-uniform WESML weights into `input_data` via
+  `prepare_*_data(weights=/weights_col=)`, or strip the provenance with
+  `attr(input_data, "choice_sampling") <- NULL` for a deliberate
+  unweighted fit. Convenience-mode behavior is unchanged.
+
 ### Documentation
 
 - Added five vignettes: a getting-started tour (“Discrete choice from

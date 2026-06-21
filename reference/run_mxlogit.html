@@ -233,7 +233,7 @@ under multiplicative scaling.</p></dd>
 
 <dt id="arg-weights">weights<a class="anchor" aria-label="anchor" href="#arg-weights"></a></dt>
 <dd><p>Optional weight vector (convenience workflow). If <code>NULL</code>,
-equal weights are used.</p></dd>
+equal weights are used. All weights must be finite and strictly positive.</p></dd>
 
 
 <dt id="arg-outside-opt-label">outside_opt_label<a class="anchor" aria-label="anchor" href="#arg-outside-opt-label"></a></dt>
@@ -283,7 +283,8 @@ instead.</p></dd>
 
 <dt id="arg-weights-col">weights_col<a class="anchor" aria-label="anchor" href="#arg-weights-col"></a></dt>
 <dd><p>Optional name of a column in <code>data</code> holding a per-row
-weight (constant within each choice situation). Mutually exclusive with
+weight (constant within each choice situation, finite and strictly positive).
+Mutually exclusive with
 <code>weights</code>; the recommended way to pass WESML weights from
 <code><a href="sample_by_choice.html">sample_by_choice</a></code> / <code><a href="wesml_weights.html">wesml_weights</a></code>, since
 alignment is by id rather than by position. Convenience workflow only. If

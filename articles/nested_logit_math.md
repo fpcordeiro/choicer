@@ -23,6 +23,8 @@ logit (NL) model as implemented in `src/nestlogit.cpp`.
       Implementation](#id_48-single-pass-implementation-and-auxiliary-accumulations)
 6.  [Implementation Details](#id_5-implementation-details)
 7.  [Post-Estimation Quantities](#id_6-post-estimation-quantities)
+8.  [Choice-Based Sampling and WESML
+    Weighting](#id_7-choice-based-sampling-and-wesml-weighting)
 
 ------------------------------------------------------------------------
 
@@ -1217,6 +1219,125 @@ probabilities:
 
 ------------------------------------------------------------------------
 
+## 7. Choice-Based Sampling and WESML Weighting
+
+### 7.1 Endogenous Stratified (Choice-Based) Sampling
+
+Under *random* (exogenous) sampling each choice situation is drawn
+independently of its outcome. Under **choice-based** (endogenous
+stratified) sampling the strata are defined by the **chosen
+alternative** $`j_i`$ and situations are drawn with stratum-specific
+frequencies — for example, deliberately oversampling individuals who
+chose a rare alternative. Let $`Q(j)`$ be the population share of
+alternative $`j`$ and $`H(j)`$ the sample share of choosers of $`j`$.
+
+Unlike the MNL special case (a full set of ASCs leaves the slopes
+consistent), the **nested logit has no such free pass**: the
+dissimilarity parameters $`\lambda_l`$ enter the within- and
+between-nest probabilities nonlinearly, so choice-based sampling
+generally biases the slopes $`\beta`$, the constants $`\delta`$, **and**
+the $`\lambda`$ block. Weighting is therefore required for consistent
+estimation of the population parameters.
+
+### 7.2 The WESML Weighted Log-Likelihood
+
+Manski and Lerman (1977) restore consistency by weighting each
+situation’s contribution by the ratio of population to sample share of
+its chosen alternative,
+
+``` math
+w_i = \frac{Q(j_i)}{H(j_i)},
+\qquad
+\ell^{W}(\theta) = \sum_{i=1}^{N} w_i \log P_{i j_i}(\theta).
+```
+
+The maximizer $`\hat\theta`$ is invariant to multiplying every $`w_i`$
+by a common positive constant, so the weights may be normalized to mean
+1 without changing the estimates.
+
+### 7.3 Robust (Sandwich) Variance: the $`w^2`$ Meat
+
+WESML is a weighted M-estimator solving
+$`\sum_i w_i\, s_i(\hat\theta) = 0`$, where
+$`s_i = \partial \log P_{i j_i}/\partial\theta`$ is the **full
+per-situation score over the $`\beta`$, $`\lambda`$ and $`\delta`$
+blocks** (\$\$3) and $`H_i`$ its Hessian (\$\$4). Its robust
+(Huber–White) asymptotic variance is the **sandwich**
+
+``` math
+V = A^{-1} B A^{-1}, \qquad
+A = \sum_{i} w_i\,(-H_i), \qquad
+B = \sum_{i} w_i^{2}\, s_i s_i^{\top}.
+```
+
+The weight enters the **bread** $`A`$ linearly, but the **meat** $`B`$
+carries the weight **squared**: the contribution of situation $`i`$ to
+the estimating equation is $`w_i s_i`$, so its variance involves
+$`(w_i s_i)(w_i s_i)^{\top} = w_i^{2}\, s_i s_i^{\top}`$. The score
+$`s_i`$ is assembled exactly as in the gradient kernel (\$\$3.3–3.4):
+the $`\beta`$ and $`\delta`$ blocks from `grad_vec`, and the
+$`\lambda_l`$ blocks from the per-nest expression
+$`(\,\mathbf{1}\{l = l_i\} - P_{il}\,)\big[\log I_{il} - \lambda_l^{-1}\!\sum_{j\in B_l}
+P_{ij|l} V_{ij}\big] + \mathbf{1}\{l=l_i\}\,\lambda_l^{-2}\big(\sum_{j\in B_l} P_{ij|l}V_{ij}
+- V_{ij_i}\big)`$, with singleton nests ($`\lambda_l \equiv 1`$)
+contributing no score.
+
+As in the MNL/MXL cases, both naive variances are wrong under weighting:
+the inverse-Hessian $`A^{-1}`$ assumes the information-matrix equality
+$`A = B`$ (which fails once the $`w_i`$ are non-degenerate), and
+ordinary BHHH/OPG $`\big(\sum_i w_i\, s_i s_i^{\top}\big)^{-1}`$ uses
+the weight to the first power, not the second. The sandwich is invariant
+to the weight scale: $`A \to cA`$, $`B \to c^2 B`$, hence
+$`V \to A^{-1} B A^{-1}`$.
+
+### 7.4 Scope: Robust vs. Design-Based Variance
+
+The estimator implemented here is the **robust weighted-M-estimator
+(Huber–White) variance**, with uncentered meat
+$`B = \sum_i w_i^{2}\, s_i s_i^{\top}`$ — the asymptotic variance under
+**variable-probability sampling**. The smaller stratum-centered
+(design-based) variance for a **fixed-quota** design is out of scope;
+see Manski & McFadden (1981) and Cosslett (1981).
+
+### 7.5 Implementation
+
+The per-individual score accumulated inside `nl_bhhh_parallel` is
+**weight-free** (singleton nests excluded as in the gradient), so the
+two summed matrices are obtained from the existing exports evaluated at
+$`\hat\theta`$:
+
+| Matrix | Call |
+|----|----|
+| Bread $`A = \sum_i w_i(-H_i)`$ | `nl_loglik_hessian_parallel(..., weights = w)` |
+| Meat $`B = \sum_i w_i^{2} s_i s_i^{\top}`$ | `nl_bhhh_parallel(..., weights = w^2)` |
+
+and combined in R as $`V = A^{-1} B A^{-1}`$. User-facing entry points:
+[`wesml_weights()`](https://fpcordeiro.github.io/choicer/reference/wesml_weights.md)
+computes the Manski–Lerman weights from the population shares $`Q`$,
+while
+[`sample_by_choice()`](https://fpcordeiro.github.io/choicer/reference/sample_by_choice.md)
+draws a choice-based sample and attaches those weights;
+`run_nestlogit(..., se_method = "sandwich")` estimates with the robust
+variance;
+[`wesml_vcov()`](https://fpcordeiro.github.io/choicer/reference/wesml_vcov.md)
+returns it post hoc. Passing `run_nestlogit(..., weights_col = )`
+collapses a row-level weight column to one weight per choice situation
+(validated constant within `id`), and a provenance guard prevents a
+WESML-labeled sample from being silently fit unweighted.
+
+*Code reference:
+[`nl_bhhh_parallel()`](https://fpcordeiro.github.io/choicer/reference/nl_bhhh_parallel.md)
+in
+[src/nestlogit.cpp](https://fpcordeiro.github.io/choicer/src/nestlogit.cpp);
+`compute_sandwich_vcov()` and `.sandwich_combine()` in
+[R/classes.R](https://fpcordeiro.github.io/choicer/R/classes.R);
+[`wesml_weights()`](https://fpcordeiro.github.io/choicer/reference/wesml_weights.md)
+/
+[`sample_by_choice()`](https://fpcordeiro.github.io/choicer/reference/sample_by_choice.md)
+in [R/sampling.R](https://fpcordeiro.github.io/choicer/R/sampling.R).*
+
+------------------------------------------------------------------------
+
 ## References
 
 - McFadden, D. (1978). Modelling the choice of residential location.
@@ -1228,3 +1349,12 @@ probabilities:
   market equilibrium. *Econometrica*, 63(4), 841–890.
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd
   ed.). Cambridge University Press. Chapter 4.
+- Manski, C. F., & Lerman, S. R. (1977). The estimation of choice
+  probabilities from choice based samples. *Econometrica*, 45(8),
+  1977–1988.
+- Manski, C. F., & McFadden, D. (1981). Alternative estimators and
+  sample designs for discrete choice analysis. In C. F. Manski & D.
+  McFadden (Eds.), *Structural Analysis of Discrete Data with
+  Econometric Applications* (pp. 2–50). MIT Press.
+- Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based
+  samples. *Econometrica*, 49(5), 1289–1316.

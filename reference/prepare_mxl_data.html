@@ -99,7 +99,7 @@
 
 
 <dt id="arg-weights">weights<a class="anchor" aria-label="anchor" href="#arg-weights"></a></dt>
-<dd><p>Optional vector of weights for each choice situation. If NULL, equal weights are used.</p></dd>
+<dd><p>Optional vector of weights for each choice situation. If NULL, equal weights are used. All weights must be finite and strictly positive.</p></dd>
 
 
 <dt id="arg-outside-opt-label">outside_opt_label<a class="anchor" aria-label="anchor" href="#arg-outside-opt-label"></a></dt>
@@ -115,7 +115,7 @@
 
 
 <dt id="arg-weights-col">weights_col<a class="anchor" aria-label="anchor" href="#arg-weights-col"></a></dt>
-<dd><p>Optional name of a column in <code>data</code> holding a per-row weight (constant within each choice situation). Mutually exclusive with <code>weights</code>.</p></dd>
+<dd><p>Optional name of a column in <code>data</code> holding a per-row weight (constant within each choice situation, finite and strictly positive). Mutually exclusive with <code>weights</code>.</p></dd>
 
 </dl></div>
     <div class="section level2">

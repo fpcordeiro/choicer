@@ -300,8 +300,7 @@ Data-generating processes and parameter-recovery diagnostics.
 - [`sample_by_choice()`](https://fpcordeiro.github.io/choicer/reference/sample_by_choice.md)
   : Draw a choice-based sample stratified by the chosen alternative
 - [`wesml_vcov()`](https://fpcordeiro.github.io/choicer/reference/wesml_vcov.md)
-  : Robust (sandwich) variance for a weighted / choice-based mixed logit
-  fit
+  : Robust (sandwich) variance for a weighted / choice-based logit fit
 
 ## Configuration and helpers
 
@@ -327,6 +326,8 @@ Data-generating processes and parameter-recovery diagnostics.
 Direct access to the C++ likelihood, gradient, Hessian and
 post-estimation kernels. Most users do not need these.
 
+- [`mnl_bhhh_parallel()`](https://fpcordeiro.github.io/choicer/reference/mnl_bhhh_parallel.md)
+  : BHHH/OPG information matrix for multinomial logit model
 - [`mnl_diversion_ratios_parallel()`](https://fpcordeiro.github.io/choicer/reference/mnl_diversion_ratios_parallel.md)
   : Compute MNL diversion ratios (parallelized over individuals)
 - [`mnl_elasticities_parallel()`](https://fpcordeiro.github.io/choicer/reference/mnl_elasticities_parallel.md)
@@ -358,6 +359,8 @@ post-estimation kernels. Most users do not need these.
   : Per-observation simulated choice probabilities for Mixed Logit
 - [`mxl_predict_shares()`](https://fpcordeiro.github.io/choicer/reference/mxl_predict_shares.md)
   : Predicted aggregate market shares for Mixed Logit
+- [`nl_bhhh_parallel()`](https://fpcordeiro.github.io/choicer/reference/nl_bhhh_parallel.md)
+  : BHHH/OPG information matrix for the Nested Logit model
 - [`nl_blp_contraction()`](https://fpcordeiro.github.io/choicer/reference/nl_blp_contraction.md)
   : BLP95 contraction mapping for the Nested Logit model
 - [`nl_diversion_ratios_parallel()`](https://fpcordeiro.github.io/choicer/reference/nl_diversion_ratios_parallel.md)

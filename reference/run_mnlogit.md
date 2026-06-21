@@ -15,11 +15,13 @@ run_mnlogit(
   optimizer = NULL,
   control = list(),
   weights = NULL,
+  weights_col = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   use_asc = TRUE,
   keep_data = TRUE,
   scale_vars = c("none", "sd", "mad", "iqr"),
+  se_method = c("hessian", "bhhh", "sandwich"),
   nloptr_opts = NULL
 )
 ```
@@ -71,7 +73,16 @@ run_mnlogit(
 - weights:
 
   Optional vector of weights for each choice situation. If `NULL`, equal
-  weights are used.
+  weights are used. All weights must be finite and strictly positive.
+
+- weights_col:
+
+  Optional name of a column in `data` holding per-row weights
+  (convenience workflow only). The column must be constant within each
+  `id_col` (one weight per choice situation) and is collapsed
+  accordingly. Mutually exclusive with `weights`. All weights must be
+  finite and strictly positive. Used for choice-based / WESML weighting;
+  pair with `se_method = "sandwich"` for valid inference.
 
 - outside_opt_label:
 
@@ -103,6 +114,13 @@ run_mnlogit(
   conditioning. Coefficients and standard errors are back-transformed to
   the user's natural units via the delta method, so reported quantities
   are invariant to this choice.
+
+- se_method:
+
+  Method for computing standard errors: `"hessian"` (default, analytical
+  Hessian), `"bhhh"` (outer product of gradients), or `"sandwich"`
+  (robust Huber–White / WESML variance \\A^{-1} B A^{-1}\\). Use
+  `"sandwich"` under choice-based / WESML weighting.
 
 - nloptr_opts:
 
@@ -214,6 +232,7 @@ summary(fit)
 #> ---
 #> Signif. codes:  '***' 0.001 '**' 0.01 '*' 0.05
 #> 
+#> Std. Errors: Analytical Hessian 
 #> Log-likelihood: -81.2408 
 #> AIC: 170.482  | BIC: 180.902 
 #> McFadden R2: 0.261 (adj: 0.224) | Hit rate: 0.590 

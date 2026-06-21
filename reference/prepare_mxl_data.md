@@ -50,7 +50,7 @@ prepare_mxl_data(
 - weights:
 
   Optional vector of weights for each choice situation. If NULL, equal
-  weights are used.
+  weights are used. All weights must be finite and strictly positive.
 
 - outside_opt_label:
 
@@ -69,7 +69,8 @@ prepare_mxl_data(
 - weights_col:
 
   Optional name of a column in `data` holding a per-row weight (constant
-  within each choice situation). Mutually exclusive with `weights`.
+  within each choice situation, finite and strictly positive). Mutually
+  exclusive with `weights`.
 
 ## Value
 

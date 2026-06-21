@@ -155,15 +155,17 @@ common <- list(
 
 fit_unweighted <- do.call(run_mxlogit, c(common, list(se_method = "bhhh")))
 #> Detected WESML choice-based-sampling provenance; applying attached weights from column '.wesml_weight'.
-#> Optimization run time 0h:0m:0.69s
-#> Warning: Non-uniform weights detected. If these are sampling/WESML weights, use
-#> se_method = 'sandwich' for valid inference.
+#> Optimization run time 0h:0m:0.66s
+#> Warning: Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG
+#> standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is NOT a valid
+#> choice-based-sampling (WESML) correction; the correct sandwich meat is w^2. Use
+#> se_method = 'sandwich' for valid WESML inference.
 
 fit_wesml <- do.call(run_mxlogit, c(common, list(
   weights_col = ".wesml_weight",
   se_method   = "sandwich"
 )))
-#> Optimization run time 0h:0m:0.66s
+#> Optimization run time 0h:0m:0.65s
 ```
 
 > **Tip.** As in the [mixed logit
@@ -253,7 +255,7 @@ summary(fit_wesml)
 #> AIC: 2956.36  | BIC: 2991.99 
 #> McFadden R2: 0.116 (adj: 0.111) | Hit rate: 0.436 
 #> N: 1200  | Parameters: 7 
-#> Optimization time: 0.66 s
+#> Optimization time: 0.65 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 ```
 

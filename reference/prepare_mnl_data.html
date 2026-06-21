@@ -63,7 +63,8 @@
 <span>  <span class="va">covariate_cols</span>,</span>
 <span>  weights <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  outside_opt_label <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  include_outside_option <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  include_outside_option <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  weights_col <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -92,7 +93,7 @@
 
 
 <dt id="arg-weights">weights<a class="anchor" aria-label="anchor" href="#arg-weights"></a></dt>
-<dd><p>Optional vector of weights for each choice situation. If <code>NULL</code>, equal weights are used.</p></dd>
+<dd><p>Optional vector of weights for each choice situation. If <code>NULL</code>, equal weights are used. All weights must be finite and strictly positive.</p></dd>
 
 
 <dt id="arg-outside-opt-label">outside_opt_label<a class="anchor" aria-label="anchor" href="#arg-outside-opt-label"></a></dt>
@@ -101,6 +102,13 @@
 
 <dt id="arg-include-outside-option">include_outside_option<a class="anchor" aria-label="anchor" href="#arg-include-outside-option"></a></dt>
 <dd><p>Logical indicating whether to include an outside option in the model.</p></dd>
+
+
+<dt id="arg-weights-col">weights_col<a class="anchor" aria-label="anchor" href="#arg-weights-col"></a></dt>
+<dd><p>Optional name of a column in <code>data</code> holding per-row
+weights. The column must be constant within each <code>id_col</code> (one weight per
+choice situation) and is collapsed accordingly. Mutually exclusive with
+<code>weights</code>. All weights must be finite and strictly positive.</p></dd>
 
 </dl></div>
     <div class="section level2">

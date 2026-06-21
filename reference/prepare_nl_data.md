@@ -17,7 +17,8 @@ prepare_nl_data(
   nest_col,
   weights = NULL,
   outside_opt_label = NULL,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  weights_col = NULL
 )
 ```
 
@@ -52,7 +53,7 @@ prepare_nl_data(
 - weights:
 
   Optional vector of weights for each choice situation. If `NULL`, equal
-  weights are used.
+  weights are used. All weights must be finite and strictly positive.
 
 - outside_opt_label:
 
@@ -62,6 +63,13 @@ prepare_nl_data(
 - include_outside_option:
 
   Logical indicating whether to include an outside option in the model.
+
+- weights_col:
+
+  Optional name of a column in `data` holding per-row weights. The
+  column must be constant within each `id_col` (one weight per choice
+  situation) and is collapsed accordingly. Mutually exclusive with
+  `weights`. All weights must be finite and strictly positive.
 
 ## Value
 

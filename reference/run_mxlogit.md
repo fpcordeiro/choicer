@@ -183,7 +183,7 @@ run_mxlogit(
 - weights:
 
   Optional weight vector (convenience workflow). If `NULL`, equal
-  weights are used.
+  weights are used. All weights must be finite and strictly positive.
 
 - outside_opt_label:
 
@@ -233,8 +233,9 @@ run_mxlogit(
 - weights_col:
 
   Optional name of a column in `data` holding a per-row weight (constant
-  within each choice situation). Mutually exclusive with `weights`; the
-  recommended way to pass WESML weights from
+  within each choice situation, finite and strictly positive). Mutually
+  exclusive with `weights`; the recommended way to pass WESML weights
+  from
   [`sample_by_choice`](https://fpcordeiro.github.io/choicer/reference/sample_by_choice.md)
   /
   [`wesml_weights`](https://fpcordeiro.github.io/choicer/reference/wesml_weights.md),

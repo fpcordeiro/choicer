@@ -14,6 +14,8 @@ Useful links:
 
 - <https://github.com/fpcordeiro/choicer>
 
+- <https://fpcordeiro.github.io/choicer/>
+
 - Report bugs at <https://github.com/fpcordeiro/choicer/issues>
 
 ## Author

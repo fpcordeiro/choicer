@@ -1,12 +1,20 @@
-# Compute aggregate elasticities for the Nested Logit model
+# BHHH/OPG information matrix for the Nested Logit model
 
-Computes the aggregate (weighted-average) elasticity matrix for the
-Nested Logit model. Reduces to the MNL elasticities when all lambda = 1.
+Computes the weighted outer product of per-individual scores \\\sum_i
+w_i\\ s_i s_i^\top\\ for the Nested Logit model. The per-individual
+score \\s_i\\ (over the beta, lambda and delta/ASC blocks) is the
+(positive) gradient of individual \\i\\'s log-likelihood contribution
+and is weight-free; the supplied `weights` enter only as the leading
+multiplier. Passing `weights = w` yields the ordinary weighted BHHH/OPG
+information; passing `weights = w^2` yields the sandwich *meat* \\B =
+\sum_i w_i^2 s_i s_i^\top\\ for robust (WESML) inference. Singleton-nest
+lambdas are fixed to 1 and contribute no score (mirroring the gradient
+kernel).
 
 ## Usage
 
 ``` r
-nl_elasticities_parallel(
+nl_bhhh_parallel(
   theta,
   X,
   alt_idx,
@@ -14,7 +22,6 @@ nl_elasticities_parallel(
   nest_idx,
   M,
   weights,
-  elast_var_idx,
   use_asc = TRUE,
   include_outside_option = FALSE
 )
@@ -25,7 +32,7 @@ nl_elasticities_parallel(
 - theta:
 
   (K + n_non_singleton_nests + n_delta) vector with model parameters.
-  Order: `[beta (K), lambda (non-singleton), delta]`.
+  Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
 
 - X:
 
@@ -37,11 +44,13 @@ nl_elasticities_parallel(
 
 - choice_idx:
 
-  N x 1 vector (kept for API consistency, not used).
+  N x 1 vector with indices of chosen alternatives; 0 for outside
+  option, 1-based index relative to rows in X_i otherwise.
 
 - nest_idx:
 
-  J x 1 vector with nest indices for each alternative; 1-based indexing.
+  J x 1 vector with indices of nests for each alternative; 1-based
+  indexing (1 to n_nests).
 
 - M:
 
@@ -50,10 +59,6 @@ nl_elasticities_parallel(
 - weights:
 
   N x 1 vector with weights for each observation.
-
-- elast_var_idx:
-
-  1-based index of the column in X for which to compute the elasticity.
 
 - use_asc:
 
@@ -65,8 +70,8 @@ nl_elasticities_parallel(
 
 ## Value
 
-J x J matrix of aggregate elasticities (row = responding alt, col =
-perturbed alt).
+A symmetric positive-semidefinite information matrix \\\sum_i w_i\\ s_i
+s_i^\top\\ (same sign convention as the negated Hessian).
 
 ## Examples
 
@@ -132,16 +137,12 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 198:    50     2  0.5864875  0.2410163      A      0
 #> 199:    50     3  1.8152284 -0.2556077      B      0
 #> 200:    50     4  0.1288214  0.9310329      B      1
-fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#> Optimization run time 0h:0m:0.01s
-elas <- nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
-  fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
-  elast_var_idx = 1L)
-elas
-#>              [,1]         [,2]         [,3]         [,4]
-#> [1,]  0.001361410 -0.002540130  0.001811959 -0.013019970
-#> [2,]  0.001254277 -0.002616363  0.001811959 -0.013019970
-#> [3,] -0.006952267  0.003469045 -0.043995961 -0.001679743
-#> [4,] -0.006952267  0.003469045 -0.015185114  0.005494552
+d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+B <- nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+  d$nest_idx, d$M, d$weights)
+dim(B)
+#> [1] 7 7
 # }
 ```

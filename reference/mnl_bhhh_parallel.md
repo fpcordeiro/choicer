@@ -1,27 +1,71 @@
-# Print summary for multinomial logit model
+# BHHH/OPG information matrix for multinomial logit model
 
-Print summary for multinomial logit model
+Computes the weighted outer product of per-individual scores \\\sum_i
+w_i\\ s_i s_i^\top\\ for the Multinomial Logit model. The per-individual
+score \\s_i\\ is the (positive) gradient of individual \\i\\'s
+log-likelihood contribution and is weight-free; the supplied `weights`
+enter only as the leading multiplier. Passing `weights = w` yields the
+ordinary weighted BHHH/OPG information; passing `weights = w^2` yields
+the sandwich *meat* \\B = \sum_i w_i^2 s_i s_i^\top\\ used for robust
+(WESML) inference.
 
 ## Usage
 
 ``` r
-# S3 method for class 'summary.choicer_mnl'
-print(x, ...)
+mnl_bhhh_parallel(
+  theta,
+  X,
+  alt_idx,
+  choice_idx,
+  M,
+  weights,
+  use_asc = TRUE,
+  include_outside_option = FALSE
+)
 ```
 
 ## Arguments
 
-- x:
+- theta:
 
-  A summary.choicer_mnl object.
+  K + J - 1 or K + J vector with model parameters
 
-- ...:
+- X:
 
-  Additional arguments (ignored).
+  sum(M) x K design matrix with covariates. Stacks M\[i\] x K matrices
+  for individual i.
+
+- alt_idx:
+
+  sum(M) x 1 vector with indices of alternatives within each choice set;
+  1-based indexing
+
+- choice_idx:
+
+  N x 1 vector with indices of chosen alternatives; 1-based indexing
+  relative to X; 0 is used if include_outside_option=True
+
+- M:
+
+  N x 1 vector with number of alternatives for each individual
+
+- weights:
+
+  N x 1 vector with weights for each observation
+
+- use_asc:
+
+  whether to use alternative-specific constants
+
+- include_outside_option:
+
+  whether to include outside option normalized to 0 (if so, the outside
+  option is not included in the data)
 
 ## Value
 
-The object invisibly.
+A symmetric positive-semidefinite information matrix \\\sum_i w_i\\ s_i
+s_i^\top\\ (same sign convention as the negated Hessian).
 
 ## Examples
 
@@ -75,23 +119,9 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 150:    50     3 -1.0563684 -1.62561674      0
 fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
 #> Optimization run time 0h:0m:0s
-print(summary(fit))
-#> Multinomial Logit (MNL) model
-#> 
-#> Parameter    Estimate  Std.Error  z-value  Pr(>|z|)  
-#> x1          -0.105496   0.182728  -0.5773  5.64e-01  
-#> x2          -0.229495   0.175867  -1.3049  1.92e-01  
-#> ASC_2        0.188575   0.331919   0.5681  5.70e-01  
-#> ASC_3       -0.344221   0.383461  -0.8977  3.69e-01  
-#> ---
-#> Signif. codes:  '***' 0.001 '**' 0.01 '*' 0.05
-#> 
-#> Std. Errors: Analytical Hessian 
-#> Log-likelihood: -52.4423 
-#> AIC: 112.885  | BIC: 120.533 
-#> McFadden R2: 0.045 (adj: -0.028) | Hit rate: 0.460 
-#> N: 50  | Parameters: 4 
-#> Optimization time: 0 s
-#> Convergence: 1 ( NLOPT_SUCCESS: Generic success return value. )
+B <- mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+  fit$data$choice_idx, fit$data$M, fit$data$weights)
+dim(B)
+#> [1] 4 4
 # }
 ```

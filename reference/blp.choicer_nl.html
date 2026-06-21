@@ -172,14 +172,14 @@ uses the estimated ASCs from the fitted model.</p></dd>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 199:    50     3     2  1.8152284 -0.2556077      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 200:    50     4     2  0.1288214  0.9310329      1</span>
 <span class="r-in"><span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="run_nestlogit.html">run_nestlogit</a></span><span class="op">(</span><span class="va">dt</span>, <span class="st">"id"</span>, <span class="st">"alt"</span>, <span class="st">"choice"</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x1"</span>, <span class="st">"x2"</span><span class="op">)</span>, <span class="st">"nest"</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
 <span class="r-in"><span><span class="fu"><a href="blp.html">blp</a></span><span class="op">(</span><span class="va">fit</span>, target_shares <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/rep.html" class="external-link">rep</a></span><span class="op">(</span><span class="fl">1</span><span class="op">/</span><span class="va">J</span>, <span class="va">J</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> Warning: Maximum iterations reached without convergence.</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>             [,1]</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1,]   0.0000000</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [2,]  -0.0962386</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [3,] 108.3302164</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [4,] 108.3947348</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>              [,1]</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1,]   0.00000000</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [2,]  -0.09623867</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [3,] 108.33018599</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [4,] 108.39470443</span>
 <span class="r-in"><span><span class="co"># }</span></span></span>
 </code></pre></div>
     </div>
