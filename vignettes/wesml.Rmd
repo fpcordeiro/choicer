@@ -12,12 +12,13 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 options(digits = 4)
 ```
 
-Choice data are often sampled by outcome. A hospital-choice researcher may
-oversample rare hospitals; a school-choice researcher may sample the same number
-of students from each enrolled school; a stated-preference analyst may balance
-observed choices by design. In these data the sample choice shares are not the
-population choice shares. Treating the sample as random therefore changes the
-likelihood target.
+Choice data are often sampled by outcome. A transport researcher running an
+on-site survey interviews travellers at the terminal of the mode they actually
+chose; a hospital-choice study may oversample patients of rare hospitals; a
+marketing team may recruit equal numbers of buyers of each brand. In each case
+the unit is drawn *conditional on the alternative it chose*, so the sample
+choice shares are not the population choice shares. Treating such a sample as
+random changes the likelihood target and, in general, biases the estimates.
 
 Manski and Lerman's (1977) weighted exogenous sample maximum likelihood (WESML)
 correction weights each choice situation by
@@ -28,12 +29,19 @@ $$
 
 where $j(i)$ is the alternative chosen by situation $i$, $Q_j$ is the population
 share choosing alternative $j$, and $H_j$ is the corresponding sample share.
-choicer provides two helpers:
+Maximizing the weighted log-likelihood $\sum_i w_i \log P_i$ recovers the
+population parameters. choicer provides two helpers:
 
 - `sample_by_choice()` draws a choice-based sample from a population frame and
   attaches WESML weights.
 - `wesml_weights()` computes the same weights when you already have a sample and
   know the population shares `Q`.
+
+Both helpers normalize the weights to mean 1 by default. Normalization — and
+indeed any rescaling of the weights by a common factor — leaves the point
+estimates and the robust (sandwich) variance unchanged, so the attached
+`.wesml_weight` need not equal $Q/H$ literally; only the *relative* weights
+across strata matter.
 
 ```{r setup}
 library(choicer)
@@ -43,16 +51,20 @@ set_num_threads(2)
 
 ## Build a population
 
-For exposition, start from a simulated population. In empirical work, the
-population shares `Q` usually come from administrative totals, market shares, or
-survey weights external to the choice-based estimation sample.
+For exposition, start from a simulated population in which tastes are
+heterogeneous (a random coefficient on `w1` and `w2`), so a mixed logit is the
+natural estimator. We turn off the outside option and fix the choice set so that
+every situation has exactly one chosen alternative and the strata are clean. In
+empirical work the population shares `Q` usually come from administrative totals,
+market shares, or survey weights external to the choice-based estimation sample.
 
 ```{r population}
-sim <- simulate_mnl_data(
-  N = 4000,
-  J = 4,
-  seed = 11,
-  outside_option = FALSE,
+sim <- simulate_mxl_data(
+  N               = 3000,
+  J               = 4,
+  Sigma           = diag(c(1.0, 1.5)),  # two uncorrelated random coefficients
+  seed            = 11,
+  outside_option  = FALSE,
   vary_choice_set = FALSE
 )
 
@@ -70,11 +82,11 @@ alternative rows are retained.
 ```{r sample}
 cb <- sample_by_choice(
   pop,
-  id_col = "id",
-  alt_col = "alt",
+  id_col     = "id",
+  alt_col    = "alt",
   choice_col = "choice",
-  n_per_alt = 400L,
-  seed = 12L
+  n_per_alt  = 300L,
+  seed       = 12L
 )
 
 strata <- sort(names(attr(cb, "Q")))
@@ -87,101 +99,101 @@ cb[choice == 1, .(id, chosen_alt = alt, .wesml_weight)][1:8]
 ```
 
 The sample choice shares are deliberately equalized, but the attached weights
-restore the population shares in the weighted likelihood. The weights are
-constant within id and repeated across that id's alternative rows.
+restore the population shares in the weighted likelihood. The weight is constant
+within an id and repeated across that id's alternative rows, which is exactly the
+row-level layout `run_mxlogit()` expects through `weights_col`.
 
-## Weighted point estimates
+## Weighted estimation and inference
 
-The difference between an unweighted fit and a WESML fit is easiest to see with a
-fast MNL example. The population fit is not available in ordinary applications;
-it is included here only as a benchmark because this vignette simulated the full
-population.
+We fit two mixed logits on the choice-based sample: an ordinary (unweighted) fit
+that ignores the sampling design, and a WESML fit that passes the weight column
+and requests the robust sandwich covariance. Passing `weights_col` by name keeps
+the estimation target visible in the script, which is the recommended style even
+when the data already carry a `choice_sampling` attribute from
+`sample_by_choice()`.
 
-```{r fit-mnl}
-fit_pop <- run_mnlogit(
-  data = pop,
-  id_col = "id",
-  alt_col = "alt",
-  choice_col = "choice",
-  covariate_cols = c("x1", "x2")
+```{r fit}
+common <- list(
+  data            = cb,
+  id_col          = "id",
+  alt_col         = "alt",
+  choice_col      = "choice",
+  covariate_cols  = c("x1", "x2"),  # fixed coefficients
+  random_var_cols = c("w1", "w2"),  # random coefficients
+  S               = 100L,
+  draws           = "generate",
+  seed            = 7L,
+  scale_vars      = "sd"
 )
 
-fit_unweighted <- run_mnlogit(
-  data = cb,
-  id_col = "id",
-  alt_col = "alt",
-  choice_col = "choice",
-  covariate_cols = c("x1", "x2")
-)
+fit_unweighted <- do.call(run_mxlogit, c(common, list(se_method = "bhhh")))
 
-id_weights <- unique(cb[, .(id, .wesml_weight)])[order(id)]
+fit_wesml <- do.call(run_mxlogit, c(common, list(
+  weights_col = ".wesml_weight",
+  se_method   = "sandwich"
+)))
+```
 
-fit_wesml <- run_mnlogit(
-  data = cb,
-  id_col = "id",
-  alt_col = "alt",
-  choice_col = "choice",
-  covariate_cols = c("x1", "x2"),
-  weights = id_weights$.wesml_weight
-)
+> **Tip.** As in the [mixed logit vignette](mxl.html), raise the number of draws
+> `S` until the estimates are stable and warm-start a stubborn solver with
+> `theta_init`. `S = 100` here keeps the package build quick.
 
-coef_compare <- cbind(
-  population_sample = coef(fit_pop),
-  choice_sample_unweighted = coef(fit_unweighted),
-  choice_sample_wesml = coef(fit_wesml)
-)
+The unweighted estimator treats the equalized sample shares as if they were the
+population shares; WESML reweights the sampled situations back to the population.
+With alternative-specific constants in the model the correction is most visible
+in the constants and, through them, in the fitted shares:
 
-round(coef_compare, 3)
+```{r coef}
+round(cbind(
+  unweighted = coef(fit_unweighted),
+  wesml      = coef(fit_wesml)
+), 3)
+```
 
+```{r shares}
 share_compare <- rbind(
-  population_sample = drop(predict(fit_pop, type = "shares")),
-  choice_sample_unweighted = drop(predict(fit_unweighted, type = "shares")),
-  choice_sample_wesml = drop(predict(fit_wesml, type = "shares"))
+  population = as.numeric(Q),
+  wesml      = drop(predict(fit_wesml, type = "shares")),
+  unweighted = drop(predict(fit_unweighted, type = "shares"))
 )
-colnames(share_compare) <- as.character(fit_pop$alt_mapping[[2]])
+colnames(share_compare) <- names(Q)
 round(share_compare, 3)
 ```
 
-The unweighted estimator treats the equalized sample shares as population
-shares. WESML reweights the sampled choice situations back to the population
-choice shares; with ASCs in the model, the correction is especially visible in
-the alternative-specific constants and fitted shares. In a single finite sample
-the WESML estimates need not be closer to the population benchmark parameter by
-parameter, but they target the population likelihood under the choice-based
-sampling design.
+The WESML fit reproduces the population shares `Q`, while the unweighted fit
+reproduces the equalized *sample* shares — a direct picture of the bias the
+correction removes. In a single finite sample the WESML estimates need not be
+closer to the truth parameter by parameter, but they target the population
+likelihood under the choice-based sampling design.
 
-`run_mnlogit()` accepts WESML weights through the `weights` argument. The example
-above sorts the id-level weights because `prepare_mnl_data()` sorts choice
-situations by id before estimation.
+For inference, the point of `se_method = "sandwich"` is that under non-uniform
+weights the inverse weighted Hessian and the ordinary BHHH variance are *not*
+valid covariance estimators. The sandwich uses the weighted Hessian as bread,
+$A = \sum_i w_i(-H_i)$, and the weight-squared outer product of the
+per-situation scores as meat, $B = \sum_i w_i^2 s_i s_i'$, giving
+$V = A^{-1} B A^{-1}$. Because $A$ scales linearly and $B$ quadratically in the
+weights, $V$ is invariant to any common rescaling of them — consistent with the
+mean-1 normalization above.
 
-## Mixed logit inference
-
-For mixed logit, pass the row-level weight column directly and request the
-robust sandwich covariance:
-
-```{r mxl-template, eval = FALSE}
-fit_mxl <- run_mxlogit(
-  data = cb,
-  id_col = "id",
-  alt_col = "alt",
-  choice_col = "choice",
-  covariate_cols = "x1",
-  random_var_cols = "x2",
-  weights_col = ".wesml_weight",
-  se_method = "sandwich",
-  S = 200L
-)
+```{r se}
+summary(fit_wesml)
 ```
 
-The distinction matters. With non-uniform WESML weights, the inverse weighted
-Hessian is not the appropriate covariance estimator. The sandwich uses the
-weighted Hessian as bread and the squared-weight outer product of scores as
-meat; it is invariant to arbitrary rescaling of the weights.
+The same robust variance is available post hoc on any fitted mixed logit via
+`wesml_vcov()`, so you can obtain choice-based-sampling standard errors even
+from a fit estimated with `se_method = "hessian"` without refitting.
 
-If the data came from `sample_by_choice()`, choicer records a
-`choice_sampling` attribute and the weight column name. The explicit
-`weights_col` argument is still recommended in scripts because it makes the
-estimation target visible.
+> **A note on the multinomial logit.** choicer implements WESML weighting and
+> the robust sandwich for the *mixed* logit (which nests the plain logit as the
+> degenerate, zero-variance case). For the plain multinomial logit there is a
+> classical and convenient result (Manski and Lerman, 1977): when the model
+> includes a full set of alternative-specific constants, choice-based sampling
+> leaves the slope coefficients consistently estimated *even without weighting* —
+> only the ASCs are inconsistent. Each constant is shifted by
+> $\ln\!\big(H_j / Q_j\big)$ and can be corrected by subtracting that term. So
+> for an MNL with ASCs the substantive marginal-utility parameters are unaffected
+> by the sampling scheme; only the constants (and the predicted shares they
+> drive) need correcting.
 
 ## Starting from an existing sample
 
@@ -194,11 +206,11 @@ cb2[, .wesml_weight := NULL]
 
 cb2 <- wesml_weights(
   cb2,
-  id_col = "id",
-  alt_col = "alt",
+  id_col     = "id",
+  alt_col    = "alt",
   choice_col = "choice",
-  Q = attr(cb, "Q"),
-  attach = TRUE
+  Q          = attr(cb, "Q"),
+  attach     = TRUE
 )
 
 attr(cb2, "choice_sampling")
