@@ -12,6 +12,7 @@ Fast estimation of discrete-choice models for applied economics. Likelihoods, an
 Useful links:
 \itemize{
   \item \url{https://github.com/fpcordeiro/choicer}
+  \item \url{https://fpcordeiro.github.io/choicer/}
   \item Report bugs at \url{https://github.com/fpcordeiro/choicer/issues}
 }
 

@@ -265,10 +265,12 @@ test_that("mnl Hessian block-decomp S6: non-uniform weights yields finite non-ne
   dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
   set.seed(7)
   w_rand <- runif(N, 0.5, 2.5)
-  fit <- run_mnlogit(
+  # Non-uniform weights under the default (hessian) SE now warn to steer users
+  # toward se_method = "sandwich"; that is expected here.
+  fit <- suppressWarnings(run_mnlogit(
     dt, "id", "alt", "choice", c("x1", "x2"),
     weights = w_rand
-  )
+  ))
   ses <- fit$se
   expect_true(all(is.finite(ses)),
               label = "SEs are finite with non-uniform weights")

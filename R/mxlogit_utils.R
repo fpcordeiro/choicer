@@ -506,7 +506,14 @@ run_mxlogit <- function(
 
   # Choice-based-sampling provenance and a guardrail for weighted inference.
   weights_nonuniform <- length(unique(input_data$weights)) > 1
-  if (weights_nonuniform && se_method != "sandwich") {
+  if (weights_nonuniform && se_method == "bhhh") {
+    warning("Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG ",
+            "standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is ",
+            "NOT a valid choice-based-sampling (WESML) correction; the correct ",
+            "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
+            "inference.",
+            call. = FALSE)
+  } else if (weights_nonuniform && se_method != "sandwich") {
     warning("Non-uniform weights detected. If these are sampling/WESML ",
             "weights, use se_method = 'sandwich' for valid inference.",
             call. = FALSE)

@@ -33,15 +33,23 @@
 #' @param control List of optimizer-specific control parameters.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
 #'   equal weights are used.
+#' @param weights_col Optional name of a column in \code{data} holding per-row
+#'   weights (convenience workflow only). The column must be constant within each
+#'   \code{id_col} (one weight per choice situation) and is collapsed accordingly.
+#'   Mutually exclusive with \code{weights}. Used for choice-based / WESML
+#'   weighting; pair with \code{se_method = "sandwich"} for valid inference.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in
 #'   the returned object for post-estimation functions.
 #' @param se_method Method for computing standard errors: \code{"hessian"}
-#'   (default, analytical Hessian via \code{nl_loglik_hessian_parallel}) or
+#'   (default, analytical Hessian via \code{nl_loglik_hessian_parallel}),
 #'   \code{"numeric"} (finite-difference oracle via
-#'   \code{nl_loglik_numeric_hessian}).
+#'   \code{nl_loglik_numeric_hessian}), \code{"bhhh"} (outer product of
+#'   gradients via \code{nl_bhhh_parallel}), or \code{"sandwich"} (robust
+#'   Huber--White / WESML variance \eqn{A^{-1} B A^{-1}}). Use \code{"sandwich"}
+#'   under choice-based / WESML weighting.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
 #'   instead.
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
@@ -81,10 +89,11 @@ run_nestlogit <- function(
     optimizer = NULL,
     control = list(),
     weights = NULL,
+    weights_col = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
     keep_data = TRUE,
-    se_method = c("hessian", "numeric"),
+    se_method = c("hessian", "numeric", "bhhh", "sandwich"),
     nloptr_opts = NULL
 ) {
   se_method <- match.arg(se_method)
@@ -100,12 +109,18 @@ run_nestlogit <- function(
   # --- Resolve input pathway --------------------------------------------------
   has_data <- !is.null(data)
   has_input <- !is.null(input_data)
+  cs_meta <- if (has_data) attr(data, "choice_sampling") else attr(input_data, "choice_sampling")
 
   if (has_data && has_input) {
     stop("Supply either 'data' (convenience) or 'input_data' (advanced), not both.")
   }
   if (!has_data && !has_input) {
     stop("Supply either 'data' (convenience) or 'input_data' (advanced).")
+  }
+  if (has_input && !is.null(weights_col)) {
+    stop("`weights_col` is only supported in the convenience (data) workflow. ",
+         "Bake weights into `input_data` via prepare_nl_data(weights_col = ) ",
+         "or supply `weights` to prepare_nl_data().")
   }
 
   if (has_data) {
@@ -115,6 +130,22 @@ run_nestlogit <- function(
       stop("Convenience workflow requires: id_col, alt_col, choice_col, ",
            "covariate_cols, and nest_col.")
     }
+    # WESML provenance present but no weights supplied: auto-adopt the recorded
+    # weight column, or error -- never silently fit unweighted under a WESML label.
+    if (!is.null(cs_meta) && is.null(weights) && is.null(weights_col)) {
+      wn <- cs_meta$weight_name
+      if (!is.null(wn) && wn %in% names(data)) {
+        weights_col <- wn
+        message("Detected WESML choice-based-sampling provenance; applying attached ",
+                "weights from column '", wn, "'.")
+      } else {
+        stop("Data carries WESML choice-based-sampling provenance but no weights were ",
+             "supplied, and the recorded weight column (",
+             if (is.null(wn)) "unknown" else paste0("'", wn, "'"),
+             ") is not present in `data`. Pass `weights_col=` or `weights=` explicitly.",
+             call. = FALSE)
+      }
+    }
     input_data <- prepare_nl_data(
       data = data,
       id_col = id_col,
@@ -123,6 +154,7 @@ run_nestlogit <- function(
       covariate_cols = covariate_cols,
       nest_col = nest_col,
       weights = weights,
+      weights_col = weights_col,
       outside_opt_label = outside_opt_label,
       include_outside_option = include_outside_option
     )
@@ -196,33 +228,76 @@ run_nestlogit <- function(
   # Extract lambda values
   lambda <- theta_hat[param_map$lambda]
 
-  # Compute vcov eagerly
-  hess <- if (identical(se_method, "numeric")) {
-    nl_loglik_numeric_hessian(
-      theta = theta_hat,
-      X = input_data$X,
-      alt_idx = input_data$alt_idx,
-      choice_idx = input_data$choice_idx,
-      nest_idx = input_data$nest_idx,
-      M = input_data$M,
-      weights = input_data$weights,
-      use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
-    )
-  } else {
-    nl_loglik_hessian_parallel(
-      theta = theta_hat,
-      X = input_data$X,
-      alt_idx = input_data$alt_idx,
-      choice_idx = input_data$choice_idx,
-      nest_idx = input_data$nest_idx,
-      M = input_data$M,
-      weights = input_data$weights,
-      use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
-    )
+  # Choice-based-sampling provenance and a guardrail for weighted inference.
+  weights_nonuniform <- length(unique(input_data$weights)) > 1
+  if (weights_nonuniform && se_method == "bhhh") {
+    warning("Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG ",
+            "standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is ",
+            "NOT a valid choice-based-sampling (WESML) correction; the correct ",
+            "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
+            "inference.",
+            call. = FALSE)
+  } else if (weights_nonuniform && se_method != "sandwich") {
+    warning("Non-uniform weights detected. If these are sampling/WESML ",
+            "weights, use se_method = 'sandwich' for valid inference.",
+            call. = FALSE)
   }
-  vcov_result <- invert_hessian(hess)
+  choice_sampling <- if (!is.null(cs_meta)) {
+    utils::modifyList(as.list(cs_meta),
+                      list(se_method = se_method, weights_applied = weights_nonuniform))
+  } else if (weights_nonuniform) {
+    list(scheme = "user", se_method = se_method, weights_applied = TRUE)
+  } else {
+    NULL
+  }
+  if (!is.null(cs_meta) && !weights_nonuniform) {
+    warning("WESML provenance is present but the applied weights are uniform; the fit ",
+            "is effectively unweighted and is NOT a WESML-corrected estimator.",
+            call. = FALSE)
+  }
+
+  # Compute vcov eagerly using the selected SE method. For "sandwich"
+  # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
+  # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
+  # weight-free BHHH routine). No back-transform layer in NL.
+  if (se_method == "sandwich") {
+    A_bread <- nl_loglik_hessian_parallel(
+      theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+      M = input_data$M, weights = input_data$weights, use_asc = use_asc,
+      include_outside_option = input_data$include_outside_option
+    )
+    B_meat <- nl_bhhh_parallel(
+      theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+      M = input_data$M, weights = input_data$weights^2, use_asc = use_asc,
+      include_outside_option = input_data$include_outside_option
+    )
+    vcov_result <- .sandwich_combine(A_bread, B_meat)
+  } else {
+    hess <- switch(
+      se_method,
+      numeric = nl_loglik_numeric_hessian(
+        theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+        M = input_data$M, weights = input_data$weights, use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option
+      ),
+      bhhh = nl_bhhh_parallel(
+        theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+        M = input_data$M, weights = input_data$weights, use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option
+      ),
+      nl_loglik_hessian_parallel(
+        theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+        M = input_data$M, weights = input_data$weights, use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option
+      )
+    )
+    vcov_result <- invert_hessian(hess)
+  }
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
@@ -263,7 +338,8 @@ run_nestlogit <- function(
     },
     lambda = lambda,
     nest_idx = input_data$nest_idx,
-    se_method = se_method
+    se_method = se_method,
+    choice_sampling = choice_sampling
   )
 }
 
@@ -282,6 +358,10 @@ run_nestlogit <- function(
 #' @param nest_col Name of the column mapping each alternative to its nest.
 #'   Every alternative must belong to exactly one nest.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.
+#' @param weights_col Optional name of a column in \code{data} holding per-row
+#'   weights. The column must be constant within each \code{id_col} (one weight
+#'   per choice situation) and is collapsed accordingly. Mutually exclusive with
+#'   \code{weights}.
 #' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @returns A \code{choicer_data_nl} object (list) containing:
@@ -315,7 +395,8 @@ prepare_nl_data <- function(
     nest_col,
     weights = NULL,
     outside_opt_label = NULL,
-    include_outside_option = FALSE
+    include_outside_option = FALSE,
+    weights_col = NULL
 ) {
   dt <- data.table::as.data.table(data)[]
 
@@ -353,6 +434,7 @@ prepare_nl_data <- function(
     choice_col = choice_col,
     covariate_cols = covariate_cols,
     weights = weights,
+    weights_col = weights_col,
     outside_opt_label = outside_opt_label,
     include_outside_option = include_outside_option
   )
@@ -384,6 +466,9 @@ prepare_nl_data <- function(
     stop("Internal error: nest count mismatch after integer conversion.")
   }
 
+  # Carry choice-based-sampling provenance from the MNL base preparation.
+  cs_provenance <- attr(result, "choice_sampling")
+
   # Add NL-specific fields
   result$nest_idx <- nest_idx
   result$data_spec <- list(
@@ -395,5 +480,9 @@ prepare_nl_data <- function(
     outside_opt_label = outside_opt_label
   )
 
-  structure(result, class = "choicer_data_nl")
+  out <- structure(result, class = "choicer_data_nl")
+  if (!is.null(cs_provenance)) {
+    attr(out, "choice_sampling") <- cs_provenance
+  }
+  out
 }

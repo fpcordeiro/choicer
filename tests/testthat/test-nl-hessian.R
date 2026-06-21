@@ -329,7 +329,7 @@ test_that("run_nestlogit rejects invalid se_method", {
 
   expect_error(
     run_nestlogit(dt, "id", "alt", "choice", "x1", "nest",
-                  se_method = "bhhh"),
+                  se_method = "not-a-method"),
     "'arg' should be one of"
   )
 })

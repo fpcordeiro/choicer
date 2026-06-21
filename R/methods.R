@@ -98,10 +98,11 @@ vcov.choicer_fit <- function(object, ...) {
 
 # --- wesml_vcov (robust / sandwich) -----------------------------------------
 
-#' Robust (sandwich) variance for a weighted / choice-based mixed logit fit
+#' Robust (sandwich) variance for a weighted / choice-based logit fit
 #'
 #' Recomputes the robust Huber-White sandwich variance
-#' \eqn{V = A^{-1} B A^{-1}} for a fitted mixed logit, where the bread
+#' \eqn{V = A^{-1} B A^{-1}} for a fitted multinomial (MNL), mixed (MXL) or
+#' nested (NL) logit, where the bread
 #' \eqn{A = \sum_i w_i (-H_i)} is the weighted negated Hessian and the meat
 #' \eqn{B = \sum_i w_i^2 s_i s_i'} is the weight-squared outer product of the
 #' per-individual scores. This is the appropriate variance under choice-based
@@ -115,8 +116,8 @@ vcov.choicer_fit <- function(object, ...) {
 #' WESML-weighted variance. Refit with WESML weights for a choice-based-sampling
 #' correction.
 #'
-#' @param object A fitted \code{choicer_mxl} object (requires
-#'   \code{keep_data = TRUE}).
+#' @param object A fitted \code{choicer_mnl}, \code{choicer_mxl} or
+#'   \code{choicer_nl} object (requires \code{keep_data = TRUE}).
 #' @param type Either \code{"vcov"} (default) to return the variance-covariance
 #'   matrix or \code{"se"} to return the standard-error vector.
 #' @param ... Unused.
@@ -139,9 +140,10 @@ vcov.choicer_fit <- function(object, ...) {
 #' @export
 wesml_vcov <- function(object, ...) UseMethod("wesml_vcov")
 
-#' @rdname wesml_vcov
-#' @export
-wesml_vcov.choicer_mxl <- function(object, type = c("vcov", "se"), ...) {
+# Shared implementation for the wesml_vcov methods. The model-specific dispatch
+# (MNL/NL/MXL) is handled inside compute_sandwich_vcov(); the surrounding
+# stored-data check, uniform-weight warning, and naming logic are identical.
+.wesml_vcov_impl <- function(object, type = c("vcov", "se")) {
   type <- match.arg(type)
   if (is.null(object[["data"]])) {
     stop("wesml_vcov() needs the stored data; refit with keep_data = TRUE.")
@@ -160,6 +162,24 @@ wesml_vcov.choicer_mxl <- function(object, type = c("vcov", "se"), ...) {
   }
   if (!is.null(res$se)) names(res$se) <- nms
   if (type == "se") res$se else res$vcov
+}
+
+#' @rdname wesml_vcov
+#' @export
+wesml_vcov.choicer_mxl <- function(object, type = c("vcov", "se"), ...) {
+  .wesml_vcov_impl(object, type)
+}
+
+#' @rdname wesml_vcov
+#' @export
+wesml_vcov.choicer_mnl <- function(object, type = c("vcov", "se"), ...) {
+  .wesml_vcov_impl(object, type)
+}
+
+#' @rdname wesml_vcov
+#' @export
+wesml_vcov.choicer_nl <- function(object, type = c("vcov", "se"), ...) {
+  .wesml_vcov_impl(object, type)
 }
 
 # --- logLik ------------------------------------------------------------------
@@ -296,6 +316,9 @@ summary.choicer_mnl <- function(object, gof = TRUE, ...) {
       convergence = object$convergence,
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
+      se_method = object$se_method %||% "hessian",
+      weighting = object$choice_sampling$scheme,
+      weights_applied = object$choice_sampling$weights_applied,
       gof = if (isTRUE(gof)) {
         # calling gof() here is safe: R skips the logical binding when
         # resolving a function call
@@ -327,6 +350,7 @@ print.summary.choicer_mnl <- function(x, ...) {
   cat(model_display_name(x$model), "model\n\n")
   print_coef_table(x$coefficients)
   cat("\n")
+  print_se_weighting(x)
   print_footer(x)
   invisible(x)
 }
@@ -472,27 +496,7 @@ print.summary.choicer_mxl <- function(x, ...) {
     print(x$sigma)
     cat("\n")
   }
-  cat("Std. Errors:", switch(
-    x$se_method %||% "hessian",
-    bhhh = "BHHH (OPG)",
-    sandwich = "Sandwich (robust)",
-    "Analytical Hessian"
-  ), "\n")
-  if (!is.null(x$weighting)) {
-    # Backward-compat: when weights_applied is absent (older fits) treat as applied.
-    applied <- !isFALSE(x$weights_applied)
-    cat("Weighting:",
-        if (identical(x$weighting, "wesml")) {
-          if (applied) {
-            "WESML choice-based"
-          } else {
-            "WESML provenance present but NOT applied (fit is unweighted)"
-          }
-        } else {
-          "user-supplied"
-        },
-        "\n")
-  }
+  print_se_weighting(x)
   print_footer(x)
   invisible(x)
 }
@@ -547,6 +551,9 @@ summary.choicer_nl <- function(object, gof = TRUE, ...) {
       convergence = object$convergence,
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
+      se_method = object$se_method %||% "hessian",
+      weighting = object$choice_sampling$scheme,
+      weights_applied = object$choice_sampling$weights_applied,
       gof = if (isTRUE(gof)) {
         # calling gof() here is safe: R skips the logical binding when
         # resolving a function call
@@ -582,6 +589,7 @@ print.summary.choicer_nl <- function(x, ...) {
   cat(model_display_name(x$model), "model\n\n")
   print_coef_table(x$coefficients)
   cat("\n")
+  print_se_weighting(x)
   print_footer(x)
   invisible(x)
 }
@@ -864,6 +872,33 @@ print_coef_table <- function(coef_table) {
 
 #' Print model footer (log-likelihood, AIC, timing)
 #' @noRd
+# Print the Std. Errors method label and (optional) WESML weighting line.
+# Shared by the MNL / MXL / NL summary print methods.
+print_se_weighting <- function(x) {
+  cat("Std. Errors:", switch(
+    x$se_method %||% "hessian",
+    bhhh = "BHHH (OPG)",
+    sandwich = "Sandwich (robust)",
+    numeric = "Numerical Hessian (finite differences)",
+    "Analytical Hessian"
+  ), "\n")
+  if (!is.null(x$weighting)) {
+    # Backward-compat: when weights_applied is absent (older fits) treat as applied.
+    applied <- !isFALSE(x$weights_applied)
+    cat("Weighting:",
+        if (identical(x$weighting, "wesml")) {
+          if (applied) {
+            "WESML choice-based"
+          } else {
+            "WESML provenance present but NOT applied (fit is unweighted)"
+          }
+        } else {
+          "user-supplied"
+        },
+        "\n")
+  }
+}
+
 print_footer <- function(x) {
   cat("Log-likelihood:", format(x$loglik, digits = 6), "\n")
   aic <- -2 * x$loglik + 2 * x$n_params

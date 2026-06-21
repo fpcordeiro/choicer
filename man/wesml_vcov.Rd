@@ -3,15 +3,21 @@
 \name{wesml_vcov}
 \alias{wesml_vcov}
 \alias{wesml_vcov.choicer_mxl}
-\title{Robust (sandwich) variance for a weighted / choice-based mixed logit fit}
+\alias{wesml_vcov.choicer_mnl}
+\alias{wesml_vcov.choicer_nl}
+\title{Robust (sandwich) variance for a weighted / choice-based logit fit}
 \usage{
 wesml_vcov(object, ...)
 
 \method{wesml_vcov}{choicer_mxl}(object, type = c("vcov", "se"), ...)
+
+\method{wesml_vcov}{choicer_mnl}(object, type = c("vcov", "se"), ...)
+
+\method{wesml_vcov}{choicer_nl}(object, type = c("vcov", "se"), ...)
 }
 \arguments{
-\item{object}{A fitted \code{choicer_mxl} object (requires
-\code{keep_data = TRUE}).}
+\item{object}{A fitted \code{choicer_mnl}, \code{choicer_mxl} or
+\code{choicer_nl} object (requires \code{keep_data = TRUE}).}
 
 \item{...}{Unused.}
 
@@ -25,7 +31,8 @@ parameter space.
 }
 \description{
 Recomputes the robust Huber-White sandwich variance
-\eqn{V = A^{-1} B A^{-1}} for a fitted mixed logit, where the bread
+\eqn{V = A^{-1} B A^{-1}} for a fitted multinomial (MNL), mixed (MXL) or
+nested (NL) logit, where the bread
 \eqn{A = \sum_i w_i (-H_i)} is the weighted negated Hessian and the meat
 \eqn{B = \sum_i w_i^2 s_i s_i'} is the weight-squared outer product of the
 per-individual scores. This is the appropriate variance under choice-based

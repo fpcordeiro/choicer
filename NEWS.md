@@ -1,5 +1,40 @@
 # choicer (development version)
 
+## WESML sandwich inference for MNL and nested logit
+
+- `run_mnlogit()` and `run_nestlogit()` now compute the robust (Huber–White /
+  WESML) sandwich variance `V = A^{-1} B A^{-1}`, at full feature parity with
+  `run_mxlogit()`. Both gain `se_method = "sandwich"` (bread = weighted negated
+  Hessian, meat = weight-squared OPG) and `se_method = "bhhh"` (ordinary
+  outer-product-of-gradients). `run_mnlogit()`'s `se_method` therefore now
+  accepts `"hessian"` (default), `"bhhh"`, or `"sandwich"`; `run_nestlogit()`'s
+  accepts `"hessian"` (default), `"numeric"`, `"bhhh"`, or `"sandwich"`.
+- New C++ kernels `mnl_bhhh_parallel()` and `nl_bhhh_parallel()` accumulate the
+  weighted outer product of per-individual scores. Their per-individual score is
+  weight-free, so passing `weights = w` yields the BHHH information and
+  `weights = w^2` yields the sandwich meat. The NL kernel includes the full
+  beta/lambda/delta score blocks (singleton-nest lambdas fixed to 1 contribute
+  no score).
+- `run_mnlogit()`, `run_nestlogit()`, `prepare_mnl_data()` and
+  `prepare_nl_data()` gain a `weights_col` argument: a row-level weight column
+  is collapsed to one weight per choice situation (validated constant within
+  `id`). A choice-based-sampling provenance guard auto-adopts the recorded
+  WESML weight column and errors rather than silently fitting unweighted under a
+  WESML label; non-uniform weights under a non-sandwich `se_method` emit a
+  warning.
+- Behavior change: weighted fits now emit a steering warning recommending
+  `se_method = "sandwich"` when non-uniform weights are supplied with the default
+  (`"hessian"`) or `"bhhh"` method; the `"bhhh"` case gets a sharper message
+  explaining that BHHH/OPG is not a valid WESML correction (its meat is `w^1`,
+  not `w^2`). Point estimates and standard errors are unchanged.
+- `wesml_vcov()` now dispatches on `choicer_mnl` and `choicer_nl` (in addition
+  to `choicer_mxl`), returning the post-hoc sandwich variance from a fit stored
+  with `keep_data = TRUE`.
+- `summary()` for MNL and NL fits now reports the standard-error method and any
+  WESML weighting in the printed footer.
+- Added "Choice-Based Sampling and WESML Weighting" sections to the multinomial
+  logit and nested logit derivation vignettes.
+
 ## Documentation
 
 - Added five vignettes: a getting-started tour ("Discrete choice from data to

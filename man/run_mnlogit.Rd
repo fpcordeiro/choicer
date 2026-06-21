@@ -14,11 +14,13 @@ run_mnlogit(
   optimizer = NULL,
   control = list(),
   weights = NULL,
+  weights_col = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   use_asc = TRUE,
   keep_data = TRUE,
   scale_vars = c("none", "sd", "mad", "iqr"),
+  se_method = c("hessian", "bhhh", "sandwich"),
   nloptr_opts = NULL
 )
 }
@@ -49,6 +51,12 @@ chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).}
 
 \item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.}
 
+\item{weights_col}{Optional name of a column in \code{data} holding per-row
+weights (convenience workflow only). The column must be constant within each
+\code{id_col} (one weight per choice situation) and is collapsed accordingly.
+Mutually exclusive with \code{weights}. Used for choice-based / WESML
+weighting; pair with \code{se_method = "sandwich"} for valid inference.}
+
 \item{outside_opt_label}{Label for the outside option (if any). If \code{NULL}, no outside option is assumed.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
@@ -66,6 +74,12 @@ returned object for \code{predict()} and post-estimation functions.}
 Hessian conditioning. Coefficients and standard errors are back-transformed
 to the user's natural units via the delta method, so reported quantities
 are invariant to this choice.}
+
+\item{se_method}{Method for computing standard errors: \code{"hessian"}
+(default, analytical Hessian), \code{"bhhh"} (outer product of gradients),
+or \code{"sandwich"} (robust Huber--White / WESML variance
+\eqn{A^{-1} B A^{-1}}). Use \code{"sandwich"} under choice-based / WESML
+weighting.}
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control} instead.}
 }

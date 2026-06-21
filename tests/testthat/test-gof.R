@@ -84,10 +84,11 @@ test_that("gof equal-shares null matches the manual weighted formula", {
   dt <- create_small_mnl_data()  # ids 1..20 in ascending order, J = 3
   set.seed(1)
   w <- runif(20, 0.5, 2)
-  fit <- run_mnlogit(
+  # Non-uniform weights under the default SE now warn (steer to "sandwich").
+  fit <- suppressWarnings(run_mnlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
     covariate_cols = c("x1", "x2"), weights = w
-  )
+  ))
 
   g <- gof(fit)
 
@@ -167,10 +168,10 @@ test_that("gof market-shares null errors with non-uniform weights", {
   dt <- create_small_mnl_data()
   set.seed(2)
   w <- runif(20, 0.5, 2)
-  fit <- run_mnlogit(
+  fit <- suppressWarnings(run_mnlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
     covariate_cols = c("x1", "x2"), weights = w
-  )
+  ))
 
   expect_error(gof(fit, null = "market_shares"), "uniform weights")
 })
