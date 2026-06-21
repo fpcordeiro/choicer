@@ -33,3 +33,4 @@ AGENTS.md
 data_room/
 _benchmarks/*/output/*
 !_benchmarks/*/output/.gitkeep
+ARCHITECTURE.md
