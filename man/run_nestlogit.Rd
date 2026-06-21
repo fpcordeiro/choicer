@@ -59,12 +59,13 @@ or a custom function. See \code{\link{run_mnlogit}} for details.}
 \item{control}{List of optimizer-specific control parameters.}
 
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
-equal weights are used.}
+equal weights are used. All weights must be finite and strictly positive.}
 
 \item{weights_col}{Optional name of a column in \code{data} holding per-row
 weights (convenience workflow only). The column must be constant within each
 \code{id_col} (one weight per choice situation) and is collapsed accordingly.
-Mutually exclusive with \code{weights}. Used for choice-based / WESML
+Mutually exclusive with \code{weights}. All weights must be finite and strictly
+positive. Used for choice-based / WESML
 weighting; pair with \code{se_method = "sandwich"} for valid inference.}
 
 \item{outside_opt_label}{Label for the outside option (convenience workflow).}

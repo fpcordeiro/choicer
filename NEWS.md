@@ -35,6 +35,22 @@
 - Added "Choice-Based Sampling and WESML Weighting" sections to the multinomial
   logit and nested logit derivation vignettes.
 
+## Weighting safety hardening
+
+- Weights are now validated to be finite and strictly positive in
+  `prepare_mnl_data()`, `prepare_nl_data()`, and `prepare_mxl_data()` (covering
+  both the `weights=` and `weights_col=` paths). Zero, negative, or non-finite
+  weights previously could slip through and silently invalidate weighted and
+  WESML sandwich inference (weight `w` enters the bread, `w^2` the meat); they
+  now error with an actionable message.
+- Advanced-mode fits (`input_data=` passed directly to `run_mnlogit()`,
+  `run_nestlogit()`, or `run_mxlogit()`) that carry WESML `choice_sampling`
+  provenance but resolve to uniform weights now error instead of warning. The
+  message explains how to proceed: bake the non-uniform WESML weights into
+  `input_data` via `prepare_*_data(weights=/weights_col=)`, or strip the
+  provenance with `attr(input_data, "choice_sampling") <- NULL` for a deliberate
+  unweighted fit. Convenience-mode behavior is unchanged.
+
 ## Documentation
 
 - Added five vignettes: a getting-started tour ("Discrete choice from data to

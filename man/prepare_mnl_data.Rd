@@ -27,7 +27,7 @@ prepare_mnl_data(
 
 \item{covariate_cols}{Vector of names of columns to be used as covariates.}
 
-\item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used.}
+\item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.}
 
 \item{outside_opt_label}{Label for the outside option (if any). If \code{NULL}, no outside option is assumed.}
 
@@ -36,7 +36,7 @@ prepare_mnl_data(
 \item{weights_col}{Optional name of a column in \code{data} holding per-row
 weights. The column must be constant within each \code{id_col} (one weight per
 choice situation) and is collapsed accordingly. Mutually exclusive with
-\code{weights}.}
+\code{weights}. All weights must be finite and strictly positive.}
 }
 \value{
 A list containing:

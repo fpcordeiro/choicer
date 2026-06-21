@@ -125,9 +125,10 @@
 #'   log-normal parameterization does not admit a closed-form back-transform
 #'   under multiplicative scaling.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
-#'   equal weights are used.
+#'   equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding a per-row
-#'   weight (constant within each choice situation). Mutually exclusive with
+#'   weight (constant within each choice situation, finite and strictly positive).
+#'   Mutually exclusive with
 #'   \code{weights}; the recommended way to pass WESML weights from
 #'   \code{\link{sample_by_choice}} / \code{\link{wesml_weights}}, since
 #'   alignment is by id rather than by position. Convenience workflow only. If
@@ -527,6 +528,16 @@ run_mxlogit <- function(
     NULL
   }
   if (!is.null(cs_meta) && !weights_nonuniform) {
+    if (has_input) {
+      stop("`input_data` is flagged as a WESML choice-based sample (it carries ",
+           "`choice_sampling` provenance), but the resolved weights are uniform. ",
+           "Fitting would produce an invalid unweighted estimator mislabeled as ",
+           "WESML. To proceed, either bake the non-uniform WESML weights into ",
+           "`input_data` via prepare_mxl_data(weights = ) / prepare_mxl_data(weights_col = ), ",
+           "or, if you deliberately want an unweighted fit, strip the provenance with ",
+           "`attr(input_data, \"choice_sampling\") <- NULL`.",
+           call. = FALSE)
+    }
     warning("WESML provenance is present but the applied weights are uniform; the fit ",
             "is effectively unweighted and is NOT a WESML-corrected estimator.",
             call. = FALSE)
@@ -688,8 +699,8 @@ run_mxlogit <- function(
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)
 #' @param covariate_cols Vector of names of columns to be used as covariates
 #' @param random_var_cols Vector of names of columns to be used as random variables
-#' @param weights Optional vector of weights for each choice situation. If NULL, equal weights are used.
-#' @param weights_col Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation). Mutually exclusive with \code{weights}.
+#' @param weights Optional vector of weights for each choice situation. If NULL, equal weights are used. All weights must be finite and strictly positive.
+#' @param weights_col Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation, finite and strictly positive). Mutually exclusive with \code{weights}.
 #' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param rc_correlation Logical indicating whether random coefficients are correlated. Default is FALSE.
@@ -875,6 +886,19 @@ prepare_mxl_data <- function(
 
   # Weights default = 1
   if (is.null(weights)) weights <- rep(1, N)
+
+  ## Weights must be finite and strictly positive. Zero/negative weights would
+  ## silently invalidate weighted and WESML sandwich inference (w in the bread,
+  ## w^2 in the meat). Validated here so every resolution path (weights=,
+  ## weights_col=, and the uniform default) is covered.
+  if (any(!is.finite(weights))) {
+    stop("Weights must be finite, but non-finite values (NA/NaN/Inf) were found.",
+         call. = FALSE)
+  }
+  if (any(weights <= 0)) {
+    stop("Weights must be strictly positive, but values <= 0 were found.",
+         call. = FALSE)
+  }
 
   ## Alternative summary -------------------------------------------------------
 
