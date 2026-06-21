@@ -12,11 +12,13 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5, fig.heig
 options(digits = 4)
 ```
 
-The multinomial probit (MNP) replaces logit's restrictive error structure with a
-*full multivariate-normal* covariance, so it can capture rich correlation
-between alternatives without imposing IIA. choicer estimates it the Bayesian way:
-a Gibbs sampler with data augmentation, written in C++ with a reproducible,
-thread-safe random number generator.
+The multinomial probit (MNP) replaces logit's Type-I extreme-value error
+structure with a multivariate-normal covariance for utility differences. That
+covariance can encode rich substitution patterns across alternatives, but the
+extra flexibility is bought with scale normalization, covariance parameters, and
+MCMC diagnostics. choicer estimates the model the Bayesian way: a Gibbs sampler
+with data augmentation, written in C++ with a reproducible, thread-safe random
+number generator.
 
 ```{r setup}
 library(choicer)
@@ -57,6 +59,11 @@ distinguishes probit from logit. They are identified only up to scale, so
 choicer reports them on the normalized scale where `Sigma_11 = 1`. The prior is
 placed on the unrestricted covariance used inside the Gibbs sampler; the reported
 posterior summaries are computed after normalizing each kept draw.
+
+For empirical work, the covariance matrix should be read as a maintained
+substitution structure unless the data contain enough variation to discipline it.
+The MNP is attractive when flexible error correlation is the central object, but
+with many alternatives its parameter count rises quickly.
 
 ## Compare posterior summaries with the truth
 

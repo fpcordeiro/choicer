@@ -14,21 +14,25 @@ options(digits = 4)
 
 The mixed (random-coefficients) logit lets tastes vary across people. Instead of
 a single coefficient on each random attribute, choicer estimates a *distribution*
-of coefficients, which relaxes IIA and allows realistic substitution
-patterns. Estimation is by simulated maximum likelihood using Halton draws, with
-the likelihood, gradient and Hessian evaluated in parallel C++.
+of coefficients. This can generate non-IIA unconditional substitution patterns,
+but only through the mixing distribution you specify and the data identify.
+Estimation is by simulated maximum likelihood using Halton draws, with the
+likelihood, gradient and Hessian evaluated in parallel C++.
 
-A useful way to see *how* it relaxes IIA: the mixed-logit probability is a
-logit kernel averaged over the taste distribution,
+A useful way to see the mechanism: the mixed-logit probability is a logit kernel
+averaged over the taste distribution,
 $P_{ij} = \int L_{ij}(\beta)\, f(\beta)\, d\beta$, where
 $L_{ij}(\beta) = \exp(X_{ij}\beta) / \sum_k \exp(X_{ik}\beta)$. *Conditional on a
 draw* $\beta$, the kernel $L_{ij}(\beta)$ is an ordinary logit and obeys IIA. It
-is the **mixing** — integrating over $\beta$ — that breaks IIA in the
-unconditional probabilities. This is the mirror image of the multinomial logit,
+is the **mixing** — integrating over $\beta$ — that removes the MNL's IIA
+restriction from the unconditional probabilities. This is the mirror image of the
+multinomial logit,
 which mixes a logit kernel over *observed* heterogeneity; the mixed logit mixes
 it over *unobserved* heterogeneity. Either way, flexible substitution comes from
 averaging logit kernels across heterogeneity — the only question is whether that
-heterogeneity is in the data or in the assumed distribution.
+heterogeneity is observed in the data or inferred through an assumed distribution.
+For counterfactual work, that distinction is central: flexibility that is not
+identified by the available variation is flexibility supplied by functional form.
 
 ```{r setup}
 library(choicer)
@@ -94,9 +98,11 @@ rows are the alternative-specific constants.
 
 ## Substitution is no longer share-proportional
 
-Because tastes are heterogeneous, mixed logit breaks IIA: people who like one
-alternative tend to like its close substitutes, so demand diverts to similar
-alternatives rather than in proportion to shares. Diversion therefore depends on
+Because tastes are heterogeneous, the unconditional mixed-logit probabilities no
+longer inherit the MNL's share-proportional diversion formula. If the estimated
+mixing distribution captures economically meaningful unobserved tastes, people
+who value one alternative tend to value nearby substitutes, so demand diverts
+toward alternatives close on that latent margin. Diversion therefore depends on
 *which* attribute is changing, so `diversion_ratios()` takes a `wrt_var`:
 
 ```{r diversion}
@@ -137,7 +143,9 @@ Two consequences are worth keeping in front of you:
   Without one of these, the random-coefficient variances are weakly identified
   and the estimates can be fragile.
 
-Practical defenses follow directly: prefer **bounded or sign-constrained mixing
+Practical defenses follow directly: report sensitivity to the number of draws,
+starting values, and distributional assumptions; compare substitution and welfare
+under a simpler baseline; and prefer **bounded or sign-constrained mixing
 distributions** (triangular, censored normal) so a tail cannot run away;
 **estimate in WTP-space** (Train & Weeks, 2005) to sidestep the ratio-of-normals
 pathology; or use a **latent-class** specification when a handful of discrete

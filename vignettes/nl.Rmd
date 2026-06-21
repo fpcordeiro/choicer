@@ -30,8 +30,10 @@ parameter per nest, and it stays globally well-behaved and cheap to estimate (a
 closed-form GEV likelihood, no simulation). The price you pay is a strong prior:
 *you* must specify the nesting tree in advance, and the model only permits
 correlation within the nests you draw. When the right grouping is obvious from
-the application (travel modes, product categories), that is a small price; when
-it is not, the result can be sensitive to how you nest. See
+the application (travel modes, product categories), that is a defensible
+restriction; when it is not, the result can be sensitive to how you nest. A good
+nested-logit application therefore treats the tree as an economic assumption,
+not as a tuning parameter chosen after looking at fit statistics. See
 [Choosing among logit models](choicer.html#choosing-among-logit-models) for how
 this tradeoff compares with the alternatives.
 
@@ -90,6 +92,11 @@ the *same* nest than for alternatives in different nests. choicer's
 elasticities(fit, elast_var = "W")
 diversion_ratios(fit)
 ```
+
+Those substitution patterns are credible only to the extent that the nesting tree
+is credible. If plausible alternative trees imply materially different diversion
+or welfare conclusions, that sensitivity is part of the empirical result rather
+than a nuisance to hide.
 
 ## Share inversion with BLP
 
