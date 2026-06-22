@@ -23,7 +23,8 @@ mnlogit_benchmark_config <- function() {
       print_level = 0L
     ),
     plot_metric = "mean_fit_time_sec",
-    clean_dll = TRUE
+    clean_dll = TRUE,
+    max_run_sec = Inf
   )
 }
 
@@ -39,5 +40,9 @@ mnlogit_normalize_config <- function(config) {
   config$packages[config$packages == "survival"] <- "clogit"
   config$grid_mode <- config$grid_mode[[1L]]
   config$plot_metric <- config$plot_metric[[1L]]
+  config$max_run_sec <- as.numeric(config$max_run_sec[[1L]])
+  if (is.na(config$max_run_sec) || config$max_run_sec <= 0) {
+    config$max_run_sec <- Inf
+  }
   config
 }

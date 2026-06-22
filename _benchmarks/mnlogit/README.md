@@ -15,6 +15,19 @@ Runtime output separates deterministic package setup from the estimator call:
 - `fit_time_sec`: model estimation only; this is the plotted headline metric.
 - `total_time_sec`: setup plus fit.
 
+Each package/spec/run attempt is executed in its own sequential child R process.
+The runner writes per-attempt partial CSVs as soon as each child exits, then
+reconciles those partials into the existing aggregate outputs:
+
+- `run_status.csv`: progress ledger for pending/running/ok/error/timeout/not_installed attempts.
+- `partials/`: one raw-result CSV and, when estimates exist, one coefficient CSV
+  per attempt.
+- `logs/`: child stdout/stderr for diagnosing package failures.
+
+Use `--max-run-sec=<seconds>` to cap each child process. Timed-out attempts are
+recorded with `status = "timeout"` and are excluded from timing summaries in the
+same way as other non-`ok` attempts. The default is no timeout.
+
 ## Example
 
 ```sh
@@ -25,6 +38,7 @@ Rscript _benchmarks/mnlogit/run.R \
   --fixed-n=50 \
   --fixed-j=3 \
   --packages=choicer,mlogit,logitr \
+  --max-run-sec=60 \
   --tag=smoke
 ```
 

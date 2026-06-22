@@ -266,3 +266,37 @@ bench_write_session_info <- function(path) {
   utils::capture.output(utils::sessionInfo(), file = path)
   invisible(path)
 }
+
+bench_atomic_fwrite <- function(x, path, ...) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  tmp <- file.path(
+    dirname(path),
+    sprintf(".%s.tmp.%s.%06d", basename(path), Sys.getpid(), sample.int(1e6, 1L))
+  )
+  on.exit(if (file.exists(tmp)) unlink(tmp), add = TRUE)
+
+  if (!length(names(x))) {
+    if (!file.create(tmp)) stop("Could not create temporary file: ", tmp)
+  } else {
+    data.table::fwrite(x, tmp, ...)
+  }
+  if (!file.rename(tmp, path)) {
+    stop("Could not move temporary file into place: ", path)
+  }
+  invisible(path)
+}
+
+bench_atomic_save_rds <- function(object, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  tmp <- file.path(
+    dirname(path),
+    sprintf(".%s.tmp.%s.%06d", basename(path), Sys.getpid(), sample.int(1e6, 1L))
+  )
+  on.exit(if (file.exists(tmp)) unlink(tmp), add = TRUE)
+
+  saveRDS(object, tmp)
+  if (!file.rename(tmp, path)) {
+    stop("Could not move temporary file into place: ", path)
+  }
+  invisible(path)
+}

@@ -16,6 +16,7 @@ Rscript _benchmarks/mnlogit/run.R \
   --fixed-n=10000 \
   --fixed-j=10 \
   --packages=choicer,mlogit,logitr \
+  --max-run-sec=600 \
   --tag=local
 ```
 
@@ -25,11 +26,19 @@ Each run writes timestamped outputs under
 Default outputs:
 
 - `metadata.json`, `metadata.txt`, `session_info.txt`
+- `run_status.csv`
 - `raw_results.csv`
 - `coef_results.csv`
 - `summary_results.csv`
 - `summary_table.md`
 - `runtime_scaling.png`, `runtime_scaling.pdf`
+
+The multinomial logit runner executes each package/spec/run attempt in a
+separate sequential R process. Partial attempt outputs are written immediately
+under `partials/`, child stdout/stderr are written under `logs/`, and the final
+aggregate CSVs are reconciled from completed partials. `--max-run-sec` sets an
+optional per-attempt child-process timeout; omit it or set it to `Inf` to run
+without a timeout.
 
 ## Legacy Benchmarks
 

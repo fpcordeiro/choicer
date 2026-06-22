@@ -15,7 +15,9 @@ mnlogit_raw_row <- function(package, spec, run, status, converged = NA,
                             setup_time_sec = NA_real_, fit_time_sec = NA_real_,
                             total_time_sec = NA_real_, loglik = NA_real_,
                             n_params = NA_integer_, error = NA_character_,
-                            warnings = NA_character_) {
+                            warnings = NA_character_, timeout_sec = NA_real_,
+                            process_elapsed_sec = NA_real_,
+                            worker_exit_status = NA_integer_) {
   dep <- mnlogit_dependency(package)
   data.table::data.table(
     benchmark = "mnlogit",
@@ -36,6 +38,9 @@ mnlogit_raw_row <- function(package, spec, run, status, converged = NA,
     total_time_sec = as.numeric(total_time_sec),
     loglik = as.numeric(loglik),
     n_params = as.integer(n_params),
+    timeout_sec = as.numeric(timeout_sec),
+    process_elapsed_sec = as.numeric(process_elapsed_sec),
+    worker_exit_status = as.integer(worker_exit_status),
     error = error,
     warnings = warnings
   )
