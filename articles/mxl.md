@@ -103,7 +103,7 @@ summary(fit)
 #> AIC: 4889.67  | BIC: 4940.08 
 #> McFadden R2: 0.106 (adj: 0.102) | Hit rate: 0.452 
 #> N: 2000  | Parameters: 9 
-#> Optimization time: 1.47 s
+#> Optimization time: 1.46 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 ```
 

@@ -54,7 +54,7 @@ fit <- run_mnlogit(
   choice_col     = "choice",
   covariate_cols = c("wait", "travel", "vcost")
 )
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 summary(fit)
 #> Multinomial Logit (MNL) model
 #> 
@@ -73,7 +73,7 @@ summary(fit)
 #> AIC: 397.777  | BIC: 417.86 
 #> McFadden R2: 0.337 (adj: 0.317) | Hit rate: 0.738 
 #> N: 210  | Parameters: 6 
-#> Optimization time: 0.01 s
+#> Optimization time: 0 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 ```
 

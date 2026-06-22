@@ -77,7 +77,7 @@ fit <- run_mxlogit(
   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
   covariate_cols = "x1", random_var_cols = "w1", S = 50L
 )
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 print(summary(fit))
 #> Mixed Logit (MXL) model
 #> 
@@ -98,7 +98,7 @@ print(summary(fit))
 #> AIC: 112.382  | BIC: 120.03 
 #> McFadden R2: 0.050 (adj: -0.023) | Hit rate: 0.420 
 #> N: 50  | Parameters: 4 
-#> Optimization time: 0.01 s
+#> Optimization time: 0 s
 #> Convergence: 1 ( NLOPT_SUCCESS: Generic success return value. )
 # }
 ```

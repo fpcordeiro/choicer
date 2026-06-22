@@ -156,7 +156,7 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 eta <- get_halton_normals(50, d$N, ncol(d$W))
 fit <- run_mxlogit(input_data = d, eta_draws = eta)
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 pm <- fit$param_map
 delta <- mxl_blp_contraction(rep(0, J), rep(1/J, J), d$X, d$W,
   coef(fit)[pm$beta], rep(0, ncol(d$W)), coef(fit)[pm$sigma],

@@ -73,7 +73,7 @@ fit <- run_nestlogit(
   include_outside_option = TRUE,
   outside_opt_label      = 0L
 )
-#> Optimization run time 0h:0m:0.12s
+#> Optimization run time 0h:0m:0.13s
 summary(fit)
 #> Nested Logit (NL) model
 #> 
@@ -95,7 +95,7 @@ summary(fit)
 #> AIC: 6145.24  | BIC: 6201.89 
 #> McFadden R2: 0.573 (adj: 0.571) | Hit rate: 0.694 
 #> N: 4000  | Parameters: 9 
-#> Optimization time: 0.12 s
+#> Optimization time: 0.13 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 ```
 
