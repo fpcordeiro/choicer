@@ -14,11 +14,11 @@ options(digits = 4)
 
 The multinomial probit (MNP) replaces logit's Type-I extreme-value error
 structure with a multivariate-normal covariance for utility differences. That
-covariance can encode rich substitution patterns across alternatives, but the
-extra flexibility is bought with scale normalization, covariance parameters, and
-MCMC diagnostics. choicer estimates the model the Bayesian way: a Gibbs sampler
-with data augmentation, written in C++ with a reproducible, thread-safe random
-number generator.
+covariance can encode correlated substitution across alternatives. The cost is
+scale normalization, a covariance parameterization that grows quickly with the
+number of alternatives, and MCMC diagnostics. choicer estimates the model the
+Bayesian way: a Gibbs sampler with data augmentation, written in C++ with a
+reproducible, thread-safe random number generator.
 
 ```{r setup}
 library(choicer)
@@ -54,11 +54,11 @@ fit <- run_mnprobit(
 summary(fit)
 ```
 
-The `Sigma` entries are the error-covariance parameters — the flexibility that
-distinguishes probit from logit. They are identified only up to scale, so
-choicer reports them on the normalized scale where `Sigma_11 = 1`. The prior is
-placed on the unrestricted covariance used inside the Gibbs sampler; the reported
-posterior summaries are computed after normalizing each kept draw.
+The `Sigma` entries are the error-covariance parameters. They are identified only
+up to scale, so choicer reports them on the normalized scale where
+`Sigma_11 = 1`. The prior is placed on the unrestricted covariance used inside
+the Gibbs sampler; the reported posterior summaries are computed after
+normalizing each kept draw.
 
 For empirical work, the covariance matrix should be read as a maintained
 substitution structure unless the data contain enough variation to discipline it.

@@ -14,25 +14,22 @@ options(digits = 4)
 
 The mixed (random-coefficients) logit lets tastes vary across people. Instead of
 a single coefficient on each random attribute, choicer estimates a *distribution*
-of coefficients. This can generate non-IIA unconditional substitution patterns,
-but only through the mixing distribution you specify and the data identify.
-Estimation is by simulated maximum likelihood using Halton draws, with the
-likelihood, gradient and Hessian evaluated in parallel C++.
+of coefficients. Substitution then reflects both observed covariates and the
+estimated distribution of tastes. Estimation is by simulated maximum likelihood
+using Halton draws, with the likelihood, gradient and Hessian evaluated in
+parallel C++.
 
-A useful way to see the mechanism: the mixed-logit probability is a logit kernel
-averaged over the taste distribution,
+A useful way to see the mechanism is to write the mixed-logit probability as a
+logit kernel averaged over the taste distribution,
 $P_{ij} = \int L_{ij}(\beta)\, f(\beta)\, d\beta$, where
 $L_{ij}(\beta) = \exp(X_{ij}\beta) / \sum_k \exp(X_{ik}\beta)$. *Conditional on a
-draw* $\beta$, the kernel $L_{ij}(\beta)$ is an ordinary logit and obeys IIA. It
-is the **mixing** — integrating over $\beta$ — that removes the MNL's IIA
-restriction from the unconditional probabilities. This is the mirror image of the
-multinomial logit,
-which mixes a logit kernel over *observed* heterogeneity; the mixed logit mixes
-it over *unobserved* heterogeneity. Either way, flexible substitution comes from
-averaging logit kernels across heterogeneity — the only question is whether that
-heterogeneity is observed in the data or inferred through an assumed distribution.
-For counterfactual work, that distinction is central: flexibility that is not
-identified by the available variation is flexibility supplied by functional form.
+draw* $\beta$, the kernel is an ordinary logit. The empirical content of the
+mixed logit is in the averaging: people with different $\beta$'s place different
+values on the same attributes, so demand leaving an alternative need not go to
+the same destinations for all consumers. For counterfactual work, the distinction
+between observed heterogeneity and the estimated mixing distribution is central:
+flexibility that is not disciplined by the available variation is supplied by the
+maintained distribution $f(\beta)$.
 
 ```{r setup}
 library(choicer)
@@ -96,14 +93,13 @@ The `beta` rows are the fixed coefficients, the `sigma` rows describe the
 covariance of the random coefficients (its Cholesky elements), and the `asc`
 rows are the alternative-specific constants.
 
-## Substitution is no longer share-proportional
+## Substitution through taste heterogeneity
 
-Because tastes are heterogeneous, the unconditional mixed-logit probabilities no
-longer inherit the MNL's share-proportional diversion formula. If the estimated
-mixing distribution captures economically meaningful unobserved tastes, people
-who value one alternative tend to value nearby substitutes, so demand diverts
-toward alternatives close on that latent margin. Diversion therefore depends on
-*which* attribute is changing, so `diversion_ratios()` takes a `wrt_var`:
+With random coefficients, diversion is mediated by the distribution of tastes. If
+the estimated mixing distribution captures economically meaningful heterogeneity,
+people who value one alternative tend to value nearby substitutes on that latent
+margin. Diversion can therefore depend on *which* attribute is changing, so
+`diversion_ratios()` takes a `wrt_var`:
 
 ```{r diversion}
 elasticities(fit, elast_var = "x2")
@@ -114,15 +110,14 @@ The rest of the toolkit — `predict()`, `wtp()`, `consumer_surplus()`, `blp()` 
 behaves exactly as in the [getting-started vignette](choicer.html), integrating
 over the distribution of tastes automatically.
 
-## No free lunch: the flexibility lives in the tails
+## Identification and tails
 
 The mixed logit is a genuine generalization of the MNL — if tastes are in fact
 homogeneous, the estimator simply returns a near-zero variance and you are back
-to a logit. So the issue is not that the random coefficients *impose* substitution
-patterns. The issue is **identification**: all of the model's extra flexibility
-is carried by the mixing distribution $f(\beta)$, and $f(\beta)$ is hardest to
-pin down exactly where it matters most for substitution and welfare — in the
-**tails**.
+to a logit. The issue is not that random coefficients are intrinsically fragile.
+The issue is identification: the additional substitution structure is carried by
+the mixing distribution $f(\beta)$, and $f(\beta)$ is often hardest to pin down
+where it matters most for welfare and diversion — in the tails.
 
 Two consequences are worth keeping in front of you:
 
@@ -150,6 +145,6 @@ distributions** (triangular, censored normal) so a tail cannot run away;
 **estimate in WTP-space** (Train & Weeks, 2005) to sidestep the ratio-of-normals
 pathology; or use a **latent-class** specification when a handful of discrete
 types is more credible than a continuous distribution. None of these is free —
-each trades one assumption for another — but each spends the assumption where you
-can defend it. The broader tradeoff is laid out in
-[Choosing among logit models](choicer.html#choosing-among-logit-models).
+each trades one restriction for another — but each puts the restriction in a
+place you can defend. The broader tradeoff is laid out in
+[Choosing among choice models](choicer.html#choosing-among-choice-models).
