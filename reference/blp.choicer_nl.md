@@ -119,13 +119,13 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 199:    50     3     2  1.8152284 -0.2556077      0
 #> 200:    50     4     2  0.1288214  0.9310329      1
 fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 blp(fit, target_shares = rep(1/J, J))
 #> Warning: Maximum iterations reached without convergence.
 #>              [,1]
 #> [1,]   0.00000000
-#> [2,]  -0.09623859
-#> [3,] 108.33022167
-#> [4,] 108.39474011
+#> [2,]  -0.09623865
+#> [3,] 108.33018626
+#> [4,] 108.39470470
 # }
 ```

@@ -117,11 +117,19 @@ fit_fun <- function(sim) run_mnlogit(
   control = list(print_level = 0L)
 )
 mc <- monte_carlo(sim_fun, fit_fun, R = 50L, seed = 1L, progress = FALSE)
+#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0.01s
@@ -133,16 +141,7 @@ mc <- monte_carlo(sim_fun, fit_fun, R = 50L, seed = 1L, progress = FALSE)
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0.01s
-#> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0s
-#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
@@ -161,6 +160,7 @@ mc <- monte_carlo(sim_fun, fit_fun, R = 50L, seed = 1L, progress = FALSE)
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s
 #> Optimization run time 0h:0m:0s

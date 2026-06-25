@@ -2,10 +2,10 @@
 
 The multinomial probit (MNP) replaces logit’s Type-I extreme-value error
 structure with a multivariate-normal covariance for utility differences.
-That covariance can encode rich substitution patterns across
-alternatives, but the extra flexibility is bought with scale
-normalization, covariance parameters, and MCMC diagnostics. choicer
-estimates the model the Bayesian way: a Gibbs sampler with data
+That covariance can encode correlated substitution across alternatives.
+The cost is scale normalization, a covariance parameterization that
+grows quickly with the number of alternatives, and MCMC diagnostics.
+choicer estimates the model the Bayesian way: a Gibbs sampler with data
 augmentation, written in C++ with a reproducible, thread-safe random
 number generator.
 
@@ -52,7 +52,7 @@ fit <- run_mnprobit(
   covariate_cols = c("x1", "x2"),
   mcmc           = list(R = 4000, burn = 1000, thin = 2)
 )
-#> MCMC run time 0h:0m:0.66s
+#> MCMC run time 0h:0m:0.65s
 summary(fit)
 #> Bayesian Multinomial Probit (MNP) model
 #> 
@@ -76,16 +76,15 @@ summary(fit)
 #> Base alternative: 1 
 #> Draws kept: 1500 (R = 4000, burn = 1000, thin = 2, seed = 721735354)
 #> N: 2000  | Parameters: 4 
-#> Sampling time: 0.66 s
+#> Sampling time: 0.65 s
 #> Identification: per-draw normalization by sigma_11 (McCulloch-Rossi 1994).
 ```
 
-The `Sigma` entries are the error-covariance parameters — the
-flexibility that distinguishes probit from logit. They are identified
-only up to scale, so choicer reports them on the normalized scale where
-`Sigma_11 = 1`. The prior is placed on the unrestricted covariance used
-inside the Gibbs sampler; the reported posterior summaries are computed
-after normalizing each kept draw.
+The `Sigma` entries are the error-covariance parameters. They are
+identified only up to scale, so choicer reports them on the normalized
+scale where `Sigma_11 = 1`. The prior is placed on the unrestricted
+covariance used inside the Gibbs sampler; the reported posterior
+summaries are computed after normalizing each kept draw.
 
 For empirical work, the covariance matrix should be read as a maintained
 substitution structure unless the data contain enough variation to

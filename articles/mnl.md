@@ -47,7 +47,7 @@ fit <- run_mnlogit(
   choice_col     = "choice",
   covariate_cols = c("x1", "x2")
 )
-#> Optimization run time 0h:0m:0.05s
+#> Optimization run time 0h:0m:0.01s
 summary(fit)
 #> Multinomial Logit (MNL) model
 #> 
@@ -66,7 +66,7 @@ summary(fit)
 #> AIC: 4886.2  | BIC: 4919.8 
 #> McFadden R2: 0.104 (adj: 0.102) | Hit rate: 0.447 
 #> N: 2000  | Parameters: 6 
-#> Optimization time: 0.05 s
+#> Optimization time: 0.01 s
 #> Convergence: 1 ( NLOPT_SUCCESS: Generic success return value. )
 ```
 
@@ -145,62 +145,42 @@ gof(fit)                             # McFadden R2 and hit rate
 #>   N: 2000  | Parameters: 6
 ```
 
-## A note on IIA
+## Substitution restrictions
 
-It is worth being precise about what IIA is and where it bites, because
-the usual one-liner (“logit assumes IIA, so it’s wrong”) obscures more
-than it explains.
+The MNL is useful partly because its substitution structure is
+transparent. Conditional on the included covariates, the odds ratio
+$`P_{ij}/P_{ik} = \exp(V_{ij} - V_{ik})`$ depends only on alternatives
+$`j`$ and $`k`$. This is the familiar individual-level IIA implication,
+but the more useful empirical statement is about counterfactual
+diversion: for a given decision maker, demand leaving one alternative is
+reallocated across the remaining alternatives in proportion to their
+fitted probabilities.
 
-**In micro MNL, IIA is imposed on individual conditional choice
-probabilities.** IIA can also be defined for aggregate shares or other
-choice-probability systems, but the logit restriction starts at the
-individual level. For a single decision-maker, the ratio of any two
-choice probabilities, $`P_{ij}/P_{ik} = \exp(V_{ij} - V_{ik})`$, depends
-only on the attributes of $`j`$ and $`k`$ — never on what other
-alternatives exist or what they look like. That is the individual-level
-independence-of-irrelevant-alternatives restriction, and the MNL
-satisfies it by construction.
-
-**At the aggregate level the picture is different.** The diversion
-ratios and cross-elasticities reported above are sample averages over
-individuals. The familiar share-proportional formula
-$`DR(j\to k) = s_k / (1 - s_j)`$ holds *only* when every individual
-faces the same covariates, so that $`P_{ij}`$ does not vary across
-$`i`$. As soon as covariates vary across choice situations — different
-attributes, demographics, or choice sets — the aggregate substitution
-patterns are **no longer share-proportional** and need not satisfy a
-market-level IIA property, even though each individual conditional
-probability still obeys IIA. (The diversion derivation in the [math
+Aggregate substitution can be less mechanical than that statement
+suggests. The elasticities and diversion ratios reported above are
+averages over choice situations. When covariates, demographics or choice
+sets vary across situations, the aggregate diversion matrix need not
+equal the simple market-share formula $`DR(j\to k) = s_k / (1 - s_j)`$.
+The [math
 companion](https://fpcordeiro.github.io/choicer/articles/multinomial_logit_math.md)
-makes this explicit.)
+gives the derivation.
 
-So the MNL is more flexible in aggregate than “IIA” suggests — but only
-along dimensions you have *observed*. Its genuine limitations are two.
-First, all of its substitution flexibility must be carried by observed
-covariates; it cannot represent substitution driven by *unobserved*
-correlation in tastes. Second, for a single decision-maker — and
-therefore for any individual-level counterfactual — substitution remains
-rigidly proportional. That second point matters most for counterfactuals
-(a new product, a removed alternative), where there is no data to
-discipline the substitution pattern and the model’s structure does all
-the work.
+The remaining restriction is substantive: all heterogeneity that matters
+for substitution must be observed and included in the utility index. If
+closeness is driven by unobserved tastes, product groupings, networks,
+peer groups or other latent features, the MNL will not recover that
+margin. It is then not enough to fit shares well; the model may still
+give the wrong diversion matrix for the counterfactual of interest.
 
-That is why the MNL is best treated as a disciplined baseline rather
-than a straw man. If the variation in the data is rich enough to explain
-the substitution margin through observed attributes, the MNL can be the
-most transparent model. If the economics turns on unobserved closeness —
-products that share latent tastes, schools with unmeasured peer groups,
-hospitals with unobserved networks — a more structured model is doing
-substantive work, and that work needs to be defended.
-
-When those limitations bite — close substitutes, rich unobserved
-heterogeneity, counterfactuals that hinge on *who* substitutes to *what*
-— reach for the [nested
-logit](https://fpcordeiro.github.io/choicer/articles/nl.md) or [mixed
-logit](https://fpcordeiro.github.io/choicer/articles/mxl.md). They keep
-the same [`predict()`](https://rdrr.io/r/stats/predict.html) /
-[`elasticities()`](https://fpcordeiro.github.io/choicer/reference/elasticities.md)
-/ [`wtp()`](https://fpcordeiro.github.io/choicer/reference/wtp.md)
-interface, and the [getting-started
-vignette](https://fpcordeiro.github.io/choicer/articles/choicer.html#choosing-among-logit-models)
-lays out what each relaxation costs.
+That makes the MNL a disciplined baseline, not a straw man. Use it when
+the included variables carry the relevant substitution margin, or when
+the target is an object that does not require richer unobserved
+structure. Move to [nested
+logit](https://fpcordeiro.github.io/choicer/articles/nl.md), [mixed
+logit](https://fpcordeiro.github.io/choicer/articles/mxl.md), or
+[multinomial
+probit](https://fpcordeiro.github.io/choicer/articles/mnp.md) when the
+empirical question requires grouped substitution, random tastes or
+correlated utility shocks. The [getting-started
+vignette](https://fpcordeiro.github.io/choicer/articles/choicer.html#choosing-among-choice-models)
+compares those choices directly.

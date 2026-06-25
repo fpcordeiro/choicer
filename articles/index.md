@@ -6,8 +6,8 @@
   logit](https://fpcordeiro.github.io/choicer/articles/mnl.md):
 - [Mixed logit and preference
   heterogeneity](https://fpcordeiro.github.io/choicer/articles/mxl.md):
-- [Nested logit and relaxed
-  IIA](https://fpcordeiro.github.io/choicer/articles/nl.md):
+- [Nested logit and grouped
+  substitution](https://fpcordeiro.github.io/choicer/articles/nl.md):
 - [Bayesian multinomial
   probit](https://fpcordeiro.github.io/choicer/articles/mnp.md):
 - [Choice-based sampling and WESML

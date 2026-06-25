@@ -1,32 +1,30 @@
-# Nested logit and relaxed IIA
+# Nested logit and grouped substitution
 
 Nested logit groups alternatives into *nests* of close substitutes.
 Within a nest, alternatives share an unobserved component, so
-substitution is stronger inside a nest than across nests — the
-independence-of-irrelevant-alternatives (IIA) property holds within
-nests but not between them. Each nest has a positive dissimilarity
-parameter λ. The usual random-utility interpretation of nested logit
-focuses on `0 < λ <= 1`: λ = 1 gives the MNL limit, and smaller λ means
-tighter substitution inside the nest. choicer imposes λ \> 0 rather than
-an upper bound. Estimates above one are mathematically computable but
-imply negative within-nest correlation and should be treated as evidence
-against the proposed nesting structure, not as the usual “close
-substitutes” interpretation.
+substitution is stronger inside a nest than across nests. Each nest has
+a positive dissimilarity parameter λ. The usual random-utility
+interpretation of nested logit focuses on `0 < λ <= 1`: λ = 1 gives the
+MNL limit, and smaller λ means tighter substitution inside the nest.
+choicer imposes λ \> 0 rather than an upper bound. Estimates above one
+are mathematically computable but imply negative within-nest correlation
+and should be treated as evidence against the proposed nesting
+structure, not as the usual “close substitutes” interpretation.
 
 Think of nested logit as the **parsimonious middle ground** between the
-multinomial and mixed logits. It buys a controlled departure from IIA —
-genuine within-nest correlation in the unobserved utility — at the cost
-of just one extra parameter per nest, and it stays globally well-behaved
-and cheap to estimate (a closed-form GEV likelihood, no simulation). The
-price you pay is a strong prior: *you* must specify the nesting tree in
-advance, and the model only permits correlation within the nests you
-draw. When the right grouping is obvious from the application (travel
-modes, product categories), that is a defensible restriction; when it is
-not, the result can be sensitive to how you nest. A good nested-logit
+multinomial and mixed logits. It introduces genuine within-nest
+correlation in unobserved utility at the cost of just one extra
+parameter per nest, and it stays globally well-behaved and cheap to
+estimate (a closed-form GEV likelihood, no simulation). The price you
+pay is a strong prior: *you* must specify the nesting tree in advance,
+and the model only permits correlation within the nests you draw. When
+the right grouping is obvious from the application (travel modes,
+product categories), that is a defensible restriction; when it is not,
+the result can be sensitive to how you nest. A good nested-logit
 application therefore treats the tree as an economic assumption, not as
 a tuning parameter chosen after looking at fit statistics. See [Choosing
-among logit
-models](https://fpcordeiro.github.io/choicer/articles/choicer.html#choosing-among-logit-models)
+among choice
+models](https://fpcordeiro.github.io/choicer/articles/choicer.html#choosing-among-choice-models)
 for how this tradeoff compares with the alternatives.
 
 ``` r
@@ -73,7 +71,7 @@ fit <- run_nestlogit(
   include_outside_option = TRUE,
   outside_opt_label      = 0L
 )
-#> Optimization run time 0h:0m:0.13s
+#> Optimization run time 0h:0m:0.12s
 summary(fit)
 #> Nested Logit (NL) model
 #> 
@@ -95,7 +93,7 @@ summary(fit)
 #> AIC: 6145.24  | BIC: 6201.89 
 #> McFadden R2: 0.573 (adj: 0.571) | Hit rate: 0.694 
 #> N: 4000  | Parameters: 9 
-#> Optimization time: 0.13 s
+#> Optimization time: 0.12 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 ```
 

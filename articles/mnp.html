@@ -79,12 +79,12 @@
     
 <p>The multinomial probit (MNP) replaces logit’s Type-I extreme-value
 error structure with a multivariate-normal covariance for utility
-differences. That covariance can encode rich substitution patterns
-across alternatives, but the extra flexibility is bought with scale
-normalization, covariance parameters, and MCMC diagnostics. choicer
-estimates the model the Bayesian way: a Gibbs sampler with data
-augmentation, written in C++ with a reproducible, thread-safe random
-number generator.</p>
+differences. That covariance can encode correlated substitution across
+alternatives. The cost is scale normalization, a covariance
+parameterization that grows quickly with the number of alternatives, and
+MCMC diagnostics. choicer estimates the model the Bayesian way: a Gibbs
+sampler with data augmentation, written in C++ with a reproducible,
+thread-safe random number generator.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/fpcordeiro/choicer" class="external-link">choicer</a></span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/set_num_threads.html">set_num_threads</a></span><span class="op">(</span><span class="fl">2</span><span class="op">)</span></span></code></pre></div>
@@ -122,7 +122,7 @@ interpreting posterior summaries.</p>
 <span>  covariate_cols <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x1"</span>, <span class="st">"x2"</span><span class="op">)</span>,</span>
 <span>  mcmc           <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>R <span class="op">=</span> <span class="fl">4000</span>, burn <span class="op">=</span> <span class="fl">1000</span>, thin <span class="op">=</span> <span class="fl">2</span><span class="op">)</span></span>
 <span><span class="op">)</span></span>
-<span><span class="co">#&gt; MCMC run time 0h:0m:0.66s</span></span>
+<span><span class="co">#&gt; MCMC run time 0h:0m:0.65s</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/base/summary.html" class="external-link">summary</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span></span>
 <span><span class="co">#&gt; Bayesian Multinomial Probit (MNP) model</span></span>
 <span><span class="co">#&gt; </span></span>
@@ -146,13 +146,12 @@ interpreting posterior summaries.</p>
 <span><span class="co">#&gt; Base alternative: 1 </span></span>
 <span><span class="co">#&gt; Draws kept: 1500 (R = 4000, burn = 1000, thin = 2, seed = 721735354)</span></span>
 <span><span class="co">#&gt; N: 2000  | Parameters: 4 </span></span>
-<span><span class="co">#&gt; Sampling time: 0.66 s</span></span>
+<span><span class="co">#&gt; Sampling time: 0.65 s</span></span>
 <span><span class="co">#&gt; Identification: per-draw normalization by sigma_11 (McCulloch-Rossi 1994).</span></span></code></pre></div>
-<p>The <code>Sigma</code> entries are the error-covariance parameters —
-the flexibility that distinguishes probit from logit. They are
-identified only up to scale, so choicer reports them on the normalized
-scale where <code>Sigma_11 = 1</code>. The prior is placed on the
-unrestricted covariance used inside the Gibbs sampler; the reported
+<p>The <code>Sigma</code> entries are the error-covariance parameters.
+They are identified only up to scale, so choicer reports them on the
+normalized scale where <code>Sigma_11 = 1</code>. The prior is placed on
+the unrestricted covariance used inside the Gibbs sampler; the reported
 posterior summaries are computed after normalizing each kept draw.</p>
 <p>For empirical work, the covariance matrix should be read as a
 maintained substitution structure unless the data contain enough

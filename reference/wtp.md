@@ -98,7 +98,7 @@ library(data.table)
 sim <- simulate_mnl_data(N = 1000, J = 4, beta = c(0.8, -0.6), seed = 123,
                          outside_option = FALSE, vary_choice_set = FALSE)
 fit <- run_mnlogit(sim$data, "id", "alt", "choice", c("x1", "x2"))
-#> Optimization run time 0h:0m:0s
+#> Optimization run time 0h:0m:0.01s
 # treat x2 as the price variable
 wtp(fit, price_var = "x2")
 #> Willingness to pay (WTP), price variable: 'x2' (95% CI)
