@@ -35,7 +35,8 @@
 #' @param true_params Named list of true DGP parameters
 #'   (e.g. `beta`, `delta`, `Sigma`, `mu`, `lambdas`).
 #' @param settings Named list of DGP settings (e.g. `N`, `J`, `K_x`).
-#' @param model Character scalar: `"mnl"`, `"mxl"`, `"nl"`, or `"mnp"`.
+#' @param model Character scalar: `"mnl"`, `"mxl"`, `"nl"`, `"mnp"`,
+#'   `"hmnl"`, or `"hmnp"`.
 #' @returns A list of class `choicer_sim`.
 #' @export
 new_choicer_sim <- function(data, true_params, settings, model) {
@@ -45,8 +46,9 @@ new_choicer_sim <- function(data, true_params, settings, model) {
   if (!is.list(true_params)) stop("`true_params` must be a named list.")
   if (!is.list(settings))    stop("`settings` must be a named list.")
   if (!is.character(model) || length(model) != 1L ||
-      !(model %in% c("mnl", "mxl", "nl", "mnp"))) {
-    stop("`model` must be one of \"mnl\", \"mxl\", \"nl\", or \"mnp\".")
+      !(model %in% c("mnl", "mxl", "nl", "mnp", "hmnl", "hmnp"))) {
+    stop("`model` must be one of \"mnl\", \"mxl\", \"nl\", \"mnp\", ",
+         "\"hmnl\", or \"hmnp\".")
   }
   structure(
     list(data = data, true_params = true_params, settings = settings, model = model),
@@ -493,5 +495,280 @@ simulate_nl_data <- function(N       = 10000,
     true_params = list(beta = beta, delta = delta, lambdas = lambdas),
     settings    = list(N = N, J_inside = J_inside, nest_structure = nests),
     model       = "nl"
+  )
+}
+
+# HB DGPs (HMNL / HMNP) ========================================================
+
+# Shared panel DGP behind simulate_hmnl_data() / simulate_hmnp_data(). The
+# two models share the utility structure
+#   U_ijt = x_ijt' gamma_i + delta_j + eps,   U_iot = eps  (outside)
+# with delta_j = z_j' theta + xi_j, xi_j ~ N(0, sigma_d^2) and
+# beta_i ~ MVN(beta, W); they differ only in the shock (EV1 vs N(0, sigma^2))
+# and in rc_dist (HMNL only: log-normal coordinates enter utility as
+# exp(beta_ik)). The outside option carries its OWN utility shock — it is
+# stochastic with systematic utility 0, matching both estimators' models.
+.simulate_hb_panel <- function(N, T, J, beta, W, theta, sigma_d, Z, rc_dist,
+                               include_outside, seed, vary_choice_set,
+                               shock = c("ev1", "normal"), sigma = 1) {
+  shock <- match.arg(shock)
+  if (!is.null(seed)) set.seed(seed)
+  stopifnot(N >= 1, T >= 1, J >= 1)
+  if (vary_choice_set && J < 2) {
+    stop("`vary_choice_set = TRUE` requires J >= 2.")
+  }
+  K_x <- length(beta)
+  if (is.null(W)) W <- diag(0.5, K_x)
+  W <- as.matrix(W)
+  if (nrow(W) != K_x || ncol(W) != K_x) {
+    stop("`W` must be a ", K_x, " x ", K_x, " matrix.")
+  }
+  if (is.null(rc_dist)) rc_dist <- rep(0L, K_x)
+  rc_dist <- as.integer(rc_dist)
+  stopifnot(length(rc_dist) == K_x, all(rc_dist %in% c(0L, 1L)))
+  if (!is.finite(sigma_d) || sigma_d < 0) {
+    stop("`sigma_d` must be a non-negative number.")
+  }
+
+  # Mean-function design: intercept always present (matching the prep's Z
+  # convention); `Z` supplies the J x (P - 1) NON-intercept columns and
+  # defaults to Uniform(-1, 1) draws so theta recovery is non-trivial.
+  P <- length(theta)
+  if (P < 1) stop("`theta` must at least contain the intercept entry.")
+  if (is.null(Z)) {
+    Z_extra <- if (P > 1) {
+      matrix(stats::runif(J * (P - 1), -1, 1), J, P - 1)
+    } else {
+      matrix(0, J, 0)
+    }
+  } else {
+    Z_extra <- as.matrix(Z)
+    if (nrow(Z_extra) != J || ncol(Z_extra) != P - 1) {
+      stop("`Z` must be a ", J, " x ", P - 1, " matrix ",
+           "(alternative-level covariates excluding the intercept).")
+    }
+  }
+  z_names <- if (P > 1) paste0("z", seq_len(P - 1)) else character(0)
+  colnames(Z_extra) <- z_names
+  Z_full <- cbind("(Intercept)" = rep(1, J), Z_extra)
+
+  # Alternative-level effects: delta_j = z_j' theta + xi_j (realized once,
+  # global across all respondents and tasks).
+  xi <- stats::rnorm(J, 0, sigma_d)
+  delta <- drop(Z_full %*% theta) + xi
+
+  # Respondent-level tastes: beta_i ~ MVN(beta, W); log-normal coordinates
+  # enter utility as exp(beta_ik) (hierarchy normal on the log/chain scale).
+  L_true <- t(chol(W))
+  beta_i <- t(L_true %*% matrix(stats::rnorm(N * K_x), nrow = K_x, ncol = N)) +
+    matrix(beta, N, K_x, byrow = TRUE)                          # N x K_x
+  gamma_i <- beta_i
+  for (k in seq_len(K_x)) {
+    if (rc_dist[k] == 1L) gamma_i[, k] <- exp(gamma_i[, k])
+  }
+
+  x_names <- paste0("x", seq_len(K_x))
+  n_tasks <- N * T
+
+  cs <- .draw_choice_set(n_tasks, J, vary = vary_choice_set)
+  alt_indices <- cs$idx
+  choice_set_sizes <- cs$sizes
+
+  # Inside alternatives. Insertion order: pid, task, x1..xK, alt, delta_val,
+  # z1..z{P-1}. Task ids are globally unique so id_col = "task" works with
+  # or without person_col = "pid".
+  dt <- data.table::data.table(
+    pid  = rep((seq_len(n_tasks) - 1L) %/% T + 1L, times = choice_set_sizes),
+    task = rep(seq_len(n_tasks), times = choice_set_sizes)
+  )
+  for (k in seq_len(K_x)) dt[, (x_names[k]) := stats::runif(.N, -1, 1)]
+  dt[, `:=`(
+    alt       = alt_indices[[task]],
+    delta_val = delta[alt_indices[[task]]]
+  ), by = task]
+  for (p in seq_along(z_names)) dt[, (z_names[p]) := Z_extra[alt, p]]
+
+  if (include_outside) {
+    dt_outside <- dt[, .(pid = pid[1L], alt = 0L), keyby = task]
+    dt <- data.table::rbindlist(list(dt_outside, dt),
+                                use.names = TRUE, fill = TRUE)
+    fill_cols <- setdiff(names(dt), c("pid", "task", "alt"))
+    dt[alt == 0L, (fill_cols) := 0]
+  }
+  data.table::setkey(dt, pid, task, alt)
+
+  # The outside rows (x = 0, delta = 0) receive their own shock: the outside
+  # good is stochastic, not a deterministic utility-0 bound.
+  if (shock == "ev1") {
+    dt[, epsilon := -log(-log(stats::runif(.N)))]
+  } else {
+    dt[, epsilon := stats::rnorm(.N, 0, sigma)]
+  }
+  xmat <- as.matrix(dt[, ..x_names])
+  gmat <- gamma_i[dt$pid, , drop = FALSE]
+  dt[, utility := rowSums(xmat * gmat) + delta_val + epsilon]
+  dt[, choice := data.table::fifelse(seq_len(.N) == which.max(utility), 1L, 0L),
+     by = task]
+  dt[, c("delta_val", "epsilon", "utility") := NULL]
+
+  list(data = dt, delta = delta, xi = xi, Z = Z_full, W = W,
+       rc_dist = rc_dist, K_x = K_x, P = P)
+}
+
+#' Simulate hierarchical multinomial logit data
+#'
+#' Generates synthetic panel choice data from the hierarchical (random
+#' coefficients + alternative-level random effects) logit DGP: respondents
+#' `i = 1..N` face `T` choice situations each, with utilities
+#' \deqn{U_{ijt} = x_{ijt}'\gamma_i + \delta_j + \epsilon_{ijt}, \qquad
+#'       U_{iot} = \epsilon_{iot},}
+#' i.i.d. Gumbel shocks (including a shock on the outside option, whose
+#' systematic utility is 0), \eqn{\beta_i \sim N(\beta, W)} with
+#' \eqn{\gamma_{ik} = \beta_{ik}} or \eqn{\exp(\beta_{ik})} per `rc_dist`,
+#' and \eqn{\delta_j = z_j'\theta + \xi_j} with
+#' \eqn{\xi_j \sim N(0, \sigma_d^2)}. Covariates are Uniform(-1, 1); the
+#' alternative-level covariates `z*` are constant within each alternative.
+#'
+#' Log-normal coordinates are reported on the *chain* (log) scale in
+#' `true_params$beta` — the scale on which the estimator's hierarchy
+#' operates — while entering utility as `exp(beta_ik)`.
+#'
+#' @param N Number of respondents.
+#' @param T Number of choice situations per respondent.
+#' @param J Number of inside alternatives.
+#' @param beta Population means of the structural random coefficients
+#'   (length `K_x = length(beta)`; chain scale for log-normal coordinates).
+#' @param W Covariance of the random coefficients (`K_x` x `K_x`).
+#'   Defaults to `diag(0.5, K_x)`.
+#' @param theta Mean-function coefficients for
+#'   \eqn{\delta_j = z_j'\theta + \xi_j}; the first entry is the intercept,
+#'   entries `2..P` load on the alternative-level covariates.
+#' @param sigma_d Standard deviation of the alternative-level effects
+#'   \eqn{\xi_j}.
+#' @param Z Optional `J x (length(theta) - 1)` matrix of alternative-level
+#'   covariates (excluding the intercept). Default `NULL` draws them
+#'   Uniform(-1, 1).
+#' @param rc_dist Integer vector (length `K_x`): `0L` for normal, `1L` for
+#'   log-normal coordinates. Default `NULL` is all-normal.
+#' @param include_outside Logical; if `TRUE` (default) an outside option
+#'   with `alt = 0`, zero covariates, and its own Gumbel shock is added to
+#'   every choice set.
+#' @param seed Random seed (`NULL` skips `set.seed()`).
+#' @param vary_choice_set Logical; if `TRUE` choice-set size is sampled
+#'   uniformly from `2:J` per task. Default `FALSE`.
+#' @returns A `choicer_sim` object. `true_params` contains `beta`, `W`,
+#'   `theta`, `sigma_d`, the realized `delta` and `xi` vectors, the full
+#'   mean-function design `Z` (intercept first), and `rc_dist`.
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnl_data(N = 100, T = 4, J = 4, seed = 123)
+#' print(sim)
+#' sim$true_params$delta
+#' }
+#' @export
+simulate_hmnl_data <- function(N = 500,
+                               T = 10,
+                               J = 4,
+                               beta = c(0.8, -0.6),
+                               W = NULL,
+                               theta = c(0.5, -0.4),
+                               sigma_d = 0.5,
+                               Z = NULL,
+                               rc_dist = NULL,
+                               include_outside = TRUE,
+                               seed = 123,
+                               vary_choice_set = FALSE) {
+  sim <- .simulate_hb_panel(
+    N = N, T = T, J = J, beta = beta, W = W, theta = theta,
+    sigma_d = sigma_d, Z = Z, rc_dist = rc_dist,
+    include_outside = include_outside, seed = seed,
+    vary_choice_set = vary_choice_set, shock = "ev1"
+  )
+  new_choicer_sim(
+    data        = sim$data,
+    true_params = list(
+      beta = beta, W = sim$W, theta = theta, sigma_d = sigma_d,
+      delta = sim$delta, xi = sim$xi, Z = sim$Z, rc_dist = sim$rc_dist
+    ),
+    settings    = list(
+      N = N, T = T, J = J, K_x = sim$K_x, P = sim$P,
+      include_outside = include_outside,
+      vary_choice_set = vary_choice_set
+    ),
+    model       = "hmnl"
+  )
+}
+
+#' Simulate hierarchical multinomial probit data
+#'
+#' Generates synthetic panel choice data from the hierarchical probit DGP
+#' with iid normal utility shocks:
+#' \deqn{U_{ijt} = x_{ijt}'\beta_i + \delta_j + \epsilon_{ijt}, \qquad
+#'       U_{iot} = \epsilon_{iot}, \qquad
+#'       \epsilon \sim N(0, \sigma^2),}
+#' choice by argmax within the task. The outside option is stochastic — it
+#' carries its own \eqn{N(0, \sigma^2)} shock on top of systematic utility
+#' 0, exactly as in the estimator. \eqn{\beta_i \sim N(\beta, W)} (normal
+#' only) and \eqn{\delta_j = z_j'\theta + \xi_j},
+#' \eqn{\xi_j \sim N(0, \sigma_d^2)}, as in [simulate_hmnl_data()].
+#'
+#' The iid-probit likelihood identifies parameters only up to the common
+#' scale \eqn{\sigma}, so `true_params` is reported on the *identified*
+#' scale: `beta` \eqn{= \beta/\sigma}, `W` \eqn{= W/\sigma^2}, `theta`
+#' \eqn{= \theta/\sigma}, `sigma_d` \eqn{= \sigma_d/\sigma}, `delta`
+#' \eqn{= \delta/\sigma}, `xi` \eqn{= \xi/\sigma}. With the default
+#' `sigma = 1` the DGP scale and the identified scale coincide.
+#'
+#' @inheritParams simulate_hmnl_data
+#' @param beta Population means of the structural random coefficients
+#'   (length `K_x = length(beta)`); all coordinates are normal.
+#' @param include_outside Logical; if `TRUE` (default) an outside option
+#'   with `alt = 0`, zero covariates, and its own normal shock is added to
+#'   every choice set.
+#' @param sigma Standard deviation of the iid utility shocks (DGP scale).
+#' @returns A `choicer_sim` object. `true_params` contains `beta`, `W`,
+#'   `theta`, `sigma_d`, the realized `delta` and `xi`, and the full
+#'   mean-function design `Z` — all on the identified scale (see Details).
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnp_data(N = 100, T = 4, J = 4, seed = 123)
+#' print(sim)
+#' sim$true_params$delta
+#' }
+#' @export
+simulate_hmnp_data <- function(N = 500,
+                               T = 10,
+                               J = 4,
+                               beta = c(0.8, -0.6),
+                               W = NULL,
+                               theta = c(0.5, -0.4),
+                               sigma_d = 0.5,
+                               Z = NULL,
+                               include_outside = TRUE,
+                               seed = 123,
+                               vary_choice_set = FALSE,
+                               sigma = 1) {
+  if (!is.finite(sigma) || sigma <= 0) {
+    stop("`sigma` must be a positive number.")
+  }
+  sim <- .simulate_hb_panel(
+    N = N, T = T, J = J, beta = beta, W = W, theta = theta,
+    sigma_d = sigma_d, Z = Z, rc_dist = NULL,
+    include_outside = include_outside, seed = seed,
+    vary_choice_set = vary_choice_set, shock = "normal", sigma = sigma
+  )
+  new_choicer_sim(
+    data        = sim$data,
+    true_params = list(
+      beta = beta / sigma, W = sim$W / sigma^2, theta = theta / sigma,
+      sigma_d = sigma_d / sigma, delta = sim$delta / sigma,
+      xi = sim$xi / sigma, Z = sim$Z
+    ),
+    settings    = list(
+      N = N, T = T, J = J, K_x = sim$K_x, P = sim$P,
+      include_outside = include_outside,
+      vary_choice_set = vary_choice_set, sigma = sigma
+    ),
+    model       = "hmnp"
   )
 }
