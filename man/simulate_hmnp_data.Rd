@@ -43,9 +43,12 @@ entries \verb{2..P} load on the alternative-level covariates.}
 covariates (excluding the intercept). Default \code{NULL} draws them
 Uniform(-1, 1).}
 
-\item{include_outside}{Logical; if \code{TRUE} (default) an outside option
-with \code{alt = 0}, zero covariates, and its own normal shock is added to
-every choice set.}
+\item{include_outside}{Logical; if \code{TRUE} (default) every choice set also
+contains an outside option with systematic utility 0 and its own normal
+shock. The outside good is \emph{implicit} in the returned data (matching the
+\code{\link[=prepare_hmnp_data]{prepare_hmnp_data()}} convention): no physical row is emitted, and a
+choice situation the outside option wins has an all-zeros \code{choice}
+column.}
 
 \item{seed}{Random seed (\code{NULL} skips \code{set.seed()}).}
 

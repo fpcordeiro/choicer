@@ -60,10 +60,15 @@ struct HbPanel {
   int total_rows = 0;     // inside rows (sum of M)
   bool include_outside = true;
 
-  Rcpp::IntegerVector row_offsets;    // n_tasks + 1: task t owns rows
+  std::vector<int> row_offsets;       // n_tasks + 1: task t owns rows
                                       //   [row_offsets[t], row_offsets[t+1])
-  Rcpp::IntegerVector task_offsets;   // N_persons + 1: person i owns tasks
+  std::vector<int> task_offsets;      // N_persons + 1: person i owns tasks
                                       //   [task_offsets[i], task_offsets[i+1])
+                                      // (plain ints, not Rcpp vectors: these
+                                      // are read in the innermost worker
+                                      // loops, where SEXP-backed access would
+                                      // both add proxy overhead and violate
+                                      // the no-R-API-off-master contract)
   std::vector<int> alt_row_offsets;   // J + 1: alternative a owns the slots
                                       //   [alt_row_offsets[a], alt_row_offsets[a+1])
                                       //   of alt_rows
@@ -93,8 +98,15 @@ struct HbPanel {
     include_outside = include_outside_option;
     if (n_tasks < 1 || N_persons < 1 || J < 1) return false;
 
-    row_offsets = compute_prefix_sum(M);
-    task_offsets = compute_prefix_sum(Ti);
+    // compute_prefix_sum allocates R vectors; copy into plain std::vectors
+    // immediately (build() runs on the master thread before the parallel
+    // region) so no SEXP is ever touched by a worker.
+    {
+      const Rcpp::IntegerVector ro = compute_prefix_sum(M);
+      const Rcpp::IntegerVector to = compute_prefix_sum(Ti);
+      row_offsets.assign(ro.begin(), ro.end());
+      task_offsets.assign(to.begin(), to.end());
+    }
     total_rows = row_offsets[n_tasks];
     if (task_offsets[N_persons] != n_tasks) return false;
     if (alt_of_row_1b.size() != total_rows) return false;
@@ -201,12 +213,20 @@ inline void hb_back_solve(const arma::mat& L, const arma::vec& b,
 }
 
 // x = (L L')^{-1} b given the Cholesky factor: two trisolves, no inverse and
-// no downdate ever formed.
+// no downdate ever formed. The 4-arg form takes a caller-owned scratch vector
+// so per-respondent hot loops (Phases 1-2 call this N times per sweep) reuse
+// one buffer per thread instead of allocating; the 3-arg form is the
+// allocating convenience wrapper for master-only / test call sites.
+inline void hb_chol_solve(const arma::mat& L, const arma::vec& b,
+                          arma::vec& x, arma::vec& y_scratch) {
+  hb_forward_solve(L, b, y_scratch);
+  hb_back_solve(L, y_scratch, x);
+}
+
 inline void hb_chol_solve(const arma::mat& L, const arma::vec& b,
                           arma::vec& x) {
   arma::vec y;
-  hb_forward_solve(L, b, y);
-  hb_back_solve(L, y, x);
+  hb_chol_solve(L, b, x, y);
 }
 
 // Solve A x = b for SPD A via hb_chol_lower + two trisolves. Returns false
@@ -222,15 +242,23 @@ inline bool hb_spd_solve(const arma::mat& A, const arma::vec& b,
 // Draw x ~ N(mean, P^{-1}) given the lower Cholesky factor Lprec of the
 // PRECISION P = Lprec Lprec': x = mean + Lprec^{-T} z, z ~ N(0, I). Draws
 // exclusively from the Xoshiro stream, so it is worker-thread safe with a
-// per-task stream.
+// per-task stream. The 6-arg form takes caller-owned scratch vectors for the
+// per-respondent hot loops (one buffer pair per thread, no per-call
+// allocation); the 4-arg form is the allocating convenience wrapper.
+inline void hb_mvn_precision_draw(Xoshiro256pp& rng, const arma::vec& mean,
+                                  const arma::mat& Lprec, arma::vec& out,
+                                  arma::vec& z_scratch, arma::vec& t_scratch) {
+  const arma::uword K = mean.n_elem;
+  z_scratch.set_size(K);
+  for (arma::uword k = 0; k < K; ++k) z_scratch(k) = rng.rnorm();
+  hb_back_solve(Lprec, z_scratch, t_scratch);
+  out = mean + t_scratch;
+}
+
 inline void hb_mvn_precision_draw(Xoshiro256pp& rng, const arma::vec& mean,
                                   const arma::mat& Lprec, arma::vec& out) {
-  const arma::uword K = mean.n_elem;
-  arma::vec z(K);
-  for (arma::uword k = 0; k < K; ++k) z(k) = rng.rnorm();
-  arma::vec t;
-  hb_back_solve(Lprec, z, t);
-  out = mean + t;
+  arma::vec z, t;
+  hb_mvn_precision_draw(rng, mean, Lprec, out, z, t);
 }
 
 // ----------------------------------------------------------------------------

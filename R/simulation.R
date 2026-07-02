@@ -17,7 +17,10 @@
     idx <- replicate(N, seq_len(J), simplify = FALSE)
     return(list(sizes = sizes, idx = idx))
   }
-  sizes <- sample(2L:J, N, replace = TRUE)
+  # sample.int avoids R's scalar-sample gotcha at J == 2 (sample(2L:2L, ...)
+  # would draw from 1:2); for J > 2 this is exactly what sample(2L:J, ...)
+  # does internally, so draws are bit-identical.
+  sizes <- sample.int(J - 1L, N, replace = TRUE) + 1L
   idx <- vector("list", N)
   for (i in seq_len(N)) idx[[i]] <- sort(sample(J, sizes[i]))
   list(sizes = sizes, idx = idx)
@@ -611,6 +614,15 @@ simulate_nl_data <- function(N       = 10000,
      by = task]
   dt[, c("delta_val", "epsilon", "utility") := NULL]
 
+  # Return INSIDE rows only: the estimators model the outside implicitly
+  # (the prepare_h*_data convention), so an outside win is encoded as an
+  # all-zeros choice column — never as a physical alt = 0 row. Emitting
+  # physical outside rows would silently create a spurious J+1-th inside
+  # alternative unless the user remembered to pass outside_opt_label = 0.
+  if (include_outside) {
+    dt <- dt[alt != 0L]
+  }
+
   list(data = dt, delta = delta, xi = xi, Z = Z_full, W = W,
        rc_dist = rc_dist, K_x = K_x, P = P)
 }
@@ -650,9 +662,12 @@ simulate_nl_data <- function(N       = 10000,
 #'   Uniform(-1, 1).
 #' @param rc_dist Integer vector (length `K_x`): `0L` for normal, `1L` for
 #'   log-normal coordinates. Default `NULL` is all-normal.
-#' @param include_outside Logical; if `TRUE` (default) an outside option
-#'   with `alt = 0`, zero covariates, and its own Gumbel shock is added to
-#'   every choice set.
+#' @param include_outside Logical; if `TRUE` (default) every choice set also
+#'   contains an outside option with systematic utility 0 and its own Gumbel
+#'   shock. The outside good is *implicit* in the returned data (matching the
+#'   [prepare_hmnl_data()] convention): no physical row is emitted, and a
+#'   choice situation the outside option wins has an all-zeros `choice`
+#'   column.
 #' @param seed Random seed (`NULL` skips `set.seed()`).
 #' @param vary_choice_set Logical; if `TRUE` choice-set size is sampled
 #'   uniformly from `2:J` per task. Default `FALSE`.
@@ -722,9 +737,12 @@ simulate_hmnl_data <- function(N = 500,
 #' @inheritParams simulate_hmnl_data
 #' @param beta Population means of the structural random coefficients
 #'   (length `K_x = length(beta)`); all coordinates are normal.
-#' @param include_outside Logical; if `TRUE` (default) an outside option
-#'   with `alt = 0`, zero covariates, and its own normal shock is added to
-#'   every choice set.
+#' @param include_outside Logical; if `TRUE` (default) every choice set also
+#'   contains an outside option with systematic utility 0 and its own normal
+#'   shock. The outside good is *implicit* in the returned data (matching the
+#'   [prepare_hmnp_data()] convention): no physical row is emitted, and a
+#'   choice situation the outside option wins has an all-zeros `choice`
+#'   column.
 #' @param sigma Standard deviation of the iid utility shocks (DGP scale).
 #' @returns A `choicer_sim` object. `true_params` contains `beta`, `W`,
 #'   `theta`, `sigma_d`, the realized `delta` and `xi`, and the full

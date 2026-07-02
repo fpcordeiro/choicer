@@ -321,9 +321,10 @@ test_that("price-like covariates without a cf residual trigger a reminder messag
 test_that("prepare_hmnl_data round-trips simulate_hmnl_data output", {
   sim <- simulate_hmnl_data(N = 12, T = 3, J = 3, seed = 5,
                             include_outside = TRUE)
+  # No outside_opt_label needed: the DGP emits the implicit-outside
+  # convention directly (all-zeros choice = outside chosen, no alt = 0 rows).
   d <- prepare_hmnl_data(sim$data, "task", "alt", "choice", c("x1", "x2"),
-                         person_col = "pid", alt_covariate_cols = "z1",
-                         outside_opt_label = 0L)
+                         person_col = "pid", alt_covariate_cols = "z1")
   expect_equal(d$n_tasks, 36L)
   expect_equal(d$N_persons, 12L)
   expect_true(all(d$Ti == 3L))
@@ -332,6 +333,6 @@ test_that("prepare_hmnl_data round-trips simulate_hmnl_data output", {
   # the prep's Z reproduces the DGP's mean-function design
   expect_equal(unname(d$Z), unname(sim$true_params$Z))
   # outside-chosen tasks are the all-zeros ones
-  n_outside <- sim$data[alt == 0L & choice == 1L, .N]
+  n_outside <- sim$data[, .(chosen = sum(choice)), by = task][chosen == 0L, .N]
   expect_equal(sum(d$choice_pos == 0L), n_outside)
 })

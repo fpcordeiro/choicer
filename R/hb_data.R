@@ -82,11 +82,12 @@
   # Endogeneity reminder: price-like covariates without a control-function
   # residual mean delta_j = z_j'theta + xi_j is exogenous only conditional on
   # Z. Informational (message, not warning) — supplying cf_residual_col is
-  # the user's call.
-  price_like <- grepl("price|cost|fee|tuition", covariate_cols,
-                      ignore.case = TRUE)
+  # the user's call. Alternative-level covariates are scanned too: a price in
+  # Z is exactly the BLP case where correlation with xi_j bites.
+  scan_cols <- c(covariate_cols, alt_covariate_cols)
+  price_like <- grepl("price|cost|fee|tuition", scan_cols, ignore.case = TRUE)
   if (is.null(cf_residual_col) && any(price_like)) {
-    message("Covariate(s) ", paste(covariate_cols[price_like], collapse = ", "),
+    message("Covariate(s) ", paste(scan_cols[price_like], collapse = ", "),
             " look like price/cost variables but no `cf_residual_col` was ",
             "supplied. If they are endogenous, consider a control-function ",
             "residual (Petrin & Train 2010).")
@@ -133,6 +134,23 @@
   num_cols <- unique(c(x_cols, alt_covariate_cols))
   if (!all(vapply(dt[, ..num_cols], is.numeric, logical(1L))))
     stop("All covariates must be numeric.")
+
+  ## Non-finite covariate values (Inf/-Inf/NaN) are as fatal as NAs: same
+  ## graceful task-drop path, instead of failing the terminal
+  ## stopifnot(all(is.finite(X))) with an unactionable assertion.
+  dt[, HAS_BAD := Reduce(`|`, lapply(.SD, function(v) !is.finite(v))),
+     .SDcols = num_cols]
+  dt[, TASK_HAS_BAD := any(HAS_BAD), by = task_by]
+  n_bad_tasks <- nrow(unique(dt[TASK_HAS_BAD == TRUE, ..task_by]))
+  if (n_bad_tasks > 0) {
+    dt <- dt[TASK_HAS_BAD == FALSE]
+    warning("Removed ", n_bad_tasks,
+            " choice situations containing non-finite covariate values.")
+  }
+  if (nrow(dt) == 0) {
+    stop("All choice situations removed due to non-finite covariate values.")
+  }
+  dt[, c("HAS_BAD", "TASK_HAS_BAD") := NULL]
 
   ## choice column must be 0/1 with the outside-option convention of
   ## prepare_mnl_data (R/mnlogit_utils.R:459-472): exactly one '1' per task,
@@ -189,6 +207,13 @@
       warning("Covariate(s) constant within every choice situation are not ",
               "identified without an outside option and were dropped: ",
               paste(const_cols, collapse = ", "), call. = FALSE)
+      if (!is.null(cf_residual_col) && cf_residual_col %in% const_cols) {
+        # Losing the control function is a substantive modelling change, not
+        # just a design-matrix cleanup — call it out by name.
+        warning("The control-function residual `", cf_residual_col, "` was ",
+                "among the dropped task-constant columns: the endogeneity ",
+                "correction is NOT active in this fit.", call. = FALSE)
+      }
       dropped_task_const <- const_cols
       x_cols <- setdiff(x_cols, const_cols)
       if (length(x_cols) == 0) {
@@ -239,24 +264,21 @@
   P <- ncol(Z)
 
   ## Alternatives summary (mirrors prepare_mnl_data) ---------------------------
+  ## One inside-alternative aggregation; the outside branch only prepends its
+  ## synthetic alt_int = 0 row.
+  alt_mapping <- dt[
+    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
+    keyby = c("alt_int", alt_col)
+  ]
   if (include_outside_option) {
-    inside_alt_mapping <- dt[
-      , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-      keyby = c("alt_int", alt_col)
-    ]
     outside_alt_mapping <- data.table::data.table(
       alt_int = 0L, N_OBS = n_tasks, N_CHOICES = sum(choice_pos == 0L)
     )
     outside_alt_mapping[[alt_col]] <- outside_opt_label %||% NA
-    alt_mapping <- list(outside_alt_mapping, inside_alt_mapping) |>
+    alt_mapping <- list(outside_alt_mapping, alt_mapping) |>
       data.table::rbindlist(use.names = TRUE, fill = TRUE)
     data.table::setcolorder(alt_mapping,
                             c("alt_int", alt_col, "N_OBS", "N_CHOICES"))
-  } else {
-    alt_mapping <- dt[
-      , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-      keyby = c("alt_int", alt_col)
-    ]
   }
   alt_mapping[, `:=`(
     TAKE_RATE = N_CHOICES / N_OBS,

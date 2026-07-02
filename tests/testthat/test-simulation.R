@@ -105,15 +105,16 @@ test_that("simulate_hmnl_data is reproducible and carries the HB truth fields", 
   expect_equal(tp$delta, drop(tp$Z %*% tp$theta) + tp$xi)
   expect_equal(tp$rc_dist, c(0L, 0L))
 
-  # row counts: outside option adds exactly one alt = 0 row per task
+  # row counts: the outside option is implicit — inside rows only
   n_tasks <- 30L * 3L
-  expect_equal(nrow(a$data), n_tasks * 5L)
-  expect_equal(a$data[alt == 0L, .N], n_tasks)
-  # z covariates constant within alternative, zero on the outside rows
-  expect_equal(a$data[, uniqueN(z1), by = alt][["V1"]], rep(1L, 5L))
-  expect_true(all(a$data[alt == 0L, z1 == 0]))
-  # one (argmax) choice per task
-  expect_equal(a$data[, sum(choice), by = task][["V1"]], rep(1L, n_tasks))
+  expect_equal(nrow(a$data), n_tasks * 4L)
+  expect_true(!any(a$data$alt == 0L))
+  # z covariates constant within alternative
+  expect_equal(a$data[, uniqueN(z1), by = alt][["V1"]], rep(1L, 4L))
+  # at most one (argmax) choice per task; an all-zeros task = outside chosen
+  chosen_per_task <- a$data[, sum(choice), by = task][["V1"]]
+  expect_true(all(chosen_per_task %in% c(0L, 1L)))
+  expect_gt(sum(chosen_per_task == 0L), 0L)   # the outside wins sometimes
 })
 
 test_that("simulate_hmnl_data honors include_outside, vary_choice_set, rc_dist", {
@@ -158,10 +159,11 @@ test_that("simulate_hmnp_data reports truth on the identified scale", {
   expect_equal(tp$delta, drop(tp$Z %*% tp$theta) + tp$xi)
   expect_equal(a$settings$sigma, sigma)
 
-  # rows: 50 tasks x (3 inside + outside)
-  expect_equal(nrow(a$data), 50L * 4L)
-  expect_equal(a$data[alt == 0L, .N], 50L)
-  expect_equal(a$data[, sum(choice), by = task][["V1"]], rep(1L, 50L))
+  # rows: 50 tasks x 3 inside alternatives (the outside option is implicit)
+  expect_equal(nrow(a$data), 50L * 3L)
+  expect_true(!any(a$data$alt == 0L))
+  chosen_per_task <- a$data[, sum(choice), by = task][["V1"]]
+  expect_true(all(chosen_per_task %in% c(0L, 1L)))
 
   expect_error(simulate_hmnp_data(N = 5, T = 1, J = 3, sigma = 0),
                "`sigma` must be a positive number")
