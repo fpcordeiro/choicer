@@ -304,6 +304,48 @@ new_choicer_hmnl <- function(call, coefficients, se, vcov, theta_summary,
   )
 }
 
+#' @rdname new_choicer_hmnl
+#' @noRd
+new_choicer_hmnp <- function(call, coefficients, se, vcov, theta_summary,
+                             sigma_d2_summary, W_mean, delta, xi, beta_i,
+                             draws, rhat, prior, mcmc, nobs,
+                             n_persons, J, P, K_struct, param_map,
+                             alt_mapping, data_spec, cf_active, sampler,
+                             data = NULL) {
+  structure(
+    list(
+      call = call,
+      model = "hmnp",
+      coefficients = coefficients,
+      se = se,
+      vcov = vcov,
+      theta_summary = theta_summary,
+      sigma_d2_summary = sigma_d2_summary,
+      W_mean = W_mean,
+      delta = delta,
+      xi = xi,
+      beta_i = beta_i,
+      draws = draws,
+      accept = NULL,   # fully conjugate: no Metropolis steps
+      rhat = rhat,
+      prior = prior,
+      mcmc = mcmc,
+      nobs = nobs,
+      n_persons = n_persons,
+      J = J,
+      P = P,
+      K_struct = K_struct,
+      param_map = param_map,
+      alt_mapping = alt_mapping,
+      data_spec = data_spec,
+      cf_active = cf_active,
+      sampler = sampler,
+      data = data
+    ),
+    class = c("choicer_hmnp", "choicer_hb")
+  )
+}
+
 # --- Lazy vcov computation --------------------------------------------------
 
 #' Compute vcov and SE on demand (lazy evaluation)
