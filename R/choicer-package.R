@@ -5,8 +5,12 @@
 utils::globalVariables(c(
   ".", "..covariate_cols", "..random_var_cols", "..show_cols",
   "HAS_NA", "N_CHOICES", "N_OBS", "alt_int", "idx_in_group",
+  # HB prep NSE variables (R/hb_data.R)
+  "HB_PERSON", "TASK_HAS_NA", "task_idx",
+  "..task_by", "..x_cols", "..num_cols", "..alt_covariate_cols",
   # DGP / simulation NSE variables (R/simulation.R)
   "alt", "choice", "delta_val", "epsilon", "utility", "id",
+  "pid", "task", "..x_names",
   "w1", "w2", "x1", "x2", "X", "W", "V", "V_over_lambda",
   "IV", "i.IV", "nest", "nest_prob", "i.nest_prob", "log_denom",
   "cond_prob", "P_j", "j", "lambda",

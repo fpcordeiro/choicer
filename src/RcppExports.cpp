@@ -63,6 +63,66 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// hb_test_chol
+Rcpp::List hb_test_chol(const arma::mat& A);
+RcppExport SEXP _choicer_hb_test_chol(SEXP ASEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type A(ASEXP);
+    rcpp_result_gen = Rcpp::wrap(hb_test_chol(A));
+    return rcpp_result_gen;
+END_RCPP
+}
+// hb_test_trisolve
+arma::vec hb_test_trisolve(const arma::mat& L, const arma::vec& b, const bool transpose);
+RcppExport SEXP _choicer_hb_test_trisolve(SEXP LSEXP, SEXP bSEXP, SEXP transposeSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type L(LSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type b(bSEXP);
+    Rcpp::traits::input_parameter< const bool >::type transpose(transposeSEXP);
+    rcpp_result_gen = Rcpp::wrap(hb_test_trisolve(L, b, transpose));
+    return rcpp_result_gen;
+END_RCPP
+}
+// hb_test_spd_solve
+Rcpp::List hb_test_spd_solve(const arma::mat& A, const arma::vec& b);
+RcppExport SEXP _choicer_hb_test_spd_solve(SEXP ASEXP, SEXP bSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type A(ASEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type b(bSEXP);
+    rcpp_result_gen = Rcpp::wrap(hb_test_spd_solve(A, b));
+    return rcpp_result_gen;
+END_RCPP
+}
+// hb_test_logsumexp
+double hb_test_logsumexp(const arma::vec& v, const bool include_outside);
+RcppExport SEXP _choicer_hb_test_logsumexp(SEXP vSEXP, SEXP include_outsideSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type v(vSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside(include_outsideSEXP);
+    rcpp_result_gen = Rcpp::wrap(hb_test_logsumexp(v, include_outside));
+    return rcpp_result_gen;
+END_RCPP
+}
+// hb_test_sigma_d2_gibbs
+Rcpp::NumericVector hb_test_sigma_d2_gibbs(const arma::vec& xi, const int n_iter, const double seed, const bool half_cauchy, const double s_d, const double c0, const double d0);
+RcppExport SEXP _choicer_hb_test_sigma_d2_gibbs(SEXP xiSEXP, SEXP n_iterSEXP, SEXP seedSEXP, SEXP half_cauchySEXP, SEXP s_dSEXP, SEXP c0SEXP, SEXP d0SEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type xi(xiSEXP);
+    Rcpp::traits::input_parameter< const int >::type n_iter(n_iterSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< const bool >::type half_cauchy(half_cauchySEXP);
+    Rcpp::traits::input_parameter< const double >::type s_d(s_dSEXP);
+    Rcpp::traits::input_parameter< const double >::type c0(c0SEXP);
+    Rcpp::traits::input_parameter< const double >::type d0(d0SEXP);
+    rcpp_result_gen = Rcpp::wrap(hb_test_sigma_d2_gibbs(xi, n_iter, seed, half_cauchy, s_d, c0, d0));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -782,6 +842,11 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_halton_inv_normal_cdf", (DL_FUNC) &_choicer_halton_inv_normal_cdf, 1},
     {"_choicer_halton_generate_uniform", (DL_FUNC) &_choicer_halton_generate_uniform, 4},
     {"_choicer_halton_generate_normal", (DL_FUNC) &_choicer_halton_generate_normal, 5},
+    {"_choicer_hb_test_chol", (DL_FUNC) &_choicer_hb_test_chol, 1},
+    {"_choicer_hb_test_trisolve", (DL_FUNC) &_choicer_hb_test_trisolve, 3},
+    {"_choicer_hb_test_spd_solve", (DL_FUNC) &_choicer_hb_test_spd_solve, 2},
+    {"_choicer_hb_test_logsumexp", (DL_FUNC) &_choicer_hb_test_logsumexp, 2},
+    {"_choicer_hb_test_sigma_d2_gibbs", (DL_FUNC) &_choicer_hb_test_sigma_d2_gibbs, 7},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},

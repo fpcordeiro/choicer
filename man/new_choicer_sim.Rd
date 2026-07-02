@@ -14,7 +14,8 @@ new_choicer_sim(data, true_params, settings, model)
 
 \item{settings}{Named list of DGP settings (e.g. \code{N}, \code{J}, \code{K_x}).}
 
-\item{model}{Character scalar: \code{"mnl"}, \code{"mxl"}, \code{"nl"}, or \code{"mnp"}.}
+\item{model}{Character scalar: \code{"mnl"}, \code{"mxl"}, \code{"nl"}, \code{"mnp"},
+\code{"hmnl"}, or \code{"hmnp"}.}
 }
 \value{
 A list of class \code{choicer_sim}.

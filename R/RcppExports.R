@@ -55,6 +55,72 @@ halton_generate_normal <- function(S, N, K_w, seed, scramble) {
     .Call(`_choicer_halton_generate_normal`, S, N, K_w, seed, scramble)
 }
 
+#' Hand-rolled lower Cholesky for testing hb_internal.h
+#'
+#' @param A Symmetric matrix.
+#' @return List with `ok` (FALSE on a non-positive pivot) and `L` (lower
+#'   Cholesky factor; zero-filled when `ok` is FALSE).
+#' @noRd
+hb_test_chol <- function(A) {
+    .Call(`_choicer_hb_test_chol`, A)
+}
+
+#' Hand-rolled triangular solve for testing hb_internal.h
+#'
+#' Solves L x = b (`transpose = FALSE`, forward substitution) or L' x = b
+#' (`transpose = TRUE`, back substitution) for a lower-triangular L.
+#'
+#' @param L Lower-triangular matrix.
+#' @param b Right-hand side vector.
+#' @param transpose Solve against L' instead of L.
+#' @return Solution vector.
+#' @noRd
+hb_test_trisolve <- function(L, b, transpose) {
+    .Call(`_choicer_hb_test_trisolve`, L, b, transpose)
+}
+
+#' SPD solve via hand-rolled Cholesky + two trisolves for testing
+#'
+#' @param A Symmetric positive-definite matrix.
+#' @param b Right-hand side vector.
+#' @return List with `ok` (FALSE when `A` is not SPD) and `x` (solution;
+#'   zero-filled when `ok` is FALSE).
+#' @noRd
+hb_test_spd_solve <- function(A, b) {
+    .Call(`_choicer_hb_test_spd_solve`, A, b)
+}
+
+#' Fixed-order log-sum-exp with optional implicit outside term for testing
+#'
+#' @param v Vector of utilities.
+#' @param include_outside Add the implicit `exp(0)` outside-option term.
+#' @return `log(sum(exp(v)))`, plus 1 inside the sum when
+#'   `include_outside = TRUE`.
+#' @noRd
+hb_test_logsumexp <- function(v, include_outside) {
+    .Call(`_choicer_hb_test_logsumexp`, v, include_outside)
+}
+
+#' Two-block Gibbs for sigma_d2 under the half-Cauchy scale mixture
+#'
+#' Runs `n_iter` sweeps of draw_sigma_d2_conditional() on fixed residuals
+#' `xi`, starting from sigma_d2 = a_d = 1, one Xoshiro stream per iteration
+#' (tag 0). Exercises both the half-Cauchy Makalic-Schmidt mixture
+#' (`half_cauchy = TRUE`, scale `s_d`) and the plain IG(c0, d0) fallback.
+#'
+#' @param xi Vector of alternative-level residuals.
+#' @param n_iter Number of Gibbs sweeps.
+#' @param seed Master seed (coerced to uint64_t).
+#' @param half_cauchy Use the half-Cauchy scale mixture (else IG fallback).
+#' @param s_d Half-Cauchy scale.
+#' @param c0 IG fallback shape.
+#' @param d0 IG fallback scale.
+#' @return Numeric vector of `n_iter` sigma_d2 draws.
+#' @noRd
+hb_test_sigma_d2_gibbs <- function(xi, n_iter, seed, half_cauchy, s_d, c0, d0) {
+    .Call(`_choicer_hb_test_sigma_d2_gibbs`, xi, n_iter, seed, half_cauchy, s_d, c0, d0)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.

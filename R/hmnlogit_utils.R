@@ -94,7 +94,7 @@
 #'   alt  = rep(1:J, N * T)
 #' )
 #' dt[, `:=`(x1 = rnorm(.N), x2 = runif(.N, -1, 1))]
-#' dt[, quality := alt / J, by = alt]        # alternative-level covariate
+#' dt[, quality := 0.1 * alt]                # alternative-level covariate
 #' dt[, choice := 0L]
 #' # leave some tasks all-zero: outside option chosen
 #' dt[, choice := if (runif(1) < 0.8) sample(c(1L, rep(0L, J - 1))) else 0L,
