@@ -123,6 +123,41 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// hmnl_gibbs
+Rcpp::List hmnl_gibbs(const arma::mat& X, const arma::mat& Z, const Rcpp::IntegerVector& M, const Rcpp::IntegerVector& choice_pos, const bool include_outside_option, const Rcpp::IntegerVector& alt_of_row, const Rcpp::IntegerVector& Ti, const Rcpp::IntegerVector& rc_dist, const arma::vec& beta_pooled, const arma::vec& delta_init, const arma::vec& theta_init, const arma::vec& b_bar, const arma::mat& A, const double nu, const arma::mat& V, const arma::vec& theta_bar, const arma::mat& A_theta, const Rcpp::List& sd_prior, const int R, const int burn, const int thin, const double seed, const int keep_beta_i, const double s_init, const double accept_target, const int trace);
+RcppExport SEXP _choicer_hmnl_gibbs(SEXP XSEXP, SEXP ZSEXP, SEXP MSEXP, SEXP choice_posSEXP, SEXP include_outside_optionSEXP, SEXP alt_of_rowSEXP, SEXP TiSEXP, SEXP rc_distSEXP, SEXP beta_pooledSEXP, SEXP delta_initSEXP, SEXP theta_initSEXP, SEXP b_barSEXP, SEXP ASEXP, SEXP nuSEXP, SEXP VSEXP, SEXP theta_barSEXP, SEXP A_thetaSEXP, SEXP sd_priorSEXP, SEXP RSEXP, SEXP burnSEXP, SEXP thinSEXP, SEXP seedSEXP, SEXP keep_beta_iSEXP, SEXP s_initSEXP, SEXP accept_targetSEXP, SEXP traceSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type Z(ZSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_pos(choice_posSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_of_row(alt_of_rowSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type Ti(TiSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type rc_dist(rc_distSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type beta_pooled(beta_pooledSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type delta_init(delta_initSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta_init(theta_initSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type b_bar(b_barSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type A(ASEXP);
+    Rcpp::traits::input_parameter< const double >::type nu(nuSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type V(VSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta_bar(theta_barSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type A_theta(A_thetaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type sd_prior(sd_priorSEXP);
+    Rcpp::traits::input_parameter< const int >::type R(RSEXP);
+    Rcpp::traits::input_parameter< const int >::type burn(burnSEXP);
+    Rcpp::traits::input_parameter< const int >::type thin(thinSEXP);
+    Rcpp::traits::input_parameter< const double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type keep_beta_i(keep_beta_iSEXP);
+    Rcpp::traits::input_parameter< const double >::type s_init(s_initSEXP);
+    Rcpp::traits::input_parameter< const double >::type accept_target(accept_targetSEXP);
+    Rcpp::traits::input_parameter< const int >::type trace(traceSEXP);
+    rcpp_result_gen = Rcpp::wrap(hmnl_gibbs(X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, rc_dist, beta_pooled, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, R, burn, thin, seed, keep_beta_i, s_init, accept_target, trace));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -847,6 +882,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_hb_test_spd_solve", (DL_FUNC) &_choicer_hb_test_spd_solve, 2},
     {"_choicer_hb_test_logsumexp", (DL_FUNC) &_choicer_hb_test_logsumexp, 2},
     {"_choicer_hb_test_sigma_d2_gibbs", (DL_FUNC) &_choicer_hb_test_sigma_d2_gibbs, 7},
+    {"_choicer_hmnl_gibbs", (DL_FUNC) &_choicer_hmnl_gibbs, 26},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},

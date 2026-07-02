@@ -175,6 +175,15 @@
   dt[, alt_int := as.integer(factor(get(alt_col), levels = levels))]
   J <- length(levels)
 
+  ## An alternative may appear at most once per choice situation: the kernels'
+  ## incremental delta-phase denominator updates assume each (task, j) pair is
+  ## a single row, and a duplicate would silently corrupt them.
+  dup_alt <- dt[, anyDuplicated(alt_int) > 0L, by = task_by][["V1"]]
+  if (any(dup_alt)) {
+    stop("Each alternative may appear at most once per choice situation; ",
+         sum(dup_alt), " choice situation(s) contain duplicated alternatives.")
+  }
+
   ## Order rows ----------------------------------------------------------------
   ##   between persons          : ascending person
   ##   within person, between tasks: ascending task id

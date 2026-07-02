@@ -5,6 +5,7 @@
 \alias{recovery_table.choicer_fit}
 \alias{recovery_table.choicer_mnp}
 \alias{recovery_table.choicer_mc}
+\alias{recovery_table.choicer_hb}
 \title{Parameter recovery table}
 \usage{
 recovery_table(object, truth = NULL, level = 0.95, ...)
@@ -14,6 +15,8 @@ recovery_table(object, truth = NULL, level = 0.95, ...)
 \method{recovery_table}{choicer_mnp}(object, truth = NULL, level = 0.95, ...)
 
 \method{recovery_table}{choicer_mc}(object, truth = NULL, level = 0.95, ...)
+
+\method{recovery_table}{choicer_hb}(object, truth = NULL, level = 0.95, ...)
 }
 \arguments{
 \item{object}{A \code{choicer_fit} object (MNL, MXL, or NL) or a \code{choicer_mc}
@@ -69,6 +72,16 @@ be on the identified scale, as returned by \code{\link[=simulate_mnp_data]{simul
 \item \code{recovery_table(choicer_mc)}: For a \code{choicer_mc} object, delegates to
 \code{summary(object, level)} and returns a \code{choicer_mc_summary}. Inspect
 \code{object$replications} directly for per-rep detail.
+
+\item \code{recovery_table(choicer_hb)}: Method for hierarchical Bayes fits
+(\code{choicer_hmnl} / \code{choicer_hmnp}). \code{estimate} holds posterior means and
+\code{se} posterior standard deviations, so \code{lower_ci} / \code{upper_ci} are
+normal-approximation credible intervals. Blocks: \code{beta} (population
+means b vs \code{truth$beta}), \code{w} (diag(W) vs \code{diag(truth$W)}), \code{theta}
+(delta mean function), \code{sigma_d} (the SD, compared through the sqrt of
+the sigma_d^2 draws), and \code{delta} (per-alternative effects vs the
+realized \code{truth$delta}). For an HMNP fit, \code{truth} must be on the
+identified scale, as returned by \code{\link[=simulate_hmnp_data]{simulate_hmnp_data()}}.
 
 }}
 \examples{
