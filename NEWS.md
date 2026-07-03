@@ -1,5 +1,48 @@
 # choicer (development version)
 
+## Hierarchical Bayesian MNL and MNP (BLP-style random-effects ASCs)
+
+- New `run_hmnlogit()` (class `choicer_hmnl`) and `run_hmnprobit()` (class
+  `choicer_hmnp`): hierarchical Bayes discrete choice with two decoupled
+  random-effect levels — respondent-level structural tastes
+  `beta_i ~ N(b, W)` (`W` is `K x K`, no ASC columns) and a global BLP-style
+  alternative effect `delta_j = z_j' theta + xi_j`, `xi_j ~ N(0, sigma_d^2)`
+  (one scalar variance regardless of `J`; partial pooling toward the
+  characteristics-based mean; posterior-predictive `delta` for alternatives
+  outside the estimation sample). Both models carry a first-class implicit
+  outside option (systematic utility 0 plus its own shock) that anchors the
+  location of `delta` — no base alternative or sum-to-zero constraint.
+  Panel and cross-sectional (`person_col = NULL`, `T_i = 1`) modes share
+  one code path.
+- HMNL: adaptive RW-Metropolis-within-Gibbs on the mnprobit engine pattern
+  (single persistent OpenMP region, per-(iteration, unit) RNG streams,
+  bitwise thread-count invariance), with a strictly serial `delta` sweep
+  (the conditionals are coupled through the softmax denominators) at O(1)
+  incremental cost per affected task; supports log-normal coordinates via
+  `rc_dist`. HMNP: fully conjugate Albert-Chib augmentation in
+  un-differenced utility space with iid `N(0, sigma^2)` shocks, a
+  non-identified `sigma^2` chain (parameter expansion), and per-draw scale
+  normalization of every identified quantity.
+- Priors: `b ~ N(b_bar, A^-1)`, `W ~ IW(nu, V)`,
+  `theta ~ N(theta_bar, A_theta^-1)`, and `sigma_d ~ half-Cauchy(0, s_d)`
+  via the Makalic-Schmidt conjugate scale mixture (IG fallback available).
+- New preps `prepare_hmnl_data()` / `prepare_hmnp_data()` (two-level
+  person/task indexing, implicit-outside convention shared with
+  `prepare_mnl_data()`, alternative-level design `Z`, optional
+  control-function residual column for price endogeneity per Petrin &
+  Train 2010) and DGPs `simulate_hmnl_data()` / `simulate_hmnp_data()`.
+- Post-estimation on the shared `choicer_hb` class, all posterior-draw
+  based: `predict()` (population/individual, entry counterfactuals via the
+  posterior-predictive `delta`; HMNP probabilities by exact 1-D
+  Gauss-Hermite quadrature), `wtp()` (posterior median + quantile
+  intervals), `logsum()` / `consumer_surplus()` (HMNL-only; probit Emax is
+  roadmapped), `elasticities()` / `diversion_ratios()` (common-random-path
+  perturbation engine including the outside option), `recovery_table()`,
+  plus `rhat()` (split R-hat) and `ppc_shares()` diagnostics.
+- Two new math articles: `vignettes/articles/hierarchical_mnl_math.Rmd`
+  and `hierarchical_mnp_math.Rmd`; recovery demos in
+  `inst/simulations/hmnl_simulation.R` / `hmnp_simulation.R`.
+
 ## WESML sandwich inference for MNL and nested logit
 
 - `run_mnlogit()` and `run_nestlogit()` now compute the robust (Huber–White /
