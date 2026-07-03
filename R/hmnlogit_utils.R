@@ -150,6 +150,9 @@ prepare_hmnl_data <- function(
   is_user_cov <- kept %in% covariate_cols
   rc_aligned[is_user_cov] <- rc_map[kept[is_user_cov]]
   panel$rc_dist <- rc_aligned
+  # Carried in data_spec too so post-estimation can recover the coordinate
+  # distributions even when the fit drops the prep (keep_data = FALSE).
+  panel$data_spec$rc_dist <- rc_aligned
 
   structure(panel, class = c("choicer_data_hmnl", "list"))
 }

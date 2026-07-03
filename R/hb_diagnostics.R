@@ -89,3 +89,49 @@ rhat <- function(draws) {
     rhat(bind_block("sigma_d2"))
   )
 }
+
+#' Posterior-predictive share check for hierarchical Bayes fits
+#'
+#' Compares each alternative's observed take rate (share of choice
+#' situations in which it was chosen, including the outside option) with its
+#' posterior-predictive share from [predict.choicer_hb()]. Large systematic
+#' gaps indicate model misfit — e.g. a missing covariate or an
+#' outside-option share the delta level cannot rationalize.
+#'
+#' @param object A `choicer_hmnl` or `choicer_hmnp` fit (with
+#'   `keep_data = TRUE`).
+#' @param n_draws Posterior draws to integrate over (default 200).
+#' @returns A `data.table` with columns `alternative`, `observed`,
+#'   `predicted`, `lower`, `upper` (95% posterior-predictive interval), and
+#'   `covered` (is the observed share inside the interval).
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)
+#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#'                     person_col = "pid",
+#'                     mcmc = list(R = 500, burn = 200))
+#' ppc_shares(fit)
+#' }
+#' @export
+ppc_shares <- function(object, n_draws = 200L) {
+  if (!inherits(object, "choicer_hb")) {
+    stop("`object` must be a choicer_hmnl or choicer_hmnp fit.")
+  }
+  pred <- stats::predict(object, n_draws = n_draws)
+
+  am <- object$alt_mapping
+  spec <- object$data_spec
+  obs_lab <- ifelse(am$alt_int == 0, "(outside)",
+                    as.character(am[[spec$alt_col]]))
+  obs <- stats::setNames(am$N_CHOICES / sum(am$N_CHOICES), obs_lab)
+
+  out <- data.table::data.table(
+    alternative = pred$alternative,
+    observed = as.numeric(obs[pred$alternative]),
+    predicted = pred$share,
+    lower = pred$lower,
+    upper = pred$upper
+  )
+  out[, covered := observed >= lower & observed <= upper]
+  out[]
+}
