@@ -7,6 +7,9 @@ attribute of alternative j changes by 1\\
 ## Usage
 
 ``` r
+# S3 method for class 'choicer_hb'
+elasticities(object, elast_var, eps = 0.01, n_draws = 100L, ...)
+
 elasticities(object, ...)
 ```
 
@@ -16,6 +19,18 @@ elasticities(object, ...)
 
   A fitted model object.
 
+- elast_var:
+
+  Structural covariate to perturb (hierarchical Bayes methods).
+
+- eps:
+
+  Relative perturbation size (default 0.01).
+
+- n_draws:
+
+  Number of posterior draws to integrate over.
+
 - ...:
 
   Additional arguments passed to methods.
@@ -23,6 +38,15 @@ elasticities(object, ...)
 ## Value
 
 A J x J elasticity matrix with alternative labels.
+
+## Methods (by class)
+
+- `elasticities(choicer_hb)`: Posterior-mean aggregate arc elasticities
+  for hierarchical Bayes fits: each inside alternative's `elast_var` is
+  perturbed by `eps` (default 1%) and shares are recomputed per
+  posterior draw with a common random-coefficient path, giving \\E\_{jk}
+  = (\Delta s_j / s_j) / \epsilon\\. Rows are responding alternatives
+  (including the outside option), columns the perturbed alternative.
 
 ## Examples
 

@@ -35,6 +35,8 @@ Reduces to the MNL diversion ratios when all lambda = 1."></head><body>
     <li><a class="dropdown-item" href="../articles/nested_logit_math.html">Nested logit (math)</a></li>
     <li><a class="dropdown-item" href="../articles/mixed_logit_math.html">Mixed logit (math)</a></li>
     <li><a class="dropdown-item" href="../articles/bayesian_multinomial_probit_math.html">Bayesian multinomial probit (math)</a></li>
+    <li><a class="dropdown-item" href="../articles/hierarchical_mnl_math.html">Hierarchical Bayesian MNL (math)</a></li>
+    <li><a class="dropdown-item" href="../articles/hierarchical_mnp_math.html">Hierarchical Bayesian MNP (math)</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -179,15 +181,15 @@ parameters. Order: <code>[beta (K), lambda (non-singleton), delta]</code>.</p></
 <span class="r-out co"><span class="r-pr">#&gt;</span> 199:    50     3  1.8152284 -0.2556077      B      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 200:    50     4  0.1288214  0.9310329      B      1</span>
 <span class="r-in"><span><span class="va">fit</span> <span class="op">&lt;-</span> <span class="fu"><a href="run_nestlogit.html">run_nestlogit</a></span><span class="op">(</span><span class="va">dt</span>, <span class="st">"id"</span>, <span class="st">"alt"</span>, <span class="st">"choice"</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x1"</span>, <span class="st">"x2"</span><span class="op">)</span>, <span class="st">"nest"</span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.01s</span>
 <span class="r-in"><span><span class="va">dr</span> <span class="op">&lt;-</span> <span class="fu">nl_diversion_ratios_parallel</span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/stats/coef.html" class="external-link">coef</a></span><span class="op">(</span><span class="va">fit</span><span class="op">)</span>, <span class="va">fit</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">X</span>, <span class="va">fit</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">alt_idx</span>,</span></span>
 <span class="r-in"><span>  <span class="va">fit</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">nest_idx</span>, <span class="va">fit</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">M</span>, <span class="va">fit</span><span class="op">$</span><span class="va">data</span><span class="op">$</span><span class="va">weights</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">dr</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>            [,1]      [,2]       [,3]      [,4]</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1,]  0.0000000 -0.898174 0.45017345 0.4192658</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [2,] -1.0621318  0.000000 0.49007051 0.4562837</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [3,]  1.4249183  1.311749 0.00000000 0.1244504</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [4,]  0.6372135  0.586425 0.05975604 0.0000000</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>            [,1]       [,2]       [,3]      [,4]</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1,]  0.0000000 -0.8981741 0.45017347 0.4192658</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [2,] -1.0621317  0.0000000 0.49007049 0.4562837</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [3,]  1.4249184  1.3117490 0.00000000 0.1244505</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [4,]  0.6372134  0.5864250 0.05975604 0.0000000</span>
 <span class="r-in"><span><span class="co"># }</span></span></span>
 </code></pre></div>
     </div>

@@ -75,7 +75,7 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #> 300:   100     3 -1.62561674  1.027004619      1
 fit <- run_mnprobit(dt, "id", "alt", "choice", c("x1", "x2"),
                     mcmc = list(R = 300, burn = 100))
-#> MCMC run time 0h:0m:0s
+#> MCMC run time 0h:0m:0.01s
 nobs(fit)
 #> [1] 100
 # }

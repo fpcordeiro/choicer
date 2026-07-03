@@ -23,3 +23,7 @@
   logit](https://fpcordeiro.github.io/choicer/articles/mixed_logit_math.md):
 - [The math behind choicer: Bayesian multinomial
   probit](https://fpcordeiro.github.io/choicer/articles/bayesian_multinomial_probit_math.md):
+- [The math behind choicer: hierarchical Bayesian multinomial
+  logit](https://fpcordeiro.github.io/choicer/articles/hierarchical_mnl_math.md):
+- [The math behind choicer: hierarchical Bayesian multinomial
+  probit](https://fpcordeiro.github.io/choicer/articles/hierarchical_mnp_math.md):

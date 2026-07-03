@@ -7,6 +7,9 @@ i when alternative j becomes less attractive.
 ## Usage
 
 ``` r
+# S3 method for class 'choicer_hb'
+diversion_ratios(object, elast_var, eps = 0.01, n_draws = 100L, ...)
+
 diversion_ratios(object, ...)
 ```
 
@@ -16,6 +19,18 @@ diversion_ratios(object, ...)
 
   A fitted model object.
 
+- elast_var:
+
+  Structural covariate to perturb (hierarchical Bayes methods).
+
+- eps:
+
+  Relative perturbation size (default 0.01).
+
+- n_draws:
+
+  Number of posterior draws to integrate over.
+
 - ...:
 
   Additional arguments passed to methods.
@@ -23,6 +38,16 @@ diversion_ratios(object, ...)
 ## Value
 
 A J x J diversion ratio matrix with alternative labels.
+
+## Methods (by class)
+
+- `diversion_ratios(choicer_hb)`: Posterior-mean diversion ratios for
+  hierarchical Bayes fits, from the same perturbation engine as
+  [`elasticities.choicer_hb()`](https://fpcordeiro.github.io/choicer/reference/elasticities.md):
+  \\DR(j \to k)\\ is the fraction of the share alternative j loses (when
+  its `elast_var` worsens) that flows to k — including the outside
+  option. Columns are the perturbed alternative j, rows the receiving
+  alternative k; the diagonal is 0.
 
 ## Examples
 

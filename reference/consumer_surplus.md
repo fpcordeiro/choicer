@@ -12,6 +12,27 @@ constant across the price changes considered.
 ## Usage
 
 ``` r
+# S3 method for class 'choicer_hmnl'
+consumer_surplus(
+  object,
+  price_var,
+  newdata = NULL,
+  level = 0.95,
+  weights = NULL,
+  n_draws = 200L,
+  ...
+)
+
+# S3 method for class 'choicer_hmnp'
+consumer_surplus(
+  object,
+  price_var,
+  newdata = NULL,
+  level = 0.95,
+  weights = NULL,
+  ...
+)
+
 consumer_surplus(
   object,
   price_var,
@@ -85,6 +106,11 @@ consumer_surplus(
   equal weights. Ignored when `newdata` is `NULL` (the stored fit
   weights apply).
 
+- n_draws:
+
+  Number of posterior draws to integrate over (hierarchical Bayes
+  methods).
+
 - ...:
 
   Additional arguments passed to methods.
@@ -116,6 +142,23 @@ The price variable must have a *fixed* coefficient. For mixed logit a
 random price coefficient is rejected (as in
 [`wtp`](https://fpcordeiro.github.io/choicer/reference/wtp.md)): with a
 random denominator \\1/(-\alpha)\\ generally has no finite moments.
+
+## Methods (by class)
+
+- `consumer_surplus(choicer_hmnl)`: Posterior consumer surplus for the
+  hierarchical logit: per-task logsum divided by the (positive) marginal
+  utility of income \\-\bar\gamma\_{price}\\, per posterior draw. With
+  `newdata`, the return also carries the compensating variation against
+  the estimation data (`attr(, "cv")`), i.e. the posterior of
+  \\(\mathrm{logsum}\_{new} - \mathrm{logsum}\_{base}) /
+  (-\bar\gamma\_{price})\\ summed over tasks. Requires a fixed-sign
+  price coefficient; the posterior-median ratio discipline of
+  [`wtp.choicer_hb()`](https://fpcordeiro.github.io/choicer/reference/wtp.md)
+  applies.
+
+- `consumer_surplus(choicer_hmnp)`: Not available for the probit (see
+  [`logsum.choicer_hmnp()`](https://fpcordeiro.github.io/choicer/reference/logsum.md));
+  roadmapped via simulated Emax.
 
 ## References
 

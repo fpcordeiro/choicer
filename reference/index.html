@@ -31,6 +31,8 @@
     <li><a class="dropdown-item" href="../articles/nested_logit_math.html">Nested logit (math)</a></li>
     <li><a class="dropdown-item" href="../articles/mixed_logit_math.html">Mixed logit (math)</a></li>
     <li><a class="dropdown-item" href="../articles/bayesian_multinomial_probit_math.html">Bayesian multinomial probit (math)</a></li>
+    <li><a class="dropdown-item" href="../articles/hierarchical_mnl_math.html">Hierarchical Bayesian MNL (math)</a></li>
+    <li><a class="dropdown-item" href="../articles/hierarchical_mnp_math.html">Hierarchical Bayesian MNP (math)</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -84,6 +86,20 @@
 
         </dt>
         <dd>Runs Bayesian multinomial probit estimation</dd>
+
+        <dt>
+
+          <code><a href="run_hmnlogit.html">run_hmnlogit()</a></code>
+
+        </dt>
+        <dd>Fit a hierarchical Bayesian multinomial logit (HMNL)</dd>
+
+        <dt>
+
+          <code><a href="run_hmnprobit.html">run_hmnprobit()</a></code>
+
+        </dt>
+        <dd>Fit a hierarchical Bayesian multinomial probit (HMNP)</dd>
       </dl></div><div class="section level2">
       <h2 id="data-preparation">Data preparation<a class="anchor" aria-label="anchor" href="#data-preparation"></a></h2>
 
@@ -121,6 +137,20 @@
 
         </dt>
         <dd>Prepare inputs for <code><a href="../reference/mnp_gibbs.html">mnp_gibbs()</a></code></dd>
+
+        <dt>
+
+          <code><a href="prepare_hmnl_data.html">prepare_hmnl_data()</a></code>
+
+        </dt>
+        <dd>Prepare inputs for hierarchical multinomial logit estimation</dd>
+
+        <dt>
+
+          <code><a href="prepare_hmnp_data.html">prepare_hmnp_data()</a></code>
+
+        </dt>
+        <dd>Prepare inputs for hierarchical multinomial probit estimation</dd>
       </dl></div><div class="section level2">
       <h2 id="demand-and-substitution">Demand and substitution<a class="anchor" aria-label="anchor" href="#demand-and-substitution"></a></h2>
 
@@ -132,6 +162,13 @@
 
 
       <dl><dt>
+
+          <code><a href="predict.choicer_hb.html">predict(<i>&lt;choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Posterior choice probabilities and shares for hierarchical Bayes fits</dd>
+
+        <dt>
 
           <code><a href="predict.choicer_mnl.html">predict(<i>&lt;choicer_mnl&gt;</i>)</a></code>
 
@@ -291,6 +328,13 @@
 
         <dt>
 
+          <code><a href="summary.choicer_hb.html">summary(<i>&lt;choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Summarize a hierarchical Bayes fit</dd>
+
+        <dt>
+
           <code><a href="summary.choicer_mnl.html">summary(<i>&lt;choicer_mnl&gt;</i>)</a></code>
 
         </dt>
@@ -326,6 +370,13 @@
 
         <dt>
 
+          <code><a href="coef.choicer_hb.html">coef(<i>&lt;choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Extract posterior means from a hierarchical Bayes fit</dd>
+
+        <dt>
+
           <code><a href="coef.choicer_mnp.html">coef(<i>&lt;choicer_mnp&gt;</i>)</a></code>
 
         </dt>
@@ -337,6 +388,13 @@
 
         </dt>
         <dd>Extract variance-covariance matrix from a choicer_fit object</dd>
+
+        <dt>
+
+          <code><a href="vcov.choicer_hb.html">vcov(<i>&lt;choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Posterior covariance of the population coefficients</dd>
 
         <dt>
 
@@ -358,6 +416,13 @@
 
         </dt>
         <dd>Extract number of observations from a choicer_fit object</dd>
+
+        <dt>
+
+          <code><a href="nobs.choicer_hb.html">nobs(<i>&lt;choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Number of choice situations behind a hierarchical Bayes fit</dd>
 
         <dt>
 
@@ -389,6 +454,13 @@
 
         <dt>
 
+          <code><a href="print.choicer_hb.html">print(<i>&lt;choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Print a hierarchical Bayes fit</dd>
+
+        <dt>
+
           <code><a href="print.choicer_mnp.html">print(<i>&lt;choicer_mnp&gt;</i>)</a></code>
 
         </dt>
@@ -400,6 +472,13 @@
 
         </dt>
         <dd>Print a WTP table</dd>
+
+        <dt>
+
+          <code><a href="print.summary.choicer_hb.html">print(<i>&lt;summary.choicer_hb&gt;</i>)</a></code>
+
+        </dt>
+        <dd>Print the summary of a hierarchical Bayes fit</dd>
 
         <dt>
 
@@ -428,6 +507,20 @@
 
         </dt>
         <dd>Print summary for nested logit model</dd>
+
+        <dt>
+
+          <code><a href="rhat.html">rhat()</a></code>
+
+        </dt>
+        <dd>Split-\(\widehat{R}\) convergence diagnostic</dd>
+
+        <dt>
+
+          <code><a href="ppc_shares.html">ppc_shares()</a></code>
+
+        </dt>
+        <dd>Posterior-predictive share check for hierarchical Bayes fits</dd>
       </dl></div><div class="section level2">
       <h2 id="simulation-and-recovery">Simulation and recovery<a class="anchor" aria-label="anchor" href="#simulation-and-recovery"></a></h2>
 
@@ -465,6 +558,20 @@
 
         </dt>
         <dd>Simulate multinomial probit data</dd>
+
+        <dt>
+
+          <code><a href="simulate_hmnl_data.html">simulate_hmnl_data()</a></code>
+
+        </dt>
+        <dd>Simulate hierarchical multinomial logit data</dd>
+
+        <dt>
+
+          <code><a href="simulate_hmnp_data.html">simulate_hmnp_data()</a></code>
+
+        </dt>
+        <dd>Simulate hierarchical multinomial probit data</dd>
 
         <dt>
 
@@ -774,6 +881,20 @@
 
         </dt>
         <dd>Gibbs sampler for the Bayesian multinomial probit model</dd>
+
+        <dt>
+
+          <code><a href="hmnl_gibbs.html">hmnl_gibbs()</a></code>
+
+        </dt>
+        <dd>Gibbs sampler for the hierarchical Bayesian multinomial logit model</dd>
+
+        <dt>
+
+          <code><a href="hmnp_gibbs.html">hmnp_gibbs()</a></code>
+
+        </dt>
+        <dd>Gibbs sampler for the hierarchical Bayesian multinomial probit model</dd>
       </dl></div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

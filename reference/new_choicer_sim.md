@@ -32,7 +32,8 @@ new_choicer_sim(data, true_params, settings, model)
 
 - model:
 
-  Character scalar: `"mnl"`, `"mxl"`, `"nl"`, or `"mnp"`.
+  Character scalar: `"mnl"`, `"mxl"`, `"nl"`, `"mnp"`, `"hmnl"`, or
+  `"hmnp"`.
 
 ## Value
 

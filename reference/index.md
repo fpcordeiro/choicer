@@ -12,6 +12,10 @@ Estimate a discrete-choice model.
   : Runs nested logit estimation
 - [`run_mnprobit()`](https://fpcordeiro.github.io/choicer/reference/run_mnprobit.md)
   : Runs Bayesian multinomial probit estimation
+- [`run_hmnlogit()`](https://fpcordeiro.github.io/choicer/reference/run_hmnlogit.md)
+  : Fit a hierarchical Bayesian multinomial logit (HMNL)
+- [`run_hmnprobit()`](https://fpcordeiro.github.io/choicer/reference/run_hmnprobit.md)
+  : Fit a hierarchical Bayesian multinomial probit (HMNP)
 
 ## Data preparation
 
@@ -38,10 +42,19 @@ Build design matrices and inputs for the estimators.
   Prepare inputs for
   [`mnp_gibbs()`](https://fpcordeiro.github.io/choicer/reference/mnp_gibbs.md)
 
+- [`prepare_hmnl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_hmnl_data.md)
+  : Prepare inputs for hierarchical multinomial logit estimation
+
+- [`prepare_hmnp_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_hmnp_data.md)
+  : Prepare inputs for hierarchical multinomial probit estimation
+
 ## Demand and substitution
 
 Predicted shares, elasticities, diversion and share inversion.
 
+- [`predict(`*`<choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/predict.choicer_hb.md)
+  : Posterior choice probabilities and shares for hierarchical Bayes
+  fits
 - [`predict(`*`<choicer_mnl>`*`)`](https://fpcordeiro.github.io/choicer/reference/predict.choicer_mnl.md)
   : Predict from a multinomial logit model
 - [`predict(`*`<choicer_mxl>`*`)`](https://fpcordeiro.github.io/choicer/reference/predict.choicer_mxl.md)
@@ -90,6 +103,8 @@ Willingness-to-pay and consumer surplus.
 
 - [`gof()`](https://fpcordeiro.github.io/choicer/reference/gof.md) :
   Goodness of fit for a fitted choice model
+- [`summary(`*`<choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/summary.choicer_hb.md)
+  : Summarize a hierarchical Bayes fit
 - [`summary(`*`<choicer_mnl>`*`)`](https://fpcordeiro.github.io/choicer/reference/summary.choicer_mnl.md)
   : Summary for multinomial logit model
 - [`summary(`*`<choicer_mnp>`*`)`](https://fpcordeiro.github.io/choicer/reference/summary.choicer_mnp.md)
@@ -100,16 +115,22 @@ Willingness-to-pay and consumer surplus.
   : Summary for nested logit model
 - [`coef(`*`<choicer_fit>`*`)`](https://fpcordeiro.github.io/choicer/reference/coef.choicer_fit.md)
   : Extract coefficients from a choicer_fit object
+- [`coef(`*`<choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/coef.choicer_hb.md)
+  : Extract posterior means from a hierarchical Bayes fit
 - [`coef(`*`<choicer_mnp>`*`)`](https://fpcordeiro.github.io/choicer/reference/coef.choicer_mnp.md)
   : Extract coefficients from a choicer_mnp object
 - [`vcov(`*`<choicer_fit>`*`)`](https://fpcordeiro.github.io/choicer/reference/vcov.choicer_fit.md)
   : Extract variance-covariance matrix from a choicer_fit object
+- [`vcov(`*`<choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/vcov.choicer_hb.md)
+  : Posterior covariance of the population coefficients
 - [`vcov(`*`<choicer_mnp>`*`)`](https://fpcordeiro.github.io/choicer/reference/vcov.choicer_mnp.md)
   : Extract variance-covariance matrix from a choicer_mnp object
 - [`logLik(`*`<choicer_fit>`*`)`](https://fpcordeiro.github.io/choicer/reference/logLik.choicer_fit.md)
   : Extract log-likelihood from a choicer_fit object
 - [`nobs(`*`<choicer_fit>`*`)`](https://fpcordeiro.github.io/choicer/reference/nobs.choicer_fit.md)
   : Extract number of observations from a choicer_fit object
+- [`nobs(`*`<choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/nobs.choicer_hb.md)
+  : Number of choice situations behind a hierarchical Bayes fit
 - [`nobs(`*`<choicer_mnp>`*`)`](https://fpcordeiro.github.io/choicer/reference/nobs.choicer_mnp.md)
   : Extract number of observations from a choicer_mnp object
 - [`print(`*`<choicer_cs>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.choicer_cs.md)
@@ -118,10 +139,14 @@ Willingness-to-pay and consumer surplus.
   : Print a choicer_fit object
 - [`print(`*`<choicer_gof>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.choicer_gof.md)
   : Print goodness-of-fit measures
+- [`print(`*`<choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.choicer_hb.md)
+  : Print a hierarchical Bayes fit
 - [`print(`*`<choicer_mnp>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.choicer_mnp.md)
   : Print a choicer_mnp object
 - [`print(`*`<choicer_wtp>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.choicer_wtp.md)
   : Print a WTP table
+- [`print(`*`<summary.choicer_hb>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.summary.choicer_hb.md)
+  : Print the summary of a hierarchical Bayes fit
 - [`print(`*`<summary.choicer_mnl>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.summary.choicer_mnl.md)
   : Print summary for multinomial logit model
 - [`print(`*`<summary.choicer_mnp>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.summary.choicer_mnp.md)
@@ -130,6 +155,10 @@ Willingness-to-pay and consumer surplus.
   : Print summary for mixed logit model
 - [`print(`*`<summary.choicer_nl>`*`)`](https://fpcordeiro.github.io/choicer/reference/print.summary.choicer_nl.md)
   : Print summary for nested logit model
+- [`rhat()`](https://fpcordeiro.github.io/choicer/reference/rhat.md) :
+  Split-\\\widehat{R}\\ convergence diagnostic
+- [`ppc_shares()`](https://fpcordeiro.github.io/choicer/reference/ppc_shares.md)
+  : Posterior-predictive share check for hierarchical Bayes fits
 
 ## Simulation and recovery
 
@@ -146,6 +175,12 @@ Data-generating processes and parameter-recovery diagnostics.
 
 - [`simulate_mnp_data()`](https://fpcordeiro.github.io/choicer/reference/simulate_mnp_data.md)
   : Simulate multinomial probit data
+
+- [`simulate_hmnl_data()`](https://fpcordeiro.github.io/choicer/reference/simulate_hmnl_data.md)
+  : Simulate hierarchical multinomial logit data
+
+- [`simulate_hmnp_data()`](https://fpcordeiro.github.io/choicer/reference/simulate_hmnp_data.md)
+  : Simulate hierarchical multinomial probit data
 
 - [`recovery_table()`](https://fpcordeiro.github.io/choicer/reference/recovery_table.md)
   : Parameter recovery table
@@ -250,3 +285,7 @@ post-estimation kernels. Most users do not need these.
   : Prediction of market shares for the Nested Logit model
 - [`mnp_gibbs()`](https://fpcordeiro.github.io/choicer/reference/mnp_gibbs.md)
   : Gibbs sampler for the Bayesian multinomial probit model
+- [`hmnl_gibbs()`](https://fpcordeiro.github.io/choicer/reference/hmnl_gibbs.md)
+  : Gibbs sampler for the hierarchical Bayesian multinomial logit model
+- [`hmnp_gibbs()`](https://fpcordeiro.github.io/choicer/reference/hmnp_gibbs.md)
+  : Gibbs sampler for the hierarchical Bayesian multinomial probit model

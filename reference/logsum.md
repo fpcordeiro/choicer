@@ -24,6 +24,12 @@ When the model includes an outside option, its normalized utility \\V =
 ## Usage
 
 ``` r
+# S3 method for class 'choicer_hmnl'
+logsum(object, newdata = NULL, n_draws = 200L, ...)
+
+# S3 method for class 'choicer_hmnp'
+logsum(object, newdata = NULL, ...)
+
 logsum(object, newdata = NULL, ...)
 
 # S3 method for class 'choicer_mnl'
@@ -50,6 +56,11 @@ logsum(object, newdata = NULL, ...)
   (default), the data stored at fit time is used (requires
   `keep_data = TRUE`).
 
+- n_draws:
+
+  Number of posterior draws to integrate over (hierarchical Bayes
+  methods; thinned evenly from the kept draws).
+
 - ...:
 
   Additional arguments passed to methods.
@@ -65,6 +76,17 @@ Numeric vector with one logsum per choice situation. With a data.frame
 Logsum *levels* depend on the ASC normalization (and, more generally, on
 any additive utility normalization), so only logsum *differences*
 between scenarios (e.g. via `newdata`) are meaningful.
+
+## Methods (by class)
+
+- `logsum(choicer_hmnl)`: Posterior expected logsum for the hierarchical
+  logit: per choice situation, \\\log(1 + \sum_j \exp V_j)\\ against the
+  outside-option anchor, averaged over posterior draws with one \\\beta
+  \sim N(b_r, W_r)\\ draw each. Returns the per-task posterior mean
+  vector.
+
+- `logsum(choicer_hmnp)`: The probit expected maximum has no closed
+  form; simulated-Emax surplus for the HMNP is on the roadmap.
 
 ## See also
 

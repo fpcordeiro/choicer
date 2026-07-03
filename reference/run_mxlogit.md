@@ -351,7 +351,7 @@ summary(fit)
 #> 
 #> Random coefficient covariance (Sigma):
 #>              w1           w2
-#> w1 3.520212e-18 0.000000e+00
+#> w1 3.520211e-18 0.000000e+00
 #> w2 0.000000e+00 1.385186e-15
 #> 
 #> Std. Errors: Analytical Hessian 

@@ -101,18 +101,18 @@ fit <- run_nestlogit(
   data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
   covariate_cols = c("x1", "x2"), nest_col = "nest"
 )
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 summary(fit)
 #> Nested Logit (NL) model
 #> 
 #> Parameter    Estimate  Std.Error  z-value  Pr(>|z|)  
 #> x1           0.368065   0.337997   1.0890  2.76e-01  
 #> x2           0.658149   0.371606   1.7711  7.65e-02  
-#> Lambda_1   158.730748 9738.696580   0.0163  9.87e-01  
+#> Lambda_1   158.730820 9738.710045   0.0163  9.87e-01  
 #> Lambda_2     2.096862   1.990404   1.0535  2.92e-01  
-#> ASC_2       13.362918 829.500434   0.0161  9.87e-01  
-#> ASC_3      116.246676 7172.663321   0.0162  9.87e-01  
-#> ASC_4      114.565371 7172.763864   0.0160  9.87e-01  
+#> ASC_2       13.362924 829.501572   0.0161  9.87e-01  
+#> ASC_3      116.246729 7172.673236   0.0162  9.87e-01  
+#> ASC_4      114.565424 7172.773779   0.0160  9.87e-01  
 #> ---
 #> Signif. codes:  '***' 0.001 '**' 0.01 '*' 0.05
 #> 
@@ -121,7 +121,7 @@ summary(fit)
 #> AIC: 141.793  | BIC: 155.177 
 #> McFadden R2: 0.078 (adj: -0.023) | Hit rate: 0.360 
 #> N: 50  | Parameters: 7 
-#> Optimization time: 0.01 s
+#> Optimization time: 0 s
 #> Convergence: 3 ( NLOPT_FTOL_REACHED: Optimization stopped because ftol_rel or ftol_abs (above) was reached. )
 # }
 ```

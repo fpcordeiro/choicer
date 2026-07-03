@@ -39,6 +39,8 @@ indicator."></head><body>
     <li><a class="dropdown-item" href="../articles/nested_logit_math.html">Nested logit (math)</a></li>
     <li><a class="dropdown-item" href="../articles/mixed_logit_math.html">Mixed logit (math)</a></li>
     <li><a class="dropdown-item" href="../articles/bayesian_multinomial_probit_math.html">Bayesian multinomial probit (math)</a></li>
+    <li><a class="dropdown-item" href="../articles/hierarchical_mnl_math.html">Hierarchical Bayesian MNL (math)</a></li>
+    <li><a class="dropdown-item" href="../articles/hierarchical_mnp_math.html">Hierarchical Bayesian MNP (math)</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
@@ -76,6 +78,9 @@ indicator.</p>
 <span><span class="fu">recovery_table</span><span class="op">(</span><span class="va">object</span>, truth <span class="op">=</span> <span class="cn">NULL</span>, level <span class="op">=</span> <span class="fl">0.95</span>, <span class="va">...</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># S3 method for class 'choicer_mc'</span></span>
+<span><span class="fu">recovery_table</span><span class="op">(</span><span class="va">object</span>, truth <span class="op">=</span> <span class="cn">NULL</span>, level <span class="op">=</span> <span class="fl">0.95</span>, <span class="va">...</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># S3 method for class 'choicer_hb'</span></span>
 <span><span class="fu">recovery_table</span><span class="op">(</span><span class="va">object</span>, truth <span class="op">=</span> <span class="cn">NULL</span>, level <span class="op">=</span> <span class="fl">0.95</span>, <span class="va">...</span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -137,6 +142,15 @@ be on the identified scale, as returned by <code><a href="simulate_mnp_data.html
 <li><p><code>recovery_table(choicer_mc)</code>: For a <code>choicer_mc</code> object, delegates to
 <code>summary(object, level)</code> and returns a <code>choicer_mc_summary</code>. Inspect
 <code>object$replications</code> directly for per-rep detail.</p></li>
+<li><p><code>recovery_table(choicer_hb)</code>: Method for hierarchical Bayes fits
+(<code>choicer_hmnl</code> / <code>choicer_hmnp</code>). <code>estimate</code> holds posterior means and
+<code>se</code> posterior standard deviations, so <code>lower_ci</code> / <code>upper_ci</code> are
+normal-approximation credible intervals. Blocks: <code>beta</code> (population
+means b vs <code>truth$beta</code>), <code>w</code> (diag(W) vs <code>diag(truth$W)</code>), <code>theta</code>
+(delta mean function), <code>sigma_d</code> (the SD, compared through the sqrt of
+the sigma_d^2 draws), and <code>delta</code> (per-alternative effects vs the
+realized <code>truth$delta</code>). For an HMNP fit, <code>truth</code> must be on the
+identified scale, as returned by <code><a href="simulate_hmnp_data.html">simulate_hmnp_data()</a></code>.</p></li>
 </ul></div>
 
     <div class="section level2">
@@ -148,7 +162,7 @@ be on the identified scale, as returned by <code><a href="simulate_mnp_data.html
 <span class="r-in"><span>  covariate_cols <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"x1"</span>, <span class="st">"x2"</span><span class="op">)</span>,</span></span>
 <span class="r-in"><span>  outside_opt_label <span class="op">=</span> <span class="fl">0L</span>, include_outside_option <span class="op">=</span> <span class="cn">FALSE</span>, use_asc <span class="op">=</span> <span class="cn">TRUE</span></span></span>
 <span class="r-in"><span><span class="op">)</span></span></span>
-<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.18s</span>
+<span class="r-msg co"><span class="r-pr">#&gt;</span> Optimization run time 0h:0m:0.2s</span>
 <span class="r-in"><span><span class="fu">recovery_table</span><span class="op">(</span><span class="va">fit</span>, <span class="va">sim</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;choicer_recovery&gt; model=choicer_mnl level=0.95</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>    parameter  group  true estimate     se    bias rel_bias_pct z_vs_true</span>

@@ -12,6 +12,9 @@ corresponding 2x2 block of `vcov(object)`.
 ## Usage
 
 ``` r
+# S3 method for class 'choicer_hb'
+wtp(object, price_var, attr_vars = NULL, level = 0.95, ...)
+
 wtp(object, price_var, attr_vars = NULL, level = 0.95, ...)
 
 # S3 method for class 'choicer_fit'
@@ -90,6 +93,20 @@ mean or median WTP computed from location parameters would be
 meaningless. Use a fixed price coefficient, or estimate the model in WTP
 space.
 
+## Methods (by class)
+
+- `wtp(choicer_hb)`: Posterior willingness-to-pay for hierarchical Bayes
+  fits: the per-draw ratio of population-mean utility coefficients,
+  \\-\bar\gamma\_{attr} / \bar\gamma\_{price}\\ (for log-normal
+  coordinates \\\bar\gamma = \exp(b + W\_{kk}/2)\\). Ratio posteriors
+  are heavy-tailed, so the point estimate is the posterior **median**
+  with equal-tailed quantile intervals — never a posterior mean or a
+  delta-method SE. A warning is raised when the price coefficient's sign
+  is not resolved by the posterior. If the price variable was flagged as
+  endogenous-without-a-control-function at prep time, WTP inherits that
+  caveat (see `cf_residual_col` in
+  [`prepare_hmnl_data()`](https://fpcordeiro.github.io/choicer/reference/prepare_hmnl_data.md)).
+
 ## Examples
 
 ``` r
@@ -98,7 +115,7 @@ library(data.table)
 sim <- simulate_mnl_data(N = 1000, J = 4, beta = c(0.8, -0.6), seed = 123,
                          outside_option = FALSE, vary_choice_set = FALSE)
 fit <- run_mnlogit(sim$data, "id", "alt", "choice", c("x1", "x2"))
-#> Optimization run time 0h:0m:0.01s
+#> Optimization run time 0h:0m:0s
 # treat x2 as the price variable
 wtp(fit, price_var = "x2")
 #> Willingness to pay (WTP), price variable: 'x2' (95% CI)

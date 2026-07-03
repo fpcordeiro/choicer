@@ -19,6 +19,9 @@ recovery_table(object, truth = NULL, level = 0.95, ...)
 
 # S3 method for class 'choicer_mc'
 recovery_table(object, truth = NULL, level = 0.95, ...)
+
+# S3 method for class 'choicer_hb'
+recovery_table(object, truth = NULL, level = 0.95, ...)
 ```
 
 ## Arguments
@@ -80,6 +83,17 @@ and no outside option baked into the fit), the first entry of
   `summary(object, level)` and returns a `choicer_mc_summary`. Inspect
   `object$replications` directly for per-rep detail.
 
+- `recovery_table(choicer_hb)`: Method for hierarchical Bayes fits
+  (`choicer_hmnl` / `choicer_hmnp`). `estimate` holds posterior means
+  and `se` posterior standard deviations, so `lower_ci` / `upper_ci` are
+  normal-approximation credible intervals. Blocks: `beta` (population
+  means b vs `truth$beta`), `w` (diag(W) vs `diag(truth$W)`), `theta`
+  (delta mean function), `sigma_d` (the SD, compared through the sqrt of
+  the sigma_d^2 draws), and `delta` (per-alternative effects vs the
+  realized `truth$delta`). For an HMNP fit, `truth` must be on the
+  identified scale, as returned by
+  [`simulate_hmnp_data()`](https://fpcordeiro.github.io/choicer/reference/simulate_hmnp_data.md).
+
 ## Examples
 
 ``` r
@@ -90,7 +104,7 @@ fit <- run_mnlogit(
   covariate_cols = c("x1", "x2"),
   outside_opt_label = 0L, include_outside_option = FALSE, use_asc = TRUE
 )
-#> Optimization run time 0h:0m:0.18s
+#> Optimization run time 0h:0m:0.2s
 recovery_table(fit, sim)
 #> <choicer_recovery> model=choicer_mnl level=0.95
 #>    parameter  group  true estimate     se    bias rel_bias_pct z_vs_true
