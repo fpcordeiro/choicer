@@ -1,10 +1,9 @@
 # Workflow derived from https://github.com/r-lib/actions/tree/v2/examples
-# Build the pkgdown site and deploy it to the gh-pages branch.
+# Build the pkgdown site and deploy it with GitHub Pages Actions.
 #
-# On pull_request the site is BUILT but not deployed (the deploy step is
-# guarded by `github.event_name != 'pull_request'`), so reference/article
-# index gaps in _pkgdown.yml fail the PR check instead of only surfacing on
-# the post-merge push to main.
+# On pull_request the site is BUILT but not deployed, so reference/article
+# index gaps in _pkgdown.yml fail the PR check without touching the Pages
+# deployment environment.
 on:
   push:
     branches: [main, master]
@@ -15,18 +14,20 @@ on:
 
 name: pkgdown.yaml
 
-permissions: read-all
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only restrict concurrency for non-PR jobs
+concurrency:
+  group: pkgdown-${{ github.event_name != 'pull_request' || github.run_id }}
 
 jobs:
   pkgdown:
     runs-on: ubuntu-latest
-    # Only restrict concurrency for non-PR jobs
-    concurrency:
-      group: pkgdown-${{ github.event_name != 'pull_request' || github.run_id }}
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -45,10 +46,20 @@ jobs:
         run: pkgdown::build_site_github_pages(new_process = FALSE, install = FALSE)
         shell: Rscript {0}
 
-      - name: Deploy to GitHub pages 🚀
+      - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
-        uses: JamesIves/github-pages-deploy-action@v4.5.0
+        uses: actions/upload-pages-artifact@v5
         with:
-          clean: false
-          branch: gh-pages
-          folder: docs
+          path: docs
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs: pkgdown
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
