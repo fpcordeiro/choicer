@@ -1,7 +1,6 @@
 # Convergence diagnostics for the hierarchical Bayes models (choicer_hmnl /
-# choicer_hmnp). Phase 1 ships split-R-hat; the posterior-predictive share
-# check arrives with the post-estimation phase of
-# _plans/hierarchical_bayes_plan.md.
+# choicer_hmnp): split-R-hat (rhat) and the posterior-predictive share
+# check (ppc_shares).
 
 #' Split-\eqn{\widehat{R}} convergence diagnostic
 #'

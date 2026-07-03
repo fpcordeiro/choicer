@@ -5,7 +5,8 @@
 // ============================================================================
 // Hierarchical Bayesian multinomial probit with iid utility shocks (HMNP)
 // via Albert-Chib data augmentation in UN-differenced utility space (see
-// _plans/hierarchical_bayes_plan.md, "Models"/"C++ kernel design").
+// vignettes/articles/hierarchical_mnp_math.Rmd for the model definition and
+// sampler derivation).
 //
 // Model (inside alternatives j, implicit outside option o):
 //   U_ijt = x_ijt' beta_i + delta_j + eps,   U_iot = eps,   eps ~ iid N(0, s2)

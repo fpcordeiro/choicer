@@ -4,7 +4,7 @@
 # into .prepare_hb_panel() below; the wrappers only add model-specific
 # extras (rc_dist alignment for the HMNL) and the class tag.
 #
-# Design (see _plans/hierarchical_bayes_plan.md, "Data prep"):
+# Design:
 #   * Two-level (person, task) indexing: person_col groups choice situations
 #     into respondents sharing one beta_i; person_col = NULL makes each task
 #     its own respondent (Ti all 1 — the cross-sectional mode).

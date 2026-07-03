@@ -4,8 +4,8 @@
 
 // ============================================================================
 // Hierarchical Bayesian multinomial logit (HMNL) via adaptive RW-Metropolis-
-// within-Gibbs (see _plans/hierarchical_bayes_plan.md, "Models"/"C++ kernel
-// design").
+// within-Gibbs (see vignettes/articles/hierarchical_mnl_math.Rmd for the
+// model definition and sampler derivation).
 //
 // Model (inside alternatives j, implicit outside option o):
 //   U_ijt = x_ijt' gamma_i + delta_j + EV1,     U_iot = EV1

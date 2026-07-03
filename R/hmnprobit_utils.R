@@ -1,6 +1,6 @@
-# Hierarchical multinomial probit (HMNP) utilities. Phase 0 ships the data
-# prep; run_hmnprobit() and the Gibbs kernel arrive with the HMNP phase of
-# _plans/hierarchical_bayes_plan.md.
+# Hierarchical multinomial probit (HMNP) utilities: the data prep
+# (prepare_hmnp_data) and the run_hmnprobit() wrapper around the hmnp_gibbs
+# kernel. See vignettes/articles/hierarchical_mnp_math.Rmd for the math.
 
 #' Prepare inputs for hierarchical multinomial probit estimation
 #'

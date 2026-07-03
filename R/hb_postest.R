@@ -2,8 +2,7 @@
 # choicer_hmnp), registered on the package's existing generics. Everything
 # integrates over posterior draws (and, at the population level, over the
 # random-coefficient distribution), returning posterior summaries rather
-# than delta-method points. See _plans/hierarchical_bayes_plan.md,
-# "Post-estimation".
+# than delta-method points.
 #
 # Probability engines:
 #   * HMNL: closed-form softmax against the implicit outside option,

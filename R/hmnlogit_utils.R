@@ -1,6 +1,6 @@
-# Hierarchical multinomial logit (HMNL) utilities. Phase 0 ships the data
-# prep; run_hmnlogit() and the Gibbs kernel arrive with the HMNL phase of
-# _plans/hierarchical_bayes_plan.md.
+# Hierarchical multinomial logit (HMNL) utilities: the data prep
+# (prepare_hmnl_data) and the run_hmnlogit() wrapper around the hmnl_gibbs
+# kernel. See vignettes/articles/hierarchical_mnl_math.Rmd for the math.
 
 #' Prepare inputs for hierarchical multinomial logit estimation
 #'

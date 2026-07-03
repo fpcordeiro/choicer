@@ -3,7 +3,6 @@
 ^LICENSE\.md$
 ^_benchmarks$
 ^_validation$
-^_plans$
 ^CLAUDE\.md$
 ^\.claude$
 ^docs$
