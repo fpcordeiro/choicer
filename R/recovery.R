@@ -809,3 +809,64 @@ print.choicer_mc_asymptotics <- function(x, ...) {
   print(show)
   invisible(x)
 }
+
+#' @describeIn recovery_table Method for hierarchical Bayes fits
+#'   (`choicer_hmnl` / `choicer_hmnp`). `estimate` holds posterior means and
+#'   `se` posterior standard deviations, so `lower_ci` / `upper_ci` are
+#'   normal-approximation credible intervals. Blocks: `beta` (population
+#'   means b vs `truth$beta`), `w` (diag(W) vs `diag(truth$W)`), `theta`
+#'   (delta mean function), `sigma_d` (the SD, compared through the sqrt of
+#'   the sigma_d^2 draws), and `delta` (per-alternative effects vs the
+#'   realized `truth$delta`). For an HMNP fit, `truth` must be on the
+#'   identified scale, as returned by [simulate_hmnp_data()].
+#' @export
+recovery_table.choicer_hb <- function(object, truth = NULL, level = 0.95, ...) {
+  if (inherits(truth, "choicer_sim")) truth <- truth$true_params
+  if (!is.list(truth)) stop("`truth` must be a named list or a `choicer_sim`.")
+  z <- stats::qnorm(1 - (1 - level) / 2)
+
+  K <- object$K_struct
+  # diag(W) positions in the row-major lower-triangle vech: (k, k) is the
+  # last entry of row k, i.e. position k (k + 1) / 2.
+  diag_idx <- vapply(seq_len(K), function(k) (k * (k + 1L)) %/% 2L, integer(1L))
+  w_diag_draws <- object$draws$w_vech[, diag_idx, drop = FALSE]
+  colnames(w_diag_draws) <- paste0("W[", colnames(object$draws$b), "]")
+  sigma_d_draws <- matrix(sqrt(object$draws$sigma_d2), ncol = 1,
+                          dimnames = list(NULL, "sigma_d"))
+
+  # Extended estimate/SD vectors: b, diag(W), theta, sigma_d, delta.
+  blocks_draws <- list(
+    beta = object$draws$b,
+    w = w_diag_draws,
+    theta = object$draws$theta,
+    sigma_d = sigma_d_draws,
+    delta = object$draws$delta
+  )
+  coefs <- unlist(lapply(blocks_draws, colMeans))
+  se <- unlist(lapply(blocks_draws, function(m) apply(m, 2, stats::sd)))
+  names(coefs) <- names(se) <-
+    unlist(lapply(blocks_draws, colnames), use.names = FALSE)
+
+  offsets <- cumsum(c(0L, vapply(blocks_draws, ncol, integer(1L))))
+  truth_map <- list(
+    beta = truth$beta,
+    w = if (!is.null(truth$W)) diag(as.matrix(truth$W)),
+    theta = truth$theta,
+    sigma_d = truth$sigma_d,
+    delta = truth$delta
+  )
+  rows <- list()
+  for (bn in seq_along(blocks_draws)) {
+    tv <- truth_map[[names(blocks_draws)[bn]]]
+    if (is.null(tv)) next
+    idx <- offsets[bn] + seq_len(ncol(blocks_draws[[bn]]))
+    rows <- c(rows, list(.build_recovery_rows(
+      names(blocks_draws)[bn], idx, as.numeric(tv), coefs, se, z
+    )))
+  }
+  out <- data.table::rbindlist(rows)
+  class(out) <- c("choicer_recovery", class(out))
+  attr(out, "level") <- level
+  attr(out, "model") <- class(object)[1L]
+  out
+}

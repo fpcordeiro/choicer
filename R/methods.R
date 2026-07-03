@@ -8,6 +8,8 @@ model_display_name <- function(model) {
     mxl = "Mixed Logit (MXL)",
     nl  = "Nested Logit (NL)",
     mnp = "Bayesian Multinomial Probit (MNP)",
+    hmnl = "Hierarchical Bayesian Multinomial Logit (HMNL)",
+    hmnp = "Hierarchical Bayesian Multinomial Probit (HMNP)",
     model
   )
 }
@@ -1889,4 +1891,185 @@ blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
     tol = tol,
     max_iter = max_iter
   )
+}
+
+# --- choicer_hb (hierarchical Bayes) methods ---------------------------------
+# Shared by choicer_hmnl and choicer_hmnp: posterior-draws objects with a
+# b-coefficient block, a delta/xi quality ladder, and hierarchy summaries.
+# Written once on the choicer_hb parent (not choicer_fit -- no loglik /
+# Hessian machinery applies).
+
+#' Print a hierarchical Bayes fit
+#'
+#' @param x A `choicer_hmnl` or `choicer_hmnp` object.
+#' @param ... Additional arguments (ignored).
+#' @returns The object invisibly.
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
+#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#'                     person_col = "pid",
+#'                     mcmc = list(R = 300, burn = 100))
+#' print(fit)
+#' }
+#' @export
+print.choicer_hb <- function(x, ...) {
+  cat(model_display_name(x$model), "model\n")
+  cat("Posterior-mean population coefficients (b):\n")
+  print(round(x$coefficients, 4))
+  cat("\nAlternatives:", x$J, " Respondents:", x$n_persons,
+      " Choice situations:", x$nobs, "\n")
+  cat("Draws kept:", x$mcmc$R_keep, " (R =", x$mcmc$R, ", burn =",
+      x$mcmc$burn, ", thin =", x$mcmc$thin, ")\n")
+  invisible(x)
+}
+
+#' Summarize a hierarchical Bayes fit
+#'
+#' Posterior summaries (mean, SD, equal-tailed credible interval) for the
+#' population coefficients \eqn{b}, the mean-function coefficients
+#' \eqn{\theta}, the alternative-effect variance \eqn{\sigma_d^2} (and, for
+#' the HMNP, the raw shock variance trace), plus the \eqn{\delta_j} /
+#' \eqn{\xi_j} quality ladder, acceptance diagnostics, and the split-R-hat
+#' table when multiple chains were run.
+#'
+#' @param object A `choicer_hmnl` or `choicer_hmnp` object.
+#' @param prob Probability mass of the equal-tailed credible interval
+#'   (default 0.95).
+#' @param ... Additional arguments (ignored).
+#' @returns A `summary.choicer_hb` object.
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
+#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#'                     person_col = "pid",
+#'                     mcmc = list(R = 300, burn = 100))
+#' summary(fit)
+#' }
+#' @export
+summary.choicer_hb <- function(object, prob = 0.95, ...) {
+  if (!is.numeric(prob) || length(prob) != 1L || prob <= 0 || prob >= 1) {
+    stop("prob must be a single number in (0, 1).")
+  }
+  structure(
+    list(
+      model = object$model,
+      coefficients = build_bayes_coef_table(object$draws$b, prob),
+      theta_table = build_bayes_coef_table(object$draws$theta, prob),
+      sigma_d2_table = build_bayes_coef_table(
+        matrix(object$draws$sigma_d2, ncol = 1,
+               dimnames = list(NULL, "sigma_d^2")), prob),
+      sigma2_table = if (!is.null(object$draws$sigma2)) {
+        build_bayes_coef_table(
+          matrix(object$draws$sigma2, ncol = 1,
+                 dimnames = list(NULL, "sigma^2 (raw)")), prob)
+      },
+      delta = object$delta,
+      xi = object$xi,
+      W_mean = object$W_mean,
+      accept = object$accept,
+      rhat = object$rhat,
+      prob = prob,
+      nobs = object$nobs,
+      n_persons = object$n_persons,
+      J = object$J,
+      mcmc = object$mcmc,
+      elapsed_time = object$sampler$elapsed_time
+    ),
+    class = "summary.choicer_hb"
+  )
+}
+
+#' Print the summary of a hierarchical Bayes fit
+#'
+#' @param x A `summary.choicer_hb` object.
+#' @param ... Additional arguments (ignored).
+#' @returns The object invisibly.
+#' @export
+print.summary.choicer_hb <- function(x, ...) {
+  cat(model_display_name(x$model), "model\n\n")
+  cat("Population coefficients b (posterior):\n")
+  print_bayes_coef_table(x$coefficients, x$prob)
+  cat("\nDelta mean function theta (posterior):\n")
+  print_bayes_coef_table(x$theta_table, x$prob)
+  cat("\nAlternative-effect variance (posterior):\n")
+  print_bayes_coef_table(x$sigma_d2_table, x$prob)
+  if (!is.null(x$sigma2_table)) {
+    cat("\nRaw shock variance (non-identified chain):\n")
+    print_bayes_coef_table(x$sigma2_table, x$prob)
+  }
+  cat("\nQuality ladder (delta = mean utility vs the outside option;",
+      "xi = delta - z'theta):\n")
+  ladder <- data.frame(
+    alternative = x$delta$alternative,
+    delta_mean = round(x$delta$mean, 4),
+    delta_sd = round(x$delta$sd, 4),
+    xi_mean = round(x$xi$mean, 4),
+    xi_sd = round(x$xi$sd, 4)
+  )
+  print(ladder, row.names = FALSE)
+  if (!is.null(x$accept$mean_beta)) {
+    cat(sprintf("\nMean acceptance: beta %.2f, delta %.2f\n",
+                x$accept$mean_beta, x$accept$mean_delta))
+  }
+  if (!is.null(x$rhat)) {
+    cat("\nsplit-R-hat:\n")
+    print(round(x$rhat, 3))
+  }
+  cat("\nRespondents:", x$n_persons, " Choice situations:", x$nobs,
+      " Alternatives:", x$J, "\n")
+  cat("Draws kept:", x$mcmc$R_keep, " Chains:", x$mcmc$chains, "\n")
+  if (!is.null(x$elapsed_time)) cat("MCMC run time", x$elapsed_time, "\n")
+  invisible(x)
+}
+
+#' Extract posterior means from a hierarchical Bayes fit
+#'
+#' @param object A `choicer_hmnl` or `choicer_hmnp` object.
+#' @param component Which block to return: `"beta"` (population means b,
+#'   default), `"theta"` (delta mean function), `"delta"` (alternative
+#'   effects), or `"xi"` (unobserved quality, delta - z'theta).
+#' @param ... Additional arguments (ignored).
+#' @returns Named numeric vector of posterior means.
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
+#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#'                     person_col = "pid",
+#'                     mcmc = list(R = 300, burn = 100))
+#' coef(fit)
+#' coef(fit, component = "delta")
+#' }
+#' @export
+coef.choicer_hb <- function(object,
+                            component = c("beta", "theta", "delta", "xi"),
+                            ...) {
+  component <- match.arg(component)
+  switch(component,
+    beta = object$coefficients,
+    theta = stats::setNames(colMeans(object$draws$theta),
+                            colnames(object$draws$theta)),
+    delta = stats::setNames(object$delta$mean, object$delta$alternative),
+    xi = stats::setNames(object$xi$mean, object$xi$alternative)
+  )
+}
+
+#' Posterior covariance of the population coefficients
+#'
+#' @param object A `choicer_hmnl` or `choicer_hmnp` object.
+#' @param ... Additional arguments (ignored).
+#' @returns K x K posterior covariance matrix of the b draws.
+#' @export
+vcov.choicer_hb <- function(object, ...) {
+  object$vcov
+}
+
+#' Number of choice situations behind a hierarchical Bayes fit
+#'
+#' @param object A `choicer_hmnl` or `choicer_hmnp` object.
+#' @param ... Additional arguments (ignored).
+#' @returns Integer count of choice situations (tasks).
+#' @export
+nobs.choicer_hb <- function(object, ...) {
+  object$nobs
 }

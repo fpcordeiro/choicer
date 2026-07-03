@@ -55,6 +55,235 @@ halton_generate_normal <- function(S, N, K_w, seed, scramble) {
     .Call(`_choicer_halton_generate_normal`, S, N, K_w, seed, scramble)
 }
 
+#' Hand-rolled lower Cholesky for testing hb_internal.h
+#'
+#' @param A Symmetric matrix.
+#' @return List with `ok` (FALSE on a non-positive pivot) and `L` (lower
+#'   Cholesky factor; zero-filled when `ok` is FALSE).
+#' @noRd
+hb_test_chol <- function(A) {
+    .Call(`_choicer_hb_test_chol`, A)
+}
+
+#' Hand-rolled triangular solve for testing hb_internal.h
+#'
+#' Solves L x = b (`transpose = FALSE`, forward substitution) or L' x = b
+#' (`transpose = TRUE`, back substitution) for a lower-triangular L.
+#'
+#' @param L Lower-triangular matrix.
+#' @param b Right-hand side vector.
+#' @param transpose Solve against L' instead of L.
+#' @return Solution vector.
+#' @noRd
+hb_test_trisolve <- function(L, b, transpose) {
+    .Call(`_choicer_hb_test_trisolve`, L, b, transpose)
+}
+
+#' SPD solve via hand-rolled Cholesky + two trisolves for testing
+#'
+#' @param A Symmetric positive-definite matrix.
+#' @param b Right-hand side vector.
+#' @return List with `ok` (FALSE when `A` is not SPD) and `x` (solution;
+#'   zero-filled when `ok` is FALSE).
+#' @noRd
+hb_test_spd_solve <- function(A, b) {
+    .Call(`_choicer_hb_test_spd_solve`, A, b)
+}
+
+#' Fixed-order log-sum-exp with optional implicit outside term for testing
+#'
+#' @param v Vector of utilities.
+#' @param include_outside Add the implicit `exp(0)` outside-option term.
+#' @return `log(sum(exp(v)))`, plus 1 inside the sum when
+#'   `include_outside = TRUE`.
+#' @noRd
+hb_test_logsumexp <- function(v, include_outside) {
+    .Call(`_choicer_hb_test_logsumexp`, v, include_outside)
+}
+
+#' Two-block Gibbs for sigma_d2 under the half-Cauchy scale mixture
+#'
+#' Runs `n_iter` sweeps of draw_sigma_d2_conditional() on fixed residuals
+#' `xi`, starting from sigma_d2 = a_d = 1, one Xoshiro stream per iteration
+#' (tag 0). Exercises both the half-Cauchy Makalic-Schmidt mixture
+#' (`half_cauchy = TRUE`, scale `s_d`) and the plain IG(c0, d0) fallback.
+#'
+#' @param xi Vector of alternative-level residuals.
+#' @param n_iter Number of Gibbs sweeps.
+#' @param seed Master seed (coerced to uint64_t).
+#' @param half_cauchy Use the half-Cauchy scale mixture (else IG fallback).
+#' @param s_d Half-Cauchy scale.
+#' @param c0 IG fallback shape.
+#' @param d0 IG fallback scale.
+#' @return Numeric vector of `n_iter` sigma_d2 draws.
+#' @noRd
+hb_test_sigma_d2_gibbs <- function(xi, n_iter, seed, half_cauchy, s_d, c0, d0) {
+    .Call(`_choicer_hb_test_sigma_d2_gibbs`, xi, n_iter, seed, half_cauchy, s_d, c0, d0)
+}
+
+#' Gibbs sampler for the hierarchical Bayesian multinomial logit model
+#'
+#' Runs the adaptive random-walk Metropolis-within-Gibbs sampler for the
+#' hierarchical (random-coefficients, panel) multinomial logit with a
+#' BLP-style alternative-level random effect: inside utilities
+#' \eqn{U_{ijt} = x_{ijt}'\gamma_i + \delta_j + EV1} against an implicit
+#' outside option with systematic utility 0, \eqn{\beta_i \sim N(b, W)}
+#' (\eqn{\gamma_{ik} = \beta_{ik}} or \eqn{\exp(\beta_{ik})} per
+#' \code{rc_dist}), and \eqn{\delta_j = z_j'\theta + \xi_j},
+#' \eqn{\xi_j \sim N(0, \sigma_d^2)}.
+#'
+#' The per-respondent \eqn{\beta_i} updates are parallelized with OpenMP;
+#' the \eqn{\delta_j} updates run as a strictly serial sweep (their
+#' conditionals are coupled through the shared softmax denominators). Each
+#' (iteration, unit) pair uses its own RNG stream, so draws are bitwise
+#' reproducible independent of the number of threads (see
+#' \code{set_num_threads()}). This is the low-level engine behind
+#' \code{\link{run_hmnlogit}}, which handles initialization and
+#' post-processing.
+#'
+#' @param X total_rows x K_struct structural design matrix (inside rows
+#'   only, no ASC columns), rows sorted by (person, task, alternative).
+#' @param Z J x P alternative-level mean-function design (intercept first).
+#' @param M Integer vector: inside alternatives per choice situation.
+#' @param choice_pos Integer vector: 1-based within-task position of the
+#'   chosen row; 0 = outside option chosen.
+#' @param include_outside_option Must be \code{TRUE} (the implicit outside
+#'   good anchors the location of delta; a no-outside mode is roadmapped).
+#' @param alt_of_row Integer vector: 1-based alternative code per row of X.
+#' @param Ti Integer vector: choice situations per respondent.
+#' @param rc_dist Integer vector (length K_struct): 0 = normal coordinate,
+#'   1 = log-normal (enters utility as \code{exp(beta_ik)}).
+#' @param beta_pooled Pooled MNL MLE on the chain scale (log scale for
+#'   log-normal coordinates); centers the H_i proposal information.
+#' @param delta_init Initial delta (length J).
+#' @param theta_init Initial theta (length P).
+#' @param b_bar K vector, prior mean of b.
+#' @param A K x K prior precision matrix of b.
+#' @param nu Inverse-Wishart prior degrees of freedom for W (>= K).
+#' @param V K x K inverse-Wishart prior scale matrix for W.
+#' @param theta_bar P vector, prior mean of theta.
+#' @param A_theta P x P prior precision matrix of theta.
+#' @param sd_prior List with elements \code{half_cauchy} (logical),
+#'   \code{s_d} (half-Cauchy scale), \code{c0}, \code{d0} (IG fallback).
+#' @param R Total number of Gibbs iterations.
+#' @param burn Number of initial iterations discarded (0 <= burn < R);
+#'   proposal-scale adaptation happens during burn-in only.
+#' @param thin Keep every thin-th post-burn-in draw.
+#' @param seed Master RNG seed (non-negative; all streams derive from it).
+#' @param keep_beta_i 0 = no beta_i output, 1 = online means/SDs,
+#'   2 = means/SDs plus the full (K, N, R_keep) draw cube.
+#' @param s_init Initial per-respondent proposal scale.
+#' @param accept_target Robbins-Monro acceptance target for the beta_i
+#'   updates (the delta_j target is fixed at 0.44).
+#' @param trace Print progress every \code{trace} iterations (0 = silent).
+#' @returns List with \code{bdraw} (R_keep x K), \code{wdraw} (R_keep x
+#'   K(K+1)/2, lower triangle of W in row-major order), \code{deltadraw}
+#'   (R_keep x J), \code{thetadraw} (R_keep x P), \code{sigma_d2draw},
+#'   \code{loglik_trace}, acceptance rates and final proposal scales
+#'   (\code{accept_rate_beta}, \code{accept_rate_delta}, \code{s_final},
+#'   \code{s_delta_final}), posterior summaries \code{beta_i_mean} /
+#'   \code{beta_i_sd} (K x N, \code{NULL} when \code{keep_beta_i = 0}),
+#'   \code{beta_i_draws} (K x N x R_keep cube when \code{keep_beta_i = 2}),
+#'   \code{delta_mean} / \code{delta_sd} / \code{xi_mean} / \code{xi_sd}
+#'   (J x 1), and \code{R_keep}.
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnl_data(N = 20, T = 2, J = 3, seed = 42)
+#' d <- prepare_hmnl_data(sim$data, "task", "alt", "choice",
+#'                        c("x1", "x2"), person_col = "pid")
+#' out <- hmnl_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
+#'   rc_dist = d$rc_dist, beta_pooled = rep(0, d$K_struct),
+#'   delta_init = rep(0, d$J), theta_init = rep(0, d$P),
+#'   b_bar = rep(0, d$K_struct), A = 0.01 * diag(d$K_struct),
+#'   nu = d$K_struct + 3, V = (d$K_struct + 3) * diag(d$K_struct),
+#'   theta_bar = rep(0, d$P), A_theta = 0.01 * diag(d$P),
+#'   sd_prior = list(half_cauchy = TRUE, s_d = 1, c0 = 3, d0 = 3),
+#'   R = 300, burn = 100, thin = 1, seed = 7, keep_beta_i = 1,
+#'   s_init = 2.38 / sqrt(d$K_struct), accept_target = 0.234)
+#' colMeans(out$bdraw)
+#' }
+#' @export
+hmnl_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, rc_dist, beta_pooled, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, R, burn, thin, seed, keep_beta_i, s_init, accept_target, trace = 0L) {
+    .Call(`_choicer_hmnl_gibbs`, X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, rc_dist, beta_pooled, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, R, burn, thin, seed, keep_beta_i, s_init, accept_target, trace)
+}
+
+#' Gibbs sampler for the hierarchical Bayesian multinomial probit model
+#'
+#' Runs the fully conjugate Albert-Chib Gibbs sampler for the hierarchical
+#' multinomial probit with iid \eqn{N(0, \sigma^2)} utility shocks in
+#' un-differenced utility space: inside utilities
+#' \eqn{U_{ijt} = x_{ijt}'\beta_i + \delta_j + \epsilon} against a
+#' stochastic implicit outside option \eqn{U_{iot} = \epsilon},
+#' \eqn{\beta_i \sim N(b, W)}, and \eqn{\delta_j = z_j'\theta + \xi_j},
+#' \eqn{\xi_j \sim N(0, \sigma_d^2)}. The chain runs on the non-identified
+#' parameterization (free \eqn{\sigma^2}); identified quantities are
+#' obtained by normalizing each draw by the matching power of \eqn{\sigma}
+#' (handled by \code{\link{run_hmnprobit}}).
+#'
+#' The latent sweep and the \eqn{\beta_i} draws are parallelized with
+#' OpenMP across respondents; the \eqn{\delta_j} draws are parallelized
+#' across alternatives (conditionally independent given the augmented
+#' utilities — unlike the HMNL, whose delta sweep must be serial). Each
+#' (iteration, unit) pair uses its own RNG stream, so draws are bitwise
+#' reproducible independent of the number of threads.
+#'
+#' @param X total_rows x K_struct structural design matrix (inside rows
+#'   only), rows sorted by (person, task, alternative).
+#' @param Z J x P alternative-level mean-function design (intercept first).
+#' @param M Integer vector: inside alternatives per choice situation.
+#' @param choice_pos Integer vector: 1-based within-task position of the
+#'   chosen row; 0 = outside option chosen.
+#' @param include_outside_option Must be \code{TRUE} (the outside good
+#'   anchors the location of delta; a no-outside mode is roadmapped).
+#' @param alt_of_row Integer vector: 1-based alternative code per row of X.
+#' @param Ti Integer vector: choice situations per respondent.
+#' @param delta_init Initial delta (length J), raw scale.
+#' @param theta_init Initial theta (length P), raw scale.
+#' @param b_bar K vector, prior mean of b.
+#' @param A K x K prior precision matrix of b.
+#' @param nu Inverse-Wishart prior degrees of freedom for W (>= K).
+#' @param V K x K inverse-Wishart prior scale matrix for W.
+#' @param theta_bar P vector, prior mean of theta.
+#' @param A_theta P x P prior precision matrix of theta.
+#' @param sd_prior List with elements \code{half_cauchy} (logical),
+#'   \code{s_d}, \code{c0}, \code{d0} — the sigma_d prior (see
+#'   \code{\link{run_hmnlogit}}).
+#' @param a0,s0 Inverse-gamma prior shape/scale for the (non-identified)
+#'   shock variance \eqn{\sigma^2}.
+#' @param R Total number of Gibbs iterations.
+#' @param burn Number of initial iterations discarded (0 <= burn < R).
+#' @param thin Keep every thin-th post-burn-in draw.
+#' @param seed Master RNG seed (non-negative; all streams derive from it).
+#' @param keep_beta_i 0 = no beta_i output, 1 = online means/SDs
+#'   (identified scale), 2 = means/SDs plus the full (K, N, R_keep) cube of
+#'   per-draw-normalized \eqn{\beta_i / \sigma} draws.
+#' @param trace Print progress every \code{trace} iterations (0 = silent).
+#' @returns List with RAW draw matrices \code{bdraw}, \code{wdraw} (lower
+#'   triangle, row-major), \code{deltadraw}, \code{thetadraw},
+#'   \code{sigma_d2draw}, \code{sigma2draw}, identified-scale summaries
+#'   \code{beta_i_mean} / \code{beta_i_sd} / \code{beta_i_draws} /
+#'   \code{delta_mean} / \code{delta_sd} / \code{xi_mean} / \code{xi_sd},
+#'   and \code{R_keep}.
+#' @examples
+#' \donttest{
+#' sim <- simulate_hmnp_data(N = 30, T = 2, J = 3, seed = 42)
+#' d <- prepare_hmnp_data(sim$data, "task", "alt", "choice",
+#'                        c("x1", "x2"), person_col = "pid")
+#' out <- hmnp_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
+#'   delta_init = rep(0, d$J), theta_init = rep(0, d$P),
+#'   b_bar = rep(0, d$K_struct), A = 0.01 * diag(d$K_struct),
+#'   nu = d$K_struct + 3, V = (d$K_struct + 3) * diag(d$K_struct),
+#'   theta_bar = rep(0, d$P), A_theta = 0.01 * diag(d$P),
+#'   sd_prior = list(half_cauchy = TRUE, s_d = 1, c0 = 3, d0 = 3),
+#'   a0 = 3, s0 = 3, R = 300, burn = 100, thin = 1, seed = 7,
+#'   keep_beta_i = 1)
+#' colMeans(out$bdraw / sqrt(as.numeric(out$sigma2draw)))
+#' }
+#' @export
+hmnp_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, a0, s0, R, burn, thin, seed, keep_beta_i, trace = 0L) {
+    .Call(`_choicer_hmnp_gibbs`, X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, a0, s0, R, burn, thin, seed, keep_beta_i, trace)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
