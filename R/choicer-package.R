@@ -6,10 +6,10 @@ utils::globalVariables(c(
   ".", "..covariate_cols", "..random_var_cols", "..show_cols",
   "HAS_NA", "N_CHOICES", "N_OBS", "alt_int", "idx_in_group",
   # HB prep NSE variables (R/hb_data.R)
-  "HB_PERSON", "TASK_HAS_NA", "task_idx", "HAS_BAD",
+  "HB_PERSON", "TASK_HAS_NA", "TASK_HAS_BAD", "task_idx", "HAS_BAD",
   "..task_by", "..x_cols", "..num_cols", "..alt_covariate_cols",
   # HB post-estimation / diagnostics NSE variables
-  "covered", "observed",
+  "covered", "observed", "lower", "upper",
   # DGP / simulation NSE variables (R/simulation.R)
   "alt", "choice", "delta_val", "epsilon", "utility", "id",
   "pid", "task", "..x_names",

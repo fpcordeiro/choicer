@@ -92,7 +92,8 @@
       z_new = NULL,
       new_labels = character(0),
       person = if (!is.null(spec$person_col)) {
-        rep(d$person_ids, times = d$Ti)
+        # one entry per ROW: person per task, expanded by the task sizes
+        rep(rep(d$person_ids, times = d$Ti), times = d$M)
       }
     ))
   }
@@ -434,6 +435,8 @@ wtp.choicer_hb <- function(object, price_var, attr_vars = NULL,
 
 # --- logsum / consumer surplus (HMNL only in v1) -------------------------------
 
+#' @param n_draws Number of posterior draws to integrate over (hierarchical
+#'   Bayes methods; thinned evenly from the kept draws).
 #' @describeIn logsum Posterior expected logsum for the hierarchical logit:
 #'   per choice situation, \eqn{\log(1 + \sum_j \exp V_j)} against the
 #'   outside-option anchor, averaged over posterior draws with one
@@ -475,6 +478,8 @@ logsum.choicer_hmnp <- function(object, newdata = NULL, ...) {
        "analysis.")
 }
 
+#' @param n_draws Number of posterior draws to integrate over (hierarchical
+#'   Bayes methods).
 #' @describeIn consumer_surplus Posterior consumer surplus for the
 #'   hierarchical logit: per-task logsum divided by the (positive) marginal
 #'   utility of income \eqn{-\bar\gamma_{price}}, per posterior draw. With
@@ -583,6 +588,10 @@ consumer_surplus.choicer_hmnp <- function(object, price_var, newdata = NULL,
        labels = labels, idx = idx)
 }
 
+#' @param elast_var Structural covariate to perturb (hierarchical Bayes
+#'   methods).
+#' @param eps Relative perturbation size (default 0.01).
+#' @param n_draws Number of posterior draws to integrate over.
 #' @describeIn elasticities Posterior-mean aggregate arc elasticities for
 #'   hierarchical Bayes fits: each inside alternative's `elast_var` is
 #'   perturbed by `eps` (default 1%) and shares are recomputed per posterior
@@ -606,6 +615,10 @@ elasticities.choicer_hb <- function(object, elast_var, eps = 0.01,
   out
 }
 
+#' @param elast_var Structural covariate to perturb (hierarchical Bayes
+#'   methods).
+#' @param eps Relative perturbation size (default 0.01).
+#' @param n_draws Number of posterior draws to integrate over.
 #' @describeIn diversion_ratios Posterior-mean diversion ratios for
 #'   hierarchical Bayes fits, from the same perturbation engine as
 #'   [elasticities.choicer_hb()]: \eqn{DR(j \to k)} is the fraction of the

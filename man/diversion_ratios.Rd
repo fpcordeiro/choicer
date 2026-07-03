@@ -12,6 +12,13 @@ diversion_ratios(object, ...)
 \arguments{
 \item{object}{A fitted model object.}
 
+\item{elast_var}{Structural covariate to perturb (hierarchical Bayes
+methods).}
+
+\item{eps}{Relative perturbation size (default 0.01).}
+
+\item{n_draws}{Number of posterior draws to integrate over.}
+
 \item{...}{Additional arguments passed to methods.}
 }
 \value{

@@ -30,6 +30,9 @@ long format or a list with \code{X}, \code{alt_idx}, \code{M} (plus
 \code{W} for MXL), as in \code{predict()}. When \code{NULL} (default),
 the data stored at fit time is used (requires \code{keep_data = TRUE}).}
 
+\item{n_draws}{Number of posterior draws to integrate over (hierarchical
+Bayes methods; thinned evenly from the kept draws).}
+
 \item{...}{Additional arguments passed to methods.}
 }
 \value{

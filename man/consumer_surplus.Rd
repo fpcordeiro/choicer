@@ -84,6 +84,9 @@ used for the mean CS (and its SE), as in \code{predict()}: for a data.frame
 equal weights. Ignored when \code{newdata} is \code{NULL} (the stored fit weights
 apply).}
 
+\item{n_draws}{Number of posterior draws to integrate over (hierarchical
+Bayes methods).}
+
 \item{...}{Additional arguments passed to methods.}
 }
 \value{
