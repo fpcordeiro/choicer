@@ -1,0 +1,3 @@
+model,serial_block,sec_per_iter_1thread,sec_per_iter_5thread,measured_speedup_total,measured_speedup_parallel_blocks_only,serial_fraction_at_1thread,serial_share_of_iter_at_5threads,amdahl_ceiling_speedup_at_infinite_threads
+hmnl,prof_t_delta_serial,0.014373809099,0.007943174839,1.80957984563381,4.31279602527302,0.409459076746014,0.740905220303687,2.44224650714068
+hmnp,prof_t_hierarchy,0.012319818735,0.00299359083175,4.11539833845564,4.26684477694401,0.00845179205065634,0.0390402061799741,118.318102717913

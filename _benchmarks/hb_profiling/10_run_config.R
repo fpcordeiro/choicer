@@ -149,10 +149,15 @@ if (model %in% c("hmnl", "hmnp")) {
 } else {
   # run_mnprobit contrast: wall time only, NOT instrumented (the currently
   # installed build is fine here -- see spec: "no instrumentation needed").
+  # simulate_mnp_data() differences against a base alternative, so Sigma
+  # must be (J - 1) x (J - 1) -- identity is fine, only wall-time/iter
+  # scaling with J is of interest here, not parameter recovery. Its output
+  # columns are id/alt/choice/x* (not task/alt/choice like the HB DGPs).
   beta_true <- rep(0.4, K)
-  sim <- simulate_mnp_data(N = N, J = J, beta = beta_true, seed = seed)
+  sim <- simulate_mnp_data(N = N, J = J, beta = beta_true,
+                           Sigma = diag(J - 1L), seed = seed)
   t0 <- Sys.time()
-  fit <- run_mnprobit(sim$data, "task", "alt", "choice",
+  fit <- run_mnprobit(sim$data, "id", "alt", "choice",
                       paste0("x", seq_len(K)),
                       mcmc = list(R = R, burn = burn, seed = seed + 1000))
   t1 <- Sys.time()
