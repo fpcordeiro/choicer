@@ -36,48 +36,70 @@
  // ============================================================================
  // Shared infrastructure for the hierarchical Bayes engines (hmnl_gibbs /
 --- src/hmnlogit.cpp	2026-07-06 21:35:26
-+++ src/hmnlogit.cpp	2026-07-06 21:43:21
-@@ -450,6 +450,14 @@
++++ src/hmnlogit.cpp	2026-07-06 22:06:57
+@@ -450,6 +450,31 @@
           ABORT_WINV, ABORT_THETA, ABORT_INIT };
    int abort_code = ABORT_NONE;
    int abort_iter = -1;
 +
 +  // --- PROFILING (HB_PROFILE only): master-thread wall-clock block totals,
-+  // accumulated across all R iterations. See hb_internal.h for hb_wtime()
-+  // and the revertibility contract.
++  // accumulated across all R iterations, plus a thread-local summed-CPU-time
++  // sub-split of the (a) beta phase's per-respondent work (Phase 2 addition,
++  // mirroring HMNP's fused-pass sub-split; see hb_internal.h for hb_wtime()
++  // and the revertibility contract).
 +#ifdef HB_PROFILE
 +  double prof_t_cache = 0.0, prof_t_beta = 0.0, prof_t_delta = 0.0,
 +         prof_t_hierarchy = 0.0, prof_t_recording = 0.0;
++#ifdef _OPENMP
++  const int prof_max_threads = omp_get_max_threads();
++#else
++  const int prof_max_threads = 1;
++#endif
++  // Thread-local summed CPU time (seconds) for the three sub-phases inside
++  // the (a) per-respondent beta-phase loop: (i) proposal construction
++  // (Cholesky of H_i + W^{-1} + back-solve, O(K^3)/respondent), (ii) the
++  // candidate loglik pass (O(rows_i)), (iii) accept/reject + adaptation
++  // bookkeeping. Distinct from the master-thread wall-clock totals above --
++  // this is SUM-over-threads of per-thread busy time, not a wall-clock
++  // duration.
++  std::vector<double> prof_beta_propconstruct_cpu(prof_max_threads, 0.0);
++  std::vector<double> prof_beta_loglik_cpu(prof_max_threads, 0.0);
++  std::vector<double> prof_beta_acceptadapt_cpu(prof_max_threads, 0.0);
 +#endif
  
  #ifdef _OPENMP
  #pragma omp parallel
-@@ -459,6 +467,10 @@
+@@ -459,6 +484,15 @@
      arma::vec gamma_loc(K), z_loc(K), t_loc(K), d_loc(K), xrow(K), xbar(K);
      arma::vec beta_star(K);
      arma::mat P_loc(K, K), L_loc(K, K);
 +#ifdef HB_PROFILE
 +    double prof_tmark = 0.0;   // master-only scratch (thread-private, unused
 +                                // on worker threads)
++#ifdef _OPENMP
++    const int prof_tid = omp_get_thread_num();
++#else
++    const int prof_tid = 0;
++#endif
 +#endif
  
      // --- Startup: respondent information H_i at the pooled init -------------
      // I_t = sum_j p_jt x_jt x_jt' - xbar_t xbar_t', xbar_t = sum_j p_jt x_jt,
-@@ -508,6 +520,13 @@
-         }
+@@ -509,6 +543,13 @@
        }
      }   // implied barrier: H complete before the chain starts
-+
+ 
 +#ifdef HB_PROFILE
 +#ifdef _OPENMP
 +#pragma omp master
 +#endif
 +    { prof_tmark = hb_wtime(); }
 +#endif
- 
++
      for (int r = 0; r < R; ++r) {
        // --- (0) Cache rebuild: v, e, D_t, ll_t, cached respondent logliks ----
-@@ -543,6 +562,14 @@
+       // Fixed sub-order per respondent; slots are respondent-owned, so this
+@@ -543,6 +584,14 @@
          ll_pers(i) = lli;
        }   // implied barrier
  
@@ -92,9 +114,48 @@
        // Startup guard: the initial state must have a finite loglik (a bad
        // beta_pooled / delta_init would otherwise poison the MH ratios).
        if (r == 0) {
-@@ -660,6 +687,15 @@
+@@ -572,6 +621,9 @@
+ #pragma omp for schedule(static)
+ #endif
+       for (int i = 0; i < N; ++i) {
++#ifdef HB_PROFILE
++        const double prof_bts0 = hb_wtime();
++#endif
+         Xoshiro256pp rng = make_stream(useed, static_cast<uint64_t>(r),
+                                        static_cast<uint64_t>(i));
+         const arma::mat& Hi = H.slice(i);
+@@ -603,6 +655,11 @@
+                                       : beta_star(k);
+         }
+ 
++#ifdef HB_PROFILE
++        const double prof_bts1 = hb_wtime();
++        prof_beta_propconstruct_cpu[prof_tid] += prof_bts1 - prof_bts0;
++#endif
++
+         double cand_ll = 0.0;
+         for (int t = panel.task_offsets[i]; t < panel.task_offsets[i + 1];
+              ++t) {
+@@ -625,6 +682,11 @@
+         }
+         if (!std::isfinite(cand_ll)) cand_ll = -arma::datum::inf;
+ 
++#ifdef HB_PROFILE
++        const double prof_bts2 = hb_wtime();
++        prof_beta_loglik_cpu[prof_tid] += prof_bts2 - prof_bts1;
++#endif
++
+         for (int k = 0; k < K; ++k) d_loc(k) = beta_i(k, i) - b(k);
+         const double q_cur = hb_quad_form(Winv, d_loc);
+         for (int k = 0; k < K; ++k) d_loc(k) = beta_star(k) - b(k);
+@@ -659,7 +721,20 @@
+           if (ls > LOG_S_MAX) ls = LOG_S_MAX;
            s_log(i) = ls;
          }
++
++#ifdef HB_PROFILE
++        prof_beta_acceptadapt_cpu[prof_tid] += hb_wtime() - prof_bts2;
++#endif
        }   // implied barrier: beta phase complete
 +
 +#ifdef HB_PROFILE
@@ -108,19 +169,19 @@
        if (abort_code != ABORT_NONE) break;
  
        // --- (b) delta phase (SERIAL, master) + (c) hierarchy + recording -----
-@@ -744,6 +780,11 @@
+@@ -743,6 +818,11 @@
+             s_delta_log(j) = ls;
            }
          }
- 
++
 +#ifdef HB_PROFILE
 +        { double __t = hb_wtime(); prof_t_delta += __t - prof_tmark;
 +          prof_tmark = __t; }
 +#endif
-+
+ 
          // --- (c) hierarchy draws (master; conditionals from hb_internal.h,
          // fixed-order sufficient statistics; arma::inv_sympd is fine HERE).
-         {
-@@ -789,6 +830,11 @@
+@@ -789,6 +869,11 @@
            draw_sigma_d2_conditional(rng_s, xi_tmp, sdp, sigma_d2, a_d);
          }
  
@@ -132,7 +193,7 @@
          // --- Recording and housekeeping (master, inside the region) --------
          if (abort_code == ABORT_NONE && r >= burn &&
              (r - burn) % thin == 0) {
-@@ -820,6 +866,11 @@
+@@ -820,6 +905,11 @@
              abort_iter = r;
            }
          }
@@ -144,7 +205,7 @@
        }   // end master block
  #ifdef _OPENMP
  #pragma omp barrier
-@@ -870,7 +921,7 @@
+@@ -870,7 +960,7 @@
      beta_i_draws = Rcpp::wrap(beta_draws);
    }
  
@@ -153,13 +214,22 @@
      Rcpp::Named("bdraw") = bdraw,
      Rcpp::Named("wdraw") = wdraw,
      Rcpp::Named("deltadraw") = deltadraw,
-@@ -890,4 +941,20 @@
+@@ -890,4 +980,33 @@
      Rcpp::Named("xi_sd") = xi_wf.sd(),
      Rcpp::Named("R_keep") = R_keep
    );
 +#ifdef HB_PROFILE
 +  // PROFILING (HB_PROFILE only): master-thread wall-clock block totals in
-+  // seconds, accumulated across all R iterations (not just R_keep).
++  // seconds, accumulated across all R iterations (not just R_keep), plus
++  // thread-summed CPU time for the (a) beta phase's three sub-blocks
++  // (summed-CPU-time, NOT a wall-clock duration -- distinct quantity).
++  double beta_propconstruct_sum = 0.0, beta_loglik_sum = 0.0,
++         beta_acceptadapt_sum = 0.0;
++  for (int th = 0; th < prof_max_threads; ++th) {
++    beta_propconstruct_sum += prof_beta_propconstruct_cpu[th];
++    beta_loglik_sum += prof_beta_loglik_cpu[th];
++    beta_acceptadapt_sum += prof_beta_acceptadapt_cpu[th];
++  }
 +  result["profile"] = Rcpp::List::create(
 +    Rcpp::Named("t_cache_rebuild") = prof_t_cache,
 +    Rcpp::Named("t_beta_mh") = prof_t_beta,
@@ -168,8 +238,12 @@
 +    Rcpp::Named("t_recording") = prof_t_recording,
 +    Rcpp::Named("t_total") = prof_t_cache + prof_t_beta + prof_t_delta +
 +                             prof_t_hierarchy + prof_t_recording,
++    Rcpp::Named("beta_propconstruct_cpu_sum") = beta_propconstruct_sum,
++    Rcpp::Named("beta_loglik_cpu_sum") = beta_loglik_sum,
++    Rcpp::Named("beta_acceptadapt_cpu_sum") = beta_acceptadapt_sum,
 +    Rcpp::Named("R") = R,
-+    Rcpp::Named("note") = "wall-clock master-thread block totals (seconds), summed across all R iterations"
++    Rcpp::Named("max_threads") = prof_max_threads,
++    Rcpp::Named("note") = "t_* are wall-clock master-thread block totals (seconds); beta_*_cpu_sum are SUMMED-OVER-THREADS busy time inside the (a) beta-phase loop, not wall-clock"
 +  );
 +#endif
 +  return result;
