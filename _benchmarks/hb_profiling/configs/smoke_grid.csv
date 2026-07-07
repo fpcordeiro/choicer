@@ -1,0 +1,3 @@
+config_id,model,N,J,K,P,R,burn,thin,threads,keep_beta_i,seed
+smoke_hmnl,hmnl,500,20,10,10,100,40,1,5,means,1
+smoke_hmnp,hmnp,500,20,10,10,100,40,1,5,means,1

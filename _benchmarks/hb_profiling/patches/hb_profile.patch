@@ -1,0 +1,423 @@
+--- src/hb_internal.h	2026-07-06 21:35:26
++++ src/hb_internal.h	2026-07-06 21:41:04
+@@ -6,6 +6,34 @@
+ #include "bayes_samplers.h"
+ #include <R_ext/Utils.h>   // R_CheckUserInterrupt / R_ToplevelExec
+ #include <vector>
++
++// ============================================================================
++// PROFILING INSTRUMENTATION (added by simulator agent, run 20260706-hb-profiling)
++// -----------------------------------------------------------------------------
++// Everything below this block, and every other block in this file guarded by
++// `#ifdef HB_PROFILE` in hmnlogit.cpp / hmnprobit.cpp, is REVERTIBLE: it is
++// compiled in only when the translation unit is built with -DHB_PROFILE (see
++// the profiling copy's src/Makevars). It never touches an RNG stream and
++// never reorders any computation -- it only reads the wall clock on the
++// thread that would have executed that code anyway (almost always the master
++// thread, at existing barrier/phase boundaries; see the per-file comments for
++// the one exception -- HMNP's fused pass -- which additionally accumulates
++// thread-local CPU-time sub-splits with no synchronization changes).
++// hb_wtime() prefers OpenMP's wall clock (consistent with the block
++// boundaries it is bracketing); falls back to std::chrono when OpenMP is not
++// available (e.g. a serial debug build) so the profiling copy still compiles.
++// ============================================================================
++#ifdef HB_PROFILE
++#include <chrono>
++inline double hb_wtime() {
++#ifdef _OPENMP
++  return omp_get_wtime();
++#else
++  return std::chrono::duration<double>(
++    std::chrono::steady_clock::now().time_since_epoch()).count();
++#endif
++}
++#endif  // HB_PROFILE
+ 
+ // ============================================================================
+ // Shared infrastructure for the hierarchical Bayes engines (hmnl_gibbs /
+--- src/hmnlogit.cpp	2026-07-06 21:35:26
++++ src/hmnlogit.cpp	2026-07-06 21:43:21
+@@ -450,6 +450,14 @@
+          ABORT_WINV, ABORT_THETA, ABORT_INIT };
+   int abort_code = ABORT_NONE;
+   int abort_iter = -1;
++
++  // --- PROFILING (HB_PROFILE only): master-thread wall-clock block totals,
++  // accumulated across all R iterations. See hb_internal.h for hb_wtime()
++  // and the revertibility contract.
++#ifdef HB_PROFILE
++  double prof_t_cache = 0.0, prof_t_beta = 0.0, prof_t_delta = 0.0,
++         prof_t_hierarchy = 0.0, prof_t_recording = 0.0;
++#endif
+ 
+ #ifdef _OPENMP
+ #pragma omp parallel
+@@ -459,6 +467,10 @@
+     arma::vec gamma_loc(K), z_loc(K), t_loc(K), d_loc(K), xrow(K), xbar(K);
+     arma::vec beta_star(K);
+     arma::mat P_loc(K, K), L_loc(K, K);
++#ifdef HB_PROFILE
++    double prof_tmark = 0.0;   // master-only scratch (thread-private, unused
++                                // on worker threads)
++#endif
+ 
+     // --- Startup: respondent information H_i at the pooled init -------------
+     // I_t = sum_j p_jt x_jt x_jt' - xbar_t xbar_t', xbar_t = sum_j p_jt x_jt,
+@@ -508,6 +520,13 @@
+         }
+       }
+     }   // implied barrier: H complete before the chain starts
++
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++    { prof_tmark = hb_wtime(); }
++#endif
+ 
+     for (int r = 0; r < R; ++r) {
+       // --- (0) Cache rebuild: v, e, D_t, ll_t, cached respondent logliks ----
+@@ -543,6 +562,14 @@
+         ll_pers(i) = lli;
+       }   // implied barrier
+ 
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++      { double __t = hb_wtime(); prof_t_cache += __t - prof_tmark;
++        prof_tmark = __t; }
++#endif
++
+       // Startup guard: the initial state must have a finite loglik (a bad
+       // beta_pooled / delta_init would otherwise poison the MH ratios).
+       if (r == 0) {
+@@ -660,6 +687,15 @@
+           s_log(i) = ls;
+         }
+       }   // implied barrier: beta phase complete
++
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++      { double __t = hb_wtime(); prof_t_beta += __t - prof_tmark;
++        prof_tmark = __t; }
++#endif
++
+       if (abort_code != ABORT_NONE) break;
+ 
+       // --- (b) delta phase (SERIAL, master) + (c) hierarchy + recording -----
+@@ -744,6 +780,11 @@
+           }
+         }
+ 
++#ifdef HB_PROFILE
++        { double __t = hb_wtime(); prof_t_delta += __t - prof_tmark;
++          prof_tmark = __t; }
++#endif
++
+         // --- (c) hierarchy draws (master; conditionals from hb_internal.h,
+         // fixed-order sufficient statistics; arma::inv_sympd is fine HERE).
+         {
+@@ -789,6 +830,11 @@
+           draw_sigma_d2_conditional(rng_s, xi_tmp, sdp, sigma_d2, a_d);
+         }
+ 
++#ifdef HB_PROFILE
++        { double __t = hb_wtime(); prof_t_hierarchy += __t - prof_tmark;
++          prof_tmark = __t; }
++#endif
++
+         // --- Recording and housekeeping (master, inside the region) --------
+         if (abort_code == ABORT_NONE && r >= burn &&
+             (r - burn) % thin == 0) {
+@@ -820,6 +866,11 @@
+             abort_iter = r;
+           }
+         }
++
++#ifdef HB_PROFILE
++        { double __t = hb_wtime(); prof_t_recording += __t - prof_tmark;
++          prof_tmark = __t; }
++#endif
+       }   // end master block
+ #ifdef _OPENMP
+ #pragma omp barrier
+@@ -870,7 +921,7 @@
+     beta_i_draws = Rcpp::wrap(beta_draws);
+   }
+ 
+-  return Rcpp::List::create(
++  Rcpp::List result = Rcpp::List::create(
+     Rcpp::Named("bdraw") = bdraw,
+     Rcpp::Named("wdraw") = wdraw,
+     Rcpp::Named("deltadraw") = deltadraw,
+@@ -890,4 +941,20 @@
+     Rcpp::Named("xi_sd") = xi_wf.sd(),
+     Rcpp::Named("R_keep") = R_keep
+   );
++#ifdef HB_PROFILE
++  // PROFILING (HB_PROFILE only): master-thread wall-clock block totals in
++  // seconds, accumulated across all R iterations (not just R_keep).
++  result["profile"] = Rcpp::List::create(
++    Rcpp::Named("t_cache_rebuild") = prof_t_cache,
++    Rcpp::Named("t_beta_mh") = prof_t_beta,
++    Rcpp::Named("t_delta_serial") = prof_t_delta,
++    Rcpp::Named("t_hierarchy") = prof_t_hierarchy,
++    Rcpp::Named("t_recording") = prof_t_recording,
++    Rcpp::Named("t_total") = prof_t_cache + prof_t_beta + prof_t_delta +
++                             prof_t_hierarchy + prof_t_recording,
++    Rcpp::Named("R") = R,
++    Rcpp::Named("note") = "wall-clock master-thread block totals (seconds), summed across all R iterations"
++  );
++#endif
++  return result;
+ }
+--- src/hmnprobit.cpp	2026-07-06 21:35:26
++++ src/hmnprobit.cpp	2026-07-06 21:45:56
+@@ -403,6 +403,29 @@
+          ABORT_WINV, ABORT_THETA };
+   int abort_code = ABORT_NONE;
+   int abort_iter = -1;
++
++  // --- PROFILING (HB_PROFILE only): master-thread wall-clock block totals,
++  // accumulated across all R iterations, plus thread-local summed-CPU-time
++  // sub-splits of the fused pass (a). See hb_internal.h for hb_wtime() and
++  // the revertibility contract, and src/hmnprobit.cpp's header comment for
++  // why (a) is fused into one omp-for loop (unlike HMNL's separate phases).
++#ifdef HB_PROFILE
++  double prof_t_startup_gram = 0.0, prof_t_fused = 0.0, prof_t_delta = 0.0,
++         prof_t_rss = 0.0, prof_t_hierarchy = 0.0, prof_t_recording = 0.0;
++#ifdef _OPENMP
++  const int prof_max_threads = omp_get_max_threads();
++#else
++  const int prof_max_threads = 1;
++#endif
++  // Thread-local summed CPU time (seconds) for the three sub-phases fused
++  // into the (a) work-shared loop below: TN latent sweep, the conjugate
++  // beta_i regression draw, and the mu_x cache refresh. Distinct from the
++  // master-thread wall-clock totals above -- this is SUM-over-threads of
++  // per-thread busy time, not a wall-clock duration.
++  std::vector<double> prof_tn_sweep_cpu(prof_max_threads, 0.0);
++  std::vector<double> prof_beta_draw_cpu(prof_max_threads, 0.0);
++  std::vector<double> prof_mu_x_cpu(prof_max_threads, 0.0);
++#endif
+ 
+ #ifdef _OPENMP
+ #pragma omp parallel
+@@ -411,8 +434,22 @@
+     // Thread-local workspaces.
+     arma::vec rhs_loc(K), mean_loc(K), z_loc(K), t_loc(K), bnew(K);
+     arma::mat Q_loc(K, K), L_loc(K, K);
++#ifdef HB_PROFILE
++    double prof_tmark = 0.0;   // master-only scratch (thread-private)
++#ifdef _OPENMP
++    const int prof_tid = omp_get_thread_num();
++#else
++    const int prof_tid = 0;
++#endif
++#endif
+ 
+     // --- Startup: Gram blocks G_i (work-shared, deterministic) --------------
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++    { prof_tmark = hb_wtime(); }
++#endif
+ #ifdef _OPENMP
+ #pragma omp for schedule(static)
+ #endif
+@@ -434,12 +471,26 @@
+       }
+     }   // implied barrier
+ 
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++    { double __t = hb_wtime(); prof_t_startup_gram += __t - prof_tmark;
++      prof_tmark = __t; }
++#endif
++
+     for (int r = 0; r < R; ++r) {
+       const double sd_eps = std::sqrt(s2);
+       const double inv_s2 = 1.0 / s2;
+ 
+       // --- (a) Fused pass: TN sweep + beta_i draw + mu_x refresh ------------
++#ifdef HB_PROFILE
+ #ifdef _OPENMP
++#pragma omp master
++#endif
++      { prof_tmark = hb_wtime(); }
++#endif
++#ifdef _OPENMP
+ #pragma omp for schedule(static)
+ #endif
+       for (int i = 0; i < N; ++i) {
+@@ -447,6 +498,9 @@
+                                          static_cast<uint64_t>(i));
+         const int t0 = panel.task_offsets[i];
+         const int t1 = panel.task_offsets[i + 1];
++#ifdef HB_PROFILE
++        const double prof_ts0 = hb_wtime();
++#endif
+ 
+         // TN sweep, fixed sub-order: inside rows then the outside latent,
+         // task by task. The iid structure makes each conditional a plain
+@@ -491,6 +545,11 @@
+           }
+         }
+ 
++#ifdef HB_PROFILE
++        const double prof_ts1 = hb_wtime();
++        prof_tn_sweep_cpu[prof_tid] += prof_ts1 - prof_ts0;
++#endif
++
+         // beta_i | U_i, b, W, s2, delta: conjugate regression on the
+         // delta-residualized utilities. Precision W^{-1} + G_i / s2 (worker
+         // thread: hand-rolled Cholesky only).
+@@ -531,6 +590,11 @@
+         hb_mvn_precision_draw(rng_b, mean_loc, L_loc, bnew, z_loc, t_loc);
+         for (int kk = 0; kk < K; ++kk) beta_i(kk, i) = bnew(kk);
+ 
++#ifdef HB_PROFILE
++        const double prof_ts2 = hb_wtime();
++        prof_beta_draw_cpu[prof_tid] += prof_ts2 - prof_ts1;
++#endif
++
+         // Refresh the row cache with the new beta_i (consumed by the delta
+         // and RSS passes).
+         for (int t = t0; t < t1; ++t) {
+@@ -541,7 +605,20 @@
+             mu_x(rr) = s;
+           }
+         }
++
++#ifdef HB_PROFILE
++        prof_mu_x_cpu[prof_tid] += hb_wtime() - prof_ts2;
++#endif
+       }   // implied barrier: U, beta_i, mu_x complete
++
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++      { double __t = hb_wtime(); prof_t_fused += __t - prof_tmark;
++        prof_tmark = __t; }
++#endif
++
+       if (abort_code != ABORT_NONE) break;
+ 
+       // --- (b) delta_j | U, beta, theta, sigma_d2, s2 (work-shared) ---------
+@@ -570,6 +647,14 @@
+         delta(j) = mean + rng_d.rnorm() / std::sqrt(prec);
+       }   // implied barrier: delta complete
+ 
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++      { double __t = hb_wtime(); prof_t_delta += __t - prof_tmark;
++        prof_tmark = __t; }
++#endif
++
+       // --- (c) RSS with the NEW beta and delta (work-shared, fixed order) ---
+ #ifdef _OPENMP
+ #pragma omp for schedule(static)
+@@ -589,6 +674,14 @@
+         rss_slot(i) = rss;
+       }   // implied barrier
+ 
++#ifdef HB_PROFILE
++#ifdef _OPENMP
++#pragma omp master
++#endif
++      { double __t = hb_wtime(); prof_t_rss += __t - prof_tmark;
++        prof_tmark = __t; }
++#endif
++
+       // --- (d) Hierarchy + variance draws + recording (master) --------------
+ #ifdef _OPENMP
+ #pragma omp master
+@@ -644,6 +737,11 @@
+                             s0 + 0.5 * rss_total);
+         }
+ 
++#ifdef HB_PROFILE
++        { double __t = hb_wtime(); prof_t_hierarchy += __t - prof_tmark;
++          prof_tmark = __t; }
++#endif
++
+         // --- Recording (raw chains; identified-scale summaries) ------------
+         if (abort_code == ABORT_NONE && r >= burn &&
+             (r - burn) % thin == 0) {
+@@ -688,6 +786,11 @@
+             abort_iter = r;
+           }
+         }
++
++#ifdef HB_PROFILE
++        { double __t = hb_wtime(); prof_t_recording += __t - prof_tmark;
++          prof_tmark = __t; }
++#endif
+       }   // end master block
+ #ifdef _OPENMP
+ #pragma omp barrier
+@@ -729,7 +832,7 @@
+     beta_i_draws = Rcpp::wrap(beta_draws);
+   }
+ 
+-  return Rcpp::List::create(
++  Rcpp::List result = Rcpp::List::create(
+     Rcpp::Named("bdraw") = bdraw,
+     Rcpp::Named("wdraw") = wdraw,
+     Rcpp::Named("deltadraw") = deltadraw,
+@@ -745,4 +848,34 @@
+     Rcpp::Named("xi_sd") = xi_wf.sd(),
+     Rcpp::Named("R_keep") = R_keep
+   );
++#ifdef HB_PROFILE
++  // PROFILING (HB_PROFILE only): master-thread wall-clock block totals
++  // (seconds, summed across all R iterations) plus thread-summed CPU time
++  // for the (a) fused pass's three sub-phases (summed-CPU-time, NOT a
++  // wall-clock duration -- distinct quantity, labelled accordingly).
++  double tn_sweep_sum = 0.0, beta_draw_sum = 0.0, mu_x_sum = 0.0;
++  for (int th = 0; th < prof_max_threads; ++th) {
++    tn_sweep_sum += prof_tn_sweep_cpu[th];
++    beta_draw_sum += prof_beta_draw_cpu[th];
++    mu_x_sum += prof_mu_x_cpu[th];
++  }
++  result["profile"] = Rcpp::List::create(
++    Rcpp::Named("t_startup_gram") = prof_t_startup_gram,
++    Rcpp::Named("t_fused_pass") = prof_t_fused,
++    Rcpp::Named("t_delta_parallel") = prof_t_delta,
++    Rcpp::Named("t_rss") = prof_t_rss,
++    Rcpp::Named("t_hierarchy") = prof_t_hierarchy,
++    Rcpp::Named("t_recording") = prof_t_recording,
++    Rcpp::Named("t_total") = prof_t_startup_gram + prof_t_fused +
++                             prof_t_delta + prof_t_rss + prof_t_hierarchy +
++                             prof_t_recording,
++    Rcpp::Named("fused_tn_sweep_cpu_sum") = tn_sweep_sum,
++    Rcpp::Named("fused_beta_draw_cpu_sum") = beta_draw_sum,
++    Rcpp::Named("fused_mu_x_refresh_cpu_sum") = mu_x_sum,
++    Rcpp::Named("R") = R,
++    Rcpp::Named("max_threads") = prof_max_threads,
++    Rcpp::Named("note") = "t_* are wall-clock master-thread block totals (seconds); fused_*_cpu_sum are SUMMED-OVER-THREADS busy time inside the fused (a) loop, not wall-clock"
++  );
++#endif
++  return result;
+ }
+--- src/Makevars	2026-07-06 21:35:26
++++ src/Makevars	2026-07-06 21:46:09
+@@ -1,2 +1,3 @@
++PKG_CPPFLAGS = -DHB_PROFILE
+ PKG_CXXFLAGS = $(SHLIB_OPENMP_CXXFLAGS)
+ PKG_LIBS = $(SHLIB_OPENMP_CXXFLAGS) $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)
+--- src/Makevars.win	2026-07-06 21:35:26
++++ src/Makevars.win	2026-07-06 21:46:28
+@@ -1,2 +1,3 @@
++PKG_CPPFLAGS = -DHB_PROFILE
+ PKG_CXXFLAGS = $(SHLIB_OPENMP_CXXFLAGS)
+ PKG_LIBS = $(SHLIB_OPENMP_CXXFLAGS) $(LAPACK_LIBS) $(BLAS_LIBS) $(FLIBS)

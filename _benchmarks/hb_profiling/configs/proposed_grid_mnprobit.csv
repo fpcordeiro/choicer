@@ -1,0 +1,4 @@
+config_id,model,N,J,K,P,R,burn,thin,threads,keep_beta_i,seed
+mnprobit_contrast_J4,mnprobit,2000,4,10,,200,40,1,5,none,1
+mnprobit_contrast_J8,mnprobit,2000,8,10,,200,40,1,5,none,1
+mnprobit_contrast_J12,mnprobit,2000,12,10,,200,40,1,5,none,1
