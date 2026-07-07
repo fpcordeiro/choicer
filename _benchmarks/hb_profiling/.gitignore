@@ -1,0 +1,3 @@
+# Ephemeral per-run scratch artifacts (worker JSON/RDS/time-log outputs).
+# Reproducible by re-running 01_bitwise_gate.R / 20_harness.R; not committed.
+results/tmp/
