@@ -56,7 +56,7 @@ with $G_i = X_i'X_i$ precomputed once; then a refresh of the row cache $\mu_x(r)
 
 $$\delta_j \mid \cdot \sim N\left(\frac{\sum_{r \in j}(U_r - \mu_x(r))/\sigma^2 + z_j'\theta/\sigma_d^2}{n_j/\sigma^2 + 1/\sigma_d^2},\; \big(n_j/\sigma^2 + 1/\sigma_d^2\big)^{-1}\right),$$
 
-each $j$'s sufficient statistic summed over its CSR row list in fixed row order by a single thread (bitwise thread-count invariance).
+each $j$'s sufficient statistic summed over its CSR row list in fixed row order by a single thread (thread-count invariant up to floating-point reduction-order round-off, ~1e-15).
 
 **(c) RSS pass** (work-shared, fixed order) with the *new* $\beta$ and $\delta$ — a separate pass so $\sigma^2$ conditions on current values, not the stale $\delta$ from (a). Outside latents contribute $U_{iot}^2$ (their residual is the latent itself) and count in $n_{\text{latents}}$.
 

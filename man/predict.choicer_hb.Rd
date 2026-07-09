@@ -59,9 +59,9 @@ HMNL probabilities are closed-form logit; HMNP probabilities use the
 \examples{
 \donttest{
 sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)
-fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
                     person_col = "pid", alt_covariate_cols = "z1",
-                    mcmc = list(R = 500, burn = 200))
+                    mcmc = list(R = 500, burn = 200)))
 predict(fit)                       # posterior shares, estimation data
 cf <- sim$data
 cf$x1 <- cf$x1 + 0.5               # a counterfactual attribute change

@@ -65,12 +65,16 @@ inverse-gamma shape/scale on the non-identified \eqn{\sigma^2}.}
 governs), \code{trace} (0). No proposal-scale settings: the sampler is fully
 conjugate, with no Metropolis steps.}
 
-\item{chains}{Number of independent chains (seeds offset by 1). Chain 1
-provides the reported draws; all chains feed the split-R-hat table.}
+\item{chains}{Number of independent chains (seeds offset by 1, run
+sequentially). Chain 1 provides the reported draws; all chains feed the
+rank-normalized split-R-hat table and the retained \code{chains} field (all
+per-chain \code{b}/\code{w_vech}/\code{delta}/\code{theta}/\code{sigma_d2}/\code{loglik} draws,
+consumed by \code{\link[=ess]{ess()}}, \code{\link[=mcse]{mcse()}}, and \code{\link[=traceplot]{traceplot()}}).}
 
 \item{keep_beta_i}{\code{"means"} (default) stores posterior means/SDs of the
 individual-level \eqn{\beta_i}; \code{"draws"} additionally stores the full
-(K, N, R_keep) draw cube (memory-guarded); \code{"none"} stores neither.}
+(K, N, R_keep) draw cube (memory-guarded, budgeted per chain); \code{"none"}
+stores neither.}
 
 \item{keep_data}{Logical; keep the prepared data on the fit (default
 \code{TRUE}, needed by post-estimation methods).}
@@ -78,7 +82,8 @@ individual-level \eqn{\beta_i}; \code{"draws"} additionally stores the full
 \value{
 A \code{choicer_hmnp} object (classed \code{c("choicer_hmnp", "choicer_hb")}); the same layout as \code{\link[=run_hmnlogit]{run_hmnlogit()}}'s return, with all
 reported summaries on the identified scale, raw chains in
-\verb{draws$*_raw}, and the non-identified \code{draws$sigma2} trace.
+\verb{draws$*_raw}, the non-identified \code{draws$sigma2} trace, and all chains'
+retained draws (identified scale) in \code{chains}.
 }
 \description{
 Runs the fully conjugate Albert-Chib Gibbs sampler for the hierarchical
@@ -101,16 +106,23 @@ power of the CURRENT \eqn{\sigma}: reported \eqn{b/\sigma},
 \eqn{\sigma_d^2/\sigma^2}. Raw chains are kept in \verb{draws$*_raw}. The
 outside option anchors the location of \eqn{\delta} exactly as in
 \code{\link[=run_hmnlogit]{run_hmnlogit()}}.
+
+For \code{beta_i} draws at very large scale beyond the memory guard's
+threshold, a future disk-streaming path (writing each kept slice to
+disk instead of retaining it in memory) is on the roadmap but not built
+in this phase; users needing per-respondent draws at that scale should
+reduce \code{R}, reduce \code{chains}, or use \code{keep_beta_i = "means"}.
 }
 \examples{
 \donttest{
 sim <- simulate_hmnp_data(N = 100, T = 3, J = 4, seed = 42)
-fit <- run_hmnprobit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+fit <- suppressWarnings(run_hmnprobit(sim$data, "task", "alt", "choice", c("x1", "x2"),
                      person_col = "pid", alt_covariate_cols = "z1",
-                     mcmc = list(R = 500, burn = 200))
+                     mcmc = list(R = 500, burn = 200)))
 summary(fit)
 }
 }
 \seealso{
-\code{\link[=prepare_hmnp_data]{prepare_hmnp_data()}}, \code{\link[=simulate_hmnp_data]{simulate_hmnp_data()}}, \code{\link[=run_hmnlogit]{run_hmnlogit()}}
+\code{\link[=prepare_hmnp_data]{prepare_hmnp_data()}}, \code{\link[=simulate_hmnp_data]{simulate_hmnp_data()}}, \code{\link[=run_hmnlogit]{run_hmnlogit()}},
+\code{\link[=ess]{ess()}}, \code{\link[=mcse]{mcse()}}, \code{\link[=traceplot]{traceplot()}}
 }

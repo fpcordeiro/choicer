@@ -22,15 +22,16 @@ Posterior summaries (mean, SD, equal-tailed credible interval) for the
 population coefficients \eqn{b}, the mean-function coefficients
 \eqn{\theta}, the alternative-effect variance \eqn{\sigma_d^2} (and, for
 the HMNP, the raw shock variance trace), plus the \eqn{\delta_j} /
-\eqn{\xi_j} quality ladder, acceptance diagnostics, and the split-R-hat
-table when multiple chains were run.
+\eqn{\xi_j} quality ladder, acceptance diagnostics, and a consolidated
+convergence-diagnostic table (rank-normalized R-hat, ESS bulk/tail, MCSE)
+built from all retained chains (see \code{\link[=rhat]{rhat()}}, \code{\link[=ess]{ess()}}, \code{\link[=mcse]{mcse()}}).
 }
 \examples{
 \donttest{
 sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
-fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
                     person_col = "pid",
-                    mcmc = list(R = 300, burn = 100))
+                    mcmc = list(R = 300, burn = 100)))
 summary(fit)
 }
 }

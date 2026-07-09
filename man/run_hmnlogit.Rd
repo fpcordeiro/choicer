@@ -75,12 +75,16 @@ d0 = 3)).}
 \code{set.seed()} governs), \code{trace} (0), \code{s_init} (2.38 / sqrt(K)),
 \code{accept_target} (0.234).}
 
-\item{chains}{Number of independent chains (seeds offset by 1). Chain 1
-provides the reported draws; all chains feed the split-R-hat table.}
+\item{chains}{Number of independent chains (seeds offset by 1, run
+sequentially). Chain 1 provides the reported draws; all chains feed the
+rank-normalized split-R-hat table and the retained \code{chains} field (all
+per-chain \code{b}/\code{w_vech}/\code{delta}/\code{theta}/\code{sigma_d2}/\code{loglik} draws,
+consumed by \code{\link[=ess]{ess()}}, \code{\link[=mcse]{mcse()}}, and \code{\link[=traceplot]{traceplot()}}).}
 
 \item{keep_beta_i}{\code{"means"} (default) stores posterior means/SDs of the
 individual-level \eqn{\beta_i}; \code{"draws"} additionally stores the full
-(K, N, R_keep) draw cube (memory-guarded); \code{"none"} stores neither.}
+(K, N, R_keep) draw cube (memory-guarded, budgeted per chain); \code{"none"}
+stores neither.}
 
 \item{keep_data}{Logical; keep the prepared data on the fit (default
 \code{TRUE}, needed by post-estimation methods).}
@@ -89,8 +93,9 @@ individual-level \eqn{\beta_i}; \code{"draws"} additionally stores the full
 A \code{choicer_hmnl} object (classed \code{c("choicer_hmnl", "choicer_hb")}) with posterior summaries (\code{coefficients}, \code{se},
 \code{vcov} for \eqn{b}; \code{theta_summary}; \code{sigma_d2_summary}; \code{W_mean};
 \code{delta} and \code{xi} quality-ladder tables; \code{beta_i}), the raw thinned
-\code{draws}, acceptance diagnostics in \code{accept}, the split-R-hat table in
-\code{rhat} (when \code{chains > 1}), and sampler metadata.
+\code{draws} (chain 1), acceptance diagnostics in \code{accept}, the
+rank-normalized split-R-hat table in \code{rhat}, all chains' retained
+draws in \code{chains}, and sampler metadata.
 }
 \description{
 Runs the adaptive RW-Metropolis-within-Gibbs sampler for the hierarchical
@@ -126,18 +131,24 @@ scale mixture (set \code{sd_prior$half_cauchy = FALSE} for a plain
 with \eqn{\xi_j}), supply a first-stage residual via \code{cf_residual_col}
 (Petrin & Train 2010); posterior uncertainty does NOT propagate
 first-stage estimation error.
+
+For \code{beta_i} draws at very large scale beyond the memory guard's
+threshold, a future disk-streaming path (writing each kept slice to
+disk instead of retaining it in memory) is on the roadmap but not built
+in this phase; users needing per-respondent draws at that scale should
+reduce \code{R}, reduce \code{chains}, or use \code{keep_beta_i = "means"}.
 }
 \examples{
 \donttest{
 sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)
-fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
                     person_col = "pid", alt_covariate_cols = "z1",
-                    mcmc = list(R = 500, burn = 200))
+                    mcmc = list(R = 500, burn = 200)))
 summary(fit)
 coef(fit, component = "delta")
 }
 }
 \seealso{
 \code{\link[=prepare_hmnl_data]{prepare_hmnl_data()}}, \code{\link[=simulate_hmnl_data]{simulate_hmnl_data()}},
-\code{\link[=recovery_table]{recovery_table()}}, \code{\link[=rhat]{rhat()}}
+\code{\link[=recovery_table]{recovery_table()}}, \code{\link[=rhat]{rhat()}}, \code{\link[=ess]{ess()}}, \code{\link[=mcse]{mcse()}}, \code{\link[=traceplot]{traceplot()}}
 }

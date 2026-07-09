@@ -1,5 +1,41 @@
 # choicer (development version)
 
+## Hierarchical Bayes (HMNL/HMNP) convergence diagnostics and multi-chain performance
+
+- New `ess(draws)` (rank-normalized bulk and tail effective sample size) and
+  `mcse(draws, kind = c("mean", "median"))` (Monte Carlo standard error of
+  the mean or median), following Vehtari, Gelman, Simpson, Carpenter &
+  Bürkner (2021, *Bayesian Analysis*). `rhat()` gains a `rank = TRUE` option
+  for the same paper's rank-normalized, folded R-hat; the default
+  `rank = FALSE` reproduces the original split R-hat exactly.
+- New `traceplot()` generic, with a `choicer_hb` method, for visual
+  inspection of the `b`/`theta`/`sigma_d2` chains (and user-selected `delta`
+  columns).
+- `summary()` on a `choicer_hmnl`/`choicer_hmnp` fit now prints one
+  consolidated multi-chain diagnostics table (R-hat, ESS bulk, ESS tail, and
+  MCSE per parameter block, plus a single worst-case summary row spanning
+  all `J` `delta_j` alternative effects) in place of the previous bare
+  split-R-hat printout. HMNP now always prints an explicit
+  "conjugate — no acceptance step" line where HMNL prints its beta/delta
+  acceptance rates. The fit-time convergence warning now checks rank-R-hat
+  and ESS bulk across every tracked parameter, including all `J` `delta_j`
+  columns (previously only `b`/`theta`/`sigma_d2` were checked).
+- `run_hmnlogit()` / `run_hmnprobit()` fits now retain **all** requested
+  chains' hierarchical draws in a new `object$chains` field (a list, one
+  element per chain: `b`, `w_vech`, `delta`, `theta`, `sigma_d2`, plus
+  `loglik` for HMNL / `sigma2` for HMNP), which the multi-chain diagnostics
+  above consume. `object$draws` (chain 1) and `object$beta_i`
+  (chain-1-only respondent taste summaries/draws) are unchanged.
+- Chains requested via `chains=` are sampled sequentially, and all of their
+  hierarchical draws are retained (`object$chains`) for the multi-chain
+  diagnostics above. Parallel multi-chain execution is planned for a future
+  release.
+- The `keep_beta_i = "draws"` memory guard on both models is now based on a
+  measured ~1.9x `Rcpp::wrap()`/R-list overhead factor (the previous formula
+  under-estimated true memory use by roughly 2x) and accounts for all
+  requested chains; it still fails fast before the chain runs rather than
+  after an out-of-memory blow-up.
+
 ## Hierarchical Bayesian MNL and MNP (BLP-style random-effects ASCs)
 
 - New `run_hmnlogit()` (class `choicer_hmnl`) and `run_hmnprobit()` (class

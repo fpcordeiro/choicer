@@ -205,27 +205,37 @@ prepare_hmnl_data <- function(
 #'   (R %/% 5), `thin` (1), `seed` (drawn via `sample.int()` so
 #'   `set.seed()` governs), `trace` (0), `s_init` (2.38 / sqrt(K)),
 #'   `accept_target` (0.234).
-#' @param chains Number of independent chains (seeds offset by 1). Chain 1
-#'   provides the reported draws; all chains feed the split-R-hat table.
+#' @param chains Number of independent chains (seeds offset by 1, run
+#'   sequentially). Chain 1 provides the reported draws; all chains feed the
+#'   rank-normalized split-R-hat table and the retained `chains` field (all
+#'   per-chain `b`/`w_vech`/`delta`/`theta`/`sigma_d2`/`loglik` draws,
+#'   consumed by [ess()], [mcse()], and [traceplot()]).
 #' @param keep_beta_i `"means"` (default) stores posterior means/SDs of the
 #'   individual-level \eqn{\beta_i}; `"draws"` additionally stores the full
-#'   (K, N, R_keep) draw cube (memory-guarded); `"none"` stores neither.
+#'   (K, N, R_keep) draw cube (memory-guarded, budgeted per chain); `"none"`
+#'   stores neither.
 #' @param keep_data Logical; keep the prepared data on the fit (default
 #'   `TRUE`, needed by post-estimation methods).
 #' @returns A `choicer_hmnl` object (classed `c("choicer_hmnl",
 #'   "choicer_hb")`) with posterior summaries (`coefficients`, `se`,
 #'   `vcov` for \eqn{b}; `theta_summary`; `sigma_d2_summary`; `W_mean`;
 #'   `delta` and `xi` quality-ladder tables; `beta_i`), the raw thinned
-#'   `draws`, acceptance diagnostics in `accept`, the split-R-hat table in
-#'   `rhat` (when `chains > 1`), and sampler metadata.
+#'   `draws` (chain 1), acceptance diagnostics in `accept`, the
+#'   rank-normalized split-R-hat table in `rhat`, all chains' retained
+#'   draws in `chains`, and sampler metadata.
+#' @details For `beta_i` draws at very large scale beyond the memory guard's
+#'   threshold, a future disk-streaming path (writing each kept slice to
+#'   disk instead of retaining it in memory) is on the roadmap but not built
+#'   in this phase; users needing per-respondent draws at that scale should
+#'   reduce `R`, reduce `chains`, or use `keep_beta_i = "means"`.
 #' @seealso [prepare_hmnl_data()], [simulate_hmnl_data()],
-#'   [recovery_table()], [rhat()]
+#'   [recovery_table()], [rhat()], [ess()], [mcse()], [traceplot()]
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)
-#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#' fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
 #'                     person_col = "pid", alt_covariate_cols = "z1",
-#'                     mcmc = list(R = 500, burn = 200))
+#'                     mcmc = list(R = 500, burn = 200)))
 #' summary(fit)
 #' coef(fit, component = "delta")
 #' }
@@ -339,17 +349,26 @@ run_hmnlogit <- function(
 
   keep_code <- switch(keep_beta_i, none = 0L, means = 1L, draws = 2L)
   if (keep_code == 2L) {
+    # Chains run sequentially (see the dispatch below), but each chain's
+    # beta_i cube is retained in `all_chains` until the final object is
+    # assembled -- so all `chains` cubes are simultaneously resident at
+    # peak, regardless of how many chains are requested. Budget for the
+    # worst case (chains-fold), not just one chain's footprint.
     R_keep_est <- (R - burn + thin - 1L) %/% thin
-    bytes <- 8 * as.numeric(K) * N * R_keep_est
-    if (bytes > 4e9) {
-      stop("keep_beta_i = \"draws\" would allocate ",
-           sprintf("%.1f GB", bytes / 1e9),
-           " for the beta_i cube; reduce R or use keep_beta_i = \"means\".")
+    bytes_per_chain <- 8 * as.numeric(K) * N * R_keep_est * .HB_BETA_I_WRAP_FACTOR
+    bytes_total <- bytes_per_chain * chains
+    if (bytes_total > 4e9) {
+      stop(sprintf(
+        "keep_beta_i = \"draws\" would allocate an estimated %.1f GB (%.1f GB/chain x %d chain%s, including ~%.1fx Rcpp::wrap()/R overhead measured in profiling) for the beta_i cube; reduce R, use fewer chains, or use keep_beta_i = \"means\".",
+        bytes_total / 1e9, bytes_per_chain / 1e9, chains,
+        if (chains == 1L) "" else "s", .HB_BETA_I_WRAP_FACTOR))
     }
-    if (bytes > 1e9) {
-      warning("keep_beta_i = \"draws\" allocates ",
-              sprintf("%.1f GB", bytes / 1e9), " for the beta_i cube.",
-              call. = FALSE)
+    if (bytes_total > 1e9) {
+      warning(sprintf(
+        "keep_beta_i = \"draws\" allocates an estimated %.1f GB (%.1f GB/chain x %d chain%s, ~%.1fx wrap overhead) for the beta_i cube across the run.",
+        bytes_total / 1e9, bytes_per_chain / 1e9, chains,
+        if (chains == 1L) "" else "s", .HB_BETA_I_WRAP_FACTOR),
+        call. = FALSE)
     }
   }
 
@@ -410,13 +429,14 @@ run_hmnlogit <- function(
       accept_target = accept_target, trace = trace
     )
   }
+  # Per-chain seed resolution, resolved in the parent before any chain runs.
+  # Chains run sequentially, in order, each a plain in-process call to the
+  # kernel -- no forking or parallel dispatch (deferred; see ROADMAP.md).
+  chain_seeds <- seed + seq_len(chains) - 1L
   elapsed <- system.time({
-    out <- run_chain(seed)
-    extra_chains <- if (chains > 1L) {
-      lapply(seq_len(chains - 1L), function(cc) run_chain(seed + cc))
-    } else {
-      list()
-    }
+    all_chains <- lapply(chain_seeds, run_chain)
+    out <- all_chains[[1L]]
+    extra_chains <- if (chains > 1L) all_chains[-1L] else list()
   })
   message("MCMC run time ", convertTime(elapsed))
 
@@ -499,11 +519,36 @@ run_hmnlogit <- function(
             ", P = ", P, "): theta and sigma_d^2 lean on the prior.",
             call. = FALSE)
   }
-  if (!is.null(rhat_tab) && any(rhat_tab > 1.05, na.rm = TRUE)) {
-    warning("split-R-hat exceeds 1.05 for: ",
-            paste(names(rhat_tab)[which(rhat_tab > 1.05)], collapse = ", "),
-            ". Consider a longer run.", call. = FALSE)
+  diag_chain_list_delta <- lapply(c(list(out), extra_chains), function(ch) {
+    `colnames<-`(ch$deltadraw, alt_labels)
+  })
+  offenders <- .hb_convergence_offenders(chain_blocks, diag_chain_list_delta)
+  if (length(offenders) > 0) {
+    shown <- utils::head(offenders, 10)
+    more <- if (length(offenders) > 10) {
+      sprintf(" (and %d more)", length(offenders) - 10)
+    } else {
+      ""
+    }
+    warning("Convergence check failed (rank-R-hat > 1.01 or ESS_bulk < 400) ",
+            "for: ", paste(shown, collapse = ", "), more,
+            ". Consider a longer run or more chains.", call. = FALSE)
   }
+
+  # Retain all chains' hierarchical draws (Workstream 1d): chains[[1]] is
+  # chain 1, identical in content to the top-level `draws` field below.
+  # beta_i (mean/sd/draws) is NOT replicated per chain -- object$beta_i
+  # continues to hold chain-1-only summaries.
+  chains_out <- lapply(c(list(out), extra_chains), function(ch) {
+    list(
+      b        = `colnames<-`(ch$bdraw, x_names),
+      w_vech   = `colnames<-`(ch$wdraw, w_names),
+      delta    = `colnames<-`(ch$deltadraw, alt_labels),
+      theta    = `colnames<-`(ch$thetadraw, z_names),
+      sigma_d2 = as.numeric(ch$sigma_d2draw),
+      loglik   = as.numeric(ch$loglik_trace)
+    )
+  })
 
   new_choicer_hmnl(
     call = cl,
@@ -548,6 +593,7 @@ run_hmnlogit <- function(
     cf_active = !is.null(input_list$data_spec$cf_residual_col),
     sampler = list(name = "hmnl_gibbs",
                    elapsed_time = convertTime(elapsed)),
-    data = if (keep_data) input_list else NULL
+    data = if (keep_data) input_list else NULL,
+    chains = chains_out
   )
 }

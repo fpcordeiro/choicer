@@ -24,9 +24,9 @@ Extract posterior means from a hierarchical Bayes fit
 \examples{
 \donttest{
 sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
-fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
                     person_col = "pid",
-                    mcmc = list(R = 300, burn = 100))
+                    mcmc = list(R = 300, burn = 100)))
 coef(fit)
 coef(fit, component = "delta")
 }
