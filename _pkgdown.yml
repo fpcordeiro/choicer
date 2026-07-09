@@ -105,6 +105,9 @@ reference:
       - starts_with("print")
       - rhat
       - ppc_shares
+      - ess
+      - mcse
+      - starts_with("traceplot")
   - title: Simulation and recovery
     desc: Data-generating processes and parameter-recovery diagnostics.
     contents:
