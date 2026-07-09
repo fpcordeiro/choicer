@@ -97,14 +97,21 @@ prepare_hmnp_data <- function(
 #' @returns A `choicer_hmnp` object (classed `c("choicer_hmnp",
 #'   "choicer_hb")`); the same layout as [run_hmnlogit()]'s return, with all
 #'   reported summaries on the identified scale, raw chains in
-#'   `draws$*_raw`, and the non-identified `draws$sigma2` trace.
-#' @seealso [prepare_hmnp_data()], [simulate_hmnp_data()], [run_hmnlogit()]
+#'   `draws$*_raw`, the non-identified `draws$sigma2` trace, and all chains'
+#'   retained draws (identified scale) in `chains`.
+#' @details For `beta_i` draws at very large scale beyond the memory guard's
+#'   threshold, a future disk-streaming path (writing each kept slice to
+#'   disk instead of retaining it in memory) is on the roadmap but not built
+#'   in this phase; users needing per-respondent draws at that scale should
+#'   reduce `R`, reduce `chains`, or use `keep_beta_i = "means"`.
+#' @seealso [prepare_hmnp_data()], [simulate_hmnp_data()], [run_hmnlogit()],
+#'   [ess()], [mcse()], [traceplot()]
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnp_data(N = 100, T = 3, J = 4, seed = 42)
-#' fit <- run_hmnprobit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#' fit <- suppressWarnings(run_hmnprobit(sim$data, "task", "alt", "choice", c("x1", "x2"),
 #'                      person_col = "pid", alt_covariate_cols = "z1",
-#'                      mcmc = list(R = 500, burn = 200))
+#'                      mcmc = list(R = 500, burn = 200)))
 #' summary(fit)
 #' }
 #' @export
@@ -212,17 +219,26 @@ run_hmnprobit <- function(
 
   keep_code <- switch(keep_beta_i, none = 0L, means = 1L, draws = 2L)
   if (keep_code == 2L) {
+    # Chains run sequentially (see the dispatch below), but each chain's
+    # beta_i cube is retained in `all_chains` until the final object is
+    # assembled -- so all `chains` cubes are simultaneously resident at
+    # peak, regardless of how many chains are requested. Budget for the
+    # worst case (chains-fold), not just one chain's footprint.
     R_keep_est <- (R - burn + thin - 1L) %/% thin
-    bytes <- 8 * as.numeric(K) * N * R_keep_est
-    if (bytes > 4e9) {
-      stop("keep_beta_i = \"draws\" would allocate ",
-           sprintf("%.1f GB", bytes / 1e9),
-           " for the beta_i cube; reduce R or use keep_beta_i = \"means\".")
+    bytes_per_chain <- 8 * as.numeric(K) * N * R_keep_est * .HB_BETA_I_WRAP_FACTOR
+    bytes_total <- bytes_per_chain * chains
+    if (bytes_total > 4e9) {
+      stop(sprintf(
+        "keep_beta_i = \"draws\" would allocate an estimated %.1f GB (%.1f GB/chain x %d chain%s, including ~%.1fx Rcpp::wrap()/R overhead measured in profiling) for the beta_i cube; reduce R, use fewer chains, or use keep_beta_i = \"means\".",
+        bytes_total / 1e9, bytes_per_chain / 1e9, chains,
+        if (chains == 1L) "" else "s", .HB_BETA_I_WRAP_FACTOR))
     }
-    if (bytes > 1e9) {
-      warning("keep_beta_i = \"draws\" allocates ",
-              sprintf("%.1f GB", bytes / 1e9), " for the beta_i cube.",
-              call. = FALSE)
+    if (bytes_total > 1e9) {
+      warning(sprintf(
+        "keep_beta_i = \"draws\" allocates an estimated %.1f GB (%.1f GB/chain x %d chain%s, ~%.1fx wrap overhead) for the beta_i cube across the run.",
+        bytes_total / 1e9, bytes_per_chain / 1e9, chains,
+        if (chains == 1L) "" else "s", .HB_BETA_I_WRAP_FACTOR),
+        call. = FALSE)
     }
   }
 
@@ -243,13 +259,14 @@ run_hmnprobit <- function(
       keep_beta_i = keep_code, trace = trace
     )
   }
+  # Per-chain seed resolution, resolved in the parent before any chain runs.
+  # Chains run sequentially, in order, each a plain in-process call to the
+  # kernel -- no forking or parallel dispatch (deferred; see ROADMAP.md).
+  chain_seeds <- seed + seq_len(chains) - 1L
   elapsed <- system.time({
-    out <- run_chain(seed)
-    extra_chains <- if (chains > 1L) {
-      lapply(seq_len(chains - 1L), function(cc) run_chain(seed + cc))
-    } else {
-      list()
-    }
+    all_chains <- lapply(chain_seeds, run_chain)
+    out <- all_chains[[1L]]
+    extra_chains <- if (chains > 1L) all_chains[-1L] else list()
   })
   message("MCMC run time ", convertTime(elapsed))
 
@@ -293,7 +310,8 @@ run_hmnprobit <- function(
     nn <- normalize_chain(ch)
     colnames(nn$b) <- x_names
     colnames(nn$theta) <- z_names
-    list(b = nn$b, theta = nn$theta, sigma_d2 = nn$sigma_d2)
+    list(b = nn$b, theta = nn$theta, sigma_d2 = nn$sigma_d2,
+         sigma2 = as.numeric(ch$sigma2draw))
   })
   rhat_tab <- tryCatch(.hb_rhat_table(chain_blocks), error = function(e) NULL)
 
@@ -342,11 +360,38 @@ run_hmnprobit <- function(
             ", P = ", P, "): theta and sigma_d^2 lean on the prior.",
             call. = FALSE)
   }
-  if (!is.null(rhat_tab) && any(rhat_tab > 1.05, na.rm = TRUE)) {
-    warning("split-R-hat exceeds 1.05 for: ",
-            paste(names(rhat_tab)[which(rhat_tab > 1.05)], collapse = ", "),
-            ". Consider a longer run.", call. = FALSE)
+  diag_chain_list_delta <- lapply(c(list(out), extra_chains), function(ch) {
+    `colnames<-`(normalize_chain(ch)$delta, alt_labels)
+  })
+  offenders <- .hb_convergence_offenders(chain_blocks, diag_chain_list_delta)
+  if (length(offenders) > 0) {
+    shown <- utils::head(offenders, 10)
+    more <- if (length(offenders) > 10) {
+      sprintf(" (and %d more)", length(offenders) - 10)
+    } else {
+      ""
+    }
+    warning("Convergence check failed (rank-R-hat > 1.01 or ESS_bulk < 400) ",
+            "for: ", paste(shown, collapse = ", "), more,
+            ". Consider a longer run or more chains.", call. = FALSE)
   }
+
+  # Retain all chains' hierarchical draws (Workstream 1d): chains[[1]] is
+  # chain 1, identical in content to the top-level `draws` field below.
+  # Every chain gets the SAME per-draw scale normalization (normalize_chain)
+  # used for chain 1; sigma2 is inherently the raw/non-identified chain, kept
+  # as-is (no `loglik` for HMNP -- the kernel has no loglik trace).
+  chains_out <- lapply(c(list(out), extra_chains), function(ch) {
+    nn <- normalize_chain(ch)
+    list(
+      b        = `colnames<-`(nn$b, x_names),
+      w_vech   = `colnames<-`(nn$w_vech, w_names),
+      delta    = `colnames<-`(nn$delta, alt_labels),
+      theta    = `colnames<-`(nn$theta, z_names),
+      sigma_d2 = as.numeric(nn$sigma_d2),
+      sigma2   = as.numeric(ch$sigma2draw)
+    )
+  })
 
   new_choicer_hmnp(
     call = cl,
@@ -383,6 +428,7 @@ run_hmnprobit <- function(
     cf_active = !is.null(input_list$data_spec$cf_residual_col),
     sampler = list(name = "hmnp_gibbs",
                    elapsed_time = convertTime(elapsed)),
-    data = if (keep_data) input_list else NULL
+    data = if (keep_data) input_list else NULL,
+    chains = chains_out
   )
 }

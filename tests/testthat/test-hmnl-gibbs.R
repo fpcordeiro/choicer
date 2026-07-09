@@ -209,7 +209,9 @@ test_that("run_hmnlogit builds a complete classed fit", {
   s <- summary(fit)
   expect_s3_class(s, "summary.choicer_hb")
   expect_output(print(s), "Quality ladder")
-  expect_output(print(s), "split-R-hat")
+  expect_output(print(s), "Convergence diagnostics")
+  expect_output(print(s), "ESS_bulk")
+  expect_output(print(s), "Acceptance:")
 })
 
 test_that("run_hmnlogit input validation and guards", {

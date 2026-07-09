@@ -1907,9 +1907,9 @@ blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
-#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#' fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
 #'                     person_col = "pid",
-#'                     mcmc = list(R = 300, burn = 100))
+#'                     mcmc = list(R = 300, burn = 100)))
 #' print(fit)
 #' }
 #' @export
@@ -1930,8 +1930,9 @@ print.choicer_hb <- function(x, ...) {
 #' population coefficients \eqn{b}, the mean-function coefficients
 #' \eqn{\theta}, the alternative-effect variance \eqn{\sigma_d^2} (and, for
 #' the HMNP, the raw shock variance trace), plus the \eqn{\delta_j} /
-#' \eqn{\xi_j} quality ladder, acceptance diagnostics, and the split-R-hat
-#' table when multiple chains were run.
+#' \eqn{\xi_j} quality ladder, acceptance diagnostics, and a consolidated
+#' convergence-diagnostic table (rank-normalized R-hat, ESS bulk/tail, MCSE)
+#' built from all retained chains (see [rhat()], [ess()], [mcse()]).
 #'
 #' @param object A `choicer_hmnl` or `choicer_hmnp` object.
 #' @param prob Probability mass of the equal-tailed credible interval
@@ -1941,9 +1942,9 @@ print.choicer_hb <- function(x, ...) {
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
-#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#' fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
 #'                     person_col = "pid",
-#'                     mcmc = list(R = 300, burn = 100))
+#'                     mcmc = list(R = 300, burn = 100)))
 #' summary(fit)
 #' }
 #' @export
@@ -1969,6 +1970,7 @@ summary.choicer_hb <- function(object, prob = 0.95, ...) {
       W_mean = object$W_mean,
       accept = object$accept,
       rhat = object$rhat,
+      diagnostic_table = .hb_diagnostic_table(object),
       prob = prob,
       nobs = object$nobs,
       n_persons = object$n_persons,
@@ -2008,13 +2010,16 @@ print.summary.choicer_hb <- function(x, ...) {
     xi_sd = round(x$xi$sd, 4)
   )
   print(ladder, row.names = FALSE)
-  if (!is.null(x$accept$mean_beta)) {
-    cat(sprintf("\nMean acceptance: beta %.2f, delta %.2f\n",
+  cat(sprintf("\nConvergence diagnostics (%d chain%s, %d draws each)\n",
+              x$diagnostic_table$chains,
+              if (x$diagnostic_table$chains == 1) "" else "s",
+              x$diagnostic_table$R_keep))
+  .print_hb_diagnostic_table(x$diagnostic_table)
+  if (!is.null(x$accept) && !is.null(x$accept$mean_beta)) {
+    cat(sprintf("Acceptance: beta %.2f, delta %.2f\n",
                 x$accept$mean_beta, x$accept$mean_delta))
-  }
-  if (!is.null(x$rhat)) {
-    cat("\nsplit-R-hat:\n")
-    print(round(x$rhat, 3))
+  } else {
+    cat("Acceptance: conjugate \u2014 no acceptance step\n")
   }
   cat("\nRespondents:", x$n_persons, " Choice situations:", x$nobs,
       " Alternatives:", x$J, "\n")
@@ -2034,9 +2039,9 @@ print.summary.choicer_hb <- function(x, ...) {
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnl_data(N = 50, T = 2, J = 3, seed = 42)
-#' fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+#' fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
 #'                     person_col = "pid",
-#'                     mcmc = list(R = 300, burn = 100))
+#'                     mcmc = list(R = 300, burn = 100)))
 #' coef(fit)
 #' coef(fit, component = "delta")
 #' }

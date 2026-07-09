@@ -27,9 +27,9 @@ outside-option share the delta level cannot rationalize.
 \examples{
 \donttest{
 sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)
-fit <- run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
+fit <- suppressWarnings(run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"),
                     person_col = "pid",
-                    mcmc = list(R = 500, burn = 200))
+                    mcmc = list(R = 500, burn = 200)))
 ppc_shares(fit)
 }
 }

@@ -9,6 +9,12 @@
 #' @noRd
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+# Measured Rcpp::wrap()+R-list-overhead multiplier for the beta_i draw cube
+# (profiling report `_benchmarks/hb_profiling_report.md` §4: true RSS is
+# 1.7-1.9x the naive 8*K*N*R_keep byte estimate). Using the conservative
+# (higher) end for a fail-fast guard.
+.HB_BETA_I_WRAP_FACTOR <- 1.9
+
 #' Convert elapsed time to formatted string
 #' @param time A proc_time object from system.time()
 #' @returns Formatted string like "0h:1m:23s"

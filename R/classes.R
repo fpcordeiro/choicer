@@ -269,7 +269,7 @@ new_choicer_hmnl <- function(call, coefficients, se, vcov, theta_summary,
                              draws, accept, rhat, prior, mcmc, nobs,
                              n_persons, J, P, K_struct, param_map,
                              alt_mapping, data_spec, cf_active, sampler,
-                             data = NULL) {
+                             data = NULL, chains = NULL) {
   structure(
     list(
       call = call,
@@ -298,7 +298,8 @@ new_choicer_hmnl <- function(call, coefficients, se, vcov, theta_summary,
       data_spec = data_spec,
       cf_active = cf_active,
       sampler = sampler,
-      data = data
+      data = data,
+      chains = chains
     ),
     class = c("choicer_hmnl", "choicer_hb")
   )
@@ -311,7 +312,7 @@ new_choicer_hmnp <- function(call, coefficients, se, vcov, theta_summary,
                              draws, rhat, prior, mcmc, nobs,
                              n_persons, J, P, K_struct, param_map,
                              alt_mapping, data_spec, cf_active, sampler,
-                             data = NULL) {
+                             data = NULL, chains = NULL) {
   structure(
     list(
       call = call,
@@ -340,7 +341,8 @@ new_choicer_hmnp <- function(call, coefficients, se, vcov, theta_summary,
       data_spec = data_spec,
       cf_active = cf_active,
       sampler = sampler,
-      data = data
+      data = data,
+      chains = chains
     ),
     class = c("choicer_hmnp", "choicer_hb")
   )

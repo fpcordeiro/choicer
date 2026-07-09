@@ -201,6 +201,8 @@ test_that("run_hmnprobit builds a complete classed fit", {
   expect_s3_class(s, "summary.choicer_hb")
   expect_output(print(s), "Quality ladder")
   expect_output(print(s), "Raw shock variance")
+  expect_output(print(s), "Convergence diagnostics")
+  expect_output(print(s), "Acceptance: conjugate")
 
   # v1 requires the outside option
   sim_no <- simulate_hmnp_data(N = 15, T = 2, J = 3, seed = 9,

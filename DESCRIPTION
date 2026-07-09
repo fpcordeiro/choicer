@@ -23,10 +23,12 @@ LinkingTo:
     RcppArmadillo
 Imports:
     data.table,
+    graphics,
     nloptr,
     randtoolbox,
     Rcpp,
-    stats
+    stats,
+    utils
 Suggests:
     testthat (>= 3.0.0),
     numDeriv,

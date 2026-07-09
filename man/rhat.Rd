@@ -4,12 +4,20 @@
 \alias{rhat}
 \title{Split-\eqn{\widehat{R}} convergence diagnostic}
 \usage{
-rhat(draws)
+rhat(draws, rank = FALSE)
 }
 \arguments{
 \item{draws}{A matrix of posterior draws (rows = iterations, columns =
 parameters) for a single chain, or a list of such matrices (one per
 chain, identical dimensions).}
+
+\item{rank}{Logical; if \code{FALSE} (default) computes the classic split
+\eqn{\widehat{R}} (unchanged from prior releases, bit-for-bit). If
+\code{TRUE}, computes the rank-normalized, folded \eqn{\widehat{R}} of
+Vehtari, Gelman, Simpson, Carpenter & Buerkner (2021, \emph{Bayesian
+Analysis}): the max of a bulk (rank-normalized draws) and a fold (rank-
+normalized absolute deviation from the pooled median) split-\eqn{R-hat},
+which is more robust to heavy tails and scale differences across chains.}
 }
 \value{
 Named numeric vector with one \eqn{\widehat{R}} per parameter
@@ -29,4 +37,5 @@ draws <- matrix(rnorm(2000), ncol = 2,
 rhat(draws)          # ~1: white noise is stationary
 drifting <- cbind(a = cumsum(rnorm(1000)))
 rhat(drifting)       # >> 1: a random walk is not
+rhat(draws, rank = TRUE)   # rank-normalized variant
 }
