@@ -14,8 +14,9 @@ print(sim)
 # Gibbs sampler with data augmentation (Albert-Chib 1993; McCulloch-Rossi
 # 1994). The chain runs on the non-identified parameterization; reported
 # quantities are normalized per draw by sigma_11. The master RNG seed is
-# drawn from R's RNG, so set.seed() makes the whole run reproducible - and
-# draws are bitwise invariant to the number of OpenMP threads.
+# drawn from R's RNG, so set.seed() makes the whole run reproducible given
+# a fixed number of OpenMP threads (across thread counts, draws agree only
+# up to floating-point reduction-order round-off).
 set.seed(42)
 fit <- run_mnprobit(
   data           = sim$data,
