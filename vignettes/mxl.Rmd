@@ -136,7 +136,14 @@ Two consequences are worth keeping in front of you:
   variation in choice sets or attributes across markets** (the BLP setting), or
   the rich, designed attribute variation of a stated-preference experiment.
   Without one of these, the random-coefficient variances are weakly identified
-  and the estimates can be fragile.
+  and the estimates can be fragile. Note that on panel data `run_mxlogit()`
+  still maximizes a *cross-sectional* simulated likelihood — each choice
+  situation gets an independent taste draw. Cluster-robust standard errors
+  (`cluster_col=`, or `vcov(fit, type = "cluster")`; see
+  [Which standard errors, and when](inference.html)) repair the inference for
+  within-person dependence, but the model that actually *uses* the panel to
+  identify the taste distribution is the hierarchical Bayesian logit,
+  [`run_hmnlogit()`](hb.html).
 
 Practical defenses follow directly: report sensitivity to the number of draws,
 starting values, and distributional assumptions; compare substitution and welfare

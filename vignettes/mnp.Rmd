@@ -92,4 +92,7 @@ abline(h = sim$true_params$beta[2], col = "red", lwd = 2)
 
 The red line marks the true value; the chain should hover around it. For a
 faster, frequentist alternative with the same post-estimation toolkit, see the
-[multinomial logit](mnl.html) and [mixed logit](mxl.html) vignettes.
+[multinomial logit](mnl.html) and [mixed logit](mxl.html) vignettes. For the
+hierarchical extension — respondent-level random tastes and partially-pooled
+alternative effects, in both logit and probit flavors — see the
+[hierarchical Bayes vignette](hb.html).

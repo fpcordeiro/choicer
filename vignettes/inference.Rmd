@@ -1,0 +1,160 @@
+---
+title: "Which standard errors, and when"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Which standard errors, and when}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+A demand estimate is only as reportable as its standard error. The default
+maximum-likelihood variance — the inverse Hessian — is correct when the model
+is correctly specified and choice situations are independent draws. Applied
+work routinely violates one or both: the same decision maker contributes
+several choice situations (panel and survey data), the sample was drawn by
+outcome (choice-based sampling), or the likelihood is at best a useful
+approximation. choicer treats the variance estimator as a choice you make —
+and can revise after estimation, without refitting.
+
+Every MNL, MXL and NL fit exposes four estimators through one interface:
+
+| `type` | Estimator | When it is the right choice |
+|---|---|---|
+| `"hessian"` | Inverse analytical Hessian | Correct specification, independent choice situations. The classical default. |
+| `"bhhh"` | Inverse outer product of scores (BHHH/OPG) | Same asymptotic justification as the Hessian; cheap; a common companion for simulated likelihoods. |
+| `"robust"` | Huber-White sandwich $A^{-1} B A^{-1}$ | Quasi-ML under misspecification; also *the* valid variance under WESML / choice-based weighting (the meat is the weight-squared score outer product). |
+| `"cluster"` | Sandwich over within-cluster sums of scores | Dependence across choice situations from the same decision maker, market, or sampling unit. |
+
+Here the unit $i$ is the *choice situation*. If the same person supplies
+several situations, cluster on the person. No small-sample correction is
+applied, so the number of clusters should be reasonably large.
+
+```{r setup}
+library(choicer)
+set_num_threads(2)
+```
+
+## Dependence you should expect: panel data
+
+The cleanest way to see what clustering buys is to build data with genuine
+within-person dependence. `simulate_hmnl_data()` draws a panel in which each
+person has their own taste vector $\beta_i \sim N(b, W)$ and makes several
+choices with it — exactly the dependence structure a survey or scanner panel
+produces.
+
+```{r sim}
+sim <- simulate_hmnl_data(N = 500, T = 8, J = 4, seed = 3)
+```
+
+We deliberately fit a plain multinomial logit. Its point estimates target the
+population-average taste, but its likelihood treats all `500 * 8 = 4000`
+choice situations as independent — which they are not, because each person's
+taste deviation persists across their eight tasks. Passing `cluster_col`
+supplies the person labels at fit time and selects cluster-robust standard
+errors for `summary()`:
+
+```{r fit}
+fit <- run_mnlogit(
+  data                   = sim$data,
+  id_col                 = "task",
+  alt_col                = "alt",
+  choice_col             = "choice",
+  covariate_cols         = c("x1", "x2"),
+  cluster_col            = "pid",
+  include_outside_option = TRUE
+)
+summary(fit)
+```
+
+How much did it matter? `vcov(fit, type = )` recomputes any of the four
+estimators from the stored per-situation scores:
+
+```{r compare}
+se_of <- function(V) sqrt(diag(V))
+tab <- cbind(
+  hessian = se_of(vcov(fit, type = "hessian")),
+  bhhh    = se_of(vcov(fit, type = "bhhh")),
+  robust  = se_of(vcov(fit, type = "robust")),
+  cluster = se_of(vcov(fit, type = "cluster"))
+)
+round(tab, 4)
+round(tab[, "cluster"] / tab[, "hessian"], 2)
+```
+
+The clustered standard errors on the slope coefficients are about 25% wider
+than the Hessian ones; the alternative-specific constants barely move. That
+pattern is the fingerprint of the data-generating process: the persistent
+component is each person's *taste* deviation, so it is the slope scores that
+are correlated within person. Note also that `"robust"` alone recovers almost
+none of this — the Huber-White sandwich guards against misspecification of
+each situation's likelihood, not against dependence *across* situations. If
+the same decision maker appears repeatedly, robust-without-clustering is the
+wrong comfort.
+
+## Post hoc, without refitting
+
+Nothing above required deciding at fit time. Any fit stored with
+`keep_data = TRUE` (the default) can be re-inferenced later — useful when the
+clustering level is itself a robustness question:
+
+```{r posthoc}
+fit0 <- run_mnlogit(
+  data                   = sim$data,
+  id_col                 = "task",
+  alt_col                = "alt",
+  choice_col             = "choice",
+  covariate_cols         = c("x1", "x2"),
+  include_outside_option = TRUE
+)
+
+# one label per choice situation, in the prepared (id-sorted) order
+cl <- sim$data$pid[!duplicated(sim$data$task)]
+se_of(vcov(fit0, type = "cluster", cluster = cl))
+```
+
+The `cluster` vector has one entry per choice situation, aligned with the
+situations sorted by the id column — here, one `pid` per `task`.
+
+## Clustering repairs inference, not the estimand
+
+A caveat that matters for the mixed logit. `run_mxlogit()` maximizes a
+*cross-sectional* simulated likelihood: each choice situation is treated as an
+independent draw from the mixing distribution. On panel data,
+`type = "cluster"` makes the standard errors robust to within-person
+dependence, but the point estimates still target that cross-sectional model —
+clustering does not turn the fit into a panel mixed logit, in which one taste
+draw is shared across a person's choices. When the panel structure is the
+object of interest — individual-level tastes, their distribution, persistence
+— estimate the panel model instead: the hierarchical Bayesian logit
+(`run_hmnlogit()` with `person_col`), covered in the
+[hierarchical Bayes vignette](hb.html).
+
+## Choice-based sampling
+
+When the sample was drawn by outcome (interviewing travellers at the terminal
+of the mode they chose, oversampling rare hospitals), the weights are not
+optional and the variance choice is forced: under WESML weighting the inverse
+weighted Hessian and the ordinary BHHH variance are both invalid, and
+`type = "robust"` — whose meat carries the squared weights — is the correct
+estimator. The [choice-based sampling vignette](wesml.html) develops the full
+workflow, from population shares to weighted fit.
+
+## References
+
+Berndt, E., Hall, B., Hall, R. and Hausman, J. (1974). Estimation and
+inference in nonlinear structural models. *Annals of Economic and Social
+Measurement*, 3(4), 653-665.
+
+Cameron, A. C. and Miller, D. L. (2015). A practitioner's guide to
+cluster-robust inference. *Journal of Human Resources*, 50(2), 317-372.
+
+Manski, C. F. and Lerman, S. R. (1977). The estimation of choice
+probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
+
+White, H. (1982). Maximum likelihood estimation of misspecified models.
+*Econometrica*, 50(1), 1-25.

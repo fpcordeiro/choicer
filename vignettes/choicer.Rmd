@@ -164,13 +164,25 @@ assumption that the counterfactual changes only the variables you changed in
 Everything above — `predict()`, `elasticities()`, `diversion_ratios()`,
 `wtp()`, `consumer_surplus()`, plus `blp()` for share inversion — works
 identically on **mixed logit** (`run_mxlogit()`) and **nested logit**
-(`run_nestlogit()`) fits, and choicer also offers a Bayesian **multinomial
-probit** sampler (`run_mnprobit()`). Learn each model in its own vignette:
+(`run_nestlogit()`) fits. choicer also offers Bayesian samplers: a
+**multinomial probit** (`run_mnprobit()`) and **hierarchical** logit and
+probit models (`run_hmnlogit()`, `run_hmnprobit()`) with panel random
+coefficients and BLP-style alternative effects. Learn each model in its own
+vignette:
 
 - [Multinomial logit](mnl.html) — the workhorse, and a parameter-recovery check
 - [Mixed logit](mxl.html) — random coefficients and preference heterogeneity
 - [Nested logit](nl.html) — grouped substitution through nests
 - [Bayesian multinomial probit](mnp.html) — correlated utility shocks via MCMC
+- [Hierarchical Bayes](hb.html) — panel tastes, partially-pooled product
+  effects, and entry counterfactuals
+
+Two further vignettes cover inference and sampling design:
+
+- [Which standard errors, and when](inference.html) — Hessian, BHHH, robust
+  and cluster-robust variances, recomputable post hoc via `vcov()`
+- [Choice-based sampling and WESML weights](wesml.html) — estimation when the
+  sample was drawn by outcome
 
 ## Choosing among choice models
 
@@ -199,6 +211,7 @@ discipline the corresponding parameters.
 | **Nested logit** | Shared unobservables within pre-specified nests, summarized by one dissimilarity parameter per nest. | The nesting tree and the random-utility interpretation of the estimated dissimilarity parameters. Correlation exists only where the tree permits it. |
 | **Mixed logit** | A mixing distribution $f(\beta)$ for tastes, possibly with correlated random coefficients. | The distributional family, its tails, simulation accuracy, and the variation that identifies heterogeneity: repeated choices, rich market or choice-set variation, or experimental variation. |
 | **Multinomial probit** | A covariance matrix for utility-difference shocks. | Scale normalization, a rapidly growing covariance parameterization, MCMC diagnostics and a clear rule for extending the covariance structure in counterfactual choice sets. |
+| **Hierarchical Bayes (HMNL/HMNP)** | Panel-identified taste heterogeneity $\beta_i \sim N(b, W)$ plus partially-pooled alternative effects $\delta_j = z_j'\theta + \xi_j$. | The priors, MCMC convergence, and — for entry counterfactuals — the exchangeability of the entrant's unobserved quality $\xi$ with the incumbents'. Repeated choices per person are the variation that earns the taste distribution. |
 
 A few principles follow.
 
@@ -226,7 +239,8 @@ A few principles follow.
 
 Each model's own vignette develops these tradeoffs in detail:
 [MNL](mnl.html#substitution-restrictions), [nested logit](nl.html),
-[mixed logit](mxl.html#identification-and-tails).
+[mixed logit](mxl.html#identification-and-tails),
+[hierarchical Bayes](hb.html).
 
 ## How choicer compares
 
