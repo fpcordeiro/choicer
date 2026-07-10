@@ -13,7 +13,8 @@ prepare_mnl_data(
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
-  weights_col = NULL
+  weights_col = NULL,
+  cluster_col = NULL
 )
 }
 \arguments{
@@ -37,6 +38,12 @@ prepare_mnl_data(
 weights. The column must be constant within each \code{id_col} (one weight per
 choice situation) and is collapsed accordingly. Mutually exclusive with
 \code{weights}. All weights must be finite and strictly positive.}
+
+\item{cluster_col}{Optional name of a column in \code{data} holding cluster labels
+for cluster-robust standard errors (e.g. a person id when the same decision
+maker contributes several choice situations). Must be constant within each
+\code{id_col}. Collapsed to one label per choice situation and returned as
+\code{cluster}; used by \code{se_method = "cluster"} and \code{vcov(fit, type = "cluster")}.}
 }
 \value{
 A list containing:
@@ -47,6 +54,7 @@ A list containing:
 \item \code{M}: Integer vector with number of alternatives per choice situation.
 \item \code{N}: Number of choice situations.
 \item \code{weights}: Vector of weights.
+\item \code{cluster}: Vector of cluster labels (or \code{NULL}).
 \item \code{include_outside_option}: Logical flag.
 \item \code{alt_mapping}: Data.table mapping alternatives to summary statistics.
 \item \code{dropped_cols}: Names of columns dropped due to collinearity, if any.

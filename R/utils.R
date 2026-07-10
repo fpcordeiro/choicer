@@ -211,3 +211,25 @@ label_matrix <- function(mat, alt_mapping) {
   }
   mat
 }
+
+#' Collapse a row-level column to one value per choice situation
+#'
+#' Used by the prepare_*_data() functions for columns that must be constant
+#' within a choice situation (e.g. cluster labels). Called AFTER filtering
+#' and ordering, so alignment is by id, never by position.
+#'
+#' @param dt data.table after filtering/ordering (long format).
+#' @param col Name of the column to collapse.
+#' @param id_col Name of the choice-situation id column.
+#' @param ids Vector of situation ids in prepared order.
+#' @returns Vector of length \code{length(ids)}, one value per situation.
+#' @noRd
+.collapse_situation_col <- function(dt, col, id_col, ids) {
+  nuniq <- dt[, data.table::uniqueN(get(col)), by = id_col][["V1"]]
+  if (any(nuniq != 1L)) {
+    stop("`", col, "` must be constant within each '", id_col,
+         "' (one value per choice situation).", call. = FALSE)
+  }
+  cmap <- dt[, get(col)[1L], by = id_col]
+  cmap[["V1"]][match(ids, cmap[[id_col]])]
+}

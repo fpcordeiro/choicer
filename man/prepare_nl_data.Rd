@@ -14,7 +14,8 @@ prepare_nl_data(
   weights = NULL,
   outside_opt_label = NULL,
   include_outside_option = FALSE,
-  weights_col = NULL
+  weights_col = NULL,
+  cluster_col = NULL
 )
 }
 \arguments{
@@ -41,13 +42,18 @@ Every alternative must belong to exactly one nest.}
 weights. The column must be constant within each \code{id_col} (one weight
 per choice situation) and is collapsed accordingly. Mutually exclusive with
 \code{weights}. All weights must be finite and strictly positive.}
+
+\item{cluster_col}{Optional name of a column in \code{data} holding cluster
+labels for cluster-robust standard errors. Must be constant within each
+\code{id_col}; collapsed to one label per choice situation and returned as
+\code{cluster}.}
 }
 \value{
 A \code{choicer_data_nl} object (list) containing:
 \itemize{
 \item All fields from \code{\link{prepare_mnl_data}} (\code{X}, \code{alt_idx},
-\code{choice_idx}, \code{M}, \code{N}, \code{weights}, \code{include_outside_option},
-\code{alt_mapping}, \code{dropped_cols}).
+\code{choice_idx}, \code{M}, \code{N}, \code{weights}, \code{cluster},
+\code{include_outside_option}, \code{alt_mapping}, \code{dropped_cols}).
 \item \code{nest_idx}: Integer vector of length J mapping each alternative
 (in \code{alt_mapping} row order) to its nest.
 \item \code{data_spec}: List with column name metadata including \code{nest_col}.

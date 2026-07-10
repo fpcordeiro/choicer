@@ -49,9 +49,17 @@
 #'   returned object for \code{predict()} and post-estimation functions.
 #' @param se_method Method for computing standard errors: \code{"hessian"}
 #'   (default, analytical Hessian), \code{"bhhh"} (outer product of gradients),
-#'   or \code{"sandwich"} (robust Huber--White / WESML variance
-#'   \eqn{A^{-1} B A^{-1}}). Use \code{"sandwich"} under choice-based / WESML
-#'   weighting.
+#'   \code{"sandwich"} (robust Huber--White / WESML variance
+#'   \eqn{A^{-1} B A^{-1}}), or \code{"cluster"} (cluster-robust sandwich;
+#'   requires \code{cluster_col} or a prepared \code{input_data} with a
+#'   \code{cluster} field). Use \code{"sandwich"} under choice-based / WESML
+#'   weighting. Any of these can also be recomputed post hoc via
+#'   \code{vcov(fit, type = )}.
+#' @param cluster_col Optional name of a column in \code{data} holding cluster
+#'   labels for cluster-robust standard errors (e.g. a person id when the same
+#'   decision maker contributes several choice situations). Must be constant
+#'   within each \code{id_col}. Supplying \code{cluster_col} without an explicit
+#'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control} instead.
 #' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
@@ -91,10 +99,12 @@ run_mnlogit <- function(
     use_asc = TRUE,
     keep_data = TRUE,
     scale_vars = c("none", "sd", "mad", "iqr"),
-    se_method = c("hessian", "bhhh", "sandwich"),
+    se_method = c("hessian", "bhhh", "sandwich", "cluster"),
+    cluster_col = NULL,
     nloptr_opts = NULL
 ) {
   cl <- match.call()
+  se_method_default <- missing(se_method)
 
   # Backward compatibility: nloptr_opts -> optimizer + control
   if (!is.null(nloptr_opts)) {
@@ -105,6 +115,7 @@ run_mnlogit <- function(
 
   scale_vars <- match.arg(scale_vars)
   se_method <- match.arg(se_method)
+  if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
 
   # --- Resolve input pathway --------------------------------------------------
   has_data <- !is.null(data)
@@ -121,6 +132,11 @@ run_mnlogit <- function(
     stop("`weights_col` is only supported in the convenience (data) workflow. ",
          "Bake weights into `input_data` via prepare_mnl_data(weights_col = ) ",
          "or supply `weights` to prepare_mnl_data().")
+  }
+  if (has_input && !is.null(cluster_col)) {
+    stop("`cluster_col` is only supported in the convenience (data) workflow. ",
+         "Bake cluster labels into `input_data` via ",
+         "prepare_mnl_data(cluster_col = ).")
   }
 
   if (has_data) {
@@ -151,11 +167,18 @@ run_mnlogit <- function(
       weights = weights,
       weights_col = weights_col,
       outside_opt_label = outside_opt_label,
-      include_outside_option = include_outside_option
+      include_outside_option = include_outside_option,
+      cluster_col = cluster_col
     )
   } else {
     # Advanced workflow: use input_data directly
     input_list <- input_data
+  }
+
+  if (se_method == "cluster" && is.null(input_list$cluster)) {
+    stop("se_method = \"cluster\" needs cluster labels: pass `cluster_col=` ",
+         "(convenience workflow) or prepare `input_data` with ",
+         "prepare_mnl_data(cluster_col = ).", call. = FALSE)
   }
 
   # Resolve alt_col for parameter naming (needed by both workflows)
@@ -233,7 +256,7 @@ run_mnlogit <- function(
             "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
             "inference.",
             call. = FALSE)
-  } else if (weights_nonuniform && se_method != "sandwich") {
+  } else if (weights_nonuniform && !se_method %in% c("sandwich", "cluster")) {
     warning("Non-uniform weights detected. If these are sampling/WESML ",
             "weights, use se_method = 'sandwich' for valid inference.",
             call. = FALSE)
@@ -265,20 +288,32 @@ run_mnlogit <- function(
   # Compute vcov eagerly using the selected SE method. For "sandwich"
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
   # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
-  # weight-free BHHH routine). Computed in scaled space; back-transform applies.
-  if (se_method == "sandwich") {
+  # weight-free BHHH routine). For "cluster", the meat is the outer product of
+  # within-cluster sums of weighted scores. Computed in scaled space;
+  # back-transform applies.
+  if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- mnl_loglik_hessian_parallel(
       theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
       choice_idx = input_list$choice_idx, M = input_list$M,
       weights = input_list$weights, use_asc = use_asc,
       include_outside_option = input_list$include_outside_option
     )
-    B_meat <- mnl_bhhh_parallel(
-      theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
-      choice_idx = input_list$choice_idx, M = input_list$M,
-      weights = input_list$weights^2, use_asc = use_asc,
-      include_outside_option = input_list$include_outside_option
-    )
+    B_meat <- if (se_method == "sandwich") {
+      mnl_bhhh_parallel(
+        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+        choice_idx = input_list$choice_idx, M = input_list$M,
+        weights = input_list$weights^2, use_asc = use_asc,
+        include_outside_option = input_list$include_outside_option
+      )
+    } else {
+      S_scores <- mnl_scores_parallel(
+        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+        choice_idx = input_list$choice_idx, M = input_list$M,
+        use_asc = use_asc,
+        include_outside_option = input_list$include_outside_option
+      )
+      .score_meat(S_scores, input_list$weights, "cluster", input_list$cluster)
+    }
     vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {
     hess <- switch(
@@ -346,7 +381,8 @@ run_mnlogit <- function(
         alt_idx = input_list$alt_idx,
         choice_idx = input_list$choice_idx,
         M = input_list$M,
-        weights = input_list$weights
+        weights = input_list$weights,
+        cluster = input_list$cluster
       )
     },
     scale_vars = scale_vars,
@@ -372,6 +408,11 @@ run_mnlogit <- function(
 #'   `weights`. All weights must be finite and strictly positive.
 #' @param outside_opt_label Label for the outside option (if any). If `NULL`, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
+#' @param cluster_col Optional name of a column in `data` holding cluster labels
+#'   for cluster-robust standard errors (e.g. a person id when the same decision
+#'   maker contributes several choice situations). Must be constant within each
+#'   `id_col`. Collapsed to one label per choice situation and returned as
+#'   `cluster`; used by `se_method = "cluster"` and `vcov(fit, type = "cluster")`.
 #' @returns A list containing:
 #'   \itemize{
 #'     \item `X`: Design matrix (sum(M) x K).
@@ -380,6 +421,7 @@ run_mnlogit <- function(
 #'     \item `M`: Integer vector with number of alternatives per choice situation.
 #'     \item `N`: Number of choice situations.
 #'     \item `weights`: Vector of weights.
+#'     \item `cluster`: Vector of cluster labels (or `NULL`).
 #'     \item `include_outside_option`: Logical flag.
 #'     \item `alt_mapping`: Data.table mapping alternatives to summary statistics.
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
@@ -405,7 +447,8 @@ prepare_mnl_data <- function(
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
-    weights_col = NULL
+    weights_col = NULL,
+    cluster_col = NULL
 ) {
   ## Preliminary housekeeping --------------------------------------------------
   # Capture any choice-based-sampling provenance before column drops / coercion,
@@ -419,6 +462,7 @@ prepare_mnl_data <- function(
     stop("Supply only one of `weights` or `weights_col`.")
   }
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
+  if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
@@ -525,6 +569,12 @@ prepare_mnl_data <- function(
     }
   }
 
+  ## Collapse a row-level cluster column to one label per choice situation
+  ## (same alignment discipline as weights_col).
+  cluster <- if (!is.null(cluster_col)) {
+    .collapse_situation_col(dt, cluster_col, id_col, ids)
+  }
+
   ## choice_idx[i] - 1-based index *within* the choice set data
   ## 0 == outside option (only if chosen = 0 for all inside options & include_outside_option == TRUE)
   if (include_outside_option) {
@@ -597,6 +647,7 @@ prepare_mnl_data <- function(
       M           = M,
       N           = N,
       weights     = weights,
+      cluster     = cluster,
       include_outside_option = include_outside_option,
       alt_mapping = alt_mapping,
       dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL,

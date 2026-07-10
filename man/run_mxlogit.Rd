@@ -23,7 +23,7 @@ run_mxlogit(
   upper = NULL,
   optimizer = NULL,
   control = list(),
-  se_method = c("hessian", "bhhh", "sandwich"),
+  se_method = c("hessian", "bhhh", "sandwich", "cluster"),
   scale_vars = c("none", "sd", "mad", "iqr"),
   weights = NULL,
   outside_opt_label = NULL,
@@ -33,7 +33,8 @@ run_mxlogit(
   scramble = c("owen", "none"),
   keep_data = TRUE,
   nloptr_opts = NULL,
-  weights_col = NULL
+  weights_col = NULL,
+  cluster_col = NULL
 )
 }
 \arguments{
@@ -105,14 +106,21 @@ or a custom function. See \code{\link{run_mnlogit}} for details.}
 \item{se_method}{Method for computing standard errors. One of
 \code{"hessian"} (default) for the analytical Hessian of the simulated
 log-likelihood, \code{"bhhh"} for the BHHH/outer-product-of-gradients
-(OPG) estimator, or \code{"sandwich"} for the robust (Huber-White)
+(OPG) estimator, \code{"sandwich"} for the robust (Huber-White)
 variance \eqn{V = A^{-1} B A^{-1}} (bread \eqn{A} = weighted negated
-Hessian, meat \eqn{B} = weight-squared OPG). Use \code{"sandwich"} for
+Hessian, meat \eqn{B} = weight-squared OPG), or \code{"cluster"} for the
+cluster-robust sandwich (requires \code{cluster_col} or a prepared
+\code{input_data} with a \code{cluster} field). Use \code{"sandwich"} for
 valid inference under choice-based / WESML weighting, where the
 inverse-Hessian and ordinary BHHH are invalid; it reduces to the usual
 robust variance under uniform weights. BHHH scales better to large
 problems (many alternatives or simulation draws) but may underestimate
-standard errors in finite samples or away from the optimum.}
+standard errors in finite samples or away from the optimum. Any of these
+can also be recomputed post hoc via \code{vcov(fit, type = )}. Note that
+clustering repairs the inference, not the estimand: the MXL likelihood
+treats each choice situation as an independent draw from the mixing
+distribution; for panel random coefficients use
+\code{\link{run_hmnlogit}}.}
 
 \item{scale_vars}{Pre-estimation column scaling for design matrices. One of
 \code{"none"} (default), \code{"sd"} (sample standard deviation),
@@ -180,6 +188,12 @@ alignment is by id rather than by position. Convenience workflow only. If
 column is auto-detected and applied (with a message); if that column is
 absent the call errors rather than silently fitting an unweighted model
 under a WESML label.}
+
+\item{cluster_col}{Optional name of a column in \code{data} holding cluster
+labels for cluster-robust standard errors (e.g. a person id when the same
+decision maker contributes several choice situations). Must be constant
+within each \code{id_col}. Supplying \code{cluster_col} without an explicit
+\code{se_method} selects \code{se_method = "cluster"}.}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).

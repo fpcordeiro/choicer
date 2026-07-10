@@ -335,6 +335,118 @@ arma::mat mnl_bhhh_parallel(
   return global_bhhh;
 }
 
+// Per-situation score matrix for the multinomial logit model (internal).
+//
+// Returns the N x n_params matrix whose row i is the weight-free score
+// s_i = d log P_i / d theta (positive gradient of situation i's
+// log-likelihood contribution). Same loop body as mnl_bhhh_parallel with the
+// outer-product accumulator replaced by a row write; weights are applied on
+// the R side (see .assemble_score_vcov in R/classes.R).
+// [[Rcpp::export]]
+arma::mat mnl_scores_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const arma::uvec& alt_idx,
+    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& M,
+    const bool use_asc = true,
+    const bool include_outside_option = false
+) {
+  const int N = M.size();
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+
+  const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  validate_choice_data(X, alt_idx, M, use_asc, par.delta, nullptr, &choice_idx);
+
+  // alt_idx is 1-based indexing => shift to 0-based indexing
+  arma::uvec alt_idx0 = alt_idx - 1;
+
+  // Compute prefix sums for indexing
+  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+
+  // --- Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (mnl_scores_parallel)", i);
+    }
+  }
+
+  // Output: one row per choice situation (each written by exactly one
+  // iteration, so no accumulator or critical section is needed).
+  arma::mat scores(N, n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    arma::vec diff_vec; // resized per individual
+    arma::vec s_i;      // per-individual score
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i         = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx   = S[i];
+      const int end_idx     = start_idx + m_i - 1;
+      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+
+      // Build utility vector V_i
+      arma::vec V_i(num_choices);
+      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
+      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
+
+      // Probabilities
+      arma::vec P_i;
+      stable_softmax(V_i, P_i);
+
+      // Chosen alternative (validated serially above)
+      int chosen_alt = choice_idx[i];
+      if (!include_outside_option) chosen_alt -= 1;
+
+      // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
+      diff_vec.set_size(num_choices);
+      diff_vec = -P_i;
+      diff_vec(chosen_alt) += 1.0;
+
+      // Assemble the (weight-free) per-individual score s_i.
+      s_i.zeros(n_params);
+
+      // Beta block
+      if (include_outside_option) {
+        const auto diff_inside = diff_vec.subvec(1, m_i); // m_i elements
+        s_i.subvec(0, K - 1) = X_i.t() * diff_inside;
+      } else {
+        s_i.subvec(0, K - 1) = X_i.t() * diff_vec;
+      }
+
+      // Delta block (scatter; scale = 1)
+      if (use_asc) {
+        if (include_outside_option) {
+          scatter_delta_grad(s_i, K, diff_vec.subvec(1, m_i), alt_idx0_i,
+                             m_i, include_outside_option, 1.0);
+        } else {
+          scatter_delta_grad(s_i, K, diff_vec, alt_idx0_i,
+                             m_i, include_outside_option, 1.0);
+        }
+      }
+
+      scores.row(i) = s_i.t();
+    } // end of i loop
+  } // end parallel region
+
+  return scores;
+}
+
 //' Prediction of choice probabilities and utilities based on fitted model
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
