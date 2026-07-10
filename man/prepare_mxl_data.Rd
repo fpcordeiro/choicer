@@ -58,6 +58,7 @@ A \code{choicer_data_mxl} object (list) containing:
 \item \code{N}: Number of choice situations.
 \item \code{weights}: Vector of weights.
 \item \code{cluster}: Vector of cluster labels (or \code{NULL}).
+\item \code{situation_ids}: Choice-situation ids in prepared (sorted) order.
 \item \code{include_outside_option}: Logical flag.
 \item \code{rc_correlation}: Logical flag.
 \item \code{alt_mapping}: data.table mapping alternatives to summary statistics.

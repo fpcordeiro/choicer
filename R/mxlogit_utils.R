@@ -715,7 +715,8 @@ run_mxlogit <- function(
         choice_idx = input_data$choice_idx,
         M = input_data$M,
         weights = input_data$weights,
-        cluster = input_data$cluster
+        cluster = input_data$cluster,
+        situation_ids = input_data$situation_ids
       )
     },
     draws_info = draws_info,
@@ -761,6 +762,7 @@ run_mxlogit <- function(
 #'     \item `N`: Number of choice situations.
 #'     \item `weights`: Vector of weights.
 #'     \item `cluster`: Vector of cluster labels (or `NULL`).
+#'     \item `situation_ids`: Choice-situation ids in prepared (sorted) order.
 #'     \item `include_outside_option`: Logical flag.
 #'     \item `rc_correlation`: Logical flag.
 #'     \item `alt_mapping`: data.table mapping alternatives to summary statistics.
@@ -1001,6 +1003,7 @@ prepare_mxl_data <- function(
       N           = N,
       weights     = weights,
       cluster     = cluster,
+      situation_ids = ids,
       include_outside_option = include_outside_option,
       rc_correlation = rc_correlation,
       alt_mapping = alt_mapping[],

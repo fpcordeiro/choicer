@@ -53,7 +53,8 @@ A \code{choicer_data_nl} object (list) containing:
 \itemize{
 \item All fields from \code{\link{prepare_mnl_data}} (\code{X}, \code{alt_idx},
 \code{choice_idx}, \code{M}, \code{N}, \code{weights}, \code{cluster},
-\code{include_outside_option}, \code{alt_mapping}, \code{dropped_cols}).
+\code{situation_ids}, \code{include_outside_option}, \code{alt_mapping},
+\code{dropped_cols}).
 \item \code{nest_idx}: Integer vector of length J mapping each alternative
 (in \code{alt_mapping} row order) to its nest.
 \item \code{data_spec}: List with column name metadata including \code{nest_col}.
