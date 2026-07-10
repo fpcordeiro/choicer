@@ -26,6 +26,12 @@ navbar:
           href: articles/nl.html
         - text: Bayesian multinomial probit
           href: articles/mnp.html
+        - text: Hierarchical Bayes
+          href: articles/hb.html
+        - text: -------
+        - text: "Inference and sampling design"
+        - text: Which standard errors, and when
+          href: articles/inference.html
         - text: Choice-based sampling and WESML
           href: articles/wesml.html
         - text: -------
@@ -51,6 +57,11 @@ articles:
       - mxl
       - nl
       - mnp
+      - hb
+  - title: Inference and sampling design
+    navbar: Inference and sampling design
+    contents:
+      - inference
       - wesml
   - title: The math behind choicer
     navbar: The math behind choicer

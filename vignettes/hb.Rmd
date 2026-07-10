@@ -1,0 +1,337 @@
+---
+title: "Hierarchical Bayes: panel tastes, product effects, and entry"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Hierarchical Bayes: panel tastes, product effects, and entry}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6.5, fig.height = 4)
+options(digits = 4)
+```
+
+choicer's hierarchical Bayesian models put random effects at the two levels
+where applied demand work actually needs them. For person $i$ facing
+alternative $j$ in choice situation $t$,
+
+$$U_{ijt} = x_{ijt}'\beta_i + \delta_j + \varepsilon_{ijt},
+\qquad \beta_i \sim N(b, W),
+\qquad \delta_j = z_j'\theta + \xi_j, \quad \xi_j \sim N(0, \sigma_d^2).$$
+
+- **Respondent level.** Each person carries one taste vector $\beta_i$ across
+  all of their choice situations. This is the genuine *panel* mixed logit: by
+  contrast, `run_mxlogit()` maximizes a cross-sectional simulated likelihood in
+  which every choice situation gets an independent taste draw (see the
+  [mixed logit vignette](mxl.html)). When people are observed repeatedly —
+  survey panels, scanner data, repeated hospital admissions — the repetition
+  is precisely the variation that identifies the taste distribution $W$, and
+  the hierarchical model is the one that uses it.
+
+- **Alternative level.** Each alternative carries a mean-utility effect
+  $\delta_j$, partially pooled toward a characteristics-based mean $z_j'\theta$
+  with one scalar variance $\sigma_d^2$ regardless of $J$. The deviation
+  $\xi_j$ is the micro-data counterpart of the unobserved product quality in
+  Berry, Levinsohn and Pakes (1995). Partial pooling matters when per-alternative
+  data are thin — with hundreds of hospitals or schools, fixed
+  alternative-specific constants drown in incidental-parameter noise, while
+  $\delta_j$ shrinks each alternative toward what its observed characteristics
+  predict. And because $\theta$ and $\sigma_d^2$ describe alternatives *as a
+  population*, the model has a posterior predictive for alternatives it has
+  never seen — which is what makes entry counterfactuals possible below.
+
+Both models require the implicit outside option (`include_outside_option =
+TRUE`): the outside good, with systematic utility zero, anchors the *location*
+of $\delta$, so $\delta_j$ is mean utility relative to not choosing any inside
+alternative. Estimation is by Gibbs sampling in C++ — an adaptive
+Metropolis-within-Gibbs for the logit (`run_hmnlogit()`), a fully conjugate
+Albert-Chib sampler for the probit (`run_hmnprobit()`).
+
+```{r setup}
+library(choicer)
+set_num_threads(2)
+```
+
+## Simulate a panel
+
+`simulate_hmnl_data()` draws a panel with known parameters: `N` people, `T`
+choice situations each, `J` inside alternatives, structural covariates `x1`
+and `x2`, and one alternative-level covariate `z1` feeding the $\delta$ mean
+function.
+
+```{r sim}
+sim <- simulate_hmnl_data(N = 250, T = 6, J = 6, seed = 42)
+head(sim$data, 8)
+```
+
+The two-level structure is visible in the identifiers: `pid` indexes people
+(who share a taste vector) and `task` indexes choice situations. A task whose
+inside rows are all `choice = 0` is one where the outside option was chosen.
+
+## Fit
+
+Point `person_col` at the person identifier — that is what groups choice
+situations into a panel. With `person_col = NULL` every situation would be
+its own respondent, the cross-sectional limit of the same model. We run two
+chains; they feed the convergence diagnostics that `summary()` reports.
+
+```{r fit}
+set.seed(99)
+fit <- run_hmnlogit(
+  data               = sim$data,
+  id_col             = "task",
+  alt_col            = "alt",
+  choice_col         = "choice",
+  covariate_cols     = c("x1", "x2"),
+  person_col         = "pid",
+  alt_covariate_cols = "z1",
+  chains             = 2,
+  mcmc               = list(R = 24000, burn = 4000, thin = 8)
+)
+summary(fit)
+```
+
+Reading the output from the top: the population mean tastes `b`, the $\delta$
+mean function `theta`, and the alternative-effect variance $\sigma_d^2$, each
+summarized by their posterior. The *quality ladder* is the per-alternative
+posterior of $\delta_j$ and $\xi_j$ — which alternatives deliver more mean
+utility than their characteristics predict. The convergence table and
+acceptance rates are discussed next.
+
+## Convergence is part of the result
+
+MCMC output is only evidence about the posterior if the chains have mixed. The
+consolidated table in `summary()` reports, per parameter, the rank-normalized
+split R-hat, bulk and tail effective sample sizes, and the Monte Carlo
+standard error of the posterior mean (Vehtari et al. 2021), plus one
+worst-case row spanning all $J$ alternative effects. The $\delta$ block is
+the one to watch: it is updated by a serial random-walk Metropolis sweep (its
+full conditionals are coupled through the softmax denominators), so it mixes
+more slowly than the conjugate blocks. If its R-hat or ESS looks poor, run
+longer — the fit also warns at estimation time when any tracked parameter
+fails the check.
+
+Trace plots make the same point visually:
+
+```{r trace-b}
+traceplot(fit, block = "b")
+```
+
+```{r trace-delta}
+traceplot(fit, block = "delta")
+```
+
+The same diagnostics are available programmatically, on any block, from the
+retained per-chain draws in `fit$chains`:
+
+```{r diagnostics}
+b_chains <- lapply(fit$chains, function(ch) ch$b)
+rhat(b_chains, rank = TRUE)
+ess(b_chains)
+mcse(b_chains)
+```
+
+## Did we recover the truth?
+
+Because the data are simulated, we can line the posterior up against the
+generating parameters:
+
+```{r recovery}
+recovery_table(fit, sim)
+```
+
+The population means `b`, the taste variances `diag(W)`, and the realized
+$\delta_j$ ladder recover tightly. Note the pattern in the `theta` and
+`sigma_d` rows: with only $J = 6$ alternatives, the mean-function regression
+of $\delta$ on $z$ has six observations, so those posteriors are wide and
+lean on the prior — more alternatives is what sharpens them. The *level* of
+$\delta$ has its own identification story: it is pinned by the outside-option
+share, so with a small outside share the level posterior is diffuse while the
+cross-alternative *contrasts* stay tight.
+
+## Willingness to pay and predicted shares
+
+Treating `x2` as the price-like attribute, `wtp()` forms the per-draw ratio of
+population-mean utility coefficients and summarizes its posterior — a median
+and quantile interval rather than a delta-method approximation, so the ratio's
+skewness is carried through honestly:
+
+```{r wtp}
+wtp(fit, price_var = "x2")
+```
+
+`predict()` integrates shares over both the taste distribution and the
+posterior, returning credible intervals (and the outside share) for free:
+
+```{r shares}
+set.seed(7)
+predict(fit, n_draws = 200)
+```
+
+A posterior-predictive check compares observed choice shares with the model's
+predictive distribution — a first-pass reality check on fit:
+
+```{r ppc}
+ppc_shares(fit, n_draws = 200)
+```
+
+Individual-level tastes are available too: `fit$beta_i` stores per-person
+posterior summaries (or full draws with `keep_beta_i = "draws"`), and
+`predict(fit, level = "individual")` conditions on them.
+
+## A policy counterfactual
+
+Cut the price `x2` of alternative 1 by 0.25 and re-predict — no refitting.
+Reusing the RNG seed makes the baseline and counterfactual share calculations
+use the same posterior and taste draws, so the contrast is exact:
+
+```{r counterfactual}
+cf <- sim$data
+cf$x2[cf$alt == 1] <- cf$x2[cf$alt == 1] - 0.25
+
+set.seed(7)
+base_shares <- predict(fit, n_draws = 200)
+set.seed(7)
+cf_shares <- predict(fit, newdata = cf, n_draws = 200)
+
+data.frame(
+  alternative    = base_shares$alternative,
+  baseline       = round(base_shares$share, 3),
+  counterfactual = round(cf_shares$share, 3)
+)
+```
+
+The welfare change is the posterior of the compensating variation — the
+logsum difference divided by the marginal utility of income, draw by draw:
+
+```{r welfare}
+set.seed(7)
+cs <- consumer_surplus(fit, price_var = "x2", newdata = cf, n_draws = 200)
+attr(cs, "cv")
+```
+
+Unlike a delta-method standard error, this interval inherits the full
+posterior uncertainty — including the heterogeneity in the price coefficient
+that sits in the denominator. A wide CV interval is not a bug; it is the
+model telling you how much the welfare number depends on tastes the data pin
+down imperfectly. (`logsum()` and `consumer_surplus()` are available for the
+hierarchical *logit* only; the probit expected-maximum counterpart is on the
+roadmap.)
+
+## An entry counterfactual
+
+The distinctive payoff of the BLP-style alternative level. A model with fixed
+alternative-specific constants is silent about an alternative it has never
+seen — it has no ASC for the entrant and no principled way to invent one. Here
+the entrant is a draw from the estimated population of alternatives: given its
+characteristics $z_{\text{new}}$, each posterior draw assigns it
+$\delta_{\text{new}} \sim N(z_{\text{new}}'\theta_r,\; \sigma_{d,r}^2)$.
+
+Add the entrant's rows to the data — same layout, a new `alt` label, its `z1`
+value, `choice = 0` — and predict:
+
+```{r entry}
+entrant <- sim$data[sim$data$alt == 1, ]
+entrant$alt <- 99L
+entrant$z1 <- 0.4
+entrant$choice <- 0L
+entry_data <- rbind(sim$data, entrant)
+
+set.seed(7)
+predict(fit, newdata = entry_data, n_draws = 200)
+```
+
+The entrant takes share from every incumbent and from the outside good, and
+its credible interval is much wider than the incumbents' — properly so. The
+model knows the entrant's observed characteristics but not its $\xi$, so the
+prediction integrates over $\xi_{\text{new}} \sim N(0, \sigma_d^2)$: the
+uncertainty about unobserved quality *is* the dominant uncertainty about an
+entrant, and the posterior predictive says so rather than hiding it. The
+maintained assumption is exchangeability — the entrant's unobserved quality is
+a draw from the same population as the incumbents'.
+
+## Price endogeneity
+
+If a price-like covariate is correlated with the unobserved quality $\xi_j$ —
+the classic demand-estimation concern — the estimates are exogenous only
+conditional on $Z$. The data preparations accept a control-function residual
+(`cf_residual_col`, Petrin and Train 2010): regress price on instruments
+outside the package, and pass the first-stage residual so it enters utility as
+an ordinary covariate. The package does not run the first stage, and posterior
+uncertainty does not propagate first-stage estimation error; joint Bayesian IV
+is on the roadmap.
+
+## The probit sibling
+
+`run_hmnprobit()` estimates the same two-level structure with iid normal utility
+shocks instead of extreme-value ones. The sampler is fully conjugate
+(Albert-Chib data augmentation — no Metropolis step, no acceptance rates to
+tune), and because it works in un-differenced utility space, unbalanced choice
+sets pose no problem. The probit has a free scale, handled by parameter
+expansion: a non-identified $\sigma^2$ chain wanders by design, and every
+reported quantity is normalized per draw, so all summaries are on the
+identified scale.
+
+```{r hmnp}
+simp <- simulate_hmnp_data(N = 250, T = 5, J = 6, seed = 42)
+
+set.seed(99)
+fitp <- run_hmnprobit(
+  data               = simp$data,
+  id_col             = "task",
+  alt_col            = "alt",
+  choice_col         = "choice",
+  covariate_cols     = c("x1", "x2"),
+  person_col         = "pid",
+  alt_covariate_cols = "z1",
+  chains             = 2,
+  mcmc               = list(R = 30000, burn = 5000, thin = 10)
+)
+summary(fitp)
+```
+
+The identified probit coefficients live on a different scale from the logit's:
+the EV1 shock has standard deviation $\pi/\sqrt{6} \approx 1.28$ against the
+probit's 1, so multiplying the probit coefficients by $\pi/\sqrt{6}$ puts the
+two models' estimates on comparable footing:
+
+```{r scale}
+rbind(
+  probit         = coef(fitp),
+  "logit scale"  = coef(fitp) * pi / sqrt(6)
+)
+```
+
+The `choicer_hb` post-estimation suite — `predict()` (probabilities by exact
+one-dimensional Gauss-Hermite quadrature), `wtp()`, `elasticities()`,
+`diversion_ratios()`, `ppc_shares()`, `recovery_table()` — works identically
+on the probit fit. The exceptions are `logsum()` and `consumer_surplus()`,
+which are logit-only as noted above.
+
+## Further reading
+
+The full derivations — priors, the Gibbs sweeps, identification, and the
+implementation contract — are in the math companions:
+[hierarchical MNL](hierarchical_mnl_math.html) and
+[hierarchical MNP](hierarchical_mnp_math.html). For where these
+models sit among choicer's estimators, see
+[Choosing among choice models](choicer.html#choosing-among-choice-models).
+
+## References
+
+Berry, S., Levinsohn, J. and Pakes, A. (1995). Automobile prices in market
+equilibrium. *Econometrica*, 63(4), 841-890.
+
+Petrin, A. and Train, K. (2010). A control function approach to endogeneity in
+consumer choice models. *Journal of Marketing Research*, 47(1), 3-13.
+
+Rossi, P. E., Allenby, G. M. and McCulloch, R. (2005). *Bayesian Statistics
+and Marketing*. Wiley.
+
+Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
+Cambridge University Press.
+
+Vehtari, A., Gelman, A., Simpson, D., Carpenter, B. and Bürkner, P.-C. (2021).
+Rank-normalization, folding, and localization: An improved R-hat for assessing
+convergence of MCMC. *Bayesian Analysis*, 16(2), 667-718.
