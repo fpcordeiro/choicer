@@ -106,7 +106,8 @@ cb[choice == 1, .(id, chosen_alt = alt, .wesml_weight)][1:8]
 The sample choice shares are deliberately equalized, but the attached weights
 restore the population shares in the weighted likelihood. The weight is constant
 within an id and repeated across that id's alternative rows, which is exactly the
-row-level layout `run_mxlogit()` expects through `weights_col`.
+row-level layout `run_mxlogit()` — and equally `run_mnlogit()` /
+`run_nestlogit()` — expects through `weights_col`.
 
 ## Weighted estimation and inference
 
@@ -186,19 +187,23 @@ summary(fit_wesml)
 
 The same robust variance is available post hoc on any fitted mixed logit via
 `wesml_vcov()`, so you can obtain choice-based-sampling standard errors even
-from a fit estimated with `se_method = "hessian"` without refitting.
+from a fit estimated with `se_method = "hessian"` without refitting. More
+generally, `vcov(fit, type = "robust")` computes the identical sandwich, and
+`type = "cluster"` extends it to within-cluster dependence — the full menu of
+variance estimators, and when each is the right choice, is the subject of
+[Which standard errors, and when](inference.html).
 
-> **A note on the multinomial logit.** choicer implements WESML weighting and
-> the robust sandwich for the *mixed* logit (which nests the plain logit as the
-> degenerate, zero-variance case). For the plain multinomial logit there is a
-> classical and convenient result (Manski and Lerman, 1977): when the model
-> includes a full set of alternative-specific constants, choice-based sampling
-> leaves the slope coefficients consistently estimated *even without weighting* —
-> only the ASCs are inconsistent. Each constant is shifted by
-> $\ln\!\big(H_j / Q_j\big)$ and can be corrected by subtracting that term. So
-> for an MNL with ASCs the substantive marginal-utility parameters are unaffected
-> by the sampling scheme; only the constants (and the predicted shares they
-> drive) need correcting.
+> **A note on the multinomial logit.** WESML weighting (`weights_col`) and the
+> robust sandwich work the same way on `run_mnlogit()` and `run_nestlogit()` as
+> on the mixed logit shown here. For the plain multinomial logit there is
+> additionally a classical and convenient result (Manski and Lerman, 1977):
+> when the model includes a full set of alternative-specific constants,
+> choice-based sampling leaves the slope coefficients consistently estimated
+> *even without weighting* — only the ASCs are inconsistent. Each constant is
+> shifted by $\ln\!\big(H_j / Q_j\big)$ and can be corrected by subtracting
+> that term. So for an MNL with ASCs the substantive marginal-utility
+> parameters are unaffected by the sampling scheme; only the constants (and the
+> predicted shares they drive) need correcting.
 
 ## Starting from an existing sample
 

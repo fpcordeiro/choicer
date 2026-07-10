@@ -169,9 +169,11 @@
 
 ## Documentation
 
-- Added five vignettes: a getting-started tour ("Discrete choice from data to
-  policy, in a dozen lines") plus one per model (multinomial logit, mixed logit,
-  nested logit, Bayesian multinomial probit).
+- Added eight vignettes: a getting-started tour ("Discrete choice from data to
+  policy, in a dozen lines"), one per model (multinomial logit, mixed logit,
+  nested logit, Bayesian multinomial probit, hierarchical Bayes), one on
+  choice-based sampling and WESML weights, and one on standard errors
+  (Hessian / BHHH / robust / cluster-robust, and when to use which).
 - Added the `mode_choice` data set: the classic Greene & Hensher intercity
   travel-mode choice data (210 travellers x 4 modes), in choicer's long layout,
   used by the getting-started vignette.
@@ -206,7 +208,7 @@
 
 ## Bayesian models
 
-- `run_mnprobit()` — Bayesian multinomial probit via Gibbs sampling with data augmentation (Albert & Chib 1993; McCulloch & Rossi 1994). Runs the non-identified chain with conjugate priors and reports identified quantities normalized per draw by `sigma_11`. New `choicer_mnp` posterior object with `summary()` (posterior mean, SD, credible intervals), `coef()`, `vcov()`, `nobs()`; math note in `docs/bayesian_multinomial_probit_math.md`
+- `run_mnprobit()` — Bayesian multinomial probit via Gibbs sampling with data augmentation (Albert & Chib 1993; McCulloch & Rossi 1994). Runs the non-identified chain with conjugate priors and reports identified quantities normalized per draw by `sigma_11`. New `choicer_mnp` posterior object with `summary()` (posterior mean, SD, credible intervals), `coef()`, `vcov()`, `nobs()`; math note in `vignettes/articles/bayesian_multinomial_probit_math.Rmd`
 - C++ MCMC infrastructure built from scratch (`src/rng.h`, `src/bayes_samplers.h`): xoshiro256++/splitmix64 RNG with one stream per (iteration, observation) — draws are reproducible given the seed and a fixed OpenMP thread count (invariant across thread counts only up to floating-point reduction-order round-off, ~1e-15) — plus exact truncated-normal, multivariate-normal, Wishart (Bartlett), and inverse-Wishart samplers. The truncated normal picks the cheapest exact method per region (naive normal rejection in high-mass regions, Robert 1995 exponential rejection in the tail, inverse CDF for narrow intervals)
 - The Gibbs chain runs inside a single persistent OpenMP region: the latent-utility sweep and mean refresh are work-shared across choice situations, the conjugate beta/Sigma conditionals run on the master thread between lightweight barriers with hand-rolled fixed-order linear algebra (no BLAS inside the region), and the truncated-normal conditional moments are hoisted per Sigma draw. On the `_benchmarks/` MNP preset this samples ~2x faster than `MNP::mnp()` and ~3.5x faster than `bayesm::rmnpGibbs()` on one thread, and scales with threads on top
 - `simulate_mnp_data()` — probit DGP returning a `choicer_sim` with truth on the identified scale; `recovery_table()` gains a `choicer_mnp` method (posterior mean/SD, normal-approximation credible intervals, `sigma` block); parameter-recovery walkthrough in `inst/simulations/mnp_simulation.R`

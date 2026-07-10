@@ -7,7 +7,7 @@
 [![R-CMD-check](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-`choicer` provides fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with OpenMP parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, diversion ratios, willingness-to-pay with delta-method standard errors, goodness-of-fit measures, counterfactual predictions, and the BLP contraction. Supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL), plus Bayesian multinomial probit (MNP) and hierarchical Bayesian multinomial logit and probit (HMNL, HMNP) via Gibbs sampling; more models will be added.
+`choicer` provides fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with OpenMP parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, diversion ratios, willingness-to-pay with delta-method standard errors, goodness-of-fit measures, counterfactual predictions, and the BLP contraction. Inference options include robust (Huber-White / WESML) and cluster-robust standard errors, recomputable post hoc via `vcov()` without refitting. Supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL), plus Bayesian multinomial probit (MNP) and hierarchical Bayesian multinomial logit and probit (HMNL, HMNP) via Gibbs sampling; more models will be added.
 
 ## Installation
 
@@ -98,7 +98,9 @@ blp(fit_nl, target_shares, damping = 0.5)  # use damping < 1 for strongly-nested
 alternative intercept `delta_j = z_j'theta + xi_j` on top of respondent-level
 random coefficients `beta_i ~ N(b, W)`, estimated by Gibbs sampling. Both
 models share an implicit outside option (no base alternative) and the
-`choicer_hb` post-estimation suite:
+`choicer_hb` post-estimation suite — including entry counterfactuals, where a
+never-observed alternative receives a posterior-predictive `delta` from its
+characteristics (see `vignette("hb", package = "choicer")`):
 
 ``` r
 # Hierarchical Bayesian MNL — simulate panel data and fit
@@ -118,9 +120,9 @@ fit_hmnl <- run_hmnlogit(
 
 summary(fit_hmnl)
 
-# Posterior-aware post-estimation
-wtp(fit_hmnl, price_var = "x1")               # posterior median + quantile interval
-consumer_surplus(fit_hmnl, price_var = "x1")  # expected consumer surplus
+# Posterior-aware post-estimation (x2 is the price-like attribute in this DGP)
+wtp(fit_hmnl, price_var = "x2")               # posterior median + quantile interval
+consumer_surplus(fit_hmnl, price_var = "x2")  # expected consumer surplus
 
 # MCMC diagnostics
 rhat(fit_hmnl$draws$b)       # split R-hat for the population-mean draws
@@ -140,9 +142,9 @@ optimizer; see `?run_mnprobit`.
 | Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
 | Bayesian MNP | `run_mnprobit()` | `summary()`, `coef()`, `vcov()`, `recovery_table()` |
 | Hierarchical Bayesian MNL | `run_hmnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `wtp()`, `logsum()`, `consumer_surplus()`, `recovery_table()` |
-| Hierarchical Bayesian MNP | `run_hmnprobit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `wtp()`, `logsum()`, `consumer_surplus()`, `recovery_table()` |
+| Hierarchical Bayesian MNP | `run_hmnprobit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `wtp()`, `recovery_table()` |
 
-All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`. `summary()` reports McFadden R2 and the hit rate alongside the usual fit statistics, and `predict()` accepts `newdata` (a long data.frame or a modified design list) for counterfactual and policy prediction, even on fits with `keep_data = FALSE`. The Bayesian models (`choicer_mnp`, and `choicer_hmnl`/`choicer_hmnp` under the shared `choicer_hb` class) are posterior-draws objects rather than `choicer_fit` models: they support `summary()`, `coef()`, `vcov()`, and `nobs()`, but not `logLik()`, `AIC()`, or `BIC()`.
+All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`. `summary()` reports McFadden R2 and the hit rate alongside the usual fit statistics, and `predict()` accepts `newdata` (a long data.frame or a modified design list) for counterfactual and policy prediction, even on fits with `keep_data = FALSE`. The Bayesian models (`choicer_mnp`, and `choicer_hmnl`/`choicer_hmnp` under the shared `choicer_hb` class) are posterior-draws objects rather than `choicer_fit` models: they support `summary()`, `coef()`, `vcov()`, and `nobs()`, but not `logLik()`, `AIC()`, or `BIC()`. Among the hierarchical models, `logsum()` and `consumer_surplus()` are available for the hierarchical logit only (the probit expected-maximum counterpart is roadmapped).
 
 ## Alternative packages
 
