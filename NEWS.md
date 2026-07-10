@@ -1,4 +1,14 @@
-# choicer (development version)
+# choicer 0.2.0
+
+## Corrections
+
+- The documentation previously claimed that MCMC draws from the Gibbs
+  samplers (`run_mnprobit()`, `run_hmnlogit()`, `run_hmnprobit()`) are
+  bitwise reproducible regardless of the OpenMP thread count. Independent
+  validation disconfirmed this: draws are reproducible given the seed and a
+  fixed thread count, and across different thread counts are invariant only
+  up to floating-point reduction-order round-off (~1e-15), not bitwise. All
+  man pages, vignettes, and NEWS entries now state the correct guarantee.
 
 ## Hierarchical Bayes (HMNL/HMNP) convergence diagnostics and multi-chain performance
 
