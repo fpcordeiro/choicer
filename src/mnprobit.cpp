@@ -20,8 +20,10 @@
 // Parallelism: given (beta, Sigma) the latent w_i are conditionally
 // independent across choice situations, so the augmentation sweep is an
 // exact Gibbs step when parallelized over i. Each (iteration, observation)
-// task draws from its own RNG stream (rng.h), so results are bitwise
-// reproducible regardless of the number of OpenMP threads.
+// task draws from its own RNG stream (rng.h), so results are reproducible
+// given the seed and a fixed thread count; across thread counts they are
+// invariant only up to floating-point reduction-order round-off (~1e-15),
+// not bitwise.
 //
 // The whole chain runs inside ONE OpenMP parallel region: the latent sweep
 // and the Mu refresh are work-shared loops, while the beta / Sigma
@@ -29,7 +31,7 @@
 // region setup/teardown is avoided, and no BLAS is called inside the region
 // (the master-path linear algebra is hand-rolled in a fixed summation
 // order), so worker threads only ever wait at lightweight barriers and the
-// draws stay independent of the thread count. Errors and user interrupts
+// draws stay reproducible for a fixed thread count. Errors and user interrupts
 // inside the region are reported through a shared abort flag and raised
 // after the region ends (exceptions must not cross an OpenMP boundary;
 // R_ToplevelExec lets the master poll for interrupts without a longjmp).
@@ -117,7 +119,9 @@ static void validate_mnp_inputs(const arma::mat& X, const Rcpp::IntegerVector& y
 //' The latent-utility sweep is parallelized with OpenMP across choice
 //' situations (they are conditionally independent given \code{beta} and
 //' \code{Sigma}). Each (iteration, observation) pair uses its own RNG
-//' stream, so draws are reproducible independent of the number of threads
+//' stream, so draws are reproducible given the seed and a fixed thread
+//' count; across different thread counts they are invariant only up to
+//' floating-point reduction-order round-off (~1e-15), not bitwise
 //' (see \code{set_num_threads()}).
 //'
 //' @param X (N*p) x K stacked design matrix of utility differences. Rows are
@@ -358,8 +362,8 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
       if (abort_code != ABORT_NONE) break;
 
       // --- Mu refresh: mu_i = X_i beta with the new beta ---------------------
-      // Per-observation summation order is fixed, so the result is bitwise
-      // independent of the number of threads.
+      // Per-observation summation order is fixed, so the result does not
+      // depend on the thread schedule.
 #ifdef _OPENMP
 #pragma omp for schedule(static)
 #endif

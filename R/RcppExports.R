@@ -135,8 +135,10 @@ hb_test_sigma_d2_gibbs <- function(xi, n_iter, seed, half_cauchy, s_d, c0, d0) {
 #' The per-respondent \eqn{\beta_i} updates are parallelized with OpenMP;
 #' the \eqn{\delta_j} updates run as a strictly serial sweep (their
 #' conditionals are coupled through the shared softmax denominators). Each
-#' (iteration, unit) pair uses its own RNG stream, so draws are bitwise
-#' reproducible independent of the number of threads (see
+#' (iteration, unit) pair uses its own RNG stream, so draws are
+#' reproducible given the seed and a fixed thread count; across different
+#' thread counts they are invariant only up to floating-point
+#' reduction-order round-off (~1e-15), not bitwise (see
 #' \code{set_num_threads()}). This is the low-level engine behind
 #' \code{\link{run_hmnlogit}}, which handles initialization and
 #' post-processing.
@@ -224,8 +226,10 @@ hmnl_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, 
 #' OpenMP across respondents; the \eqn{\delta_j} draws are parallelized
 #' across alternatives (conditionally independent given the augmented
 #' utilities — unlike the HMNL, whose delta sweep must be serial). Each
-#' (iteration, unit) pair uses its own RNG stream, so draws are bitwise
-#' reproducible independent of the number of threads.
+#' (iteration, unit) pair uses its own RNG stream, so draws are
+#' reproducible given the seed and a fixed thread count; across different
+#' thread counts they are invariant only up to floating-point
+#' reduction-order round-off (~1e-15), not bitwise.
 #'
 #' @param X total_rows x K_struct structural design matrix (inside rows
 #'   only), rows sorted by (person, task, alternative).
@@ -557,7 +561,9 @@ mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc
 #' The latent-utility sweep is parallelized with OpenMP across choice
 #' situations (they are conditionally independent given \code{beta} and
 #' \code{Sigma}). Each (iteration, observation) pair uses its own RNG
-#' stream, so draws are reproducible independent of the number of threads
+#' stream, so draws are reproducible given the seed and a fixed thread
+#' count; across different thread counts they are invariant only up to
+#' floating-point reduction-order round-off (~1e-15), not bitwise
 #' (see \code{set_num_threads()}).
 #'
 #' @param X (N*p) x K stacked design matrix of utility differences. Rows are

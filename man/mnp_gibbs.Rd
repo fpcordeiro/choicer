@@ -51,7 +51,9 @@ obtained by normalizing each draw by \code{sigma_11} (handled by
 The latent-utility sweep is parallelized with OpenMP across choice
 situations (they are conditionally independent given \code{beta} and
 \code{Sigma}). Each (iteration, observation) pair uses its own RNG
-stream, so draws are reproducible independent of the number of threads
+stream, so draws are reproducible given the seed and a fixed thread
+count; across different thread counts they are invariant only up to
+floating-point reduction-order round-off (~1e-15), not bitwise
 (see \code{set_num_threads()}).
 }
 \examples{

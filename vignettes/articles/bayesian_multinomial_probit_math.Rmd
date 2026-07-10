@@ -323,7 +323,7 @@ The RNG core is xoshiro256++ seeded via splitmix64 (the generator authors' recom
 - the latent update of observation $i$ in iteration $r$ uses stream $(\texttt{seed}, r, i)$;
 - the $\beta$ and $\Sigma$ draws of iteration $r$ use the tagged streams $(\texttt{seed}, r, N)$ and $(\texttt{seed}, r, N+1)$.
 
-Streams are deterministic functions of their key, so the draws are **bitwise reproducible regardless of the number of OpenMP threads or the loop schedule** — verified by a thread-invariance test (1 vs 4 threads). When the user does not pass `mcmc$seed`, the master seed is drawn from R's RNG, so `set.seed()` governs the run end-to-end, consistent with the rest of the package.
+Streams are deterministic functions of their key, so the draws are reproducible given the seed and a fixed number of OpenMP threads; across different thread counts they are invariant only up to floating-point reduction-order round-off (~1e-15), **not bitwise** (independent validation disconfirmed an earlier "bitwise, tested 1-vs-4 threads" claim). When the user does not pass `mcmc$seed`, the master seed is drawn from R's RNG, so `set.seed()` governs the run end-to-end, consistent with the rest of the package.
 
 *Code reference: [rng.h:119-131](../src/rng.h#L119-L131), [mnprobit.cpp:217](../src/mnprobit.cpp#L217)*
 

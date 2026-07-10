@@ -121,8 +121,10 @@ outside option with systematic utility 0, \eqn{\beta_i \sim N(b, W)}
 The per-respondent \eqn{\beta_i} updates are parallelized with OpenMP;
 the \eqn{\delta_j} updates run as a strictly serial sweep (their
 conditionals are coupled through the shared softmax denominators). Each
-(iteration, unit) pair uses its own RNG stream, so draws are bitwise
-reproducible independent of the number of threads (see
+(iteration, unit) pair uses its own RNG stream, so draws are
+reproducible given the seed and a fixed thread count; across different
+thread counts they are invariant only up to floating-point
+reduction-order round-off (~1e-15), not bitwise (see
 \code{set_num_threads()}). This is the low-level engine behind
 \code{\link{run_hmnlogit}}, which handles initialization and
 post-processing.
