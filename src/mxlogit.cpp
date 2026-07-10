@@ -1218,6 +1218,238 @@ arma::mat mxl_bhhh_parallel(
   return global_bhhh;
 }
 
+// Per-situation score matrix for the mixed logit model (internal).
+//
+// Returns the N x n_params matrix whose row i is the weight-free score
+// s_i = d log(P-bar_i) / d theta over the beta, mu, L and delta/ASC blocks.
+// Same loop body as mxl_bhhh_parallel with the outer-product accumulator
+// replaced by a row write; weights are applied on the R side (see
+// .assemble_score_vcov in R/classes.R).
+// [[Rcpp::export]]
+arma::mat mxl_scores_parallel(
+    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &M,
+    const arma::cube &eta_draws, const arma::uvec &rc_dist,
+    const bool rc_correlation = true, const bool rc_mean = false,
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
+
+  // Basic dimensions
+  const int N = M.size();
+  const int K_x = X.n_cols;
+  const int K_w = W.n_cols;
+  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
+  const int n_params = theta.n_elem;
+  const int L_size =
+      rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
+
+  // Parameter block start indices (used below to assemble the scores)
+  const int idx_beta_start = 0;
+  const int idx_mu_start = K_x;
+  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
+  const int idx_delta_start = idx_L_start + L_size;
+
+  // Parse theta into parameter blocks (shared helper; validates theta)
+  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+                                        rc_correlation, rc_mean, use_asc,
+                                        include_outside_option);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
+                        nullptr, &choice_idx);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, use_asc, par.delta, nullptr, &choice_idx);
+    check_rc_dist_length(rc_dist, K_w);
+  }
+  const arma::vec& beta = par.beta;
+  const arma::mat& L = par.L;
+  const arma::vec& delta = par.delta;
+  const arma::vec& mu_final = par.mu_final;
+  const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
+
+  // Convenience objects shared by all threads
+  arma::uvec alt_idx0 = alt_idx - 1; // 0-based
+  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
+                                          alt_idx0, use_asc, delta);
+
+  // --- Serial pre-loop validation of chosen-alternative indices ---
+  for (int i = 0; i < N; ++i) {
+    int chosen = choice_idx[i];
+    if (!include_outside_option) chosen -= 1;
+    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
+    if (chosen < 0 || chosen >= num_choices_i) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_scores_parallel)", i);
+    }
+  }
+
+  // Construct on-the-fly generator outside parallel region.
+  const bool use_generate_s = (gen_seed >= 0);
+  HaltonGen halton_gen_s;
+  if (use_generate_s) {
+    halton_gen_s = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
+  }
+
+  // Output: one row per choice situation (each written by exactly one
+  // iteration, so no accumulator or critical section is needed).
+  arma::mat scores(N, n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // --- Pre-allocate working memory for the thread ---
+    arma::vec V_s;
+    arma::vec inside_utils;
+    arma::vec P_s;
+
+    // BLAS-3 collapse scratch (re-sized per individual)
+    arma::mat DiffW;  // m_i x Sdraw: DiffW(:,s) = P_choice_s * diff_inside_s
+    arma::mat BW;     // K_w x Sdraw: BW = W_i^T * DiffW  (one dgemm)
+    arma::mat Btil;   // K_w x Sdraw: Btil = BW .% Dgamma1 (elementwise)
+    arma::mat A;      // K_w x K_w:   A = Btil * eta_i^T  (one dgemm)
+    arma::vec s_i;    // n_params score vector per individual
+    arma::mat eta_i_buf_s;    // generate mode scratch
+    arma::mat eta_i_store_s;  // cube mode materialised slice
+
+// Loop over individuals in parallel
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      //  Slice data for individual i
+      const int m_i = M[i];
+      const int num_choices = include_outside_option ? m_i + 1 : m_i;
+      const int start_idx = S_prefix[i];
+      const int end_idx = start_idx + m_i - 1;
+      const auto X_i = X.rows(start_idx, end_idx);
+      const auto alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      arma::mat W_i =
+          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
+
+      // chosen alternative index (validated serially above)
+      int chosen_alt = choice_idx[i];
+      if (!include_outside_option)
+        chosen_alt -= 1;
+
+      const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
+
+      //  Per-draw accumulator (loglik denominator only)
+      double log_P_avg = -std::numeric_limits<double>::infinity();
+
+      V_s.set_size(num_choices);
+      inside_utils.set_size(m_i);
+      DiffW.set_size(m_i, Sdraw); // m_i x Sdraw
+
+      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
+      const arma::mat* eta_i_ptr_s;
+      if (use_generate_s) {
+        halton_gen_s.fill_eta_i(eta_i_buf_s, i + 1);
+        eta_i_ptr_s = &eta_i_buf_s;
+      } else {
+        eta_i_store_s = eta_draws.slice(i);
+        eta_i_ptr_s = &eta_i_store_s;
+      }
+      const arma::mat& eta_i = *eta_i_ptr_s;
+      arma::mat Dgamma1;
+      arma::mat Gamma_final = batch_gamma_draws(L, eta_i, rc_dist, &Dgamma1);
+
+      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
+      const arma::mat WGamma = W_i * Gamma_final;
+
+      // ---- Draw loop: minimal work — utilities, softmax, logSumExp, DiffW ----
+      for (int s = 0; s < Sdraw; ++s) {
+        // Build utility vector
+        inside_utils = base_util_i + WGamma.col(s);
+        fill_choice_utilities(V_s, inside_utils, num_choices,
+                              include_outside_option);
+
+        // Probabilities
+        stable_softmax(V_s, P_s);
+        double P_choice = P_s(chosen_alt);
+        double log_P = std::log(P_choice);
+
+        // log-sum-exp over draws (log of un-normalized sum_s P_choice_s)
+        if (s == 0) {
+          log_P_avg = log_P;
+        } else {
+          log_P_avg = logSumExp2(log_P_avg, log_P);
+        }
+
+        // Build DiffW column: P_choice_s * diff_inside_s
+        if (include_outside_option) {
+          DiffW.col(s) = P_choice * (-P_s.subvec(1, m_i));
+          if (chosen_alt > 0) {
+            DiffW(chosen_alt - 1, s) += P_choice;
+          }
+        } else {
+          DiffW.col(s) = P_choice * (-P_s);
+          DiffW(chosen_alt, s) += P_choice;
+        }
+
+      } // end S loop
+
+      // ---- Post-draw BLAS-3 score assembly (same collapse as gradient) ----
+      // d_bar = sum_s DiffW(:,s) = rowSums(DiffW)  [m_i vector]
+      arma::vec d_bar = arma::sum(DiffW, 1); // m_i x 1
+
+      // s_i = grad_num / sum_s P_choice_s  (exp(-log_P_avg) = 1/sum_s P_choice_s)
+      // log_P_avg holds log(sum_s P_choice_s) -- BEFORE the "-= log(Sdraw)"
+      // normalization; the 1/S factor cancels between numerator and denominator.
+      const double inv_sum_P = std::exp(-log_P_avg);
+
+      s_i.zeros(n_params);
+
+      // Beta block
+      s_i.subvec(idx_beta_start, idx_mu_start - 1) =
+          inv_sum_P * (X_i.t() * d_bar);
+
+      if (K_w > 0) {
+        // BW = W_i^T * DiffW  (K_w x Sdraw, one dgemm)
+        BW = W_i.t() * DiffW;
+
+        // Mu block
+        if (rc_mean) {
+          s_i.subvec(idx_mu_start, idx_L_start - 1) =
+              inv_sum_P * (arma::sum(BW, 1) % dmu_final_dmu);
+        }
+
+        // L block
+        Btil = BW % Dgamma1;          // K_w x Sdraw elementwise
+        A = Btil * eta_i.t();         // K_w x K_w
+
+        if (rc_correlation) {
+          int lp = 0;
+          for (int p = 0; p < K_w; ++p) {
+            for (int q = 0; q <= p; ++q, ++lp) {
+              const double dLpq = (p == q) ? L(p, p) : 1.0;
+              s_i[idx_L_start + lp] = inv_sum_P * dLpq * A(p, q);
+            }
+          }
+        } else {
+          for (int p = 0; p < K_w; ++p) {
+            s_i[idx_L_start + p] = inv_sum_P * L(p, p) * A(p, p);
+          }
+        }
+      }
+
+      // Delta block (scatter of d_bar)
+      if (use_asc) {
+        scatter_delta_grad(s_i, idx_delta_start, d_bar,
+                           alt_idx0_i, m_i, include_outside_option, inv_sum_P);
+      }
+
+      scores.row(i) = s_i.t();
+    } // end N loop
+  } // end parallel region
+
+  return scores;
+}
+
 // ============================================================================
 // Mixed Logit: Share Prediction and BLP Contraction
 // ============================================================================

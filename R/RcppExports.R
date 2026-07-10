@@ -362,6 +362,10 @@ mnl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc
     .Call(`_choicer_mnl_bhhh_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
 
+mnl_scores_parallel <- function(theta, X, alt_idx, choice_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_mnl_scores_parallel`, theta, X, alt_idx, choice_idx, M, use_asc, include_outside_option)
+}
+
 #' Prediction of choice probabilities and utilities based on fitted model
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
@@ -826,6 +830,10 @@ mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_
     .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
 
+mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+}
+
 #' Per-observation simulated choice probabilities for Mixed Logit
 #'
 #' Returns the simulated choice probability for each (individual, alternative)
@@ -1166,6 +1174,10 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' @export
 nl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_bhhh_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
+}
+
+nl_scores_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
+    .Call(`_choicer_nl_scores_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, use_asc, include_outside_option)
 }
 
 #' Numerical Hessian of the log-likelihood via finite differences

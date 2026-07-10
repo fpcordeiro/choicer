@@ -15,7 +15,8 @@ prepare_mxl_data(
   outside_opt_label = NULL,
   include_outside_option = FALSE,
   rc_correlation = FALSE,
-  weights_col = NULL
+  weights_col = NULL,
+  cluster_col = NULL
 )
 }
 \arguments{
@@ -40,6 +41,11 @@ prepare_mxl_data(
 \item{rc_correlation}{Logical indicating whether random coefficients are correlated. Default is FALSE.}
 
 \item{weights_col}{Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation, finite and strictly positive). Mutually exclusive with \code{weights}.}
+
+\item{cluster_col}{Optional name of a column in \code{data} holding cluster
+labels for cluster-robust standard errors. Must be constant within each
+\code{id_col}; collapsed to one label per choice situation and returned as
+\code{cluster}.}
 }
 \value{
 A \code{choicer_data_mxl} object (list) containing:
@@ -51,6 +57,7 @@ A \code{choicer_data_mxl} object (list) containing:
 \item \code{M}: Integer vector with number of alternatives per choice situation.
 \item \code{N}: Number of choice situations.
 \item \code{weights}: Vector of weights.
+\item \code{cluster}: Vector of cluster labels (or \code{NULL}).
 \item \code{include_outside_option}: Logical flag.
 \item \code{rc_correlation}: Logical flag.
 \item \code{alt_mapping}: data.table mapping alternatives to summary statistics.

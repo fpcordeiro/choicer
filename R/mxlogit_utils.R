@@ -98,14 +98,26 @@
 #' @param se_method Method for computing standard errors. One of
 #'   \code{"hessian"} (default) for the analytical Hessian of the simulated
 #'   log-likelihood, \code{"bhhh"} for the BHHH/outer-product-of-gradients
-#'   (OPG) estimator, or \code{"sandwich"} for the robust (Huber-White)
+#'   (OPG) estimator, \code{"sandwich"} for the robust (Huber-White)
 #'   variance \eqn{V = A^{-1} B A^{-1}} (bread \eqn{A} = weighted negated
-#'   Hessian, meat \eqn{B} = weight-squared OPG). Use \code{"sandwich"} for
+#'   Hessian, meat \eqn{B} = weight-squared OPG), or \code{"cluster"} for the
+#'   cluster-robust sandwich (requires \code{cluster_col} or a prepared
+#'   \code{input_data} with a \code{cluster} field). Use \code{"sandwich"} for
 #'   valid inference under choice-based / WESML weighting, where the
 #'   inverse-Hessian and ordinary BHHH are invalid; it reduces to the usual
 #'   robust variance under uniform weights. BHHH scales better to large
 #'   problems (many alternatives or simulation draws) but may underestimate
-#'   standard errors in finite samples or away from the optimum.
+#'   standard errors in finite samples or away from the optimum. Any of these
+#'   can also be recomputed post hoc via \code{vcov(fit, type = )}. Note that
+#'   clustering repairs the inference, not the estimand: the MXL likelihood
+#'   treats each choice situation as an independent draw from the mixing
+#'   distribution; for panel random coefficients use
+#'   \code{\link{run_hmnlogit}}.
+#' @param cluster_col Optional name of a column in \code{data} holding cluster
+#'   labels for cluster-robust standard errors (e.g. a person id when the same
+#'   decision maker contributes several choice situations). Must be constant
+#'   within each \code{id_col}. Supplying \code{cluster_col} without an explicit
+#'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param scale_vars Pre-estimation column scaling for design matrices. One of
 #'   \code{"none"} (default), \code{"sd"} (sample standard deviation),
 #'   \code{"mad"} (\code{stats::mad}, i.e. 1.4826 \eqn{\times}
@@ -204,7 +216,7 @@ run_mxlogit <- function(
     upper = NULL,
     optimizer = NULL,
     control = list(),
-    se_method = c("hessian", "bhhh", "sandwich"),
+    se_method = c("hessian", "bhhh", "sandwich", "cluster"),
     scale_vars = c("none", "sd", "mad", "iqr"),
     weights = NULL,
     outside_opt_label = NULL,
@@ -214,11 +226,14 @@ run_mxlogit <- function(
     scramble    = c("owen", "none"),
     keep_data = TRUE,
     nloptr_opts = NULL,
-    weights_col = NULL
+    weights_col = NULL,
+    cluster_col = NULL
 ) {
   cl <- match.call()
 
+  se_method_default <- missing(se_method)
   se_method <- match.arg(se_method)
+  if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
   scale_vars <- match.arg(scale_vars)
   draws   <- match.arg(draws)
   scramble <- match.arg(scramble)
@@ -257,6 +272,11 @@ run_mxlogit <- function(
          "Bake weights into `input_data` via prepare_mxl_data(weights_col = ) ",
          "or supply `weights` to prepare_mxl_data().")
   }
+  if (has_input && !is.null(cluster_col)) {
+    stop("`cluster_col` is only supported in the convenience (data) workflow. ",
+         "Bake cluster labels into `input_data` via ",
+         "prepare_mxl_data(cluster_col = ).")
+  }
 
   if (has_data) {
     # Convenience workflow: validate required column-name arguments
@@ -292,7 +312,8 @@ run_mxlogit <- function(
       weights_col = weights_col,
       outside_opt_label = outside_opt_label,
       include_outside_option = include_outside_option,
-      rc_correlation = rc_correlation
+      rc_correlation = rc_correlation,
+      cluster_col = cluster_col
     )
     K_w <- ncol(input_data$W)
     if (draws == "store") {
@@ -314,6 +335,12 @@ run_mxlogit <- function(
     if (is.null(eta_draws)) {
       stop("'eta_draws' is required when using 'input_data' (advanced workflow).")
     }
+  }
+
+  if (se_method == "cluster" && is.null(input_data$cluster)) {
+    stop("se_method = \"cluster\" needs cluster labels: pass `cluster_col=` ",
+         "(convenience workflow) or prepare `input_data` with ",
+         "prepare_mxl_data(cluster_col = ).", call. = FALSE)
   }
 
   # Parameter dimensions
@@ -514,7 +541,7 @@ run_mxlogit <- function(
             "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
             "inference.",
             call. = FALSE)
-  } else if (weights_nonuniform && se_method != "sandwich") {
+  } else if (weights_nonuniform && !se_method %in% c("sandwich", "cluster")) {
     warning("Non-uniform weights detected. If these are sampling/WESML ",
             "weights, use se_method = 'sandwich' for valid inference.",
             call. = FALSE)
@@ -547,8 +574,10 @@ run_mxlogit <- function(
   # For "sandwich" (robust / WESML) standard errors, form V = A^{-1} B A^{-1}
   # with bread A = weighted negated Hessian and meat B = weight-squared OPG
   # (pass weights^2 to the BHHH routine, whose per-individual score is
-  # weight-free). Computed in scaled space; the back-transform below applies.
-  if (se_method == "sandwich") {
+  # weight-free). For "cluster", the meat is the outer product of
+  # within-cluster sums of weighted scores. Computed in scaled space; the
+  # back-transform below applies.
+  if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- mxl_hessian_parallel(
       theta = theta_hat, X = input_data$X, W = input_data$W,
       alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
@@ -558,15 +587,28 @@ run_mxlogit <- function(
       include_outside_option = input_data$include_outside_option,
       gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
     )
-    B_meat <- mxl_bhhh_parallel(
-      theta = theta_hat, X = input_data$X, W = input_data$W,
-      alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
-      M = input_data$M, weights = input_data$weights^2, eta_draws = eta_draws,
-      rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
-      use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
-    )
+    B_meat <- if (se_method == "sandwich") {
+      mxl_bhhh_parallel(
+        theta = theta_hat, X = input_data$X, W = input_data$W,
+        alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
+        M = input_data$M, weights = input_data$weights^2, eta_draws = eta_draws,
+        rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
+        use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option,
+        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+      )
+    } else {
+      S_scores <- mxl_scores_parallel(
+        theta = theta_hat, X = input_data$X, W = input_data$W,
+        alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
+        M = input_data$M, eta_draws = eta_draws,
+        rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
+        use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option,
+        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+      )
+      .score_meat(S_scores, input_data$weights, "cluster", input_data$cluster)
+    }
     vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {
   hess <- switch(
@@ -672,7 +714,8 @@ run_mxlogit <- function(
         alt_idx = input_data$alt_idx,
         choice_idx = input_data$choice_idx,
         M = input_data$M,
-        weights = input_data$weights
+        weights = input_data$weights,
+        cluster = input_data$cluster
       )
     },
     draws_info = draws_info,
@@ -704,6 +747,10 @@ run_mxlogit <- function(
 #' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param rc_correlation Logical indicating whether random coefficients are correlated. Default is FALSE.
+#' @param cluster_col Optional name of a column in \code{data} holding cluster
+#'   labels for cluster-robust standard errors. Must be constant within each
+#'   \code{id_col}; collapsed to one label per choice situation and returned as
+#'   \code{cluster}.
 #' @returns A `choicer_data_mxl` object (list) containing:
 #'   \itemize{
 #'     \item `X`: Fixed-coefficient design matrix (sum(M) x K_x).
@@ -713,6 +760,7 @@ run_mxlogit <- function(
 #'     \item `M`: Integer vector with number of alternatives per choice situation.
 #'     \item `N`: Number of choice situations.
 #'     \item `weights`: Vector of weights.
+#'     \item `cluster`: Vector of cluster labels (or `NULL`).
 #'     \item `include_outside_option`: Logical flag.
 #'     \item `rc_correlation`: Logical flag.
 #'     \item `alt_mapping`: data.table mapping alternatives to summary statistics.
@@ -742,7 +790,8 @@ prepare_mxl_data <- function(
     outside_opt_label = NULL,
     include_outside_option = FALSE,
     rc_correlation = FALSE,
-    weights_col = NULL
+    weights_col = NULL,
+    cluster_col = NULL
 ) {
 
   ## Preliminary housekeeping --------------------------------------------------
@@ -757,6 +806,7 @@ prepare_mxl_data <- function(
     stop("Supply only one of `weights` or `weights_col`.")
   }
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
+  if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
@@ -869,6 +919,12 @@ prepare_mxl_data <- function(
     }
   }
 
+  ## Collapse a row-level cluster column to one label per choice situation
+  ## (same alignment discipline as weights_col).
+  cluster <- if (!is.null(cluster_col)) {
+    .collapse_situation_col(dt, cluster_col, id_col, ids)
+  }
+
   ## choice_idx[i] - 1-based index *within* the choice set data
   ## 0 == outside option (only if chosen = 0 for all inside options & include_outside_option == TRUE)
   if (include_outside_option) {
@@ -944,6 +1000,7 @@ prepare_mxl_data <- function(
       M           = M,
       N           = N,
       weights     = weights,
+      cluster     = cluster,
       include_outside_option = include_outside_option,
       rc_correlation = rc_correlation,
       alt_mapping = alt_mapping[],

@@ -75,9 +75,43 @@ coef.choicer_fit <- function(object, ...) {
 
 #' Extract variance-covariance matrix from a choicer_fit object
 #'
-#' Triggers lazy Hessian computation if vcov has not been computed yet.
+#' With no arguments, returns the variance-covariance matrix implied by the
+#' fit's own \code{se_method} (triggering lazy computation if needed). Passing
+#' \code{type} recomputes a different variance estimator post hoc from the
+#' stored data — no refit needed (requires \code{keep_data = TRUE}):
+#' \describe{
+#'   \item{\code{"hessian"}}{Inverse of the analytical negated Hessian.}
+#'   \item{\code{"bhhh"}}{Inverse of the BHHH/OPG information
+#'     \eqn{\sum_i w_i s_i s_i'}.}
+#'   \item{\code{"robust"}}{Huber-White sandwich
+#'     \eqn{A^{-1} (\sum_i w_i^2 s_i s_i') A^{-1}} — also the valid WESML
+#'     variance under choice-based weighting.}
+#'   \item{\code{"cluster"}}{Cluster-robust sandwich
+#'     \eqn{A^{-1} (\sum_g g_g g_g') A^{-1}} with
+#'     \eqn{g_g = \sum_{i \in g} w_i s_i} the within-cluster sum of weighted
+#'     scores. Requires \code{cluster} (or a fit made with
+#'     \code{cluster_col}). No small-sample correction is applied.}
+#' }
+#' Here \eqn{i} indexes \emph{choice situations}. For repeated choices by the
+#' same decision maker (panel data), cluster on the decision maker.
+#'
+#' Note (mixed logit): clustering repairs the \emph{inference}, not the
+#' \emph{estimand}. \code{run_mxlogit()} treats each choice situation as an
+#' independent draw from the mixing distribution (a cross-sectional MSL
+#' likelihood, not the panel product form), so on panel data the point
+#' estimates target that cross-sectional model; \code{type = "cluster"} makes
+#' their standard errors robust to within-person dependence but does not turn
+#' the fit into a panel mixed logit. For panel random coefficients use
+#' \code{\link{run_hmnlogit}} (\code{person_col}).
 #'
 #' @param object A choicer_fit object.
+#' @param type \code{NULL} (default; return the as-fitted vcov) or one of
+#'   \code{"hessian"}, \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
+#' @param cluster Cluster labels for \code{type = "cluster"}: one label per
+#'   choice situation, aligned with the prepared data (situations sorted by
+#'   the id column). Defaults to the labels stored at fit time via
+#'   \code{cluster_col}. Supplying \code{cluster} without \code{type} implies
+#'   \code{type = "cluster"}.
 #' @param ... Additional arguments (ignored).
 #' @returns Named variance-covariance matrix, or NULL if unavailable.
 #' @examples
@@ -87,15 +121,32 @@ coef.choicer_fit <- function(object, ...) {
 #' N <- 50; J <- 3
 #' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
 #' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+#' dt[, person := rep(1:10, each = 5)[id]]
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' vcov(fit)
+#' vcov(fit)                          # as fitted (hessian)
+#' vcov(fit, type = "robust")         # Huber-White, post hoc
+#' cl <- dt[, person[1L], by = id][["V1"]]
+#' vcov(fit, type = "cluster", cluster = cl)
 #' }
 #' @export
-vcov.choicer_fit <- function(object, ...) {
-  object <- ensure_vcov(object)
-  object$vcov
+vcov.choicer_fit <- function(object, type = NULL, cluster = NULL, ...) {
+  if (is.null(type)) {
+    if (is.null(cluster)) {
+      object <- ensure_vcov(object)
+      return(object$vcov)
+    }
+    type <- "cluster"
+  }
+  type <- match.arg(type, c("hessian", "bhhh", "robust", "cluster"))
+  res <- .assemble_score_vcov(object, type = type, cluster = cluster)
+  if (!is.null(res$vcov)) {
+    nms <- names(object$coefficients)
+    rownames(res$vcov) <- nms
+    colnames(res$vcov) <- nms
+  }
+  res$vcov
 }
 
 # --- wesml_vcov (robust / sandwich) -----------------------------------------
@@ -881,6 +932,7 @@ print_se_weighting <- function(x) {
     x$se_method %||% "hessian",
     bhhh = "BHHH (OPG)",
     sandwich = "Sandwich (robust)",
+    cluster = "Cluster-robust sandwich",
     numeric = "Numerical Hessian (finite differences)",
     "Analytical Hessian"
   ), "\n")

@@ -1,5 +1,30 @@
 # choicer 0.2.0
 
+## Robust and clustered standard errors (MNL / MXL / NL)
+
+- `vcov()` on a fitted MNL, MXL, or NL model gains `type =` and `cluster =`
+  arguments for post-hoc variance recomputation without refitting (requires
+  `keep_data = TRUE`): `"hessian"` (inverse analytical Hessian), `"bhhh"`
+  (OPG), `"robust"` (Huber-White / WESML sandwich), and `"cluster"`
+  (cluster-robust sandwich over within-cluster sums of weighted scores — use
+  it when the same decision maker contributes several choice situations).
+  With no arguments, `vcov()` returns the as-fitted variance, unchanged.
+- New `cluster_col=` argument on `run_mnlogit()` / `run_mxlogit()` /
+  `run_nestlogit()` (and the corresponding `prepare_*_data()` functions):
+  supplies per-situation cluster labels at fit time and selects the new
+  `se_method = "cluster"`.
+- All score-based variances (BHHH, robust, cluster) are now assembled in R
+  from one per-situation score matrix, computed by new internal C++ kernels
+  that reuse the BHHH loop bodies. The existing `se_method = "sandwich"` /
+  `wesml_vcov()` results are unchanged (the robust meat is the `w^2` special
+  case of the shared path).
+- Scope note (MXL): clustering repairs the inference, not the estimand. The
+  MXL simulated likelihood treats each choice situation as an independent
+  draw from the mixing distribution (cross-sectional MSL, not the panel
+  product form), so clustered standard errors on panel data are robust to
+  within-person dependence but do not turn the fit into a panel mixed logit.
+  For panel random coefficients use `run_hmnlogit()` (`person_col=`).
+
 ## Corrections
 
 - The documentation previously claimed that MCMC draws from the Gibbs

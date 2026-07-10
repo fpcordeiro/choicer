@@ -370,6 +370,9 @@ ensure_vcov <- function(object) {
   se_method <- object$se_method %||% "hessian"
   result <- if (identical(se_method, "sandwich")) {
     compute_sandwich_vcov(object)
+  } else if (identical(se_method, "cluster")) {
+    .assemble_score_vcov(object, type = "cluster",
+                         cluster = object[["data"]]$cluster)
   } else {
     invert_hessian(compute_hessian(object))
   }
@@ -740,82 +743,203 @@ invert_hessian <- function(hess) {
 #' Computes \code{V = A^{-1} B A^{-1}} from stored (natural-scale) data, where
 #' \code{A = sum_i w_i (-H_i)} is the weighted negated Hessian and
 #' \code{B = sum_i w_i^2 s_i s_i'} is the weight-squared outer product of
-#' per-individual scores. \code{B} is obtained with zero extra C++ by calling
-#' the BHHH routine with squared weights (its per-individual score is
-#' weight-free). Valid under choice-based / WESML weighting, where the plain
-#' inverse-Hessian is not. Supported for MNL, MXL and NL fits.
+#' per-individual scores — the \code{"robust"} case of the shared
+#' \code{.assemble_score_vcov()} path (\code{crossprod(w * S)} over the
+#' per-situation score matrix). Valid under choice-based / WESML weighting,
+#' where the plain inverse-Hessian is not. Supported for MNL, MXL and NL fits.
 #'
 #' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
 #'   \code{keep_data = TRUE}.
 #' @returns List with \code{vcov} and \code{se}.
 #' @noRd
 compute_sandwich_vcov <- function(object) {
+  .assemble_score_vcov(object, type = "robust")
+}
+
+#' Per-situation score matrix from stored data
+#'
+#' Dispatches to the internal \code{*_scores_parallel} C++ kernels and returns
+#' the \code{N x p} matrix whose row \code{i} is the weight-free score of
+#' choice situation \code{i} evaluated at the fitted coefficients. For MXL,
+#' Halton draws are regenerated deterministically from \code{draws_info}
+#' (mirroring \code{compute_hessian()}).
+#'
+#' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
+#'   \code{keep_data = TRUE}.
+#' @returns Numeric matrix, \code{nobs x n_params}.
+#' @noRd
+compute_scores <- function(object) {
   if (is.null(object[["data"]])) {
-    stop("Cannot compute sandwich vcov: no data stored. ",
-         "Refit with keep_data = TRUE.")
+    stop("Cannot compute scores: no data stored. Refit with keep_data = TRUE.")
   }
   if (!object$model %in% c("mnl", "mxl", "nl")) {
-    stop("Sandwich standard errors are implemented for multinomial (MNL), ",
+    stop("Score-based standard errors are implemented for multinomial (MNL), ",
          "mixed (MXL) and nested (NL) logit only.")
   }
 
-  # Recomputes A (bread) and B (meat) from the stored NATURAL-scale data and
-  # natural-scale coefficients, so it needs no back-transform: by design it
-  # operates entirely in natural space (unlike the eager run_mxlogit() path,
-  # which works in scaled space and then back-transforms the result).
+  theta <- object$coefficients
+  d <- object[["data"]]
+
+  switch(object$model,
+    mnl = mnl_scores_parallel(
+      theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+      M = d$M, use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    ),
+    nl = nl_scores_parallel(
+      theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+      nest_idx = d$nest_idx, M = d$M, use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    ),
+    mxl = {
+      gp <- .mxl_gen_params(object$draws_info)
+      mxl_scores_parallel(
+        theta = theta, X = d$X, W = d$W,
+        alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+        M = d$M, eta_draws = gp$eta_draws,
+        rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+        rc_mean = object$rc_mean, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option,
+        gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
+      )
+    }
+  )
+}
+
+#' Bread matrix: weighted negated Hessian from stored data
+#'
+#' Always the analytical Hessian (numeric fallback for NL fits estimated with
+#' \code{se_method = "numeric"}), regardless of \code{object$se_method} —
+#' unlike \code{compute_hessian()}, which returns the BHHH matrix for
+#' \code{se_method = "bhhh"} fits.
+#'
+#' @noRd
+.compute_bread <- function(object) {
   theta <- object$coefficients
   d <- object[["data"]]
   w <- d$weights
 
-  res <- switch(object$model,
-    mnl = {
-      A <- mnl_loglik_hessian_parallel(
-        theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
-        M = d$M, weights = w, use_asc = object$use_asc,
-        include_outside_option = object$include_outside_option
-      )
-      B <- mnl_bhhh_parallel(
-        theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
-        M = d$M, weights = w^2, use_asc = object$use_asc,
-        include_outside_option = object$include_outside_option
-      )
-      list(A = A, B = B)
-    },
-    nl = {
-      A <- nl_loglik_hessian_parallel(
+  switch(object$model,
+    mnl = mnl_loglik_hessian_parallel(
+      theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+      M = d$M, weights = w, use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    ),
+    nl = if (identical(object$se_method %||% "hessian", "numeric")) {
+      nl_loglik_numeric_hessian(
         theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
         nest_idx = d$nest_idx, M = d$M, weights = w, use_asc = object$use_asc,
         include_outside_option = object$include_outside_option
       )
-      B <- nl_bhhh_parallel(
+    } else {
+      nl_loglik_hessian_parallel(
         theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx,
-        nest_idx = d$nest_idx, M = d$M, weights = w^2, use_asc = object$use_asc,
+        nest_idx = d$nest_idx, M = d$M, weights = w, use_asc = object$use_asc,
         include_outside_option = object$include_outside_option
       )
-      list(A = A, B = B)
     },
     mxl = {
-      gp_sw <- .mxl_gen_params(object$draws_info)
-      A <- mxl_hessian_parallel(
+      gp <- .mxl_gen_params(object$draws_info)
+      mxl_hessian_parallel(
         theta = theta, X = d$X, W = d$W,
         alt_idx = d$alt_idx, choice_idx = d$choice_idx,
-        M = d$M, weights = w, eta_draws = gp_sw$eta_draws,
+        M = d$M, weights = w, eta_draws = gp$eta_draws,
         rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
         rc_mean = object$rc_mean, use_asc = object$use_asc,
         include_outside_option = object$include_outside_option,
-        gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
+        gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
       )
-      B <- mxl_bhhh_parallel(
-        theta = theta, X = d$X, W = d$W,
-        alt_idx = d$alt_idx, choice_idx = d$choice_idx,
-        M = d$M, weights = w^2, eta_draws = gp_sw$eta_draws,
-        rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
-        rc_mean = object$rc_mean, use_asc = object$use_asc,
-        include_outside_option = object$include_outside_option,
-        gen_seed = gp_sw$gen_seed, gen_scramble = gp_sw$gen_scramble, gen_S = gp_sw$gen_S
-      )
-      list(A = A, B = B)
     }
   )
-  .sandwich_combine(res$A, res$B)
+}
+
+#' Meat matrix from a per-situation score matrix
+#'
+#' One code path for every score-based variance estimator:
+#' \describe{
+#'   \item{bhhh}{\code{crossprod(sqrt(w) * S)} — the ordinary weighted
+#'     BHHH/OPG information \eqn{\sum_i w_i s_i s_i'}.}
+#'   \item{robust}{\code{crossprod(w * S)} — the Huber-White / WESML sandwich
+#'     meat \eqn{\sum_i w_i^2 s_i s_i'} (the \eqn{w^2} special case).}
+#'   \item{cluster}{\code{crossprod(rowsum(w * S, cluster))} — within-cluster
+#'     sums of weighted scores, then their outer product
+#'     \eqn{\sum_g (\sum_{i \in g} w_i s_i)(\sum_{i \in g} w_i s_i)'}.
+#'     Invariant to the ordering of cluster labels (\code{rowsum} groups by
+#'     value). No small-sample (\eqn{G/(G-1)}) correction is applied.}
+#' }
+#'
+#' @param S \code{N x p} score matrix (rows are weight-free scores).
+#' @param w Length-\code{N} weight vector.
+#' @param type One of \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
+#' @param cluster Length-\code{N} cluster labels (required for
+#'   \code{type = "cluster"}).
+#' @returns \code{p x p} meat matrix.
+#' @noRd
+.score_meat <- function(S, w, type, cluster = NULL) {
+  switch(type,
+    bhhh = crossprod(sqrt(w) * S),
+    robust = crossprod(w * S),
+    cluster = {
+      if (is.null(cluster)) {
+        stop("Clustered standard errors need `cluster`: a vector with one ",
+             "cluster label per choice situation (or fit with `cluster_col=`).",
+             call. = FALSE)
+      }
+      if (length(cluster) != nrow(S)) {
+        stop("`cluster` has length ", length(cluster), " but the model has ",
+             nrow(S), " choice situations. Supply one cluster label per ",
+             "choice situation, aligned with the prepared data ",
+             "(situations sorted by id).", call. = FALSE)
+      }
+      if (anyNA(cluster)) {
+        stop("`cluster` contains missing values.", call. = FALSE)
+      }
+      crossprod(rowsum(w * S, group = as.character(cluster)))
+    },
+    stop("Unknown meat type: '", type, "'.")
+  )
+}
+
+#' Score-based variance assembly (bhhh / robust / cluster) from stored data
+#'
+#' The single post-hoc entry point behind \code{vcov(fit, type = )},
+#' \code{ensure_vcov()} (for \code{se_method = "cluster"} fits) and
+#' \code{compute_sandwich_vcov()}. Operates entirely in natural space: the
+#' stored data and coefficients are natural-scale even when the fit used
+#' \code{scale_vars}, so no back-transform is needed.
+#'
+#' @param object A fitted \code{choicer_fit} (MNL / MXL / NL) with
+#'   \code{keep_data = TRUE}.
+#' @param type One of \code{"hessian"}, \code{"bhhh"}, \code{"robust"},
+#'   \code{"cluster"}.
+#' @param cluster Cluster labels for \code{type = "cluster"}; defaults to the
+#'   labels stored at fit time via \code{cluster_col}.
+#' @returns List with \code{vcov} and \code{se}.
+#' @noRd
+.assemble_score_vcov <- function(object, type, cluster = NULL) {
+  if (is.null(object[["data"]])) {
+    stop("Cannot compute standard errors: no data stored. ",
+         "Refit with keep_data = TRUE.")
+  }
+  if (!object$model %in% c("mnl", "mxl", "nl")) {
+    stop("Score-based standard errors are implemented for multinomial (MNL), ",
+         "mixed (MXL) and nested (NL) logit only.")
+  }
+
+  if (identical(type, "hessian")) {
+    return(invert_hessian(.compute_bread(object)))
+  }
+
+  w <- object[["data"]]$weights
+  S <- compute_scores(object)
+
+  if (identical(type, "bhhh")) {
+    return(invert_hessian(.score_meat(S, w, "bhhh")))
+  }
+
+  if (identical(type, "cluster") && is.null(cluster)) {
+    cluster <- object[["data"]]$cluster
+  }
+  B <- .score_meat(S, w, type, cluster)
+  .sandwich_combine(.compute_bread(object), B)
 }

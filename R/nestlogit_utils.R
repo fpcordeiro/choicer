@@ -48,9 +48,17 @@
 #'   (default, analytical Hessian via \code{nl_loglik_hessian_parallel}),
 #'   \code{"numeric"} (finite-difference oracle via
 #'   \code{nl_loglik_numeric_hessian}), \code{"bhhh"} (outer product of
-#'   gradients via \code{nl_bhhh_parallel}), or \code{"sandwich"} (robust
-#'   Huber--White / WESML variance \eqn{A^{-1} B A^{-1}}). Use \code{"sandwich"}
-#'   under choice-based / WESML weighting.
+#'   gradients via \code{nl_bhhh_parallel}), \code{"sandwich"} (robust
+#'   Huber--White / WESML variance \eqn{A^{-1} B A^{-1}}), or \code{"cluster"}
+#'   (cluster-robust sandwich; requires \code{cluster_col} or a prepared
+#'   \code{input_data} with a \code{cluster} field). Use \code{"sandwich"}
+#'   under choice-based / WESML weighting. Any of these can also be recomputed
+#'   post hoc via \code{vcov(fit, type = )}.
+#' @param cluster_col Optional name of a column in \code{data} holding cluster
+#'   labels for cluster-robust standard errors (e.g. a person id when the same
+#'   decision maker contributes several choice situations). Must be constant
+#'   within each \code{id_col}. Supplying \code{cluster_col} without an explicit
+#'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
 #'   instead.
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
@@ -94,10 +102,13 @@ run_nestlogit <- function(
     outside_opt_label = NULL,
     include_outside_option = FALSE,
     keep_data = TRUE,
-    se_method = c("hessian", "numeric", "bhhh", "sandwich"),
+    se_method = c("hessian", "numeric", "bhhh", "sandwich", "cluster"),
+    cluster_col = NULL,
     nloptr_opts = NULL
 ) {
+  se_method_default <- missing(se_method)
   se_method <- match.arg(se_method)
+  if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
   cl <- match.call()
 
   # Backward compatibility: nloptr_opts -> optimizer + control
@@ -122,6 +133,11 @@ run_nestlogit <- function(
     stop("`weights_col` is only supported in the convenience (data) workflow. ",
          "Bake weights into `input_data` via prepare_nl_data(weights_col = ) ",
          "or supply `weights` to prepare_nl_data().")
+  }
+  if (has_input && !is.null(cluster_col)) {
+    stop("`cluster_col` is only supported in the convenience (data) workflow. ",
+         "Bake cluster labels into `input_data` via ",
+         "prepare_nl_data(cluster_col = ).")
   }
 
   if (has_data) {
@@ -157,8 +173,15 @@ run_nestlogit <- function(
       weights = weights,
       weights_col = weights_col,
       outside_opt_label = outside_opt_label,
-      include_outside_option = include_outside_option
+      include_outside_option = include_outside_option,
+      cluster_col = cluster_col
     )
+  }
+
+  if (se_method == "cluster" && is.null(input_data$cluster)) {
+    stop("se_method = \"cluster\" needs cluster labels: pass `cluster_col=` ",
+         "(convenience workflow) or prepare `input_data` with ",
+         "prepare_nl_data(cluster_col = ).", call. = FALSE)
   }
 
   # Parameter dimensions
@@ -238,7 +261,7 @@ run_nestlogit <- function(
             "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
             "inference.",
             call. = FALSE)
-  } else if (weights_nonuniform && se_method != "sandwich") {
+  } else if (weights_nonuniform && !se_method %in% c("sandwich", "cluster")) {
     warning("Non-uniform weights detected. If these are sampling/WESML ",
             "weights, use se_method = 'sandwich' for valid inference.",
             call. = FALSE)
@@ -270,20 +293,31 @@ run_nestlogit <- function(
   # Compute vcov eagerly using the selected SE method. For "sandwich"
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
   # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
-  # weight-free BHHH routine). No back-transform layer in NL.
-  if (se_method == "sandwich") {
+  # weight-free BHHH routine). For "cluster", the meat is the outer product of
+  # within-cluster sums of weighted scores. No back-transform layer in NL.
+  if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- nl_loglik_hessian_parallel(
       theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
       choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
       M = input_data$M, weights = input_data$weights, use_asc = use_asc,
       include_outside_option = input_data$include_outside_option
     )
-    B_meat <- nl_bhhh_parallel(
-      theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-      choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-      M = input_data$M, weights = input_data$weights^2, use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
-    )
+    B_meat <- if (se_method == "sandwich") {
+      nl_bhhh_parallel(
+        theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+        M = input_data$M, weights = input_data$weights^2, use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option
+      )
+    } else {
+      S_scores <- nl_scores_parallel(
+        theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
+        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+        M = input_data$M, use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option
+      )
+      .score_meat(S_scores, input_data$weights, "cluster", input_data$cluster)
+    }
     vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {
     hess <- switch(
@@ -344,7 +378,8 @@ run_nestlogit <- function(
         choice_idx = input_data$choice_idx,
         nest_idx = input_data$nest_idx,
         M = input_data$M,
-        weights = input_data$weights
+        weights = input_data$weights,
+        cluster = input_data$cluster
       )
     },
     lambda = lambda,
@@ -375,11 +410,15 @@ run_nestlogit <- function(
 #'   \code{weights}. All weights must be finite and strictly positive.
 #' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
+#' @param cluster_col Optional name of a column in \code{data} holding cluster
+#'   labels for cluster-robust standard errors. Must be constant within each
+#'   \code{id_col}; collapsed to one label per choice situation and returned as
+#'   \code{cluster}.
 #' @returns A \code{choicer_data_nl} object (list) containing:
 #'   \itemize{
 #'     \item All fields from \code{\link{prepare_mnl_data}} (\code{X}, \code{alt_idx},
-#'       \code{choice_idx}, \code{M}, \code{N}, \code{weights}, \code{include_outside_option},
-#'       \code{alt_mapping}, \code{dropped_cols}).
+#'       \code{choice_idx}, \code{M}, \code{N}, \code{weights}, \code{cluster},
+#'       \code{include_outside_option}, \code{alt_mapping}, \code{dropped_cols}).
 #'     \item \code{nest_idx}: Integer vector of length J mapping each alternative
 #'       (in \code{alt_mapping} row order) to its nest.
 #'     \item \code{data_spec}: List with column name metadata including \code{nest_col}.
@@ -407,7 +446,8 @@ prepare_nl_data <- function(
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
-    weights_col = NULL
+    weights_col = NULL,
+    cluster_col = NULL
 ) {
   dt <- data.table::as.data.table(data)[]
 
@@ -447,7 +487,8 @@ prepare_nl_data <- function(
     weights = weights,
     weights_col = weights_col,
     outside_opt_label = outside_opt_label,
-    include_outside_option = include_outside_option
+    include_outside_option = include_outside_option,
+    cluster_col = cluster_col
   )
 
   # Build nest_idx aligned with alt_mapping row order (inside alternatives only;
