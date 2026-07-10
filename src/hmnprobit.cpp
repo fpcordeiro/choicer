@@ -55,8 +55,9 @@
 // Parallelism / reproducibility contract (mirrors src/mnprobit.cpp:20-35):
 // ONE persistent OpenMP region; workers touch only hand-rolled hb_internal.h
 // helpers (no BLAS/LAPACK/R API off master); every cross-unit reduction is
-// fixed-order; per-(iteration, unit) RNG streams make draws bitwise
-// independent of the thread count.
+// fixed-order; per-(iteration, unit) RNG streams make draws reproducible
+// given the seed and a fixed thread count (across thread counts, invariant
+// only up to floating-point reduction-order round-off, not bitwise).
 //
 // RNG partition per iteration r (make_stream(seed, r, tag), documented in
 // hb_internal.h):
@@ -224,8 +225,10 @@ static void validate_hmnp_inputs(const arma::mat& X, const arma::mat& Z,
 //' OpenMP across respondents; the \eqn{\delta_j} draws are parallelized
 //' across alternatives (conditionally independent given the augmented
 //' utilities — unlike the HMNL, whose delta sweep must be serial). Each
-//' (iteration, unit) pair uses its own RNG stream, so draws are bitwise
-//' reproducible independent of the number of threads.
+//' (iteration, unit) pair uses its own RNG stream, so draws are
+//' reproducible given the seed and a fixed thread count; across different
+//' thread counts they are invariant only up to floating-point
+//' reduction-order round-off (~1e-15), not bitwise.
 //'
 //' @param X total_rows x K_struct structural design matrix (inside rows
 //'   only), rows sorted by (person, task, alternative).
@@ -547,7 +550,7 @@ Rcpp::List hmnp_gibbs(const arma::mat& X,
       // --- (b) delta_j | U, beta, theta, sigma_d2, s2 (work-shared) ---------
       // Conditionally independent across j given U; each j's sufficient
       // statistic is summed over its CSR row list in fixed row order by one
-      // thread, so the draw is bitwise thread-count invariant.
+      // thread, so the draw does not depend on the thread schedule.
 #ifdef _OPENMP
 #pragma omp for schedule(static)
 #endif

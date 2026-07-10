@@ -111,8 +111,10 @@ The latent sweep and the \eqn{\beta_i} draws are parallelized with
 OpenMP across respondents; the \eqn{\delta_j} draws are parallelized
 across alternatives (conditionally independent given the augmented
 utilities — unlike the HMNL, whose delta sweep must be serial). Each
-(iteration, unit) pair uses its own RNG stream, so draws are bitwise
-reproducible independent of the number of threads.
+(iteration, unit) pair uses its own RNG stream, so draws are
+reproducible given the seed and a fixed thread count; across different
+thread counts they are invariant only up to floating-point
+reduction-order round-off (~1e-15), not bitwise.
 }
 \examples{
 \donttest{

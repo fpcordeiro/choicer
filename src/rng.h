@@ -17,8 +17,9 @@
 //   * Each consumer derives an independent stream with make_stream(seed,
 //     iter, tag) — for the MNP latent sweep, one stream per (iteration,
 //     observation). Streams are deterministic functions of their key, so
-//     results are bitwise reproducible regardless of the number of OpenMP
-//     threads or the loop schedule.
+//     results are reproducible given the seed and a fixed number of OpenMP
+//     threads; across different thread counts they are invariant only up to
+//     floating-point reduction-order round-off (~1e-15), not bitwise.
 //   * An Xoshiro256pp instance must never be shared across threads; create
 //     one per task with make_stream() instead.
 //   * The master seed is supplied from R (drawn from R's RNG when the user

@@ -14,8 +14,9 @@
 // LAPACK/BLAS/R API, or (b) explicitly master-only (see each block). The
 // engine safety contract is the one documented in src/mnprobit.cpp:15-36:
 // no BLAS/LAPACK and no R RNG off the master thread, all cross-unit
-// accumulations in a fixed order so draws are bitwise independent of the
-// thread count.
+// accumulations in a fixed order so draws are reproducible given the seed
+// and a fixed thread count (across thread counts, invariant only up to
+// floating-point reduction-order round-off, not bitwise).
 //
 // RNG tag partition (per iteration r, master seed `seed`, via
 // make_stream(seed, r, tag) — src/rng.h). With N respondents and J inside
@@ -319,8 +320,8 @@ inline double hb_rinvgamma(Xoshiro256pp& rng, const double shape,
 // Master-only conditional draws for the shared hierarchy (b, W, theta,
 // sigma_d2). These run on the master thread between barriers, so they may
 // use armadillo / bayes_samplers freely; the sufficient statistics are still
-// accumulated in fixed i = 0..N-1 / j = 0..J-1 order for bitwise
-// thread-count invariance of everything feeding them.
+// accumulated in fixed i = 0..N-1 / j = 0..J-1 order so everything feeding
+// them is deterministic given the seed and a fixed thread count.
 // ----------------------------------------------------------------------------
 
 // b | beta_1..N, W  ~  MVN with precision (A + N W^{-1}) and mean

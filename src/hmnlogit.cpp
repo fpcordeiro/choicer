@@ -47,7 +47,9 @@
 // trace, and the interrupt poll run in a master block between barriers. All
 // cross-respondent reductions (the loglik trace, the sufficient statistics
 // inside draw_b/W_conditional) are accumulated on the master thread in fixed
-// respondent order, so draws are bitwise independent of the thread count.
+// respondent order, so draws are reproducible given the seed and a fixed
+// thread count; across thread counts they are invariant only up to
+// floating-point reduction-order round-off (~1e-15), not bitwise.
 //
 // RNG partition per iteration r via make_stream(seed, r, tag) (documented in
 // hb_internal.h; N respondents, J inside alternatives):
@@ -242,8 +244,10 @@ static void validate_hmnl_inputs(const arma::mat& X, const arma::mat& Z,
 //' The per-respondent \eqn{\beta_i} updates are parallelized with OpenMP;
 //' the \eqn{\delta_j} updates run as a strictly serial sweep (their
 //' conditionals are coupled through the shared softmax denominators). Each
-//' (iteration, unit) pair uses its own RNG stream, so draws are bitwise
-//' reproducible independent of the number of threads (see
+//' (iteration, unit) pair uses its own RNG stream, so draws are
+//' reproducible given the seed and a fixed thread count; across different
+//' thread counts they are invariant only up to floating-point
+//' reduction-order round-off (~1e-15), not bitwise (see
 //' \code{set_num_threads()}). This is the low-level engine behind
 //' \code{\link{run_hmnlogit}}, which handles initialization and
 //' post-processing.
@@ -512,7 +516,7 @@ Rcpp::List hmnl_gibbs(const arma::mat& X,
     for (int r = 0; r < R; ++r) {
       // --- (0) Cache rebuild: v, e, D_t, ll_t, cached respondent logliks ----
       // Fixed sub-order per respondent; slots are respondent-owned, so this
-      // pass is bitwise independent of the thread count.
+      // pass does not depend on the thread schedule.
 #ifdef _OPENMP
 #pragma omp for schedule(static)
 #endif
