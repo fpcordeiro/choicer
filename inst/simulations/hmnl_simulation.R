@@ -21,8 +21,9 @@ print(sim)
 # updates (proposal precision H_i + W^-1 at the pooled MLE), a strictly
 # serial delta_j sweep (the delta conditionals are coupled through the
 # softmax denominators), and conjugate hierarchy draws. set.seed() makes
-# the whole run reproducible; draws are bitwise invariant to the number of
-# OpenMP threads. Two chains feed the split-R-hat table.
+# the whole run reproducible given a fixed number of OpenMP threads (across
+# thread counts, draws agree only up to floating-point reduction-order
+# round-off). Two chains feed the split-R-hat table.
 set.seed(42)
 fit <- run_hmnlogit(
   data               = sim$data,

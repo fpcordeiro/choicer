@@ -8,9 +8,10 @@ test_that("run_hmnprobit recovers the DGP on a mid-sized panel", {
   # J = 12 (not 8): the delta mean-function intercept theta_0 is the
   # weakly-identified block (regressing the J alternative effects on Z), and
   # at J = 8 its posterior mean sits right at the 3-SD tolerance for this
-  # seed. The Gibbs chain is bitwise-reproducible across thread counts but
-  # not across platform BLAS/LAPACK (the master-thread Wishart / inv_sympd
-  # calls), so a borderline theta_0 that just passes on one platform's chain
+  # seed. The Gibbs chain is reproducible at a fixed seed and thread count
+  # but not across platform BLAS/LAPACK (the master-thread Wishart /
+  # inv_sympd calls) or thread counts (reduction-order round-off), so a
+  # borderline theta_0 that just passes on one platform's chain
   # realization can just fail on another's. J = 12 gives theta_0 enough
   # alternatives to concentrate near truth with margin on every platform.
   sim <- simulate_hmnp_data(N = 300, T = 5, J = 12, beta = c(0.8, -0.6),
