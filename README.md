@@ -25,37 +25,40 @@ pak::pkg_install("fpcordeiro/choicer")
 
 ## Example
 
-Estimate a multinomial logit model and compute elasticities and diversion ratios:
+Estimate a multinomial logit model on the shipped `mode_choice` data (the
+classic Greene & Hensher intercity travel-mode study: 210 travellers choosing
+among air, train, bus, and car) and compute elasticities and diversion ratios:
 
 ``` r
 library(choicer)
-library(data.table)
+data(mode_choice)
 
 # Estimate
 fit <- run_mnlogit(
-    data = dt,
-    id_col = "id",
-    alt_col = "alt",
-    choice_col = "choice",
-    covariate_cols = c("x1", "x2")
+    data           = mode_choice,
+    id_col         = "id",
+    alt_col        = "mode",
+    choice_col     = "choice",
+    covariate_cols = c("wait", "travel", "vcost")
 )
 
 summary(fit)
 
 # Post-estimation
-predict(fit, type = "shares")        # predicted market shares
-elasticities(fit, elast_var = "x1")  # own- and cross-price elasticities
-diversion_ratios(fit)                # diversion ratio matrix
-wtp(fit, price_var = "x1")           # willingness-to-pay with delta-method SEs
-gof(fit)                             # McFadden R2 and hit rate (also in summary())
+predict(fit, type = "shares")           # predicted market shares
+elasticities(fit, elast_var = "vcost")  # own- and cross-price elasticities
+diversion_ratios(fit)                   # diversion ratio matrix
+wtp(fit, price_var = "vcost")           # willingness-to-pay with delta-method SEs
+gof(fit)                                # McFadden R2 and hit rate (also in summary())
 
-# Counterfactual / policy prediction: perturb the data and predict
-dt_cf <- copy(dt)[alt == 2, x1 := x1 + 1]
-predict(fit, type = "shares", newdata = dt_cf)
+# Counterfactual / policy prediction: cut train fares 25% and predict
+mc_cf <- mode_choice
+mc_cf$vcost[mc_cf$mode == "train"] <- 0.75 * mc_cf$vcost[mc_cf$mode == "train"]
+predict(fit, type = "shares", newdata = mc_cf)
 
 # Welfare: change in expected consumer surplus from the counterfactual
-cs0 <- consumer_surplus(fit, price_var = "x1")
-cs1 <- consumer_surplus(fit, price_var = "x1", newdata = dt_cf)
+cs0 <- consumer_surplus(fit, price_var = "vcost")
+cs1 <- consumer_surplus(fit, price_var = "vcost", newdata = mc_cf)
 cs1$mean_cs - cs0$mean_cs
 ```
 
