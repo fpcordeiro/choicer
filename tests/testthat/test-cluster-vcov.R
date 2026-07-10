@@ -30,11 +30,13 @@ fit_mnl <- function(dt, ...) {
   ))
 }
 
-# Per-situation cluster labels aligned with the prepared data (ids sorted).
+# Per-situation cluster labels named by choice-situation id. Because the
+# labels carry their ids as names, vcov() realigns them to the prepared order
+# safely, regardless of the vector's own order.
 situation_clusters <- function(dt) {
   m <- unique(dt[, .(id, person)])
   data.table::setorder(m, id)
-  m$person
+  stats::setNames(m$person, m$id)
 }
 
 # --- Scores vs numDeriv per-situation gradients ------------------------------
@@ -164,7 +166,9 @@ test_that("cluster of singletons equals the robust variance", {
   dt <- make_panel_mnl()
   fit <- fit_mnl(dt)
   V_rob <- vcov(fit, type = "robust")
-  V_singleton <- vcov(fit, type = "cluster", cluster = seq_len(fit$nobs))
+  # Each situation its own cluster, named by situation id.
+  singletons <- stats::setNames(seq_len(fit$nobs), fit$data$situation_ids)
+  V_singleton <- vcov(fit, type = "cluster", cluster = singletons)
   expect_equal(V_singleton, V_rob, tolerance = 1e-10)
 })
 
@@ -185,13 +189,14 @@ test_that("a single cluster gives the outer product of the summed score", {
 test_that("cluster meat is invariant to label ordering and coding", {
   dt <- make_panel_mnl()
   fit <- fit_mnl(dt)
-  cl_int <- situation_clusters(dt)
+  cl_int <- situation_clusters(dt)         # named by situation id
   V1 <- vcov(fit, cluster = cl_int)  # cluster= alone implies type = "cluster"
-  # Relabel: reverse the integer coding
+  # Relabel: reverse the integer coding (names ride along)
   V2 <- vcov(fit, type = "cluster", cluster = max(cl_int) + 1L - cl_int)
-  # Recode as unordered character labels
+  # Recode as unordered character labels, keeping the id names
   pool <- sample(paste0("grp_", seq_len(max(cl_int))))
-  V3 <- vcov(fit, type = "cluster", cluster = pool[cl_int])
+  V3 <- vcov(fit, type = "cluster",
+             cluster = stats::setNames(pool[cl_int], names(cl_int)))
   expect_equal(V1, V2, tolerance = 1e-12)
   expect_equal(V1, V3, tolerance = 1e-12)
 })
@@ -262,14 +267,19 @@ test_that("cluster_col at fit time matches post-hoc clustering", {
 })
 
 test_that("cluster_col works for NL and MXL fits", {
+  # Well-conditioned fixture: 50 clusters identify the 7 NL parameters with
+  # room to spare, so vcov entries are small and well-scaled. (A small,
+  # ill-conditioned fixture makes the fit-time-vs-post-hoc comparison fragile:
+  # the parallel Hessian bread differs call-to-call by ~1e-8, which a poorly
+  # identified vcov amplifies into a large relative wobble.)
   set.seed(21)
-  N <- 60L; J <- 4L
+  N <- 200L; J <- 4L
   dt <- data.table::data.table(
     id = rep(seq_len(N), each = J), alt = rep(seq_len(J), N)
   )
   dt[, `:=`(x1 = stats::rnorm(.N), x2 = stats::rnorm(.N))]
   dt[, nest := ifelse(alt <= 2, "A", "B")]
-  dt[, person := rep(seq_len(15L), each = 4L)[id]]
+  dt[, person := rep(seq_len(50L), each = 4L)[id]]
   dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
 
   fit_nl <- suppressMessages(run_nestlogit(
@@ -280,8 +290,10 @@ test_that("cluster_col works for NL and MXL fits", {
   expect_identical(fit_nl$se_method, "cluster")
   expect_true(all(is.finite(fit_nl$se)))
   cl <- situation_clusters(dt)
+  # Fit-time and post-hoc are the same estimator; they differ only by the
+  # parallel-reduction noise in the bread, so allow a margin above it.
   expect_equal(vcov(fit_nl), vcov(fit_nl, type = "cluster", cluster = cl),
-               tolerance = 1e-6)
+               tolerance = 1e-5)
 
   fit_mxl <- suppressMessages(run_mxlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
@@ -290,7 +302,7 @@ test_that("cluster_col works for NL and MXL fits", {
   ))
   expect_identical(fit_mxl$se_method, "cluster")
   expect_equal(vcov(fit_mxl), vcov(fit_mxl, type = "cluster", cluster = cl),
-               tolerance = 1e-6)
+               tolerance = 1e-5)
 })
 
 # --- Error handling ----------------------------------------------------------
@@ -299,7 +311,7 @@ test_that("cluster errors are informative", {
   dt <- make_panel_mnl()
   fit <- fit_mnl(dt)
   expect_error(vcov(fit, type = "cluster"),
-               "need `cluster`")
+               "need cluster labels")
   expect_error(vcov(fit, type = "cluster", cluster = 1:5),
                "choice situations")
   cl <- situation_clusters(dt)
@@ -328,4 +340,123 @@ test_that("cluster errors are informative", {
   # keep_data = FALSE blocks post-hoc recomputation
   fit_nodata <- fit_mnl(dt, keep_data = FALSE)
   expect_error(vcov(fit_nodata, type = "robust"), "keep_data")
+})
+
+# --- Named-cluster realignment (the alignment footgun) -----------------------
+
+test_that("named cluster realigns by id, so its order does not matter", {
+  dt <- make_panel_mnl()
+  fit <- fit_mnl(dt)
+  cl <- situation_clusters(dt)                 # named by id, prepared order
+  V_ref <- vcov(fit, type = "cluster", cluster = cl)
+  # Shuffle the vector: names still identify each situation.
+  V_shuf <- vcov(fit, type = "cluster", cluster = cl[sample.int(length(cl))])
+  expect_equal(V_ref, V_shuf, tolerance = 1e-12)
+})
+
+test_that("a named cluster recovers the fit-time cluster_col result even when the data is not id-ordered", {
+  # Scramble row order so first-appearance (data) order != prepared (id) order.
+  dt <- make_panel_mnl()
+  set.seed(99)
+  dt_scrambled <- dt[sample.int(nrow(dt))]
+  fit_col <- fit_mnl(dt_scrambled, cluster_col = "person")  # ground truth
+  fit_plain <- fit_mnl(dt_scrambled)
+
+  # A per-situation vector built in DATA order (first appearance of each id).
+  first_seen <- dt_scrambled[!duplicated(id), .(id, person)]
+  data_order <- stats::setNames(first_seen$person, first_seen$id)
+  # Named -> realigned by id -> matches the fit-time truth despite its order.
+  expect_equal(vcov(fit_plain, type = "cluster", cluster = data_order),
+               vcov(fit_col), tolerance = 1e-6)
+
+  # The same labels stripped of names and taken positionally are NOT the
+  # fit-time truth (this is exactly the silent-misalignment hazard that names
+  # remove); the call warns about the prepared-order assumption.
+  V_positional <- suppressWarnings(
+    vcov(fit_plain, type = "cluster", cluster = unname(data_order))
+  )
+  expect_false(isTRUE(all.equal(V_positional, vcov(fit_col), tolerance = 1e-6)))
+})
+
+test_that("unnamed cluster warns about the prepared-order assumption", {
+  dt <- make_panel_mnl()
+  fit <- fit_mnl(dt)
+  cl <- unname(situation_clusters(dt))         # prepared order, but unnamed
+  expect_warning(vcov(fit, type = "cluster", cluster = cl),
+                 "prepared \\(id-sorted\\) order")
+  # In prepared order it still gives the right answer (equal to the named form).
+  V_unnamed <- suppressWarnings(vcov(fit, type = "cluster", cluster = cl))
+  V_named <- vcov(fit, type = "cluster", cluster = situation_clusters(dt))
+  expect_equal(V_unnamed, V_named, tolerance = 1e-12)
+})
+
+test_that("cluster resolution rejects row-level and incomplete vectors", {
+  dt <- make_panel_mnl()
+  fit <- fit_mnl(dt)
+  # Row-level (length sum(M)) labels: the most common mistake.
+  row_level <- dt$person
+  expect_error(vcov(fit, type = "cluster", cluster = row_level),
+               "stacked")
+  # Named but not covering every situation.
+  cl <- situation_clusters(dt)
+  bad <- cl[-1]
+  expect_error(vcov(fit, type = "cluster", cluster = bad),
+               "do not cover")
+  # Duplicate names.
+  dup <- cl
+  names(dup)[2] <- names(dup)[1]
+  expect_error(vcov(fit, type = "cluster", cluster = dup),
+               "duplicate names")
+})
+
+# --- Coverage: outside option, weights, and scale_vars with clustering -------
+
+test_that("clustering works with an outside option", {
+  set.seed(11)
+  N <- 80L; J <- 3L
+  dt <- data.table::data.table(
+    id = rep(seq_len(N), each = J), alt = rep(seq_len(J), N)
+  )
+  dt[, `:=`(x1 = stats::rnorm(.N), x2 = stats::rnorm(.N))]
+  dt[, person := rep(seq_len(20L), each = 4L)[id]]
+  # About a third of situations pick the (implicit) outside option.
+  dt[, V := 0.6 * x1 - 0.4 * x2]
+  dt[, prob := exp(V) / (1 + sum(exp(V))), by = id]
+  dt[, choice := 0L]
+  dt[, choice := {
+    p <- c(1 - sum(prob), prob)
+    pick <- sample.int(J + 1L, 1L, prob = p)
+    out <- rep(0L, .N); if (pick > 1L) out[pick - 1L] <- 1L; out
+  }, by = id]
+  fit <- suppressMessages(run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), include_outside_option = TRUE,
+    cluster_col = "person"
+  ))
+  expect_true(all(is.finite(fit$se)))
+  cl <- situation_clusters(dt)
+  expect_equal(vcov(fit), vcov(fit, type = "cluster", cluster = cl),
+               tolerance = 1e-6)
+})
+
+test_that("clustering composes with weights and with scale_vars", {
+  dt <- make_panel_mnl()
+  dt[, wt := 0.5 + (person %% 3)]              # non-uniform, constant within id
+
+  # Weighted + clustered: fit-time equals post-hoc.
+  fit_w <- suppressWarnings(suppressMessages(run_mnlogit(
+    data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+    covariate_cols = c("x1", "x2"), weights_col = "wt", cluster_col = "person"
+  )))
+  cl <- situation_clusters(dt)
+  expect_equal(vcov(fit_w), vcov(fit_w, type = "cluster", cluster = cl),
+               tolerance = 1e-6)
+
+  # scale_vars is unwound to natural units, so a scaled clustered fit matches
+  # the natural-scale post-hoc cluster variance of an unscaled fit.
+  fit_scaled <- fit_mnl(dt, scale_vars = "sd", cluster_col = "person")
+  fit_plain <- fit_mnl(dt)
+  expect_equal(vcov(fit_scaled),
+               vcov(fit_plain, type = "cluster", cluster = cl),
+               tolerance = 1e-6)
 })

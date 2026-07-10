@@ -107,11 +107,21 @@ coef.choicer_fit <- function(object, ...) {
 #' @param object A choicer_fit object.
 #' @param type \code{NULL} (default; return the as-fitted vcov) or one of
 #'   \code{"hessian"}, \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
-#' @param cluster Cluster labels for \code{type = "cluster"}: one label per
-#'   choice situation, aligned with the prepared data (situations sorted by
-#'   the id column). Defaults to the labels stored at fit time via
-#'   \code{cluster_col}. Supplying \code{cluster} without \code{type} implies
-#'   \code{type = "cluster"}.
+#' @param cluster Cluster labels for \code{type = "cluster"}, one per choice
+#'   situation. Alignment to the prepared (id-sorted) choice situations is
+#'   handled as follows:
+#'   \itemize{
+#'     \item \strong{Named} (recommended): names are matched against the
+#'       choice-situation ids, so the vector is safe in any order. Build it by
+#'       naming your per-situation labels with the id values.
+#'     \item \strong{Unnamed}: taken to be in the prepared, id-sorted order; a
+#'       warning flags that assumption. A vector of per-alternative (row-level)
+#'       length is rejected.
+#'   }
+#'   Defaults to the labels stored at fit time via \code{cluster_col} (already
+#'   aligned). Supplying \code{cluster} without \code{type} implies
+#'   \code{type = "cluster"}. The safest route is to pass \code{cluster_col=}
+#'   at fit time, which sidesteps post-hoc alignment entirely.
 #' @param ... Additional arguments (ignored).
 #' @returns Named variance-covariance matrix, or NULL if unavailable.
 #' @examples
@@ -127,8 +137,9 @@ coef.choicer_fit <- function(object, ...) {
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
 #' vcov(fit)                          # as fitted (hessian)
 #' vcov(fit, type = "robust")         # Huber-White, post hoc
-#' cl <- dt[, person[1L], by = id][["V1"]]
-#' vcov(fit, type = "cluster", cluster = cl)
+#' # named by situation id -> safe regardless of order
+#' cl <- dt[, person[1L], by = id]
+#' vcov(fit, type = "cluster", cluster = setNames(cl$V1, cl$id))
 #' }
 #' @export
 vcov.choicer_fit <- function(object, type = NULL, cluster = NULL, ...) {

@@ -382,7 +382,8 @@ run_mnlogit <- function(
         choice_idx = input_list$choice_idx,
         M = input_list$M,
         weights = input_list$weights,
-        cluster = input_list$cluster
+        cluster = input_list$cluster,
+        situation_ids = input_list$situation_ids
       )
     },
     scale_vars = scale_vars,
@@ -422,6 +423,7 @@ run_mnlogit <- function(
 #'     \item `N`: Number of choice situations.
 #'     \item `weights`: Vector of weights.
 #'     \item `cluster`: Vector of cluster labels (or `NULL`).
+#'     \item `situation_ids`: Choice-situation ids in prepared (sorted) order.
 #'     \item `include_outside_option`: Logical flag.
 #'     \item `alt_mapping`: Data.table mapping alternatives to summary statistics.
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
@@ -648,6 +650,7 @@ prepare_mnl_data <- function(
       N           = N,
       weights     = weights,
       cluster     = cluster,
+      situation_ids = ids,
       include_outside_option = include_outside_option,
       alt_mapping = alt_mapping,
       dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL,

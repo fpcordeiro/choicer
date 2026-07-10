@@ -55,6 +55,7 @@ A list containing:
 \item \code{N}: Number of choice situations.
 \item \code{weights}: Vector of weights.
 \item \code{cluster}: Vector of cluster labels (or \code{NULL}).
+\item \code{situation_ids}: Choice-situation ids in prepared (sorted) order.
 \item \code{include_outside_option}: Logical flag.
 \item \code{alt_mapping}: Data.table mapping alternatives to summary statistics.
 \item \code{dropped_cols}: Names of columns dropped due to collinearity, if any.

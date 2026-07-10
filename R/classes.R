@@ -371,8 +371,8 @@ ensure_vcov <- function(object) {
   result <- if (identical(se_method, "sandwich")) {
     compute_sandwich_vcov(object)
   } else if (identical(se_method, "cluster")) {
-    .assemble_score_vcov(object, type = "cluster",
-                         cluster = object[["data"]]$cluster)
+    # cluster = NULL routes to the stored, already-aligned fit-time labels.
+    .assemble_score_vcov(object, type = "cluster")
   } else {
     invert_hessian(compute_hessian(object))
   }
@@ -900,6 +900,82 @@ compute_scores <- function(object) {
   )
 }
 
+#' Resolve a user-supplied post-hoc cluster vector to prepared order
+#'
+#' Guards the alignment hazards of \code{vcov(fit, type = "cluster",
+#' cluster = )}, where the supplied labels must line up with the prepared
+#' (id-sorted) choice situations:
+#' \itemize{
+#'   \item A row-level vector (length \code{sum(M)}) is rejected outright — the
+#'     most common mistake is passing raw per-alternative labels.
+#'   \item A \emph{named} vector is realigned to the prepared order by matching
+#'     its names against the stored choice-situation ids, so it is safe
+#'     regardless of the order the user built it in. This is the recommended
+#'     post-hoc form.
+#'   \item An \emph{unnamed} vector of length \code{N} is taken to be in
+#'     prepared order, with a warning flagging that assumption.
+#' }
+#' The fit-time \code{cluster_col=} path never reaches here: its labels are
+#' collapsed and stored already aligned.
+#'
+#' @param object A fitted \code{choicer_fit} with stored data.
+#' @param cluster User-supplied cluster labels (named or unnamed).
+#' @returns A length-\code{N} vector aligned with the prepared choice
+#'   situations.
+#' @noRd
+.resolve_cluster <- function(object, cluster) {
+  d <- object[["data"]]
+  N <- length(d$M)
+  n_rows <- nrow(d$X)
+
+  # Most common mistake: per-alternative (row-level) labels.
+  if (n_rows != N && length(cluster) == n_rows) {
+    stop("`cluster` has length ", n_rows, ", the number of stacked ",
+         "alternative rows, but cluster-robust standard errors need one ",
+         "label per choice situation (N = ", N, "). Collapse to one label ",
+         "per choice situation, or set `cluster_col=` at fit time.",
+         call. = FALSE)
+  }
+
+  nm <- names(cluster)
+  ids <- d$situation_ids
+
+  if (!is.null(nm)) {
+    if (is.null(ids)) {
+      stop("Cannot realign a named `cluster`: this fit does not carry ",
+           "choice-situation ids (it predates id storage). Supply `cluster` ",
+           "in the prepared, id-sorted order (unnamed), or set `cluster_col=` ",
+           "at fit time.", call. = FALSE)
+    }
+    if (anyDuplicated(nm)) {
+      stop("`cluster` has duplicate names; names must be the unique ",
+           "choice-situation ids.", call. = FALSE)
+    }
+    idx <- match(as.character(ids), nm)
+    if (anyNA(idx)) {
+      miss <- as.character(ids)[is.na(idx)]
+      stop("`cluster` names do not cover every choice situation (",
+           length(miss), " of ", N, " missing, e.g. ",
+           paste(utils::head(miss, 3L), collapse = ", "),
+           "). Name `cluster` by choice-situation id.", call. = FALSE)
+    }
+    return(unname(cluster[idx]))
+  }
+
+  # Unnamed: must already be in prepared (id-sorted) order.
+  if (length(cluster) != N) {
+    stop("`cluster` has length ", length(cluster), " but the model has ", N,
+         " choice situations. Supply one label per choice situation, name it ",
+         "by choice-situation id, or set `cluster_col=` at fit time.",
+         call. = FALSE)
+  }
+  warning("Unnamed `cluster` is assumed to be in the prepared (id-sorted) ",
+          "order. Name it by choice-situation id (see `fit$data$situation_ids`) ",
+          "or set `cluster_col=` at fit time to guarantee alignment.",
+          call. = FALSE)
+  cluster
+}
+
 #' Score-based variance assembly (bhhh / robust / cluster) from stored data
 #'
 #' The single post-hoc entry point behind \code{vcov(fit, type = )},
@@ -937,8 +1013,20 @@ compute_scores <- function(object) {
     return(invert_hessian(.score_meat(S, w, "bhhh")))
   }
 
-  if (identical(type, "cluster") && is.null(cluster)) {
-    cluster <- object[["data"]]$cluster
+  if (identical(type, "cluster")) {
+    if (is.null(cluster)) {
+      # No explicit labels: use the fit-time cluster_col vector, already
+      # collapsed and aligned to the prepared order.
+      cluster <- object[["data"]]$cluster
+      if (is.null(cluster)) {
+        stop("Cluster-robust standard errors need cluster labels: pass ",
+             "`cluster=` (named by choice-situation id) or fit with ",
+             "`cluster_col=`.", call. = FALSE)
+      }
+    } else {
+      # User-supplied labels: guard and realign to the prepared order.
+      cluster <- .resolve_cluster(object, cluster)
+    }
   }
   B <- .score_meat(S, w, type, cluster)
   .sandwich_combine(.compute_bread(object), B)

@@ -379,7 +379,8 @@ run_nestlogit <- function(
         nest_idx = input_data$nest_idx,
         M = input_data$M,
         weights = input_data$weights,
-        cluster = input_data$cluster
+        cluster = input_data$cluster,
+        situation_ids = input_data$situation_ids
       )
     },
     lambda = lambda,
@@ -418,7 +419,8 @@ run_nestlogit <- function(
 #'   \itemize{
 #'     \item All fields from \code{\link{prepare_mnl_data}} (\code{X}, \code{alt_idx},
 #'       \code{choice_idx}, \code{M}, \code{N}, \code{weights}, \code{cluster},
-#'       \code{include_outside_option}, \code{alt_mapping}, \code{dropped_cols}).
+#'       \code{situation_ids}, \code{include_outside_option}, \code{alt_mapping},
+#'       \code{dropped_cols}).
 #'     \item \code{nest_idx}: Integer vector of length J mapping each alternative
 #'       (in \code{alt_mapping} row order) to its nest.
 #'     \item \code{data_spec}: List with column name metadata including \code{nest_col}.
