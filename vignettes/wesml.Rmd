@@ -230,6 +230,45 @@ The names of `Q` must match the chosen-alternative strata exactly after coercion
 to character. This strict matching is intentional: silently dropping a realized
 stratum would change the target population.
 
+## The shipped `mode_choice` data
+
+The package's own `mode_choice` data — the Greene and Hensher intercity study
+used in the [getting-started vignette](choicer.html) — is itself a
+choice-based sample: the survey over-sampled the minority modes and
+under-sampled car (see `?mode_choice`). It ships without weights because the
+population mode shares are not part of the data set; they are external
+information, exactly as `Q` was throughout this vignette. A user with
+population shares — from transport statistics, or from the textbook
+treatments of this data set — attaches them in one step and refits:
+
+```{r mode-choice, eval = FALSE}
+data(mode_choice)
+
+mc <- wesml_weights(
+  mode_choice,
+  id_col     = "id",
+  alt_col    = "mode",
+  choice_col = "choice",
+  Q          = c(air = Q_air, train = Q_train, bus = Q_bus, car = Q_car),
+  attach     = TRUE
+)
+
+fit_w <- run_mnlogit(
+  data           = mc,
+  id_col         = "id",
+  alt_col        = "mode",
+  choice_col     = "choice",
+  covariate_cols = c("wait", "travel", "vcost"),
+  weights_col    = ".wesml_weight",
+  se_method      = "sandwich"
+)
+```
+
+Expect the constants and the fitted shares to move, and the slopes — hence the
+value-of-time WTP ratios — to stay essentially put: this model carries a full
+set of alternative-specific constants, so it is exactly the Manski-Lerman
+special case in the note above.
+
 ## References
 
 Manski, C. F. and Lerman, S. R. (1977). The estimation of choice probabilities

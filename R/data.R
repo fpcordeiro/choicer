@@ -30,12 +30,28 @@
 #' alternative-specific constants; \code{vcost} then plays the role of price for
 #' willingness-to-pay and consumer-surplus calculations.
 #'
+#' The sample is \emph{choice-based}: the survey over-sampled the less popular
+#' modes (air, train, bus) and under-sampled car, so sample choice shares do
+#' not estimate population mode shares. With a full set of
+#' alternative-specific constants the slope coefficients remain consistently
+#' estimated under this design (Manski and Lerman, 1977), and
+#' willingness-to-pay ratios are unaffected; the constants, and any shares,
+#' elasticities or surplus levels computed from fitted probabilities, inherit
+#' the sampling design. To target population quantities, attach WESML weights
+#' with \code{\link{wesml_weights}} using external population shares; see
+#' \code{vignette("wesml", package = "choicer")}.
+#'
 #' @source
 #' Greene, W. H. and Hensher, D. A. (1997). Reshaped from the \code{TravelMode}
 #' data distributed with the \pkg{AER} package
 #' (\url{https://CRAN.R-project.org/package=AER}). The same data appear in
 #' Greene's \emph{Econometric Analysis} and in several other choice-modelling
 #' packages.
+#'
+#' @references
+#' Manski, C. F. and Lerman, S. R. (1977). The estimation of choice
+#' probabilities from choice based samples. \emph{Econometrica}, 45(8),
+#' 1977-1988.
 #'
 #' @examples
 #' data(mode_choice)

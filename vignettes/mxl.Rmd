@@ -78,10 +78,15 @@ reported covariance is the robust WESML sandwich rather than the inverse weighte
 Hessian.
 
 > **Tip.** For real applications increase the number of draws (`S`) until your
-> estimates are stable, and keep `scale_vars = "sd"`. If the solver struggles,
-> pass an explicit `theta_init` (for example the MNL coefficients) and bounds on
-> the Cholesky diagonal. See `inst/simulations/mxl_simulation.R` for a fully
-> hardened example.
+> estimates are stable, and keep `scale_vars = "sd"`. Stability in `S` is a
+> statistical requirement, not just numerical hygiene: simulated ML with a
+> fixed number of draws is biased — the log of an unbiased probability
+> simulator is not unbiased — and the classical asymptotics require `S` to
+> grow with the sample (see the
+> [math companion](mixed_logit_math.html) for the conditions). If the solver
+> struggles, pass an explicit `theta_init` (for example the MNL coefficients)
+> and bounds on the Cholesky diagonal. See
+> `inst/simulations/mxl_simulation.R` for a fully hardened example.
 
 ## Parameter recovery
 
@@ -155,3 +160,20 @@ types is more credible than a continuous distribution. None of these is free —
 each trades one restriction for another — but each puts the restriction in a
 place you can defend. The broader tradeoff is laid out in
 [Choosing among choice models](choicer.html#choosing-among-choice-models).
+
+## References
+
+McFadden, D. and Train, K. (2000). Mixed MNL models for discrete response.
+*Journal of Applied Econometrics*, 15(5), 447-470.
+
+Revelt, D. and Train, K. (1998). Mixed logit with repeated choices:
+households' choices of appliance efficiency level. *Review of Economics and
+Statistics*, 80(4), 647-657.
+
+Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
+Cambridge University Press.
+
+Train, K. and Weeks, M. (2005). Discrete choice models in preference space
+and willingness-to-pay space. In R. Scarpa and A. Alberini (Eds.),
+*Applications of Simulation Methods in Environmental and Resource Economics*.
+Springer.

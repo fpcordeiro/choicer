@@ -176,9 +176,20 @@
   (Hessian / BHHH / robust / cluster-robust, and when to use which).
 - Added the `mode_choice` data set: the classic Greene & Hensher intercity
   travel-mode choice data (210 travellers x 4 modes), in choicer's long layout,
-  used by the getting-started vignette.
+  used by the getting-started vignette. `?mode_choice` and the vignettes now
+  document that the sample is choice-based (car under-sampled): slopes and WTP
+  ratios are unaffected in the ASC-saturated logit, while constants, shares,
+  and surplus levels inherit the design — see the WESML vignette for the
+  correction.
 - Added a pkgdown website configuration, including the model derivation notes as
   "The math behind choicer" articles.
+- Expanded the identification discussions across the documentation: price
+  endogeneity and the control-function route in the getting-started
+  model-choice section (Petrin & Train 2010; `blp()` as the Berry 1994
+  inversion), what identifies the nested-logit dissimilarity parameters, the
+  Keane (1992) covariance-identification caveat for the multinomial probit,
+  and the classical MSL asymptotics (fixed-`S` bias, `S` growth conditions) in
+  the mixed logit math note.
 
 ## Mixed logit — on-the-fly randomized Halton draws
 

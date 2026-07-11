@@ -116,6 +116,10 @@ computed **per draw** $r$.
 
 *Code reference: [mnprobit_utils.R (run_mnprobit post-processing)](../R/mnprobit_utils.R)*
 
+### 2.4 What Identifies the Covariance in Practice
+
+Scale normalization removes the formal redundancy; whether the data *inform* $\Sigma$ is a separate question. After normalization the differenced covariance carries $p(p+1)/2 - 1$ free parameters, and the sample disciplines them only through variation that shifts choice probabilities differentially across alternatives. Keane (1992) shows that when the covariates do not vary across alternatives — demographics interacted with ASCs, or constants alone — the covariance parameters are identified by the normal functional form alone, and estimation is fragile: near-flat likelihood regions, erratic point estimates, and strong sensitivity to specification. Alternative-specific regressors (prices, distances, attributes varying across the $J$ options within a choice situation) act as the exclusion restrictions that identify $\Sigma$ in practice. The Bayesian machinery does not repeal this: with weak alternative-specific variation the $\Sigma$ posterior is dominated by the prior and the functional form rather than by the data. A useful habit is to compare the reported $\Sigma$ posterior against its prior — if they nearly coincide, the substitution pattern the covariance implies is maintained, not estimated.
+
 ---
 
 ## 3. Priors and Joint Posterior
@@ -359,6 +363,7 @@ Total cost is linear in $N$ with no $N K^2$ term, and the latent sweep — the d
 - Albert, J. H., & Chib, S. (1993). Bayesian Analysis of Binary and Polychotomous Response Data. *Journal of the American Statistical Association*, 88(422), 669–679.
 - Allenby, G. M., & Rossi, P. E. (1999). Marketing models of consumer heterogeneity. *Journal of Econometrics*, 89(1–2), 57–78.
 - Blackman, D., & Vigna, S. (2021). Scrambled Linear Pseudorandom Number Generators. *ACM Transactions on Mathematical Software*, 47(4), 1–32.
+- Keane, M. P. (1992). A note on identification in the multinomial probit model. *Journal of Business & Economic Statistics*, 10(2), 193–200.
 - Marsaglia, G., & Tsang, W. W. (2000). A Simple Method for Generating Gamma Variables. *ACM Transactions on Mathematical Software*, 26(3), 363–372.
 - McCulloch, R., & Rossi, P. E. (1994). An exact likelihood analysis of the multinomial probit model. *Journal of Econometrics*, 64(1–2), 207–240.
 - McCulloch, R. E., Polson, N. G., & Rossi, P. E. (2000). A Bayesian analysis of the multinomial probit model with fully identified parameters. *Journal of Econometrics*, 99(1), 173–193.

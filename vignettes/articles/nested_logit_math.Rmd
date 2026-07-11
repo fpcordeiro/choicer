@@ -197,6 +197,10 @@ where $V_{\max,k} = \max_{j \in B_k} V_{ij}/\lambda_k$.
 
 *Code reference: [nestlogit.cpp:190-230](../src/nestlogit.cpp#L190-L230)*
 
+### 2.8 Relation to Other Nested-Logit Parameterizations
+
+The probabilities in §§2.3–2.4 are the utility-maximization-consistent GEV form (McFadden 1978; Train 2009, Ch. 4): utility is scaled by $1/\lambda_k$ inside the conditional probability, and the inclusive value is raised by $\lambda_k$ in the nest probability. Some software instead estimates the *non-normalized* nested logit, in which $V_{ij}$ enters the within-nest logit unscaled. The two forms imply the same choice probabilities only in special cases (for instance, utilities consisting solely of alternative-specific constants); with generic coefficients the non-normalized form is not consistent with random-utility maximization, and its $\beta$ and $\lambda$ estimates are not comparable to the GEV form's without rescaling (Koppelman & Wen 1998; Hensher & Greene 2002; Heiss 2002). When benchmarking choicer against another package, verify which parameterization the other package implements before comparing coefficients or dissimilarity parameters.
+
 ---
 
 ## 3. Gradient Computation
@@ -313,7 +317,7 @@ The common factor $\log I_k - \bar{V}_k / \lambda_k$ is labeled `term_in_bracket
 
 Two implementations are available:
 
-- `nl_loglik_hessian_parallel` — **default** (`se_method = "hessian"`): single-pass analytical Hessian derived below. Validated against the numeric oracle at max absolute difference $\approx 2.6 \times 10^{-8}$ across all test fixtures (Fixtures A–I), well below the $10^{-6}$ equivalence gate. At extreme $\lambda_k < 0.1$, the oracle's own finite-difference accuracy degrades; the analytical Hessian remains finite and symmetric throughout.
+- `nl_loglik_hessian_parallel` — **default** (`se_method = "hessian"`): single-pass analytical Hessian derived below. Validated against the numeric oracle at a maximum absolute difference of $\approx 2.6 \times 10^{-8}$ across the package's test fixtures, well below the $10^{-6}$ tolerance those tests enforce. At extreme $\lambda_k < 0.1$, the oracle's own finite-difference accuracy degrades; the analytical Hessian remains finite and symmetric throughout.
 - `nl_loglik_numeric_hessian` — retained oracle (`se_method = "numeric"`): central finite differences on the analytical gradient with step $\epsilon_i = 10^{-6} \cdot \max(|\theta_i|, 1)$. Use for diagnostic comparison or whenever a direct verification of the analytical path is required.
 
 ---
@@ -1024,6 +1028,9 @@ WESML-labeled sample from being silently fit unweighted.
 
 - McFadden, D. (1978). Modelling the choice of residential location. In A. Karlqvist et al. (Eds.), *Spatial Interaction Theory and Planning Models* (pp. 75-96). North-Holland.
 - Ben-Akiva, M., & Lerman, S. R. (1985). *Discrete Choice Analysis: Theory and Application to Travel Demand*. MIT Press.
+- Koppelman, F. S., & Wen, C.-H. (1998). Alternative nested logit models: structure, properties and estimation. *Transportation Research Part B*, 32(5), 289-298.
+- Hensher, D. A., & Greene, W. H. (2002). Specification and estimation of the nested logit model: alternative normalisations. *Transportation Research Part B*, 36(1), 1-17.
+- Heiss, F. (2002). Structural choice analysis with nested logit models. *The Stata Journal*, 2(3), 227-252.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841–890.
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.). Cambridge University Press. Chapter 4.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977–1988.

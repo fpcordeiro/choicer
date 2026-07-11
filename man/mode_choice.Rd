@@ -45,10 +45,26 @@ attributes that are constant across modes. A standard specification regresses
 the choice on \code{wait}, \code{travel} and \code{vcost} with
 alternative-specific constants; \code{vcost} then plays the role of price for
 willingness-to-pay and consumer-surplus calculations.
+
+The sample is \emph{choice-based}: the survey over-sampled the less popular
+modes (air, train, bus) and under-sampled car, so sample choice shares do
+not estimate population mode shares. With a full set of
+alternative-specific constants the slope coefficients remain consistently
+estimated under this design (Manski and Lerman, 1977), and
+willingness-to-pay ratios are unaffected; the constants, and any shares,
+elasticities or surplus levels computed from fitted probabilities, inherit
+the sampling design. To target population quantities, attach WESML weights
+with \code{\link{wesml_weights}} using external population shares; see
+\code{vignette("wesml", package = "choicer")}.
 }
 \examples{
 data(mode_choice)
 head(mode_choice)
 table(mode_choice$mode[mode_choice$choice == 1L])
+}
+\references{
+Manski, C. F. and Lerman, S. R. (1977). The estimation of choice
+probabilities from choice based samples. \emph{Econometrica}, 45(8),
+1977-1988.
 }
 \keyword{datasets}
