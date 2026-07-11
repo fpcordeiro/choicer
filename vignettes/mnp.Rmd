@@ -60,10 +60,18 @@ up to scale, so choicer reports them on the normalized scale where
 the Gibbs sampler; the reported posterior summaries are computed after
 normalizing each kept draw.
 
-For empirical work, the covariance matrix should be read as a maintained
-substitution structure unless the data contain enough variation to discipline it.
-The MNP is attractive when flexible error correlation is the central object, but
-with many alternatives its parameter count rises quickly.
+For empirical work, ask what disciplines the covariance before interpreting
+it. Keane (1992) shows that when covariates do not vary across alternatives —
+demographics, or constants alone — the covariance parameters are identified by
+the normal functional form only, and estimation is fragile. Alternative-specific
+regressors (prices, distances, attributes that differ across the options within
+a choice situation) are the exclusion restrictions that identify $\Sigma$ in
+practice; the simulated data above contain two of them. The Bayesian machinery
+does not repeal this: with weak alternative-specific variation the $\Sigma$
+posterior sits close to its prior, and the substitution pattern it implies is
+maintained rather than estimated. The MNP is attractive when flexible error
+correlation is the central object, but with many alternatives its parameter
+count rises quickly.
 
 ## Compare posterior summaries with the truth
 
@@ -90,9 +98,45 @@ plot(beta_draws[, "x2"], type = "l", col = "steelblue",
 abline(h = sim$true_params$beta[2], col = "red", lwd = 2)
 ```
 
-The red line marks the true value; the chain should hover around it. For a
-faster, frequentist alternative with the same post-estimation toolkit, see the
+The red line marks the true value; the chain should hover around it. The same
+diagnostics used for the hierarchical models apply to any draws matrix:
+`rhat()` computes the split R-hat (values near 1 are consistent with
+convergence) and `ess()` the rank-normalized bulk and tail effective sample
+sizes — the number of effectively independent draws behind each posterior
+summary:
+
+```{r rhat}
+rhat(fit$draws$beta)
+ess(fit$draws$beta)
+```
+
+On a single chain these are necessary rather than sufficient checks; the
+stronger standard is several chains from dispersed starting values, compared
+with the same functions.
+
+The full derivations — the data-augmented Gibbs sampler, the McCulloch-Rossi
+normalization, and the identification discussion — are in the
+[math companion](bayesian_multinomial_probit_math.html). For a faster,
+frequentist alternative with the same post-estimation toolkit, see the
 [multinomial logit](mnl.html) and [mixed logit](mxl.html) vignettes. For the
 hierarchical extension — respondent-level random tastes and partially-pooled
 alternative effects, in both logit and probit flavors — see the
 [hierarchical Bayes vignette](hb.html).
+
+## References
+
+Albert, J. H. and Chib, S. (1993). Bayesian analysis of binary and
+polychotomous response data. *Journal of the American Statistical
+Association*, 88(422), 669-679.
+
+Keane, M. P. (1992). A note on identification in the multinomial probit
+model. *Journal of Business & Economic Statistics*, 10(2), 193-200.
+
+McCulloch, R. and Rossi, P. E. (1994). An exact likelihood analysis of the
+multinomial probit model. *Journal of Econometrics*, 64(1-2), 207-240.
+
+Rossi, P. E., Allenby, G. M. and McCulloch, R. (2005). *Bayesian Statistics
+and Marketing*. Wiley.
+
+Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
+Cambridge University Press, Chapter 5.

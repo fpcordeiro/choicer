@@ -204,6 +204,16 @@ To avoid numerical overflow/underflow, the implementation uses:
 
    Applied iteratively across draws $s$.
 
+### 2.5 Statistical Properties of the MSL Estimator
+
+The simulated probability $\bar{P}_{ij_i}$ is an unbiased simulator of the true mixed-logit probability, but the log-likelihood uses its *logarithm*, and by Jensen's inequality $\mathbb{E}[\log \bar{P}] < \log \mathbb{E}[\bar{P}]$. The simulated log-likelihood is therefore biased for any finite number of draws, and the MSL estimator inherits a bias of order $O(1/S)$ — the second-order term of the expansion of $\log \bar{P}$ around $P$, proportional to the simulation variance of $\bar{P}$. The classical results (Hajivassiliou & Ruud 1994; Lee 1995; Gouriéroux & Monfort 1996; Train 2009, Ch. 10) are:
+
+- **Fixed $S$**: MSL is inconsistent — the simulation bias does not vanish as $N \to \infty$.
+- **$S \to \infty$ with $N$** (at any rate): MSL is consistent.
+- **$S$ rising faster than $\sqrt{N}$**: MSL is asymptotically equivalent to exact maximum likelihood — the simulation noise is $o_p(N^{-1/2})$, the $\sqrt{N}$-normal limit distribution is that of the exact MLE, and the usual Hessian/BHHH variance estimators apply.
+
+Quasi-Monte Carlo draws improve the constants, not these conditions: Halton sequences and their Owen-scrambled randomization (§5.4) reduce the simulation variance of $\bar{P}$ at a given $S$ by an order of magnitude or more relative to pseudo-random draws (Bhat 2003), which is why a few hundred Halton draws often match thousands of pseudo-random ones. The practical discipline follows directly — treat $S$ as part of the specification: increase it until the estimates *and* their standard errors stabilize, and if the parameters of interest (typically the Cholesky block) still move with $S$, report that sensitivity as part of the result. `mc_asymptotics()` operationalizes the consistency, asymptotic-normality, coverage, and information-matrix-equality claims as testable Monte Carlo diagnostics.
+
 ---
 
 ## 3. Gradient Computation
@@ -436,8 +446,8 @@ Note: since both $q < p$ and $r < p$, both derivatives $\partial L_{pq}/\partial
 
 ### 4.4 Implementation Tricks in `mxl_hessian_parallel`
 
-The four subsections below describe the computational restructuring introduced in the O3
-optimization of `mxl_hessian_parallel`. They cover (i) a block decomposition of the score
+The four subsections below describe the computational restructuring used by
+`mxl_hessian_parallel`. They cover (i) a block decomposition of the score
 vector and Hessian terms, (ii) buffer accumulation that eliminates the per-draw dense
 matrix allocation, (iii) BLAS-3 batching of two outer-product sums, and (iv) the symmetry
 strategy used for final assembly.
@@ -567,8 +577,8 @@ in a single cache-friendly level-3 kernel.
 level-3 multiply) is a reassociation of additions that is exact in real arithmetic. In
 floating-point the results differ only by rounding. Across 10 equivalence scenarios
 sweeping all combinations of `rc_dist`, `rc_correlation`, and `rc_mean`, the worst-case
-element-wise deviation was $4.588 \times 10^{-13}$, roughly 2,000 times smaller than the
-$10^{-6}$ acceptance gate.
+element-wise deviation from the per-draw form was $4.588 \times 10^{-13}$, several orders
+of magnitude below the $10^{-6}$ tolerance enforced by the package's equivalence tests.
 
 #### 4.4.4 Optional Per-Draw Batching of `sum_Pzz_cc` — Identity D
 
@@ -591,11 +601,11 @@ counts the active (non-outside-option) alternatives. One `dsyrk` call per draw o
 $J_{\text{eff}}^*$ columns would replace $J_{\text{eff}}^*$ individual `dsyr` rank-1
 updates. The identity holds by the same $P_{ia}^s \geq 0$ argument as Identities A and B.
 
-**Shipped code decision.** The current implementation retains the per-alternative rank-1
+**Implementation choice.** The implementation retains the per-alternative rank-1
 accumulation (`sum_Pzz_cc += P_a * (zc_a * zc_a.t())`). Both forms are correct; the
 result flows into `buf_Pzz_cc` via the Identity C scalar-times-matrix step at the end of
-each draw. Identity D represents an available further micro-optimization deferred to a
-future pass.
+each draw. Identity D is recorded here to establish that the batched form is available
+without changing any result; the per-alternative form is kept for auditability.
 
 #### 4.4.5 Final Assembly and Symmetry
 
@@ -1105,6 +1115,11 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 - Train, K., & Weeks, M. (2005). Discrete choice models in preference space and willingness-to-pay space. In R. Scarpa & A. Alberini (Eds.), *Applications of Simulation Methods in Environmental and Resource Economics* (pp. 1-16). Springer.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
+- Bhat, C. R. (2003). Simulation estimation of mixed discrete choice models using randomized and scrambled Halton sequences. *Transportation Research Part B*, 37(9), 837-855.
+- Gouriéroux, C., & Monfort, A. (1996). *Simulation-Based Econometric Methods*. Oxford University Press.
+- Hajivassiliou, V. A., & Ruud, P. A. (1994). Classical estimation methods for LDV models using simulation. In R. F. Engle & D. L. McFadden (Eds.), *Handbook of Econometrics*, Vol. 4 (pp. 2383-2441). North-Holland.
+- Lee, L.-F. (1995). Asymptotic bias in simulated maximum likelihood estimation of discrete choice models. *Econometric Theory*, 11(3), 437-483.
+- Owen, A. B. (2017). A randomized Halton algorithm in R. arXiv:1706.02808.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
 - Manski, C. F., & McFadden, D. (1981). Alternative estimators and sample designs for discrete choice analysis. In *Structural Analysis of Discrete Data with Econometric Applications*. MIT Press.
 - Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based samples. *Econometrica*, 49(5), 1289-1316.

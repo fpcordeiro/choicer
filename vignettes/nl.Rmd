@@ -81,6 +81,30 @@ unique to nested logit.
 recovery_table(fit, sim$true_params)
 ```
 
+## What identifies the dissimilarity parameters?
+
+It is worth being explicit about where each parameter block gets its
+information. The coefficients on `X` and `W` are identified, as in any logit,
+by how utilities respond to covariate variation. The dissimilarity parameters
+are identified by *reallocation*: when an observed utility shifter moves, does
+the displaced demand stay inside the nest or spill across nests?
+Alternative-specific covariates that vary within nests are therefore the
+variation that disciplines λ. If the covariates move whole nests together — or
+the specification is mostly alternative-specific constants — λ is pinned down
+mainly by functional form, and a wide confidence interval on a `lambda` row is
+the model saying the data cannot see inside that nest.
+
+The estimate's position in (0, 1] is itself informative. A λ near 1 says the
+data see no extra within-nest correlation: the MNL was adequate, and the nest
+costs a parameter without buying substitution structure. A λ near 0 says the
+nest's alternatives are nearly perfect substitutes at the nest margin, which
+carries a sharp welfare implication: the nested logsum discounts within-nest
+variety by λ, so adding an alternative to a tight nest adds almost no expected
+consumer surplus, while adding one to a loose nest adds a lot. Welfare
+counterfactuals computed with `consumer_surplus()` inherit exactly this
+structure — one more reason to treat the tree as an economic assumption rather
+than a fit device.
+
 ## Nest-consistent elasticities
 
 This is the payoff of nesting: cross-elasticities are larger for alternatives in
@@ -111,3 +135,21 @@ head(blp(fit, target_shares, damping = 0.5))
 
 As always, `predict()`, `wtp()` and `consumer_surplus()` are available on the
 fitted object with the same syntax used throughout choicer.
+
+The full derivations — the GEV likelihood, analytical gradient and Hessian,
+nest-consistent elasticities and diversion, and how choicer's
+utility-maximization-consistent parameterization relates to the non-normalized
+nested logit found in some other software — are in the
+[math companion](nested_logit_math.html).
+
+## References
+
+Heiss, F. (2002). Structural choice analysis with nested logit models.
+*The Stata Journal*, 2(3), 227-252.
+
+McFadden, D. (1978). Modelling the choice of residential location. In
+A. Karlqvist et al. (Eds.), *Spatial Interaction Theory and Planning Models*.
+North-Holland.
+
+Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
+Cambridge University Press, Chapter 4.

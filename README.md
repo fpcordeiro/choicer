@@ -148,10 +148,18 @@ All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, 
 
 ## Alternative packages
 
-There are multiple R packages that offer similar functionalities:
+Several excellent R packages estimate discrete-choice models:
 
 - [mlogit](https://CRAN.R-project.org/package=mlogit)
 - [logitr](https://CRAN.R-project.org/package=logitr)
 - [gmnl](https://CRAN.R-project.org/package=gmnl)
 - [apollo](https://CRAN.R-project.org/package=apollo)
 - [mixl](https://cran.r-project.org/package=mixl)
+- [bayesm](https://cran.r-project.org/package=bayesm)
+
+choicer's distinguishing focus is a fast C++ core with analytical gradients and
+Hessians, and one consistent post-estimation toolkit aimed at the demand and
+welfare quantities applied economists report: elasticities, diversion,
+willingness to pay, consumer surplus, counterfactual shares, and share
+inversion, with the matching robust, clustered, and choice-based-sampling
+inference.
