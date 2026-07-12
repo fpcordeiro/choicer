@@ -19,6 +19,31 @@
 
 suppressMessages(library(choicer))
 
+# The identity harness deliberately exercises implementation kernels.  Keep
+# the installed-package lookup explicit now that those kernels are internal.
+mnl_loglik_gradient_parallel <- choicer:::mnl_loglik_gradient_parallel
+mnl_predict <- choicer:::mnl_predict
+mnl_predict_shares <- choicer:::mnl_predict_shares
+mnl_loglik_hessian_parallel <- choicer:::mnl_loglik_hessian_parallel
+mnl_elasticities_parallel <- choicer:::mnl_elasticities_parallel
+mnl_diversion_ratios_parallel <- choicer:::mnl_diversion_ratios_parallel
+mxl_loglik_gradient_parallel <- choicer:::mxl_loglik_gradient_parallel
+mxl_hessian_parallel <- choicer:::mxl_hessian_parallel
+mxl_bhhh_parallel <- choicer:::mxl_bhhh_parallel
+mxl_predict <- choicer:::mxl_predict
+mxl_logsum <- choicer:::mxl_logsum
+mxl_predict_shares <- choicer:::mxl_predict_shares
+mxl_elasticities_parallel <- choicer:::mxl_elasticities_parallel
+mxl_diversion_ratios_parallel <- choicer:::mxl_diversion_ratios_parallel
+build_var_mat <- choicer:::build_var_mat
+jacobian_vech_Sigma <- choicer:::jacobian_vech_Sigma
+nl_loglik_gradient_parallel <- choicer:::nl_loglik_gradient_parallel
+nl_predict <- choicer:::nl_predict
+nl_predict_shares <- choicer:::nl_predict_shares
+nl_elasticities_parallel <- choicer:::nl_elasticities_parallel
+nl_diversion_ratios_parallel <- choicer:::nl_diversion_ratios_parallel
+nl_loglik_numeric_hessian <- choicer:::nl_loglik_numeric_hessian
+
 args <- commandArgs(trailingOnly = TRUE)
 mode <- if (length(args) >= 1) args[1] else ""
 if (!mode %in% c("baseline", "check")) {

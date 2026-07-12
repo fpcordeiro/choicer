@@ -6,7 +6,7 @@
 \alias{choicer-package}
 \title{choicer: Discrete Choice Models for Economic Applications}
 \description{
-Fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with 'OpenMP' parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, and diversion ratios. Supports multinomial logit ('MNL'), mixed logit ('MXL'), and nested logit ('NL'), as well as Bayesian multinomial probit ('MNP') and hierarchical Bayesian multinomial logit and probit ('HMNL', 'HMNP') via Gibbs sampling.
+Fast estimation of discrete-choice models for applied economics. Frequentist likelihoods, analytical gradients, and Hessians are implemented in C++ with 'OpenMP' parallelism, scaling efficiently to specifications with many alternative-specific constants. Compiled Gibbs samplers provide Bayesian multinomial probit and hierarchical models. Post-estimation routines cover predicted shares, own- and cross-price elasticities, diversion ratios, willingness to pay, and welfare counterfactuals. Supports multinomial logit ('MNL'), mixed logit ('MXL'), nested logit ('NL'), Bayesian multinomial probit ('MNP'), and hierarchical Bayesian multinomial logit and probit ('HMNL', 'HMNP').
 }
 \seealso{
 Useful links:

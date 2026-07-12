@@ -38,8 +38,10 @@ sim
 ## Run the sampler
 
 `run_mnprobit()` returns posterior draws. The settings below keep this vignette
-quick; for real work use longer chains, multiple starting values, and convergence
-diagnostics before interpreting posterior summaries.
+quick; for real work use a longer run, repeat the fit with several independent
+seeds when needed, and inspect trace, autocorrelation, ESS and Monte Carlo error
+before interpreting posterior summaries. `run_mnprobit()` does not currently
+expose user-specified starts or a multi-chain wrapper.
 
 ```{r fit}
 set.seed(3)
@@ -111,8 +113,29 @@ ess(fit$draws$beta)
 ```
 
 On a single chain these are necessary rather than sufficient checks; the
-stronger standard is several chains from dispersed starting values, compared
-with the same functions.
+stronger practical check in the current API is to repeat the complete fit with
+several independent seeds, then compare posterior summaries and pass the
+separate draws matrices to the same diagnostic functions. Because the sampler's
+initial state is internal rather than user-controlled, this is not equivalent
+to deliberately overdispersed starting values. Longer runs, posterior stability
+across seeds, and prior sensitivity should therefore be reported together.
+
+## What this fit does not provide
+
+`choicer_mnp` is a posterior-draws object, not a `choicer_fit`. It provides
+coefficient and covariance summaries, recovery tools, and access to the raw and
+identified draws. It does **not** currently implement `predict()`, elasticities,
+diversion ratios, logsum welfare, `logLik()`, AIC, or BIC. General MNP
+counterfactual prediction requires multivariate-normal probability evaluation
+and an explicit rule for transporting the covariance structure to a new choice
+set; choicer does not silently impose either.
+
+For a reportable MNP application, document the base alternative and per-draw
+scale normalization, the prior on the raw covariance and its implications after
+normalization, the alternative-specific variation that identifies covariance,
+trace/ESS/MCSE evidence, stability across independent seeds, and sensitivity to
+the prior and base alternative. Covariance conclusions are often the first to
+move when the identifying variation is weak.
 
 The full derivations — the data-augmented Gibbs sampler, the McCulloch-Rossi
 normalization, and the identification discussion — are in the

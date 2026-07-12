@@ -46,9 +46,9 @@ arma::mat build_L_mat(const arma::vec &L_params, const int K_w,
 //' @returns matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
 //' @examples
 //' L_params <- c(log(1.0), 0.3, log(0.5))
-//' Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
+//' Sigma <- choicer:::build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
 //' Sigma  # 2x2 covariance matrix
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
                         const bool rc_correlation) {
@@ -100,12 +100,12 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 //' eta <- get_halton_normals(50, d$N, ncol(d$W))
 //' K_x <- ncol(d$X); K_w <- ncol(d$W); J <- nrow(d$alt_mapping)
 //' theta <- rep(0, K_x + K_w + J - 1)
-//' result <- mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
+//' result <- choicer:::mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
 //'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, K_w),
 //'   rc_correlation = FALSE, rc_mean = FALSE)
 //' result$objective
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 Rcpp::List mxl_loglik_gradient_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
@@ -402,9 +402,9 @@ inline arma::vec vech(const arma::mat &M) {
 //' @returns Jacobian (dVech(Sigma) / dTheta)
 //' @examples
 //' L_params <- c(log(0.8), 0.2, log(0.6))
-//' J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
+//' J_mat <- choicer:::jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
 //' dim(J_mat)  # 3 x 3 for K_w=2 correlated
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
                               const bool rc_correlation = true) {
@@ -487,12 +487,12 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 //' eta <- get_halton_normals(50, d$N, ncol(d$W))
 //' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
-//' H <- mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+//' H <- choicer:::mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
 //'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
 //'   rc_correlation = FALSE, rc_mean = FALSE)
 //' dim(H)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mxl_hessian_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
@@ -976,12 +976,12 @@ arma::mat mxl_hessian_parallel(
 //' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 //' eta <- get_halton_normals(50, d$N, ncol(d$W))
 //' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
-//' H <- mxl_bhhh_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+//' H <- choicer:::mxl_bhhh_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
 //'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
 //'   rc_correlation = FALSE, rc_mean = FALSE)
 //' dim(H)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mxl_bhhh_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
@@ -1609,7 +1609,7 @@ arma::vec mxl_predict_shares_internal(
 //' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 //'   simulated mean of the deterministic + W*gamma component), and, when
 //'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 Rcpp::List mxl_predict(
     const arma::vec& theta,
@@ -1803,11 +1803,11 @@ Rcpp::List mxl_predict(
 //' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 //' eta <- get_halton_normals(50, d$N, ncol(d$W))
 //' fit <- run_mxlogit(input_data = d, eta_draws = eta)
-//' ls <- mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
+//' ls <- choicer:::mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
 //'   rc_dist = rep(0L, ncol(d$W)), rc_correlation = FALSE, rc_mean = FALSE)
 //' head(ls)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat &W,
                      const arma::uvec &alt_idx, const Rcpp::IntegerVector &M,
@@ -1947,7 +1947,7 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
 //'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Vector of length J (or J+1 with outside option) of predicted shares.
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::vec mxl_predict_shares(
     const arma::vec& theta,
@@ -2036,7 +2036,7 @@ arma::vec mxl_predict_shares(
 //'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mxl_diversion_ratios_parallel(
     const arma::vec& theta,
@@ -2504,13 +2504,13 @@ arma::vec mxl_blp_contraction(
 //' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 //' eta <- get_halton_normals(50, d$N, ncol(d$W))
 //' fit <- run_mxlogit(input_data = d, eta_draws = eta)
-//' elas <- mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
+//' elas <- choicer:::mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
 //'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
 //'   elast_var_idx = 1L, is_random_coef = FALSE,
 //'   rc_correlation = FALSE, rc_mean = FALSE)
 //' elas
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mxl_elasticities_parallel(
     const arma::vec& theta,

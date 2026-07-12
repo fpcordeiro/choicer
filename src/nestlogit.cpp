@@ -47,11 +47,11 @@ static void nl_parse_theta(
 //' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 //' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 //' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-//' result <- nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+//' result <- choicer:::nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
 //'   d$choice_idx, d$nest_idx, d$M, d$weights)
 //' result$objective
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 Rcpp::List nl_loglik_gradient_parallel(
     const arma::vec& theta,
@@ -296,11 +296,11 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 //' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 //' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-//' B <- nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+//' B <- choicer:::nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
 //'   d$nest_idx, d$M, d$weights)
 //' dim(B)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat nl_bhhh_parallel(
     const arma::vec& theta,
@@ -652,11 +652,11 @@ arma::mat nl_scores_parallel(
 //' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 //' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 //' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-//' H <- nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
+//' H <- choicer:::nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
 //'   d$nest_idx, d$M, d$weights)
 //' dim(H)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat nl_loglik_numeric_hessian(
   const arma::vec& theta,
@@ -762,11 +762,11 @@ arma::mat nl_loglik_numeric_hessian(
 //' K_x <- ncol(d$X)
 //' K_l <- sum(table(d$nest_idx) > 1)   # number of non-singleton nests (= 2)
 //' theta <- c(rep(0, K_x), rep(0.8, K_l), rep(0, J - 1))
-//' H <- nl_loglik_hessian_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+//' H <- choicer:::nl_loglik_hessian_parallel(theta, d$X, d$alt_idx, d$choice_idx,
 //'   d$nest_idx, d$M, d$weights)
 //' dim(H)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat nl_loglik_hessian_parallel(
     const arma::vec& theta,
@@ -1314,11 +1314,11 @@ static void nl_parse_theta(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' pred <- nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
+//' pred <- choicer:::nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
 //'   fit$data$nest_idx, use_asc = TRUE)
 //' head(pred$choice_prob)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 Rcpp::List nl_predict(
     const arma::vec& theta,
@@ -1476,11 +1476,11 @@ static arma::vec nl_predict_shares_internal(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' shares <- nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+//' shares <- choicer:::nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$M, fit$data$weights, fit$data$nest_idx, use_asc = TRUE)
 //' shares
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::vec nl_predict_shares(
     const arma::vec& theta,
@@ -1541,12 +1541,12 @@ arma::vec nl_predict_shares(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' elas <- nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//' elas <- choicer:::nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
 //'   elast_var_idx = 1L)
 //' elas
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat nl_elasticities_parallel(
     const arma::vec& theta,
@@ -1715,11 +1715,11 @@ arma::mat nl_elasticities_parallel(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' dr <- nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//' dr <- choicer:::nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$nest_idx, fit$data$M, fit$data$weights)
 //' dr
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat nl_diversion_ratios_parallel(
     const arma::vec& theta,

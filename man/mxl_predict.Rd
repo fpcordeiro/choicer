@@ -62,3 +62,4 @@ simulated mean of the deterministic + W*gamma component), and, when
 Returns the simulated choice probability for each (individual, alternative)
 row of \code{X}, averaged over the supplied Halton draws. Mirrors \code{mnl_predict}.
 }
+\keyword{internal}

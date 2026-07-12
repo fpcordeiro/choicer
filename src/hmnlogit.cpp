@@ -302,7 +302,7 @@ static void validate_hmnl_inputs(const arma::mat& X, const arma::mat& Z,
 //' sim <- simulate_hmnl_data(N = 20, T = 2, J = 3, seed = 42)
 //' d <- prepare_hmnl_data(sim$data, "task", "alt", "choice",
 //'                        c("x1", "x2"), person_col = "pid")
-//' out <- hmnl_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
+//' out <- choicer:::hmnl_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
 //'   rc_dist = d$rc_dist, beta_pooled = rep(0, d$K_struct),
 //'   delta_init = rep(0, d$J), theta_init = rep(0, d$P),
 //'   b_bar = rep(0, d$K_struct), A = 0.01 * diag(d$K_struct),
@@ -313,7 +313,7 @@ static void validate_hmnl_inputs(const arma::mat& X, const arma::mat& Z,
 //'   s_init = 2.38 / sqrt(d$K_struct), accept_target = 0.234)
 //' colMeans(out$bdraw)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export(rng = false)]]
 Rcpp::List hmnl_gibbs(const arma::mat& X,
                       const arma::mat& Z,

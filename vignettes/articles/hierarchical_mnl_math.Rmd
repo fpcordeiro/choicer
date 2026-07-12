@@ -1,6 +1,10 @@
 ---
 title: "The math behind choicer: hierarchical Bayesian multinomial logit"
 output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The math behind choicer: hierarchical Bayesian multinomial logit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
 
@@ -50,7 +54,7 @@ with $C_{it}$ the (possibly unbalanced) inside choice set and the $1$ the outsid
 Two random-effect levels, deliberately decoupled:
 
 - **Respondent level:** $\beta_i \sim N(b, W)$ over the $K$ structural covariates only. $W$ is $K \times K$ — the genuine mixed-logit object. Log-normal coordinates keep the hierarchy normal on the log scale and enter utility exponentiated.
-- **Alternative level (BLP-style):** $\delta_j = z_j'\theta + \xi_j$, $\xi_j \sim N(0, \sigma_d^2)$. One scalar variance regardless of $J$; $\xi_j$ is the micro-Bayesian counterpart of BLP's unobserved product quality. Partial pooling shrinks each $\delta_j$ toward its characteristics-based mean, remains consistent when per-alternative data are sparse (where fixed ASC dummies suffer from incidental-parameters noise), and yields a posterior predictive for alternatives outside the estimation sample (entry counterfactuals in `predict()`).
+- **Alternative level (BLP-style):** $\delta_j = z_j'\theta + \xi_j$, $\xi_j \sim N(0, \sigma_d^2)$. One scalar variance regardless of $J$; $\xi_j$ is the micro-Bayesian counterpart of BLP's unobserved product quality. Partial pooling regularizes noisy alternative effects by shrinking each $\delta_j$ toward its characteristics-based mean and yields a posterior predictive for alternatives outside the estimation sample (entry counterfactuals in `predict()`). With sparse per-alternative data, that stability is purchased under the maintained Gaussian exchangeability and mean-function assumptions; it is not a generic consistency guarantee. Researchers should vary $Z$ and the prior on $\sigma_d$, and examine whether entrant conclusions are driven by shrinkage.
 
 Keeping the ASCs out of $\beta_i$ is the scalability decision: it removes the $O((K+J)^3)$ per-respondent Cholesky and the $O(J^2)$ ASC covariance block a dense specification would carry, replacing them with a length-$J$ vector gathered by row index.
 
@@ -72,6 +76,8 @@ with defaults $\bar b = 0$, $A = 0.01 I$, $\nu = K + 3$, $V = \nu I$, $\bar\thet
 $$\sigma_d^2 \mid a_d \sim \mathcal{IG}(\tfrac12, 1/a_d), \qquad a_d \sim \mathcal{IG}(\tfrac12, 1/s_d^2),$$
 
 which keeps full conjugacy while avoiding the $\mathcal{IG}(\epsilon, \epsilon)$ near-zero pathology (Gelman 2006). A plain $\mathcal{IG}(c_0, d_0)$ fallback is exposed (`sd_prior$half_cauchy = FALSE`).
+
+The labels “diffuse” and “weakly informative” are not substitutes for a sensitivity analysis. In particular, $V$ and $\nu$ shape heterogeneity in $W$, while $s_d$ controls how aggressively sparse alternative effects are pooled toward $Z\theta$. Report prior-predictive implications and rerun substantively important taste, substitution, welfare, and entry results under defensible alternative scales.
 
 The joint posterior over $(\{\beta_i\}, b, W, \delta, \theta, \sigma_d^2, a_d)$ multiplies the logit likelihood by the two Gaussian hierarchies and the priors above.
 

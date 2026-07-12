@@ -48,6 +48,14 @@ estimates and the robust (sandwich) variance unchanged, so the attached
 `.wesml_weight` need not equal $Q/H$ literally; only the *relative* weights
 across strata matter.
 
+Before fitting, record where `Q` came from, its population and reference period,
+how its alternative definitions map to the estimation sample, and whether the
+totals themselves are estimated. `wesml_weights()` treats `Q` as fixed: it does
+not propagate sampling error, benchmarking error, or uncertainty from an
+external survey into the covariance matrix. If that uncertainty is material,
+recompute the complete fit over plausible or resampled `Q` values and report how
+the coefficients and policy objects move.
+
 ```{r setup}
 library(choicer)
 library(data.table)

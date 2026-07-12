@@ -2,7 +2,7 @@
 % Please edit documentation in R/mnlogit_utils.R
 \name{prepare_mnl_data}
 \alias{prepare_mnl_data}
-\title{Prepare inputs for \code{mnl_loglik_gradient_parallel()}}
+\title{Prepare inputs for multinomial logit estimation}
 \usage{
 prepare_mnl_data(
   data,

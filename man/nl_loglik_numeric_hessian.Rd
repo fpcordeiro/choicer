@@ -59,8 +59,9 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-H <- nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
+H <- choicer:::nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
   d$nest_idx, d$M, d$weights)
 dim(H)
 }
 }
+\keyword{internal}

@@ -42,6 +42,20 @@ jobs:
           extra-packages: any::pkgdown, local::.
           needs: website
 
+      # pkgdown renders every top-level Markdown file it finds, including
+      # repository-only contributor and architecture notes. The CI checkout is
+      # disposable, so stage those notes outside the package tree before the
+      # build rather than renaming or deleting their canonical source files.
+      - name: Stage repository-only Markdown outside the site source
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/choicer-internal-markdown"
+          for file in AGENTS.md CLAUDE.md ARCHITECTURE.md; do
+            if [[ -f "${file}" ]]; then
+              mv "${file}" "${RUNNER_TEMP}/choicer-internal-markdown/"
+            fi
+          done
+
       - name: Build site
         run: pkgdown::build_site_github_pages(new_process = FALSE, install = FALSE)
         shell: Rscript {0}

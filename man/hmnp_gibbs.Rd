@@ -121,7 +121,7 @@ reduction-order round-off (~1e-15), not bitwise.
 sim <- simulate_hmnp_data(N = 30, T = 2, J = 3, seed = 42)
 d <- prepare_hmnp_data(sim$data, "task", "alt", "choice",
                        c("x1", "x2"), person_col = "pid")
-out <- hmnp_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
+out <- choicer:::hmnp_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
   delta_init = rep(0, d$J), theta_init = rep(0, d$P),
   b_bar = rep(0, d$K_struct), A = 0.01 * diag(d$K_struct),
   nu = d$K_struct + 3, V = (d$K_struct + 3) * diag(d$K_struct),
@@ -132,3 +132,4 @@ out <- hmnp_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
 colMeans(out$bdraw / sqrt(as.numeric(out$sigma2draw)))
 }
 }
+\keyword{internal}

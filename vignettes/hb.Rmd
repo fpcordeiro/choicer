@@ -48,6 +48,22 @@ alternative. Estimation is by Gibbs sampling in C++ — an adaptive
 Metropolis-within-Gibbs for the logit (`run_hmnlogit()`), a fully conjugate
 Albert-Chib sampler for the probit (`run_hmnprobit()`).
 
+The hierarchy is shared; the utility-shock model is not:
+
+| | HMNL (`run_hmnlogit`) | HMNP (`run_hmnprobit`) |
+|---|---|---|
+| Choice shock | iid Type-I extreme value | iid normal in utility levels, including a stochastic outside option |
+| Persistent tastes | Normal or lognormal coordinates in `beta_i` | Normal coordinates only |
+| Scale | Logit scale fixed by the EV1 distribution | Free expanded `sigma2`; every reported draw is scale-normalized |
+| Sampler | Adaptive random-walk Metropolis-within-Gibbs | Fully conjugate Albert-Chib augmentation |
+| Welfare | Logsum and consumer surplus | No expected-maximum/logsum welfare implementation |
+
+In particular, HMNP is not the hierarchical analogue of the unrestricted
+utility-difference covariance estimated by `run_mnprobit()`. HMNP gains a
+conjugate, scalable panel sampler by imposing iid utility-level normal shocks;
+its flexible substitution comes from persistent person tastes and pooled
+alternative effects, not an unrestricted shock covariance.
+
 ```{r setup}
 library(choicer)
 set_num_threads(2)
@@ -131,6 +147,15 @@ rhat(b_chains, rank = TRUE)
 ess(b_chains)
 mcse(b_chains)
 ```
+
+Two chains keep this vignette build manageable and permit between-chain checks;
+for a serious empirical run, four or more independently seeded chains are often
+a better default. Report the number of people, tasks per person and alternatives;
+all prior scales; HMNL acceptance rates; rank-normalized R-hat; bulk and tail
+ESS; MCSE; trace plots; and posterior-predictive shares. Show prior sensitivity
+for `W` and `sigma_d2`. For entry, defend why the entrant's residual quality is
+exchangeable with incumbents rather than treating the posterior predictive as a
+data-free ASC.
 
 ## Did we recover the truth?
 
@@ -271,7 +296,9 @@ tune), and because it works in un-differenced utility space, unbalanced choice
 sets pose no problem. The probit has a free scale, handled by parameter
 expansion: a non-identified $\sigma^2$ chain wanders by design, and every
 reported quantity is normalized per draw, so all summaries are on the
-identified scale.
+identified scale. Do not diagnose convergence from the wandering, unidentified
+raw `sigma2` chain alone; diagnose the normalized structural and predictive
+quantities that enter the economic conclusions.
 
 ```{r hmnp}
 simp <- simulate_hmnp_data(N = 250, T = 5, J = 6, seed = 42)

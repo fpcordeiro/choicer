@@ -152,13 +152,13 @@ static void validate_mnp_inputs(const arma::mat& X, const Rcpp::IntegerVector& y
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
-//' out <- mnp_gibbs(d$X, d$y, d$p,
+//' out <- choicer:::mnp_gibbs(d$X, d$y, d$p,
 //'   beta_bar = rep(0, d$K), A = 0.01 * diag(d$K),
 //'   nu = d$p + 3, V = (d$p + 3) * diag(d$p),
 //'   R = 500, burn = 100, thin = 1, seed = 42)
 //' colMeans(out$betadraw)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export(rng = false)]]
 Rcpp::List mnp_gibbs(const arma::mat& X,
                      const Rcpp::IntegerVector& y,

@@ -2,7 +2,7 @@
 % Please edit documentation in R/mxlogit_utils.R
 \name{prepare_mxl_data}
 \alias{prepare_mxl_data}
-\title{Prepare inputs for \code{mxl_loglik_gradient_parallel()}}
+\title{Prepare inputs for mixed logit estimation}
 \usage{
 prepare_mxl_data(
   data,

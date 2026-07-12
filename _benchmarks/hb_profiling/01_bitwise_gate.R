@@ -48,6 +48,10 @@ library(choicer, lib.loc = ref_lib_dir)   # non-instrumented reference build
 cat("Build A (non-instrumented): choicer ", as.character(packageVersion("choicer")),
    " @ ", find.package("choicer"), "\n", sep = "")
 
+# This gate deliberately compares internal compiled kernels.
+hmnl_gibbs <- choicer:::hmnl_gibbs
+hmnp_gibbs <- choicer:::hmnp_gibbs
+
 set_num_threads(5L)
 
 # --- Tiny fixed-seed config (per spec): N=200, J=10, K=4, P=3, R=200,
@@ -129,6 +133,8 @@ run_gate_for_model <- function(model) {
   outB_path <- file.path(tmp_dir, paste0("gate_outB_", model, ".rds"))
   writeLines(sprintf('
     library(choicer, lib.loc = "%s")
+    hmnl_gibbs <- choicer:::hmnl_gibbs
+    hmnp_gibbs <- choicer:::hmnp_gibbs
     choicer::set_num_threads(5L)
     inputs <- readRDS("%s")
     if (inputs$model == "hmnl") {
@@ -236,6 +242,8 @@ overhead_check <- function(model) {
   worker_script <- tempfile(fileext = ".R")
   writeLines(sprintf('
     library(choicer, lib.loc = "%s")
+    hmnl_gibbs <- choicer:::hmnl_gibbs
+    hmnp_gibbs <- choicer:::hmnp_gibbs
     choicer::set_num_threads(5L)
     inputs <- readRDS("%s")
     K <- ncol(inputs$X)

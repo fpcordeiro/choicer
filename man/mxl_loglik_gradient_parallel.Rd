@@ -86,9 +86,10 @@ d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 eta <- get_halton_normals(50, d$N, ncol(d$W))
 K_x <- ncol(d$X); K_w <- ncol(d$W); J <- nrow(d$alt_mapping)
 theta <- rep(0, K_x + K_w + J - 1)
-result <- mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
+result <- choicer:::mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, K_w),
   rc_correlation = FALSE, rc_mean = FALSE)
 result$objective
 }
 }
+\keyword{internal}

@@ -17,6 +17,15 @@ suppressPackageStartupMessages({
   library(data.table)
 })
 
+# These compiled kernels are intentionally internal as of choicer 0.2.0.
+# Bind them explicitly because this validation suite runs against an installed
+# package rather than inside the package namespace.
+mxl_bhhh_parallel <- choicer:::mxl_bhhh_parallel
+mxl_hessian_parallel <- choicer:::mxl_hessian_parallel
+mxl_loglik_gradient_parallel <- choicer:::mxl_loglik_gradient_parallel
+build_var_mat <- choicer:::build_var_mat
+jacobian_vech_Sigma <- choicer:::jacobian_vech_Sigma
+
 # ---- Cholesky round-trip startup assert ------------------------------------
 #
 # Catches a row-major-vs-column-major regression in the simulator's L_params

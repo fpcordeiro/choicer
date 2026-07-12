@@ -393,7 +393,7 @@ run_mnlogit <- function(
   )
 }
 
-#' Prepare inputs for `mnl_loglik_gradient_parallel()`
+#' Prepare inputs for multinomial logit estimation
 #'
 #' Prepares and validates inputs for multinomial logit estimation routine.
 #'
@@ -669,4 +669,3 @@ prepare_mnl_data <- function(
   }
   out
 }
-

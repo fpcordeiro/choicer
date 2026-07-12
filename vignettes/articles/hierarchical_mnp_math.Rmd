@@ -1,10 +1,16 @@
 ---
 title: "The math behind choicer: hierarchical Bayesian multinomial probit"
 output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The math behind choicer: hierarchical Bayesian multinomial probit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
 
 This document describes the hierarchical Bayesian multinomial probit with i.i.d. shocks (HMNP) as implemented in `src/hmnprobit.cpp`, with shared infrastructure in `src/hb_internal.h`. The R-side entry point is `run_hmnprobit()`. The hierarchical structure ($\beta_i \sim N(b, W)$; $\delta_j = z_j'\theta + \xi_j$) is identical to the HMNL (see the companion article); this note focuses on what differs: the shock family, the data augmentation, identification, and the parallelization asymmetry.
+
+> **Model boundary.** `run_hmnprobit()` is not a hierarchical version of the unrestricted-covariance MNP fitted by `run_mnprobit()`. HMNP imposes i.i.d. utility-level normal shocks with one common expanded variance $\sigma^2$; after differencing against the stochastic outside good, the covariance is the fixed equicorrelation structure implied by that assumption. `run_mnprobit()` instead estimates a full covariance matrix of utility differences. HMNP's flexible substitution comes from respondent taste heterogeneity $W$ and pooled alternative effects, not from an unrestricted shock covariance.
 
 ## Table of Contents
 
@@ -40,7 +46,7 @@ The sampler works in **un-differenced utility space**: with i.i.d. shocks the la
 
 ## 3. Priors and Joint Posterior
 
-As in the HMNL for $(b, W, \theta, \sigma_d^2)$, plus $\sigma^2 \sim \mathcal{IG}(a_0, s_0)$ (defaults $a_0 = s_0 = 3$) on the non-identified variance. All conditionals below are conjugate — the sampler has no Metropolis steps.
+As in the HMNL for $(b, W, \theta, \sigma_d^2)$, plus $\sigma^2 \sim \mathcal{IG}(a_0, s_0)$ (defaults $a_0 = s_0 = 3$) on the non-identified variance. All conditionals below are conjugate — the sampler has no Metropolis steps. Because identified draws are ratios involving the current $\sigma$, raw-scale priors induce a joint prior on identified tastes, heterogeneity, and alternative effects. Prior-predictive and prior-sensitivity checks should therefore cover $W$, $\sigma_d$, and the expanded-scale prior rather than diagnosing the deliberately non-identified $\sigma^2$ chain in isolation.
 
 ## 4. The Gibbs Sampler
 

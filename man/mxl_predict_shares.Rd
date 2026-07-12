@@ -64,3 +64,4 @@ Exported wrapper around the internal \code{mxl_predict_shares_internal}. Parses
 \code{theta} using the standard parameter ordering and returns the simulated
 weighted-average market shares.
 }
+\keyword{internal}

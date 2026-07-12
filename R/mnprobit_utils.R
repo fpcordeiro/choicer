@@ -260,7 +260,7 @@ run_mnprobit <- function(
   )
 }
 
-#' Prepare inputs for `mnp_gibbs()`
+#' Prepare inputs for Bayesian multinomial probit estimation
 #'
 #' Prepares and validates inputs for Bayesian multinomial probit estimation.
 #' Covariates are differenced against the base alternative, so the design

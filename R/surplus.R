@@ -461,8 +461,8 @@ consumer_surplus.choicer_mxl <- function(object, price_var, newdata = NULL,
       price_var %in% w_names) {
     stop("Random price coefficients are not supported: 1/(-alpha) with a ",
          "random alpha generally has no finite moments. Use a fixed price ",
-         "coefficient (a 'covariate_cols' variable) or estimate the model ",
-         "in WTP space.")
+         "coefficient (a 'covariate_cols' variable). choicer does not ",
+         "currently estimate models in WTP space.")
   }
   price_idx <- .wtp_price_index(object, price_var)
   alpha <- unname(object$coefficients[price_idx])

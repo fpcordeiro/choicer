@@ -48,8 +48,9 @@ dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
 dt[, choice := 0L]
 dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-H <- mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+H <- choicer:::mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
   fit$data$choice_idx, fit$data$M, fit$data$weights)
 dim(H)
 }
 }
+\keyword{internal}
