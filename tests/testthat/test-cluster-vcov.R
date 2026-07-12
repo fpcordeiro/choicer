@@ -125,8 +125,14 @@ test_that("NL score rows match numDeriv per-situation gradients", {
     covariate_cols = c("x1", "x2"), nest_col = "nest"
   ))
   d <- fit$data
+  # Uniformly random choices leave lambda weakly identified, so its MLE can
+  # approach the zero boundary differently across platforms. The numerical
+  # oracle uses central differences and must stay in the lambda > 0 domain;
+  # test the score identity at a fixed, feasible interior point instead.
+  theta_eval <- fit$coefficients
+  theta_eval[fit$param_map$lambda] <- 0.7
   S_mat <- choicer:::nl_scores_parallel(
-    theta = fit$coefficients, X = d$X, alt_idx = d$alt_idx,
+    theta = theta_eval, X = d$X, alt_idx = d$alt_idx,
     choice_idx = d$choice_idx, nest_idx = d$nest_idx, M = d$M,
     use_asc = fit$use_asc,
     include_outside_option = fit$include_outside_option
@@ -140,7 +146,7 @@ test_that("NL score rows match numDeriv per-situation gradients", {
     )$objective
   }
   for (i in c(1L, 23L, N)) {
-    g_num <- numDeriv::grad(loglik_i, fit$coefficients, i = i)
+    g_num <- numDeriv::grad(loglik_i, theta_eval, i = i)
     expect_equal(unname(S_mat[i, ]), g_num, tolerance = 1e-6)
   }
 })
