@@ -42,7 +42,7 @@ $$
 where every $\varepsilon$, including the outside shock, is iid type-I extreme value with unit scale and variance $\pi^2/6$. Let
 
 $$
-v_{ijt}=x_{ijt}'\gamma_i+\delta_j,qquad
+v_{ijt}=x_{ijt}'\gamma_i+\delta_j,\qquad
 D_{it}=1+\sum_{k\in C_{it}}\exp(v_{ikt}).
 $$
 
@@ -72,7 +72,7 @@ $$
 and
 
 $$
-\delta_j=z_j'\theta+\xi_j,qquad
+\delta_j=z_j'\theta+\xi_j,\qquad
 \xi_j\mid\sigma_d^2\stackrel{ind}{\sim}N(0,\sigma_d^2).
 $$
 
@@ -146,14 +146,14 @@ $$
 The proposal is symmetric:
 
 $$
-\beta_i^*=\beta_i+s_iL_i^{-T}z,qquad z\sim N_K(0,I_K),
+\beta_i^*=\beta_i+s_iL_i^{-T}z,\qquad z\sim N_K(0,I_K),
 $$
 
 where $L_iL_i'=H_i+W^{-1}$. Thus its covariance is $s_i^2(H_i+W^{-1})^{-1}$. $H_i$ is fixed once at startup. At the pooled initialization, for each task,
 
 $$
 H_{it}=\sum_{j\in C_{it}}p_{ijt}x_{ijt}x_{ijt}'
--\bar x_{it}\bar x_{it}',qquad
+-\bar x_{it}\bar x_{it}',\qquad
 \bar x_{it}=\sum_{j\in C_{it}}p_{ijt}x_{ijt},
 $$
 
@@ -162,7 +162,7 @@ and $H_i=\sum_tH_{it}$. The omitted outside vector is zero but its probability r
 Because the proposal is symmetric,
 
 $$
-\log\alpha_i=ell_i(\beta_i^*,\delta)-\ell_i(\beta_i,\delta)
+\log\alpha_i=\ell_i(\beta_i^*,\delta)-\ell_i(\beta_i,\delta)
 +\tfrac12\left[q_i-q_i^*\right],
 $$
 
@@ -207,7 +207,7 @@ $$W\mid\cdot\sim IW_K\left(\nu+N,V+\sum_i(\beta_i-b)(\beta_i-b)'\right).$$
 
 For the alternative mean function, let
 
-$$P_\theta=A_\theta+Z'Z/\sigma_d^2,qquad
+$$P_\theta=A_\theta+Z'Z/\sigma_d^2,\qquad
 r_\theta=A_\theta\bar\theta+Z'\delta/\sigma_d^2.$$
 
 Then $\theta\mid\cdot\sim N_P(P_\theta^{-1}r_\theta,P_\theta^{-1})$. Writing $\xi=\delta-Z\theta$, the half-Cauchy mixture gives

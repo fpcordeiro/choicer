@@ -17,7 +17,7 @@ This article gives a self-contained description of the hierarchical Bayesian mul
 Respondents are $i=1,\ldots,N$, tasks are $t=1,\ldots,T_i$, and $C_{it}\subseteq\{1,\ldots,J\}$ is the possibly unbalanced set of inside alternatives. The implicit outside option is $o$. Structural covariates are $x_{ijt}\in\mathbb R^K$ and alternative characteristics are $z_j\in\mathbb R^P$. Utilities on the sampler's raw scale are
 
 $$
-U_{ijt}=x_{ijt}'\beta_i+\delta_j+\varepsilon_{ijt},qquad
+U_{ijt}=x_{ijt}'\beta_i+\delta_j+\varepsilon_{ijt},\qquad
 U_{iot}=\varepsilon_{iot},
 $$
 
@@ -35,7 +35,7 @@ $$
 $$
 
 $$
-\delta_j=z_j'\theta+\xi_j,qquad
+\delta_j=z_j'\theta+\xi_j,\qquad
 \xi_j\mid\sigma_d^2\stackrel{ind}{\sim}N(0,\sigma_d^2).
 $$
 
@@ -46,14 +46,14 @@ All taste coordinates are normal. HMNP does not offer `rc_dist`: exponentiating 
 Difference each inside utility against the outside:
 
 $$
-w_{ijt}=U_{ijt}-U_{iot}=x_{ijt}'\beta_i+\delta_j+\eta_{ijt},qquad
+w_{ijt}=U_{ijt}-U_{iot}=x_{ijt}'\beta_i+\delta_j+\eta_{ijt},\qquad
 \eta_{ijt}=\varepsilon_{ijt}-\varepsilon_{iot}.
 $$
 
 Within a task,
 
 $$
-\operatorname{Var}(\eta_{ijt})=2\sigma^2,qquad
+\operatorname{Var}(\eta_{ijt})=2\sigma^2,\qquad
 \operatorname{Cov}(\eta_{ijt},\eta_{ikt})=\sigma^2\quad(j\ne k).
 $$
 
@@ -78,11 +78,11 @@ $$
 The likelihood therefore has no information about one common utility scale. The chain samples a proper raw-scale posterior with free $\sigma^2$ and raw-scale priors. Every retained draw is then mapped to the identified convention $\tilde\sigma=1$:
 
 $$
-\tilde b=\frac b\sigma,quad
-\tilde\beta_i=\frac{\beta_i}\sigma,quad
-\tilde W=\frac W{\sigma^2},quad
-\tilde\delta=\frac\delta\sigma,quad
-\tilde\theta=\frac\theta\sigma,quad
+\tilde b=\frac b\sigma,\quad
+\tilde\beta_i=\frac{\beta_i}\sigma,\quad
+\tilde W=\frac W{\sigma^2},\quad
+\tilde\delta=\frac\delta\sigma,\quad
+\tilde\theta=\frac\theta\sigma,\quad
 \tilde\sigma_d^2=\frac{\sigma_d^2}{\sigma^2}.
 $$
 
@@ -156,7 +156,7 @@ and the outside conditional is $N(0,\sigma^2)$. If alternative $a$ is chosen, it
 Let $X_i$ stack respondent $i$'s inside rows, $U_i$ their latent utilities, and $d_i$ the vector repeating the relevant $\delta_j$. Define the precomputed Gram matrix $G_i=X_i'X_i$. Then
 
 $$
-Q_i=W^{-1}+G_i/\sigma^2,qquad
+Q_i=W^{-1}+G_i/\sigma^2,\qquad
 r_i=W^{-1}b+X_i'(U_i-d_i)/\sigma^2,
 $$
 
@@ -171,7 +171,7 @@ After each draw the row cache $x_{ijt}'\beta_i$ is refreshed. The outside latent
 Given augmented utilities, different $\delta_j$ appear in disjoint normal regressions and are conditionally independent. Let $\mathcal R_j$ be all inside rows for alternative $j$, $n_j=|\mathcal R_j|$, and $m_j=z_j'\theta$. Then
 
 $$
-q_j=n_j/\sigma^2+1/\sigma_d^2,qquad
+q_j=n_j/\sigma^2+1/\sigma_d^2,\qquad
 r_j=\frac1{\sigma^2}\sum_{r\in\mathcal R_j}(U_r-x_r'\beta_{i(r)})
 +\frac{m_j}{\sigma_d^2},
 $$
@@ -195,7 +195,7 @@ $$
 
 $$
 \theta\mid\cdot\sim N(P_\theta^{-1}r_\theta,P_\theta^{-1}),\quad
-P_\theta=A_\theta+Z'Z/\sigma_d^2,quad
+P_\theta=A_\theta+Z'Z/\sigma_d^2,\quad
 r_\theta=A_\theta\bar\theta+Z'\delta/\sigma_d^2.
 $$
 

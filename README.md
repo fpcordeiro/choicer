@@ -7,9 +7,8 @@
 [![R-CMD-check](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-`choicer` provides fast discrete-choice estimation for applied economics. MNL,
-cross-sectional MXL, and NL use C++ likelihoods, analytical gradients and
-Hessians, and OpenMP parallelism. MNP, HMNL, and HMNP use dedicated C++ MCMC
+`choicer` provides fast discrete-choice estimation for applied economics. Multinomial Logit (MNL), Mixed Logit (MXL), and Nested Logit (NL) use C++ likelihoods, analytical gradients and
+Hessians, and OpenMP parallelism. Bayesian Multinomial Probit (MNP), Hierarchical Multinomial Logit (HMNL), and Hierarchical Multinomial Probit (HMNP) use dedicated C++ MCMC
 kernels and posterior diagnostics. A common research interface covers fitted
 shares, elasticities, diversion, willingness to pay, welfare, counterfactuals,
 and BLP inversion wherever each model supports the economic object. Frequentist
@@ -198,16 +197,6 @@ own posterior prediction and substitution methods.
 | Logsum / consumer-surplus welfare | yes | yes | yes | — | yes | — |
 | Entry prediction for unseen alternatives | — | — | — | — | yes | yes |
 | Native multi-chain posterior diagnostics | — | — | — | — | yes | yes |
-
-### Current boundaries
-
-The frequentist MXL likelihood is cross-sectional: clustering repeated tasks
-repairs inference, not the likelihood or estimand; use HMNL for persistent panel
-tastes. v0.2.0 does not estimate WTP-space models, bounded/censored mixing
-distributions, latent classes, or merger simulations. MNP returns posterior
-coefficient and covariance summaries but not prediction, substitution, or
-welfare. HMNP restricts utility-level shocks to iid normals and has prediction
-but no expected-maximum/logsum welfare implementation.
 
 ## Alternative packages
 
