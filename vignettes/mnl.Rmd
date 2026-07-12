@@ -92,7 +92,7 @@ The elasticities and diversion ratios reported above are averages over choice
 situations. When covariates, demographics or choice sets vary across situations,
 the aggregate diversion matrix need not equal the simple market-share formula
 $DR(j\to k) = s_k / (1 - s_j)$. The
-[math companion](multinomial_logit_math.html) gives the derivation.
+[math companion](https://fpcordeiro.github.io/choicer/articles/multinomial_logit_math.html) gives the derivation.
 
 The remaining restriction is substantive: all heterogeneity that matters for
 substitution must be observed and included in the utility index. If closeness is

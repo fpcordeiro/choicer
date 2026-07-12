@@ -718,7 +718,7 @@ arma::vec blp_contraction(
 
   // total number of distinct alternatives
   int num_alts = include_outside_option ? (delta.n_elem + 1) :  delta.n_elem;
-  if (target_shares.n_elem != num_alts) {
+  if (target_shares.n_elem != static_cast<arma::uword>(num_alts)) {
     Rcpp::stop("Error: target_shares must have the same length as the total number of alternatives.");
   }
   if (arma::any(target_shares <= 0)) {

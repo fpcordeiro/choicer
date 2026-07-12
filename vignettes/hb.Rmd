@@ -367,8 +367,8 @@ which are logit-only as noted above.
 
 The full derivations — priors, the Gibbs sweeps, identification, and the
 implementation contract — are in the math companions:
-[hierarchical MNL](hierarchical_mnl_math.html) and
-[hierarchical MNP](hierarchical_mnp_math.html). For where these
+[hierarchical MNL](https://fpcordeiro.github.io/choicer/articles/hierarchical_mnl_math.html) and
+[hierarchical MNP](https://fpcordeiro.github.io/choicer/articles/hierarchical_mnp_math.html). For where these
 models sit among choicer's estimators, see
 [Choosing among choice models](choicer.html#choosing-among-choice-models).
 

@@ -89,7 +89,7 @@ have enough independent clusters for its asymptotics.
 > fixed number of draws is biased — the log of an unbiased probability
 > simulator is not unbiased — and the classical asymptotics require `S` to
 > grow with the sample (see the
-> [math companion](mixed_logit_math.html) for the conditions). If the solver
+> [math companion](https://fpcordeiro.github.io/choicer/articles/mixed_logit_math.html) for the conditions). If the solver
 > struggles, pass an explicit `theta_init`: place the MNL slope and ASC estimates
 > in the corresponding MXL parameter blocks and initialize the additional mean
 > and Cholesky coordinates deliberately. Bounds can keep Cholesky diagonals away

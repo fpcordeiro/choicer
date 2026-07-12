@@ -159,7 +159,7 @@ The full derivations — the GEV likelihood, analytical gradient and Hessian,
 nest-consistent elasticities and diversion, and how choicer's
 utility-maximization-consistent parameterization relates to the non-normalized
 nested logit found in some other software — are in the
-[math companion](nested_logit_math.html).
+[math companion](https://fpcordeiro.github.io/choicer/articles/nested_logit_math.html).
 
 ## References
 

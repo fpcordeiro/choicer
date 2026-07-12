@@ -144,7 +144,7 @@ move when the identifying variation is weak.
 
 The full derivations — the data-augmented Gibbs sampler, the McCulloch-Rossi
 normalization, and the identification discussion — are in the
-[math companion](bayesian_multinomial_probit_math.html). For a faster,
+[math companion](https://fpcordeiro.github.io/choicer/articles/bayesian_multinomial_probit_math.html). For a faster,
 frequentist alternative with the same post-estimation toolkit, see the
 [multinomial logit](mnl.html) and [mixed logit](mxl.html) vignettes. For the
 hierarchical extension — respondent-level random tastes and partially-pooled
