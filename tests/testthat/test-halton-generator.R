@@ -114,22 +114,36 @@ test_that("halton_generate_uniform (scramble=0) matches randtoolbox exactly", {
 })
 
 # ---------------------------------------------------------------------------
-# 4. Owen mode (scramble=1): reproducibility and sanity
+# 4. Position-wise permutation mode (scramble=1): reproducibility and sanity
 # ---------------------------------------------------------------------------
 
-test_that("Owen mode is bitwise reproducible with the same seed", {
+test_that("permuted mode is bitwise reproducible with the same seed", {
   a1 <- choicer:::halton_generate_normal(100, 10, 3, seed = 42, scramble = 1)
   a2 <- choicer:::halton_generate_normal(100, 10, 3, seed = 42, scramble = 1)
   expect_identical(a1, a2)
 })
 
-test_that("Owen mode produces different draws with a different seed", {
+test_that("permuted mode produces different draws with a different seed", {
   a <- choicer:::halton_generate_normal(100, 10, 3, seed = 42,  scramble = 1)
   b <- choicer:::halton_generate_normal(100, 10, 3, seed = 999, scramble = 1)
   expect_false(isTRUE(all.equal(a, b)))
 })
 
-test_that("Owen mode per-dim mean is approximately 0 and var approximately 1", {
+test_that("permuted mode leaves implicit trailing zero digits unchanged", {
+  # For n=1 in base 2 the implementation visits one explicit digit and then
+  # stops. Across seeds the first coordinate can therefore only be 0 or 1/2;
+  # it does not acquire a randomized binary tail. This pins the precise
+  # position-wise construction and guards against calling it nested Owen.
+  first_points <- vapply(0:63, function(seed) {
+    choicer:::halton_generate_uniform(
+      n = 1L, dim = 1L, seed = seed, scramble = 1L
+    )[1L, 1L]
+  }, numeric(1L))
+  expect_true(all(first_points %in% c(0, 0.5)))
+  expect_setequal(unique(first_points), c(0, 0.5))
+})
+
+test_that("permuted mode per-dim mean is approximately 0 and var approximately 1", {
   # Use N=2000 individuals with S=1 draw each per dimension.
   # Low-discrepancy sequences have good Monte Carlo statistics at N=2000.
   # NIT-2 (Phase-A review): the gate |mean| < 0.1 and |var-1| < 0.3 is
@@ -144,16 +158,16 @@ test_that("Owen mode per-dim mean is approximately 0 and var approximately 1", {
     row_vals <- m[k, ]
     expect_true(
       abs(mean(row_vals)) < 0.1,
-      label = paste0("Owen dim ", k, " mean approx 0: mean=", round(mean(row_vals), 4))
+      label = paste0("permuted dim ", k, " mean approx 0: mean=", round(mean(row_vals), 4))
     )
     expect_true(
       abs(var(row_vals) - 1.0) < 0.3,
-      label = paste0("Owen dim ", k, " var approx 1: var=", round(var(row_vals), 4))
+      label = paste0("permuted dim ", k, " var approx 1: var=", round(var(row_vals), 4))
     )
   }
 })
 
-test_that("Owen mode slice indexing is consistent with n = (i-1)*S + s + 1", {
+test_that("permuted-mode indexing uses n = (i-1)*S + s + 1", {
   # In compat mode (scramble=0), verify that the K_w x (S*N) output of
   # halton_generate_normal is consistent with the per-point formula:
   #   column (i-1)*S + s (0-based) = inv_normal_cdf(phi_b((i-1)*S + s + 1))
@@ -213,4 +227,38 @@ test_that("halton_generate_normal has documented output layout K_w x (S*N)", {
 
   expect_equal(col_i1_s0, z_i1, tolerance = 1e-10)
   expect_equal(col_i2_s0, z_i2, tolerance = 1e-10)
+})
+
+test_that("the full 128-prime Halton table is addressable", {
+  # Dimension indices are 0..127 in C++, so K_w = 128 is valid and uses the
+  # final prime (719). This guards the former >= off-by-one rejection.
+  u <- choicer:::halton_generate_uniform(
+    n = 2L, dim = 128L, seed = 0, scramble = 0L
+  )
+  expect_equal(dim(u), c(2L, 128L))
+  expect_equal(u[1L, 128L], 1 / 719, tolerance = 1e-15)
+  expect_equal(u[2L, 128L], 2 / 719, tolerance = 1e-15)
+
+  expect_error(
+    choicer:::halton_generate_uniform(1L, 129L, seed = 0, scramble = 0L),
+    "between 1 and 128"
+  )
+  expect_error(
+    choicer:::halton_generate_normal(1L, 1L, 129L, seed = 0, scramble = 0L),
+    "between 1 and 128"
+  )
+
+  # Exercise a production generate-mode kernel at K_w = 128, not only the
+  # test wrapper. W is zero, so the expected shares are exactly symmetric.
+  K_w <- 128L
+  shares <- mxl_predict_shares(
+    theta = c(0, rep(log(0.1), K_w)),
+    X = matrix(0, 2L, 1L), W = matrix(0, 2L, K_w),
+    alt_idx = 1:2, M = 2L, weights = 1,
+    eta_draws = array(0, dim = c(K_w, 0L, 0L)),
+    rc_dist = rep(0L, K_w), rc_correlation = FALSE,
+    rc_mean = FALSE, use_asc = FALSE, include_outside_option = FALSE,
+    gen_seed = 0L, gen_scramble = 0L, gen_S = 1L
+  )
+  expect_equal(as.numeric(shares), c(0.5, 0.5), tolerance = 1e-15)
 })

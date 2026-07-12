@@ -169,7 +169,8 @@ logsum.choicer_mxl <- function(object, newdata = NULL, ...) {
   } else {
     eta_draws        <- array(0, dim = c(object$draws_info$K_w, 0L, 0L))
     gen_seed_arg     <- as.integer(object$draws_info$seed)
-    gen_scramble_arg <- if (identical(object$draws_info$scramble, "owen")) 1L else 0L
+    gen_scramble_arg <- if (object$draws_info$scramble %in%
+                             c("permuted", "owen")) 1L else 0L
     gen_S_arg        <- as.integer(object$draws_info$S)
   }
 

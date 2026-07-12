@@ -80,7 +80,7 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns List with loglikelihood and gradient evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -141,7 +141,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
                         &weights, &choice_idx);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -468,7 +468,7 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Hessian evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -524,7 +524,7 @@ arma::mat mxl_hessian_parallel(
                         &weights, &choice_idx);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -954,7 +954,7 @@ arma::mat mxl_hessian_parallel(
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns n_params x n_params PSD matrix representing the observed information
 //'   matrix estimated by the outer product of gradients (same sign convention
@@ -1016,7 +1016,7 @@ arma::mat mxl_bhhh_parallel(
                         &weights, &choice_idx);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -1259,7 +1259,7 @@ arma::mat mxl_scores_parallel(
                         nullptr, &choice_idx);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, nullptr, &choice_idx);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -1478,7 +1478,7 @@ arma::vec mxl_predict_shares_internal(
   const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   // C++ runtime guards for generate mode
   if (gen_seed >= 0 && gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-  if (gen_seed >= 0 && K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+  if (gen_seed >= 0 && K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
 
   const bool use_generate_s = (gen_seed >= 0);
   HaltonGen halton_gen_s;
@@ -1604,7 +1604,7 @@ arma::vec mxl_predict_shares_internal(
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 //'   simulated mean of the deterministic + W*gamma component), and, when
@@ -1639,7 +1639,7 @@ Rcpp::List mxl_predict(
     validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -1783,7 +1783,7 @@ Rcpp::List mxl_predict(
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Vector of length N with the simulated expected logsum per choice
 //'   situation.
@@ -1829,7 +1829,7 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
     validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -1944,7 +1944,7 @@ arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 //' @keywords internal
@@ -1977,7 +1977,7 @@ arma::vec mxl_predict_shares(
                         &weights);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -2033,7 +2033,7 @@ arma::vec mxl_predict_shares(
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 //' @keywords internal
@@ -2105,7 +2105,7 @@ arma::mat mxl_diversion_ratios_parallel(
                         &weights);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
     check_rc_dist_length(rc_dist, K_w);
   }
@@ -2290,6 +2290,12 @@ arma::mat mxl_diversion_ratios_parallel(
 //' @param include_outside_option whether outside option is included
 //' @param tol convergence tolerance (default 1e-8)
 //' @param max_iter maximum iterations (default 1000)
+//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+//'   on the fly from this seed.
+//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+//'   identity permutations, \code{1} = seeded position-wise digit permutations.
+//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns vector with converged delta (ASC) values
 //' @examples
 //' \donttest{
@@ -2329,7 +2335,10 @@ arma::vec mxl_blp_contraction(
     const bool rc_mean = false,
     const bool include_outside_option = false,
     const double tol = 1e-8,
-    const int max_iter = 1000
+    const int max_iter = 1000,
+    const int gen_seed = -1,
+    const int gen_scramble = 1,
+    const int gen_S = 0
 ) {
   const int K_w = W.n_cols;
   const bool use_asc = true;
@@ -2337,8 +2346,16 @@ arma::vec mxl_blp_contraction(
   // delta is harmonized to cover every referenced alternative below, so the
   // ASC-coverage check is skipped here (use_asc = false, empty delta).
   check_rc_dist_length(rc_dist, K_w);
-  validate_mxl_inputs(X, W, alt_idx, M, eta_draws,
-                      /*use_asc=*/false, arma::vec(), &weights);
+  if (gen_seed < 0) {
+    validate_mxl_inputs(X, W, alt_idx, M, eta_draws,
+                        /*use_asc=*/false, arma::vec(), &weights);
+  } else {
+    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    validate_choice_data(X, alt_idx, M, /*use_asc=*/false, arma::vec(),
+                         &weights);
+    check_rc_dist_length(rc_dist, K_w);
+  }
 
   // Build L matrix
   arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
@@ -2399,7 +2416,8 @@ arma::vec mxl_blp_contraction(
   // Compute initial predicted shares
   arma::vec shares_pred = mxl_predict_shares_internal(
     X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
-    delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option
+    delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option,
+    gen_seed, gen_scramble, gen_S
   );
 
   // Work with inside shares only for the contraction step
@@ -2444,7 +2462,8 @@ arma::vec mxl_blp_contraction(
     delta_current = delta_new;
     shares_pred = mxl_predict_shares_internal(
       X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
-      delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option
+      delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option,
+      gen_seed, gen_scramble, gen_S
     );
 
     shares_pred_inside = include_outside_option
@@ -2489,7 +2508,7 @@ arma::vec mxl_blp_contraction(
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns J x J matrix of aggregate elasticities
 //' @examples
@@ -2563,7 +2582,7 @@ arma::mat mxl_elasticities_parallel(
                         &weights);
   } else {
     if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w >= HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
+    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
     validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
     check_rc_dist_length(rc_dist, K_w);
   }

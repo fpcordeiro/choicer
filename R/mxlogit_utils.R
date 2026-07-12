@@ -158,18 +158,24 @@
 #'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times N} Halton cube
 #'   (existing behavior, exact reproducibility). \code{"generate"} computes each
 #'   individual's draws on-the-fly in C++ from a stored seed, eliminating the O(N)
-#'   cube; recommended for memory-constrained or large-N settings. Uses randomized
-#'   digit-scrambled (Owen 2017) Halton sequences when \code{scramble = "owen"}.
-#'   Only supported in the convenience workflow.
+#'   cube; recommended for memory-constrained or large-N settings. With
+#'   \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
+#'   dimension receives a seeded permutation shared across sequence indices.
+#'   This is not Owen's nested-uniform scramble and does not carry standard
+#'   randomized-QMC unbiasedness or error-estimation guarantees. Only supported
+#'   in the convenience workflow.
 #' @param seed Integer master seed for the on-the-fly generator. Used only when
 #'   \code{draws = "generate"}. If \code{NULL} (default), a seed is drawn from R's
 #'   RNG at call time (so \code{set.seed()} governs reproducibility). Ignored when
 #'   \code{draws = "store"}.
 #' @param scramble Scrambling mode for on-the-fly Halton draws. One of
-#'   \code{"owen"} (default) for Owen (2017) digit scrambling, or \code{"none"} for
-#'   plain unscrambled Halton (identity permutations). \code{"none"} reproduces the
-#'   randtoolbox sequence exactly and is intended for testing; \code{"owen"} is
-#'   strongly recommended for estimation with \eqn{K_w > 5}. Used only when
+#'   \code{"permuted"} (default) for seeded position-wise digit permutations or
+#'   \code{"none"} for plain Halton (identity permutations). The historical value
+#'   \code{"owen"} is accepted with a deprecation warning as an alias for
+#'   \code{"permuted"}; the implementation is not Owen's nested-uniform scramble.
+#'   \code{"none"} reproduces the randtoolbox sequence exactly. Simulation-draw
+#'   sensitivity should be assessed by increasing \code{S} and, for
+#'   \code{"permuted"}, varying \code{seed}. Used only when
 #'   \code{draws = "generate"}.
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in
 #'   the returned object for post-estimation functions.
@@ -223,7 +229,7 @@ run_mxlogit <- function(
     include_outside_option = FALSE,
     draws       = c("store", "generate"),
     seed        = NULL,
-    scramble    = c("owen", "none"),
+    scramble    = c("permuted", "none", "owen"),
     keep_data = TRUE,
     nloptr_opts = NULL,
     weights_col = NULL,
@@ -237,6 +243,13 @@ run_mxlogit <- function(
   scale_vars <- match.arg(scale_vars)
   draws   <- match.arg(draws)
   scramble <- match.arg(scramble)
+  if (identical(scramble, "owen")) {
+    warning("scramble = \"owen\" is a deprecated alias for ",
+            "scramble = \"permuted\". The implemented position-wise digit ",
+            "permutation is not Owen's nested-uniform scramble.",
+            call. = FALSE)
+    scramble <- "permuted"
+  }
 
   # Validate seed parameter
   if (!is.null(seed)) {
@@ -489,7 +502,7 @@ run_mxlogit <- function(
   # Resolve generate-mode parameters for C++ kernels.
   # In store mode (draws="store"): gen_seed_cpp = -1L triggers cube path (unchanged behavior).
   gen_seed_cpp     <- if (draws == "generate") seed else -1L
-  gen_scramble_cpp <- if (draws == "generate") (if (scramble == "owen") 1L else 0L) else 1L
+  gen_scramble_cpp <- if (draws == "generate") (if (scramble == "permuted") 1L else 0L) else 1L
   gen_S_cpp        <- if (draws == "generate") S else 0L
 
   # Build eval_f closure
@@ -1082,7 +1095,9 @@ get_halton_normals <- function(S, N, K_w) {
     list(
       eta_draws    = array(0, dim = c(draws_info$K_w, 0L, 0L)),
       gen_seed     = as.integer(draws_info$seed),
-      gen_scramble = if (identical(draws_info$scramble, "owen")) 1L else 0L,
+      # "owen" is the legacy serialized label for the same position-wise
+      # permutation. Read it silently so old fitted objects keep working.
+      gen_scramble = if (draws_info$scramble %in% c("permuted", "owen")) 1L else 0L,
       gen_S        = as.integer(draws_info$S)
     )
   } else {

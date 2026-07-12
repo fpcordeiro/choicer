@@ -139,10 +139,16 @@ where the inverse-Wishart density is parameterized (matching `bayesm`) as
 $$
 \pi(\Sigma) \propto |\Sigma|^{-(\nu + p + 1)/2} \exp\!\left(-\tfrac{1}{2}\operatorname{tr}(V \Sigma^{-1})\right),
 \qquad
-E[\Sigma] = \frac{V}{\nu - p - 1}.
+E[\Sigma] = \frac{V}{\nu - p - 1}\quad\text{when }\nu>p+1.
 $$
 
-Defaults: $\bar{\beta} = 0$, $A = 0.01\, I_K$, $\nu = p + 3$, $V = \nu I_p$ — proper raw-scale priors, with prior mean of $\Sigma$ close to $I_p$. They should be treated as defaults to interrogate, not as evidence that the induced identified-scale prior is weak. Sensitivity is most important for covariance, correlation, and substitution conclusions when alternative-specific identifying variation is limited.
+Defaults: $\bar{\beta} = 0$, $A = 0.01\, I_K$, $\nu = p + 3$, and $V = \nu I_p$. Thus the **raw-scale** prior mean is
+
+$$
+E[\Sigma] = \frac{p+3}{2}I_p,
+$$
+
+not $I_p$. This is not a contradiction because the raw scale is unidentified and every reported draw is subsequently divided by its own $\sigma_{11}$. More importantly, it is not a reason to call the induced prior on $(\tilde\beta,\tilde\Sigma)$ weak: normalization changes dependence and tail behavior. These defaults should be interrogated through prior-predictive and sensitivity analysis, especially for covariance, correlation, and substitution conclusions when alternative-specific identifying variation is limited. The engine accepts $\nu\ge p$, which is sufficient for a proper inverse-Wishart under this convention; the displayed prior-mean formula exists only for $\nu>p+1$.
 
 ### 3.2 Augmented Joint Posterior
 
@@ -220,13 +226,13 @@ so $\operatorname{Var}(U^{-1}z) = Q^{-1}$ without ever forming $Q^{-1}$.
 
 ### 4.3 Covariance: $\Sigma \mid w, \beta$
 
-With $\varepsilon_i = w_i - X_i\beta$ and $S = \sum_i \varepsilon_i \varepsilon_i'$ (one rank-$N$ BLAS product of the $p \times N$ residual matrix), conjugacy of the inverse-Wishart gives
+With $\varepsilon_i = w_i - X_i\beta$ and $S = \sum_i \varepsilon_i \varepsilon_i'$, conjugacy of the inverse-Wishart gives
 
 $$
 \Sigma \mid w, \beta \;\sim\; \mathrm{IW}\!\left(\nu + N,\; V + S\right).
 $$
 
-$V + S$ is symmetrized before factorization to remove floating-point asymmetry.
+The implementation accumulates the lower triangle of $S$ in fixed $(i,j,k)$ order, copies it to the upper triangle, and symmetrizes $V+S$ before factorization. The fixed-order accumulation is deliberate: it avoids a threaded BLAS reduction whose rounding order could vary with the OpenMP configuration.
 
 *Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
@@ -238,23 +244,26 @@ All primitives are implemented from scratch (header-only) and draw from the pack
 
 ### 5.1 Truncated Univariate Normal
 
-To draw from $\mathrm{TN}(\mu, \sigma^2; a, b)$, standardize to bounds $(\alpha, \beta_u) = ((a-\mu)/\sigma, (b-\mu)/\sigma)$ and mirror the interval into the upper half-line when $\beta_u < 0$ (by symmetry of the normal). Two regimes:
+To draw from $\mathrm{TN}(\mu, \sigma^2; a, b)$, standardize to bounds $(\alpha, \beta_u) = ((a-\mu)/\sigma, (b-\mu)/\sigma)$ and, when $\beta_u<0$, use normal symmetry to mirror the interval into the upper half-line. The current implementation selects among three exact algorithms. Write $h=\beta_u-\alpha$.
 
-- **Central case** ($\alpha < 4$): inverse CDF on the *upper-tail* scale,
+- **Wide central interval** ($h>0.5$ and $\alpha<0.45$): draw $z\sim N(0,1)$ until $\alpha<z<\beta_u$. In this region ordinary rejection avoids the relatively expensive `pnorm`/`qnorm` round trip while retaining adequate acceptance probability. This is the common MNP augmentation case.
 
-$$
-z = \bar{\Phi}^{-1}\!\big(u\big), \qquad u \sim \mathrm{Uniform}\big(\bar{\Phi}(\beta_u),\, \bar{\Phi}(\alpha)\big),
-$$
-
-where $\bar{\Phi}(x) = 1 - \Phi(x)$. Working with upper-tail probabilities keeps full floating-point precision when both bounds are far in the tail, where $\Phi(x)$ rounds to 1. (The naive $\Phi^{-1}(\mathrm{Uniform}(\Phi(a), \Phi(b)))$ returns $\infty$ for $a \gtrsim 8$.)
-
-- **Tail case** ($\alpha \geq 4$): Robert (1995) exponential rejection. With rate
+- **Wide or ultra-deep-tail interval** ($h>0.5$ or $\alpha>30$, outside the preceding case): use Robert's (1995) exponential rejection. With rate
 
 $$
 \lambda = \frac{\alpha + \sqrt{\alpha^2 + 4}}{2},
 $$
 
-propose $z = \alpha + E/\lambda$ with $E \sim \mathrm{Exp}(1)$, reject $z > \beta_u$, and accept with probability $\exp\!\left(-(z - \lambda)^2 / 2\right)$. This is exact and has acceptance probability approaching 1 as $\alpha \to \infty$.
+propose $z = \alpha + E/\lambda$ with $E \sim \mathrm{Exp}(1)$, reject $z > \beta_u$, and accept with probability $\exp\!\left(-(z - \lambda)^2 / 2\right)$. This remains stable arbitrarily far into the tail.
+
+- **Narrow interval** ($h\le0.5$ and $\alpha\le30$): inverse CDF on the upper-tail scale,
+
+$$
+z = \bar\Phi^{-1}(u),\qquad
+u\sim\mathrm{Uniform}\!\left(\bar\Phi(\beta_u),\bar\Phi(\alpha)\right).
+$$
+
+Narrow intervals can make rejection stall. Upper-tail probabilities avoid the loss of precision that occurs when $\Phi(x)$ rounds to one in the positive tail.
 
 $\bar{\Phi}$ and $\bar{\Phi}^{-1}$ are evaluated with Rmath's `pnorm`/`qnorm` (pure functions, thread-safe — only R's *RNG* is unusable in threads).
 
@@ -320,7 +329,7 @@ and normalizing posterior means after averaging would be biased. By construction
 
 ### 7.2 In-Place Chain State
 
-The latent matrix $W$ ($p \times N$) is allocated once and swept in place for the entire run — iteration $r+1$ starts from iteration $r$'s values, which is precisely the Markov property. The systematic-utility matrix `Mu`, the residual matrix, and all $\beta$-draw workspaces are likewise pre-allocated; the hot loop performs no heap allocation. Where a stacked-vector view of a $p \times N$ matrix is needed (e.g. $X'\mathrm{vec}(\Omega W)$), Armadillo's non-copying alias constructor is used (column-major $p \times N$ memory *is* the stacked $N p$-vector).
+The latent matrix $W$ ($p \times N$) is allocated once and swept in place for the entire run — iteration $r+1$ starts from iteration $r$'s values, which is precisely the Markov property. The systematic-utility matrix `Mu`, $\Omega W$ workspace `Vm`, and all $\beta$-draw workspaces are likewise pre-allocated. Matrix-vector products that enter the master-thread conditionals are accumulated with explicit loops in a fixed order; the implementation does not rely on a parallel BLAS reduction inside the persistent OpenMP region.
 
 *Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
@@ -337,7 +346,7 @@ Streams are deterministic functions of their key, so the draws are reproducible 
 
 ### 7.4 Parallelization
 
-The latent sweep runs under `#pragma omp parallel for schedule(static)` over choice situations; threads write disjoint columns of $W$ and share read-only $\Omega$ and `Mu`, so no synchronization is needed. Thread count follows the package-wide convention (`set_num_threads()` / `get_num_threads()`). The $\beta$ and $\Sigma$ draws, `Rcpp::checkUserInterrupt()`, and all error paths stay on the master thread. Unlike the frequentist likelihood engines, the Gibbs chain itself is inherently sequential across iterations; only the within-iteration sweep parallelizes.
+The entire chain runs in one persistent `#pragma omp parallel` region. Within it, a static work-sharing loop distributes choice situations for the latent sweep; threads write disjoint columns of $W$ and share read-only $\Omega$ and `Mu`. The $\beta$ and $\Sigma$ draws are master-only. Every 100 iterations the master polls for an interrupt through `R_ToplevelExec`; abort codes are synchronized at barriers and converted to `Rcpp::stop()` only after the region closes, so neither an R long jump nor a C++ exception crosses an OpenMP boundary. Thread count follows the package-wide convention (`set_num_threads()` / `get_num_threads()`). Iterations themselves remain sequential; only conditionally independent within-iteration work is distributed.
 
 *Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
@@ -352,13 +361,19 @@ The latent sweep runs under `#pragma omp parallel for schedule(static)` over cho
 | Step | Cost | Notes |
 |------|------|-------|
 | Latent sweep | $O(N p^2)$ | parallelized over $i$ |
-| $\Omega W$, residual product | $O(N p^2)$ | single BLAS calls |
-| $X'\mathrm{vec}(\cdot)$ | $O(N p K)$ | single BLAS gemv |
+| $\Omega W$, residual cross-product | $O(N p^2)$ | fixed-order master-thread loops |
+| $X'\mathrm{vec}(\Omega W)$ | $O(N p K)$ | fixed-order master-thread loop |
 | Assemble $Q$ | $O(p^2 K^2)$ | independent of $N$ (Gram blocks) |
 | Cholesky / solves for $\beta$ | $O(K^3)$ | |
 | $\Sigma$ draw | $O(p^3)$ | |
 
-Total cost is linear in $N$ with no $N K^2$ term, and the latent sweep — the dominant term for large $N$ — scales near-linearly with threads.
+For fixed $(p,K)$, total arithmetic cost is linear in $N$ and the Gram-block construction removes an $O(NK^2)$ term from each iteration. The latent sweep is the principal work-shared component; its realized speedup depends on problem size, thread overhead, memory bandwidth, and the distribution of truncation-rejection work, so linear thread scaling is not assumed.
+
+### 7.7 Scope of Post-Estimation
+
+The `choicer_mnp` object is a posterior-draw object, not a `choicer_fit`. Version 0.2.0 reports identified coefficient and covariance summaries but does **not** implement `predict()`, elasticities, diversion ratios, WTP, logsum, consumer surplus, `logLik()`, AIC, or BIC for this class. In particular, one must not substitute a logit softmax for MNP probabilities: prediction requires multivariate-normal probability evaluation or simulation under each posterior draw. These omissions are API boundaries, not mathematical claims that the corresponding quantities do not exist.
+
+`run_mnprobit()` currently runs one chain and does not expose the multi-chain rank-$\widehat R$/ESS machinery provided for `choicer_hb`. Applied work should therefore fit independently seeded runs, compare identified-scale posterior summaries and traces externally, and check Monte Carlo stability. Re-running a single chain longer is not a substitute for overdispersed-chain evidence.
 
 ---
 

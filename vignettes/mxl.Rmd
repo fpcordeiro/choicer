@@ -12,14 +12,16 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 options(digits = 4)
 ```
 
-The mixed (random-coefficients) logit lets tastes vary across people. Instead of
+The mixed (random-coefficients) logit lets tastes vary across decision units. Instead of
 a single coefficient on each random attribute, choicer estimates a *distribution*
 of coefficients. Substitution then reflects both observed covariates and the
 estimated distribution of tastes. Estimation is by simulated maximum likelihood
 using Halton draws, with the likelihood, gradient and Hessian evaluated in
 parallel C++. `run_mxlogit()` currently estimates a **cross-sectional**
-simulated likelihood: each choice situation receives its own taste draw. It is
-not a frequentist panel mixed-logit likelihood.
+simulated likelihood: each choice situation's probability is integrated over
+the taste distribution separately. It does not hold a simulation draw fixed
+across a person's tasks and then integrate the product of conditional
+probabilities, as a frequentist panel mixed-logit likelihood would.
 
 A useful way to see the mechanism is to write the mixed-logit probability as a
 logit kernel averaged over the taste distribution,
@@ -77,7 +79,9 @@ fast and keeps package-build time short. For final empirical work, compare it
 with the default analytical-Hessian standard errors; when the data come from a
 choice-based or otherwise weighted sample, use `se_method = "sandwich"` so the
 reported covariance is the robust WESML sandwich rather than the inverse weighted
-Hessian.
+Hessian. If WESML observations are also dependent within people or markets, use
+the weighted cluster sandwich (`se_method = "cluster"`, with `cluster_col`) and
+have enough independent clusters for its asymptotics.
 
 > **Tip.** For real applications increase the number of draws (`S`) until your
 > estimates are stable, and keep `scale_vars = "sd"`. Stability in `S` is a
@@ -86,8 +90,10 @@ Hessian.
 > simulator is not unbiased — and the classical asymptotics require `S` to
 > grow with the sample (see the
 > [math companion](mixed_logit_math.html) for the conditions). If the solver
-> struggles, pass an explicit `theta_init` (for example the MNL coefficients)
-> and bounds on the Cholesky diagonal. See
+> struggles, pass an explicit `theta_init`: place the MNL slope and ASC estimates
+> in the corresponding MXL parameter blocks and initialize the additional mean
+> and Cholesky coordinates deliberately. Bounds can keep Cholesky diagonals away
+> from numerically pathological regions. See
 > `inst/simulations/mxl_simulation.R` for a fully hardened example.
 
 ## Parameter recovery
@@ -111,11 +117,18 @@ margin. Diversion can therefore depend on *which* attribute is changing, so
 ```{r diversion}
 elasticities(fit, elast_var = "x2")
 diversion_ratios(fit, wrt_var = "x2")
+
+# For a random-coefficient attribute the perturbation coordinate matters.
+elasticities(fit, elast_var = "w2", is_random_coef = TRUE)
+diversion_ratios(fit, wrt_var = "w2", is_random_coef = TRUE)
 ```
 
 The rest of the toolkit — `predict()`, `wtp()`, `consumer_surplus()`, `blp()` —
-behaves exactly as in the [getting-started vignette](choicer.html), integrating
-over the distribution of tastes automatically.
+uses the same fitted object as in the [getting-started vignette](choicer.html).
+Prediction and share inversion integrate over the fitted taste distribution;
+`wtp()` respects choicer's supported coefficient parameterizations. In v0.2.0,
+`consumer_surplus()` requires a fixed price coefficient because inverse moments
+of a random price coefficient need not exist.
 
 ## Identification and tails
 
@@ -138,14 +151,17 @@ Two consequences are worth keeping in front of you:
 
 - **$f(\beta)$ is hard to identify and estimate in practice.** A single
   cross-section of choices — one decision per person, a fixed menu — carries
-  little information about the spread of tastes. Reliable estimation typically
-  needs **repeated choices from the same individual** (panel data), **substantial
+  little information about the spread of tastes. In mixed-logit research,
+  reliable estimation typically uses **repeated choices from the same individual**
+  (panel data), **substantial
   variation in choice sets or attributes across markets** (the BLP setting), or
   the rich, designed attribute variation of a stated-preference experiment.
   Without one of these, the random-coefficient variances are weakly identified
   and the estimates can be fragile. Note that on panel data `run_mxlogit()`
-  still maximizes a *cross-sectional* simulated likelihood — each choice
-  situation gets an independent taste draw. Cluster-robust standard errors
+  does not exploit the first source: it still maximizes a *cross-sectional*
+  simulated likelihood — each choice situation is integrated separately rather
+  than sharing a taste draw across that person's likelihood contributions.
+  Cluster-robust standard errors
   (`cluster_col=`, or `vcov(fit, type = "cluster")`; see
   [Which standard errors, and when](inference.html)) repair the inference for
   within-person dependence, but the model that actually *uses* the panel to

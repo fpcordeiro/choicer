@@ -21,7 +21,10 @@ mxl_blp_contraction(
   rc_mean = FALSE,
   include_outside_option = FALSE,
   tol = 1e-08,
-  max_iter = 1000L
+  max_iter = 1000L,
+  gen_seed = -1L,
+  gen_scramble = 1L,
+  gen_S = 0L
 )
 }
 \arguments{
@@ -58,6 +61,15 @@ mxl_blp_contraction(
 \item{tol}{convergence tolerance (default 1e-8)}
 
 \item{max_iter}{maximum iterations (default 1000)}
+
+\item{gen_seed}{Integer master seed for the on-the-fly Halton generator. \code{< 0}
+(default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+on the fly from this seed.}
+
+\item{gen_scramble}{Integer scramble mode for on-the-fly generation: \code{0} =
+identity permutations, \code{1} = seeded position-wise digit permutations.}
+
+\item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
 }
 \value{
 vector with converged delta (ASC) values

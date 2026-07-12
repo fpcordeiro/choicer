@@ -49,6 +49,8 @@ test_that("prepare_hmnl_data round-trips the hand-built 3-person panel", {
   expect_equal(d$Ti, c(2L, 1L, 2L))
   expect_equal(d$n_tasks, 5L)
   expect_equal(sum(d$Ti), d$n_tasks)
+  expect_length(d$task_keys, d$n_tasks)
+  expect_equal(length(unique(d$task_keys)), d$n_tasks)
 
   # Task-level round trip: M, choice_pos (0 = outside chosen)
   expect_equal(d$M, c(3L, 2L, 2L, 3L, 2L))

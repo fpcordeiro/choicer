@@ -66,9 +66,11 @@ For empirical work, ask what disciplines the covariance before interpreting
 it. Keane (1992) shows that when covariates do not vary across alternatives —
 demographics, or constants alone — the covariance parameters are identified by
 the normal functional form only, and estimation is fragile. Alternative-specific
-regressors (prices, distances, attributes that differ across the options within
-a choice situation) are the exclusion restrictions that identify $\Sigma$ in
-practice; the simulated data above contain two of them. The Bayesian machinery
+covariate variation (prices, distances, or attributes that differ across the
+options within a choice situation), and especially defensible exclusions across
+utility equations, is what separates covariance from systematic utility in
+practice; the simulated data above contain two varying attributes. The Bayesian
+machinery
 does not repeal this: with weak alternative-specific variation the $\Sigma$
 posterior sits close to its prior, and the substitution pattern it implies is
 maintained rather than estimated. The MNP is attractive when flexible error
@@ -110,12 +112,15 @@ summary:
 ```{r rhat}
 rhat(fit$draws$beta)
 ess(fit$draws$beta)
+mcse(fit$draws$beta)
 ```
 
 On a single chain these are necessary rather than sufficient checks; the
 stronger practical check in the current API is to repeat the complete fit with
-several independent seeds, then compare posterior summaries and pass the
-separate draws matrices to the same diagnostic functions. Because the sampler's
+several independent seeds, then compare posterior summaries and pass equal-length
+draw matrices as a list to the same diagnostic functions, for example
+`rhat(list(fit$draws$beta, fit_seed_2$draws$beta), rank = TRUE)`. Because the
+sampler's
 initial state is internal rather than user-controlled, this is not equivalent
 to deliberately overdispersed starting values. Longer runs, posterior stability
 across seeds, and prior sensitivity should therefore be reported together.

@@ -37,13 +37,14 @@ This document provides a detailed mathematical description of the nested logit (
 |--------|-------------|
 | $i = 1, \ldots, N$ | Index for individuals (choice situations) |
 | $j = 1, \ldots, J_i$ | Index for inside alternatives available to individual $i$ |
+| $C_i$ | Choice set of inside alternatives available in situation $i$ |
 | $j_i$ | The alternative chosen by individual $i$ |
 | $w_i$ | Weight for individual $i$ |
 | $X_{ij}$ | Row vector of covariates for individual $i$ and alternative $j$ ($1 \times K$) |
 | $\beta$ | Coefficient vector ($K \times 1$) |
 | $\delta_j$ | Alternative-specific constant (ASC) for alternative $j$ |
 | $V_{ij}$ | Systematic (deterministic) utility |
-| $B_k$ | Set of alternatives belonging to nest $k$ |
+| $B_k$ | Global set of inside alternatives belonging to nest $k$; situation $i$ contributes $B_k\cap C_i$ |
 | $k(j)$ | The nest containing alternative $j$ |
 | $\lambda_k$ | Inclusive value (dissimilarity) coefficient for nest $k$ |
 | $I_k$ | Inclusive value for nest $k$ |
@@ -81,7 +82,10 @@ Each nest $k$ has a dissimilarity parameter $\lambda_k > 0$ that governs within-
 
 - $\lambda_k = 1$ corresponds to independent (MNL-like) alternatives within the nest.
 - $0 < \lambda_k < 1$ indicates positive within-nest correlation (the typical case).
-- $\lambda_k > 1$ is mathematically evaluable in the implemented likelihood but lies outside the usual positive-correlation nested-logit interpretation; it implies negative within-nest correlation and raises the standard random-utility regularity concerns that motivate the common $0 < \lambda_k \leq 1$ restriction.
+- $\lambda_k > 1$ is mathematically evaluable in the implemented probability formula
+  but lies outside the standard globally RUM-consistent nested-GEV restriction
+  $0<\lambda_k\leq1$. It should not automatically be interpreted as a valid negative
+  within-nest correlation parameter.
 
 The optimizer in `run_nestlogit()` currently imposes the lower bound $\lambda_k > 0$
 but does not impose $\lambda_k \leq 1$. An estimate above one should therefore be
@@ -89,6 +93,9 @@ read as a diagnostic about the nesting tree or maintained assumptions, not as
 evidence of especially strong within-nest substitution.
 
 **Singleton nests** (nests with exactly one alternative) have $\lambda_k$ fixed to 1 and are not estimated. Only non-singleton nests contribute $\lambda$ parameters to $\theta$.
+The low-level parser requires at least one globally non-singleton nest; a specification in
+which every nest is a singleton is rejected rather than estimated as an MNL through this
+entry point.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
@@ -120,12 +127,16 @@ The two components are derived from the GEV generating function.
 The inclusive value for nest $k$ is the log-sum of scaled utilities within the nest:
 
 $$
-I_k = \sum_{j \in B_k} \exp\!\left(\frac{V_{ij}}{\lambda_k}\right)
+I_{ik} = \sum_{j \in B_k\cap C_i} \exp\!\left(\frac{V_{ij}}{\lambda_k}\right)
 $$
 
 $$
-\log I_k = \log\!\left(\sum_{j \in B_k} \exp\!\left(\frac{V_{ij}}{\lambda_k}\right)\right)
+\log I_{ik} = \log\!\left(\sum_{j \in B_k\cap C_i} \exp\!\left(\frac{V_{ij}}{\lambda_k}\right)\right)
 $$
+
+The rest of the article suppresses the $i$ subscript and writes $I_k$. Nests with no
+available alternative in $C_i$ have log inclusive value $-\infty$ and contribute zero to
+the upper-level denominator.
 
 ### 2.3 Conditional Choice Probability
 
@@ -203,7 +214,17 @@ where $V_{\max,k} = \max_{j \in B_k} V_{ij}/\lambda_k$.
 
 ### 2.8 Relation to Other Nested-Logit Parameterizations
 
-The probabilities in §§2.3–2.4 are the utility-maximization-consistent GEV form (McFadden 1978; Train 2009, Ch. 4): utility is scaled by $1/\lambda_k$ inside the conditional probability, and the inclusive value is raised by $\lambda_k$ in the nest probability. Some software instead estimates the *non-normalized* nested logit, in which $V_{ij}$ enters the within-nest logit unscaled. The two forms imply the same choice probabilities only in special cases (for instance, utilities consisting solely of alternative-specific constants); with generic coefficients the non-normalized form is not consistent with random-utility maximization, and its $\beta$ and $\lambda$ estimates are not comparable to the GEV form's without rescaling (Koppelman & Wen 1998; Hensher & Greene 2002; Heiss 2002). When benchmarking choicer against another package, verify which parameterization the other package implements before comparing coefficients or dissimilarity parameters.
+The probabilities in §§2.3–2.4 are the utility-normalized GEV form used by
+`choicer` (McFadden 1978; Train 2009, Ch. 4): utility is scaled by $1/\lambda_k$
+inside the conditional probability, and the inclusive value is multiplied by
+$\lambda_k$ in the nest probability. Some software uses a normalization in which its
+reported systematic index enters the within-nest logit unscaled. These conventions can
+represent different definitions of utility coefficients and error scales; they are not
+generally numerically identical under a common-coefficient restriction, and their
+reported $\beta$ and $\lambda$ cannot be compared without deriving the normalization
+mapping. It is too strong to label every unscaled convention non-RUM; the precise point
+is which utility, inclusive-value, and scale normalization is being estimated
+(Koppelman & Wen 1998; Hensher & Greene 2002; Heiss 2002).
 
 ---
 
@@ -374,7 +395,10 @@ $$
 $$
 \frac{\partial P_{ia}}{\partial V_{ib}}
 = P_{ia} \left\{
-  \mathbf{1}_{k_a = k_b} \cdot P(b \mid k_a) \left[1 + \frac{\mathbf{1}_{a=b} - P(a \mid k_a)}{\lambda_{k_a}}\right]
+  \mathbf{1}_{k_a = k_b}\left[
+    \frac{\mathbf{1}_{a=b}}{\lambda_{k_a}}
+    + P(b \mid k_a)\left(1-\frac{1}{\lambda_{k_a}}\right)
+  \right]
   - P_{ib}
 \right\}
 $$
@@ -392,10 +416,13 @@ $$
 \boxed{
 Q_i[a, b]
 = P_{ia} \left\{
-  \mathbf{1}_{k_a = k_b} P(b \mid k_a) \left[1 + \frac{\mathbf{1}_{a=b} - P(a \mid k_a)}{\lambda_{k_a}}\right]
+  \mathbf{1}_{k_a = k_b}\left[
+    \frac{\mathbf{1}_{a=b}}{\lambda_{k_a}}
+    +P(b \mid k_a)\left(1-\frac{1}{\lambda_{k_a}}\right)
+  \right]
   - P_{ib}
 \right\}
-- \underbrace{\mathbf{1}_{k_a = k_i} \mathbf{1}_{k_b = k_i} \cdot \frac{1 - 1/\lambda_{k_i}}{\lambda_{k_i}} \cdot P(b \mid k_i)\bigl(\mathbf{1}_{a=b} - P(a \mid k_i)\bigr)}_{C_{a,b}: \text{ chosen-nest correction}}
+- \underbrace{\mathbf{1}_{k_a = k_i} \mathbf{1}_{k_b = k_i} \cdot \frac{1 - 1/\lambda_{k_i}}{\lambda_{k_i}} \cdot P(a \mid k_i)\bigl(\mathbf{1}_{a=b} - P(b \mid k_i)\bigr)}_{C_{a,b}: \text{ chosen-nest correction}}
 }
 $$
 
@@ -403,7 +430,8 @@ The chosen-nest correction $C_{a,b}$ is nonzero only when both $a$ and $b$ are i
 
 **Structural notes and MNL limit:**
 
-- For $k_a \neq k_b$: $Q_i[a,b] = -P_{ia} P_{ib}$ (cross-nest entries equal the product of marginal probabilities, the familiar multinomial variance term).
+- For $k_a \neq k_b$: $Q_i[a,b] = -P_{ia} P_{ib}$ (cross-nest entries are the
+  *negative* product of marginal probabilities, the familiar multinomial covariance term).
 - **MNL limit** ($\lambda_k = 1$ for all $k$): $Q_i[a,b] = P_{ia}(\mathbf{1}_{a=b} - P_{ib})$, the standard multinomial Hessian of $-\log P_{c_a}$. Own diagonal $= P_{ia}(1-P_{ia})$; off-diagonal $= -P_{ia}P_{ib}$. The chosen-nest correction vanishes because $1 - 1/\lambda_{k_i} = 0$.
 - When the outside option is chosen ($k_i = -1$) or when $\lambda_{k_i} = 1$ (singleton chosen nest), $C_{a,b} = 0$ for all pairs.
 
@@ -635,9 +663,10 @@ The full parameter vector $\theta$ is organized as:
 |-------|---------|--------|-------------|
 | $\beta$ | $[0, K)$ | $K$ | Coefficients for design matrix $X$ |
 | $\lambda$ | $[K, K + K_\lambda)$ | $K_\lambda$ | Non-singleton nest dissimilarity parameters |
-| $\delta$ | $[K + K_\lambda, K + K_\lambda + J_{\text{asc}})$ | $J-1$ or $J$ | Alternative-specific constants |
+| $\delta$ | $[K + K_\lambda, K + K_\lambda + J_{\text{asc}})$ | $0$, $J-1$, or $J$ | Free alternative-specific constants |
 
-where $K_\lambda$ is the number of non-singleton nests and $J_{\text{asc}} = J - 1$ without outside option or $J$ with outside option.
+where $K_\lambda$ is the number of non-singleton nests and $J_{\text{asc}}=0$ when
+`use_asc = FALSE`, $J-1$ without an outside option, or $J$ with an outside option.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
@@ -657,7 +686,8 @@ This ensures that the NL model degenerates gracefully to MNL on a per-nest basis
 - **Design matrix $X$**: Stacked matrix of dimension $(\sum_i M_i) \times K$, where $M_i$ is the number of inside alternatives for individual $i$.
 - **`alt_idx`**: 1-based indices mapping rows of $X$ to global alternative IDs.
 - **`nest_idx`**: 1-based nest assignment of length $J$ (number of unique inside alternatives), not length $\sum M_i$. Accessed via `nest_idx.elem(alt_idx0_i)` to handle varying choice sets.
-- **`choice_idx`**: 1-based index of the chosen inside alternative; 0 for outside option.
+- **`choice_idx`**: 1-based local row position of the chosen inside alternative within
+  each situation's block; 0 for the outside option.
 - **Prefix sums $S$**: Used for efficient slicing into the stacked data: $S_i = \sum_{j < i} M_j$.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
@@ -687,11 +717,24 @@ The implementation parallelizes over individuals using OpenMP:
 
 ### 5.6 Negated Objectives
 
-The C++ function returns:
+The likelihood/gradient kernel returns:
 - $-\ell(\theta)$ (negated log-likelihood)
 - $-\nabla\ell(\theta)$ (negated gradient)
 
 for compatibility with minimization routines (e.g., `nloptr`) that minimize a loss function rather than maximize a likelihood.
+The analytical and numeric Hessian kernels return $-\nabla^2\ell$; the BHHH kernel
+instead returns the positive-semidefinite OPG information approximation
+$\sum_iw_is_is_i^T$.
+
+### 5.7 Finite-Value Guards
+
+The likelihood kernel replaces a non-finite chosen log probability by $-10^{10}$.
+If the final negated objective is non-finite it returns $10^{10}$ and a zero gradient;
+isolated non-finite gradient entries are zeroed. The analytical Hessian skips a situation
+whose chosen log probability is non-finite, symmetrizes the aggregate, and replaces any
+remaining non-finite entries by zero. These rules are optimizer failure guards, not part
+of the regular finite-parameter nested-logit criterion; encountering them calls for
+rescaling or revising the specification.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
@@ -754,7 +797,11 @@ Substituting the three cases:
 
 **Outside option.** When an outside option is present it occupies its own singleton nest with $\lambda_0 = 1$ and $x_{i0,k} = 0$. Its row (responding = outside option) has semi-elasticity $-P_{ia}$ for every inside alternative $a$ (different nest, §3.1); its column (perturbed = outside option) is identically zero because $\beta_k \cdot 0 = 0$.
 
-The implementation accumulates $w_i \cdot E_{ij,ia}^k$ across individuals and divides by $\sum_i w_i$ to produce weighted average elasticities.
+The implementation accumulates $w_i \cdot E_{ij,ia}^k$ across individuals and divides by
+$\sum_i w_i$ to produce a weighted average of *individual probability elasticities*.
+This is not generally the elasticity of an aggregate share under a common market-level
+perturbation when attributes vary across situations. Rows index responding alternatives
+and columns perturbed alternatives.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
@@ -764,10 +811,11 @@ The implementation accumulates $w_i \cdot E_{ij,ia}^k$ across individuals and di
 
 #### 6.3.1 Definition
 
-The diversion ratio from alternative $k$ to alternative $j$ is:
+The utility-based diversion ratio from losing alternative $j$ to receiving alternative
+$k$ is:
 
 $$
-DR(k \to j) = -\frac{\partial Q_k / \partial V_{ij}}{\partial Q_j / \partial V_{ij}}
+DR(j \to k) = -\frac{\partial Q_k / \partial V_{ij}}{\partial Q_j / \partial V_{ij}}
 $$
 
 where $Q_m = \sum_i w_i P_{im}$ is aggregate demand and the perturbation is through the systematic utility of the *losing* alternative $j$.
@@ -785,19 +833,26 @@ P_{im}\!\left[\left(1 - \dfrac{1}{\lambda_r}\right) P(j \mid r) - P_{ij}\right] 
 \end{cases}
 $$
 
-#### 6.3.3 Covariate-independence of diversion ratios
+#### 6.3.3 Utility Perturbation and Covariate Interpretation
 
-For a concrete attribute $k$ the perturbation is $\partial V_{ij} = \beta_k \, \partial x_{ij,k}$. Both numerator and denominator of $DR(k \to j)$ are proportional to the *same* factor $\beta_k \, x_{ij,k}$ (the same attribute of the same losing alternative $j$), so it cancels:
+The implemented matrix is defined with respect to a common additive perturbation of
+$V_{ij}$. If a fixed-coefficient attribute of alternative $j$ receives the same additive
+change $dx$ in every situation, $dV_{ij}=\beta_r dx$, so the common scalar cancels:
 
 $$
-DR(k \to j)
-= -\frac{\beta_k \, x_{ij,k} \sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
-         {\beta_k \, x_{ij,k} \sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
+DR(j \to k)
+= -\frac{\beta_r dx\sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
+         {\beta_r dx\sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
 = -\frac{\sum_i w_i \,(\partial P_{ik}/\partial V_{ij})}
          {\sum_i w_i \,(\partial P_{ij}/\partial V_{ij})}
 $$
 
-The NL diversion ratio is therefore independent of which covariate is perturbed — a property it shares with MNL (see §6.2 of the MNL document) but which does **not** hold for mixed logit, where $\beta_k$ is individual-specific.
+It is in this additive-shift sense that NL diversion is independent of the chosen fixed
+covariate. For a proportional perturbation $dx_i=x_{ij,r}d\log x$, the values
+$x_{ij,r}$ remain inside both population sums and generally do **not** cancel. The kernel
+does not compute that attribute-specific proportional diversion. In MXL even a common
+additive perturbation of a random-coefficient attribute carries draw-specific
+$\beta_{ir}^s$, so the coefficient cannot be factored out.
 
 #### 6.3.4 Population aggregation and column-sum property
 
@@ -808,7 +863,7 @@ $$
 \text{den}(j) = \sum_{i=1}^{N} w_i \frac{\partial P_{ij}}{\partial V_{ij}}
 $$
 
-so that $DR(k \to j) = \text{num}(k,j) \,/\, \text{den}(j)$ for $k \neq j$.
+so that $DR(j \to k) = \text{num}(k,j) \,/\, \text{den}(j)$ for $k \neq j$.
 
 **Columns sum to 1.** The fundamental identity $\sum_{m} \partial P_{im}/\partial V_{ij} = 0$ (probabilities sum to 1 for every individual and every perturbation direction, including the outside option when present) gives:
 
@@ -817,17 +872,20 @@ $$
 \implies
 \sum_{k \neq j} \text{num}(k, j) = \text{den}(j)
 \implies
-\sum_{k \neq j} DR(k \to j) = 1
+\sum_{k \neq j} DR(j \to k) = 1
 $$
 
 When an outside option is present it acts as both a source (it can lose demand) and a destination (it can receive diverted demand), so it appears in both the row index $k$ and the column index $j$ of the $J_{\text{total}} \times J_{\text{total}}$ diversion matrix, and the column sums still equal 1 over all alternatives including the outside option.
+Because its systematic utility is fixed at zero in estimation, the outside-as-source
+column is a derivative with respect to a hypothetical perturbation of that normalized
+utility, not an available outside-option covariate.
 
 #### 6.3.5 Reduction to MNL at $\lambda = 1$
 
 When all $\lambda_k = 1$ the cross-same-nest case collapses to the cross-different-nest case ($\partial P_{im}/\partial V_{ij} = -P_{im} P_{ij}$ for $m \neq j$) and the own case gives $\partial P_{ij}/\partial V_{ij} = P_{ij}(1 - P_{ij})$. Substituting:
 
 $$
-DR(k \to j)\big|_{\lambda=1}
+DR(j \to k)\big|_{\lambda=1}
 = \frac{\sum_i w_i \, P_{ij} \, P_{ik}}{\sum_i w_i \, P_{ij} (1 - P_{ij})}
 $$
 
@@ -849,13 +907,16 @@ $$
 
 #### 6.4.2 Damped contraction mapping
 
-Berry, Levinsohn, and Pakes (1995) establish that the fixed-point iteration
+Under the usual feasibility, connected-substitutes, and normalization conditions, the
+BLP fixed-point iteration is
 
 $$
 \delta^{(t+1)} = \delta^{(t)} + \kappa \bigl(\log s^* - \log \hat{s}(\delta^{(t)})\bigr)
 $$
 
-converges to the unique solution. Setting $\kappa = 1$ reproduces the original BLP95 update. Predicted shares $\hat{s}(\delta^{(t)})$ are computed via the NL formula: for each alternative $j$,
+with $\kappa=1$ giving the undamped update. Existence, uniqueness, and global convergence
+are properties of the share mapping and target—not an unconditional guarantee for every
+numerical input. Predicted shares $\hat{s}(\delta^{(t)})$ are computed via the NL formula:
 
 $$
 \hat{s}_j(\delta^{(t)}) = \frac{\sum_{i=1}^{N} w_i \, P_{ij}(\delta^{(t)})}{\sum_{i=1}^{N} w_i}
@@ -865,17 +926,29 @@ where $P_{ij}(\delta^{(t)}) = P(j \mid k(j)) \cdot P_{k(j)}$ is evaluated at the
 
 #### 6.4.3 Damping for nested models
 
-For strongly nested data (small $\lambda_k$) the plain BLP update ($\kappa = 1$) can overshoot. Setting $\kappa < 1$ improves contraction. A practical heuristic is:
+For strongly nested data (small $\lambda_k$) the plain update can overshoot numerically.
+Choosing $0<\kappa<1$ may stabilize iteration. A possible empirical starting heuristic is
 
 $$
 \kappa \approx \min_k \lambda_k
 $$
 
-since the curvature of the NL log-share map is sharpest in nests with small dissimilarity parameters. The function argument is called `damping`.
+but this is not a theorem or an automatic rule in the package. The kernel accepts the
+numeric `damping` value as supplied and does not constrain it to $(0,1]$; the analyst must
+inspect convergence and resulting share residuals.
 
 #### 6.4.4 Baseline re-normalization
 
-After convergence the returned $\delta$ is re-centered so that the baseline is identified: $\delta \leftarrow \delta - \delta_0$ (subtract the outside-option entry, or equivalently $\delta_1$ when there is no outside option). This matches the ASC identification convention from §1.4.
+Without an outside option, `delta` is a full length-$J$ vector and is centered initially
+and on return by subtracting its first inside entry, so the returned baseline is zero.
+With an outside option, supplied and returned `delta` contain the $J$ inside ASCs only.
+The kernel works internally with a prepended outside entry, pins that entry at zero after
+each update, and returns the inside subvector without subtracting the first inside ASC.
+
+All target shares must be strictly positive and have length $J$ (no outside) or $J+1$
+(outside first). The kernel does not check that they sum to one. Convergence uses the
+largest absolute change in the full working vector; reaching `max_iter` prints a warning
+and returns the last iterate without a separate convergence flag.
 
 **Note on the `lambda` argument.** `nl_blp_contraction` expects a *full* length-$n_{\text{nests}}$ vector where singleton nests have their entry set to 1. This differs from the estimated parameter block $\lambda$ in $\theta$, which contains only non-singleton entries. The caller is responsible for expanding the estimated lambdas into the full vector before invoking the contraction.
 
@@ -899,7 +972,8 @@ with $\hat{V}_{(k,p)}$ the $2 \times 2$ block of the coefficient covariance. The
 
 ### 6.6 Consumer Surplus and the Nested Logsum
 
-For the nested logit, the expected maximum utility (logsum) over individual $i$'s choice set replaces the flat MNL log-sum with the two-level structure of §2:
+For the nested logit, expected maximum utility is the two-level logsum below plus the
+scenario-invariant extreme-value location constant (omitted by `logsum()`, as in MNL):
 
 $$
 \mathrm{logsum}_i = \log D_i = \log\left( \sum_{l} \exp\big(\lambda_l \log I_l\big) \; [+\, 1] \right),
@@ -921,6 +995,8 @@ $$
 $$
 
 with the same caveats: no income effects, and CS levels inherit the ASC normalization, so only differences across scenarios (counterfactual `newdata` vs. baseline) are meaningful. The implementation reports point estimates for NL (the delta-method SE of the mean CS is currently provided for MNL only; Krinsky–Robb resampling of the coefficients is the practical interval method here).
+The routine does not enforce $\alpha<0$; interpreting $-\alpha$ as positive marginal
+utility of income requires the analyst to verify the estimated sign.
 
 *Code reference: [R/surplus.R](https://github.com/fpcordeiro/choicer/blob/main/R/surplus.R)*
 
@@ -930,7 +1006,11 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 
 - **McFadden pseudo R²**: $R^2 = 1 - \ell(\hat\theta)/\ell_0$ and $R^2_{\text{adj}} = 1 - (\ell(\hat\theta) - K)/\ell_0$, with $K$ counting all estimated parameters including the $\lambda$ block.
 - **Equal-shares null** (default, exact for unbalanced sets and weights): $\ell_0 = -\sum_i w_i \log(M_i + \mathbf{1}_{\text{outside}})$.
-- **Market-shares null** (constants-only closed form): $\ell_0 = \sum_j N_j \log(s_j)$; requires identical choice-set composition across individuals and uniform weights. The constants-only model is itself an MNL — at $\beta = 0$ and free ASCs the nest structure is undetermined — so the same closed form applies.
+- **Market-shares null** (constants-only closed form):
+  $\ell_0 = c\sum_j N_j \log(s_j)$, where $c$ is the common weight; requires
+  identical choice-set composition across individuals and uniform weights. The
+  constants-only model is itself an MNL—at $\beta = 0$ and free ASCs the nest structure
+  is not identified from constant shares—so the same closed form applies.
 - **Hit rate**: weighted share of choice situations whose observed choice has the highest predicted NL probability; with an outside option the outside good competes with $P_{i0} = 1 - \sum_j P_{ij}$.
 
 *Code reference: [R/gof.R](https://github.com/fpcordeiro/choicer/blob/main/R/gof.R)*
@@ -1004,18 +1084,30 @@ variance under **variable-probability sampling**. The smaller stratum-centered
 (design-based) variance for a **fixed-quota** design is out of scope; see Manski & McFadden
 (1981) and Cosslett (1981).
 
-### 7.5 Implementation
+### 7.5 Implementation and Cluster-Robust Extension
 
-The per-individual score accumulated inside `nl_bhhh_parallel` is **weight-free** (singleton
-nests excluded as in the gradient), so the two summed matrices are obtained from the existing
-exports evaluated at $\hat\theta$:
+The common post-estimation path obtains the $N\times p$ matrix $S$ of weight-free scores
+from `nl_scores_parallel` (singleton lambda rows are absent because those parameters are
+not in $\theta$), then forms
 
-| Matrix | Call |
-|--------|------|
-| Bread $A = \sum_i w_i(-H_i)$ | `nl_loglik_hessian_parallel(..., weights = w)` |
-| Meat $B = \sum_i w_i^{2} s_i s_i^{\top}$ | `nl_bhhh_parallel(..., weights = w^2)` |
+$$
+A=\texttt{nl\_loglik\_hessian\_parallel}(\widehat\theta;w),
+\qquad B=(\operatorname{diag}(w)S)^T(\operatorname{diag}(w)S).
+$$
 
-and combined in R as $V = A^{-1} B A^{-1}$. User-facing entry points: `wesml_weights()`
+For a fit whose selected method is the numeric NL Hessian, the post-hoc bread uses the
+numeric oracle instead. The eager fit-time robust path is algebraically identical and may
+obtain $B$ by calling the BHHH accumulator with `weights = w^2`. For cluster labels
+$g(i)$, `se_method = "cluster"` uses
+
+$$
+B_{\mathrm{cluster}}=\sum_g
+\left(\sum_{i:g(i)=g}w_is_i\right)
+\left(\sum_{i:g(i)=g}w_is_i\right)^T,
+$$
+
+with no finite-cluster correction. These matrices are combined as
+$V=A^{-1}BA^{-1}$. User-facing entry points: `wesml_weights()`
 computes the Manski--Lerman weights from the population shares $Q$, while
 `sample_by_choice()` draws a choice-based sample and attaches those weights;
 `run_nestlogit(..., se_method = "sandwich")`
@@ -1024,7 +1116,7 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc. Passing
 choice situation (validated constant within `id`), and a provenance guard prevents a
 WESML-labeled sample from being silently fit unweighted.
 
-*Code reference: `nl_bhhh_parallel()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp); `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `nl_scores_parallel()` / `nl_bhhh_parallel()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, and `.assemble_score_vcov()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 

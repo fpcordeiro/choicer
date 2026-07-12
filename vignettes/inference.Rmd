@@ -50,17 +50,19 @@ set_num_threads(2)
 The cleanest way to see what clustering buys is to build data with genuine
 within-person dependence. `simulate_hmnl_data()` draws a panel in which each
 person has their own taste vector $\beta_i \sim N(b, W)$ and makes several
-choices with it — exactly the dependence structure a survey or scanner panel
-produces.
+choices with it — a stylized version of the persistent within-person dependence
+in a survey or scanner panel.
 
 ```{r sim}
 sim <- simulate_hmnl_data(N = 500, T = 8, J = 4, seed = 3)
 ```
 
-We deliberately fit a plain multinomial logit. Its point estimates target the
-population-average taste, but its likelihood treats all `500 * 8 = 4000`
-choice situations as independent — which they are not, because each person's
-taste deviation persists across their eight tasks. Passing `cluster_col`
+We deliberately fit a plain multinomial logit. Because a homogeneous logit is
+misspecified for this random-coefficients DGP, its point estimates target the
+pseudo-true homogeneous-logit projection, not generally the population mean
+$b$. Its likelihood also treats all `500 * 8 = 4000` choice situations as
+independent — which they are not, because each person's taste deviation persists
+across their eight tasks. Passing `cluster_col`
 supplies the person labels at fit time and selects cluster-robust standard
 errors for `summary()`:
 
@@ -93,7 +95,8 @@ round(tab[, "cluster"] / tab[, "hessian"], 2)
 ```
 
 The clustered standard errors on the slope coefficients are about 25% wider
-than the Hessian ones; the alternative-specific constants barely move. That
+than the Hessian ones; those on the alternative-specific constants differ
+little. That
 pattern is the fingerprint of the data-generating process: the persistent
 component is each person's *taste* deviation, so it is the slope scores that
 are correlated within person. Note also that `"robust"` alone recovers almost
@@ -118,21 +121,26 @@ fit0 <- run_mnlogit(
   include_outside_option = TRUE
 )
 
-# one label per choice situation, in the prepared (id-sorted) order
-cl <- sim$data$pid[!duplicated(sim$data$task)]
+# one cluster label per choice situation, named by choice-situation id
+task_person <- unique(sim$data[, c("task", "pid")])
+cl <- setNames(task_person$pid, task_person$task)
 se_of(vcov(fit0, type = "cluster", cluster = cl))
 ```
 
-The `cluster` vector has one entry per choice situation, aligned with the
-situations sorted by the id column — here, one `pid` per `task`.
+The `cluster` vector has one entry per choice situation — here, one `pid` per
+`task` — and is named by the choice-situation id. choicer uses those names to
+realign labels safely to its prepared order.
 
 ## Clustering repairs inference, not the estimand
 
 A caveat that matters for the mixed logit. `run_mxlogit()` maximizes a
-*cross-sectional* simulated likelihood: each choice situation is treated as an
-independent draw from the mixing distribution. On panel data,
+*cross-sectional* simulated likelihood: each choice situation's probability is
+integrated over the mixing distribution separately, rather than holding each
+simulation draw fixed across a person's tasks before integrating their joint
+probability. On panel data,
 `type = "cluster"` makes the standard errors robust to within-person
-dependence, but the point estimates still target that cross-sectional model —
+dependence around its pseudo-true target, but the point estimates still target
+that cross-sectional model —
 clustering does not turn the fit into a panel mixed logit, in which one taste
 draw is shared across a person's choices. When the panel structure is the
 object of interest — individual-level tastes, their distribution, persistence
@@ -147,8 +155,11 @@ of the mode they chose, oversampling rare hospitals), the weights are not
 optional and the variance choice is forced: under WESML weighting the inverse
 weighted Hessian and the ordinary BHHH variance are both invalid, and
 `type = "robust"` — whose meat carries the squared weights — is the correct
-estimator. The [choice-based sampling vignette](wesml.html) develops the full
-workflow, from population shares to weighted fit.
+estimator, conditional on the supplied population shares `Q`. If weighted
+observations are also dependent within sampling units, use the weighted cluster
+sandwich instead; if `Q` is estimated, its uncertainty requires an additional
+resampling or sensitivity layer. The [choice-based sampling vignette](wesml.html)
+develops the full workflow, from population shares to weighted fit.
 
 ## References
 

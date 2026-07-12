@@ -20,7 +20,7 @@
 #      copy of fit_s with only draws_info switched to generate mode); the
 #      comparison isolates draw-path equivalence, not optimizer reproducibility.
 #
-# NOTE: NO cross-platform bit-equality assertions on Owen-scrambled draws.
+# NOTE: NO cross-platform bit-equality assertions on digit-permuted draws.
 
 # ---------------------------------------------------------------------------
 # Tolerances
@@ -210,12 +210,40 @@ test_that("run_mxlogit draws_info: mode='store' is default, mode='generate' set 
     covariate_cols="x1", random_var_cols=c("w1","w2"),
     S=20L, rc_correlation=FALSE, rc_mean=FALSE, use_asc=TRUE,
     include_outside_option=FALSE,
-    draws="generate", seed=42L, scramble="owen",
+    draws="generate", seed=42L,
     control=list(print_level=0L, maxeval=50L)
   )
   expect_equal(fit_g$draws_info$mode,     "generate")
   expect_equal(fit_g$draws_info$seed,     42L)
-  expect_equal(fit_g$draws_info$scramble, "owen")
+  expect_equal(fit_g$draws_info$scramble, "permuted")
+})
+
+test_that("the deprecated owen label canonicalizes without breaking old objects", {
+  dt <- create_small_mxl_data(seed = 2)
+  fit_alias <- NULL
+  expect_warning(
+    fit_alias <- run_mxlogit(
+      data=dt, id_col="id", alt_col="alt", choice_col="choice",
+      covariate_cols="x1", random_var_cols="w1", S=5L,
+      rc_correlation=FALSE, draws="generate", seed=7L, scramble="owen",
+      control=list(print_level=0L, maxeval=1L)
+    ),
+    "deprecated alias"
+  )
+  expect_identical(fit_alias$draws_info$scramble, "permuted")
+
+  legacy <- fit_alias$draws_info
+  legacy$scramble <- "owen"
+  canonical <- fit_alias$draws_info
+  expect_identical(
+    choicer:::.mxl_gen_params(legacy),
+    choicer:::.mxl_gen_params(canonical)
+  )
+
+  legacy_fit <- fit_alias
+  legacy_fit$draws_info <- legacy
+  expect_equal(predict(legacy_fit), predict(fit_alias), tolerance = TOL_POST)
+  expect_equal(logsum(legacy_fit), logsum(fit_alias), tolerance = TOL_POST)
 })
 
 # ---------------------------------------------------------------------------
@@ -477,6 +505,72 @@ test_that("post-estimation generics match store vs generate at converged theta (
                label = "vcov hessian: store vs generate")
 })
 
+test_that("BLP preserves generate-mode seed and scrambling metadata", {
+  fix <- .gen_mode_fixture()
+
+  # Keep the fitted parameters and data fixed and change only the simulator.
+  # A scrambled generator is essential here: with scramble="none", silently
+  # materialising the legacy store-mode cube produces the same Halton points
+  # and would not expose the metadata-loss regression.
+  fit_g <- fix$fit_s
+  fit_g$draws_info$mode <- "generate"
+  fit_g$draws_info$seed <- 31415L
+  # Exercise the legacy serialized label: fitted-object post-estimation must
+  # read it silently as the same position-wise permutation mode.
+  fit_g$draws_info$scramble <- "owen"
+
+  target <- predict(fit_g, type = "shares")
+  delta <- blp(fit_g, target_shares = target, tol = 1e-10,
+               max_iter = 2000L)
+
+  pm <- fit_g$param_map
+  asc <- if (is.null(pm$asc)) {
+    rep(0, nrow(fit_g$alt_mapping))
+  } else {
+    c(0, fit_g$coefficients[pm$asc])
+  }
+
+  # BLP fed shares from the fitted generator must recover the fitted ASCs,
+  # up to the no-outside additive normalization.
+  expect_equal(
+    as.numeric(delta) - as.numeric(delta)[1L],
+    unname(asc - asc[1L]),
+    tolerance = 1e-7
+  )
+})
+
+test_that("BLP store and generate inputs agree for the identity Halton path", {
+  fix <- .gen_mode_fixture()
+  fit <- fix$fit_s
+  pm <- fit$param_map
+  J <- nrow(fit$alt_mapping)
+  target <- rep(1 / J, J)
+  delta0 <- if (is.null(pm$asc)) rep(0, J) else c(0, coef(fit)[pm$asc])
+  beta <- coef(fit)[pm$beta]
+  mu <- if (is.null(pm$mu)) rep(0, fix$K_w) else coef(fit)[pm$mu]
+  L_params <- coef(fit)[pm$sigma]
+
+  common <- list(
+    delta = delta0, target_shares = target,
+    X = fix$inputs$X, W = fix$inputs$W,
+    beta = beta, mu = mu, L_params = L_params,
+    alt_idx = fix$inputs$alt_idx, M = fix$inputs$M,
+    weights = fix$inputs$weights, rc_dist = fit$rc_dist,
+    rc_correlation = fit$rc_correlation, rc_mean = fit$rc_mean,
+    include_outside_option = FALSE, tol = 1e-10, max_iter = 2000L
+  )
+
+  d_store <- do.call(mxl_blp_contraction, c(common, list(
+    eta_draws = fix$eta
+  )))
+  d_generate <- do.call(mxl_blp_contraction, c(common, list(
+    eta_draws = fix$eta_empty, gen_seed = 0L, gen_scramble = 0L,
+    gen_S = fix$S
+  )))
+
+  expect_equal(d_store, d_generate, tolerance = TOL_POST)
+})
+
 test_that("vcov bhhh matches between store and generate modes at same theta", {
   fix   <- .gen_mode_fixture()
   fit_s <- fix$fit_s
@@ -519,10 +613,10 @@ test_that("vcov bhhh matches between store and generate modes at same theta", {
 })
 
 # ---------------------------------------------------------------------------
-# 4. generate mode: seed governs reproducibility (Owen scramble)
+# 4. generate mode: seed governs reproducibility (position-wise permutation)
 # ---------------------------------------------------------------------------
 
-test_that("generate mode with same seed (Owen) produces identical loglik", {
+test_that("generate mode with same permuted seed produces identical loglik", {
   dt <- create_small_mxl_data(seed = 77)
 
   args <- list(
@@ -530,7 +624,7 @@ test_that("generate mode with same seed (Owen) produces identical loglik", {
     covariate_cols="x1", random_var_cols="w1",
     S=20L, rc_correlation=FALSE, rc_mean=FALSE, use_asc=TRUE,
     include_outside_option=FALSE,
-    draws="generate", seed=42L, scramble="owen",
+    draws="generate", seed=42L, scramble="permuted",
     control=list(print_level=0L, maxeval=50L)
   )
 
@@ -540,7 +634,7 @@ test_that("generate mode with same seed (Owen) produces identical loglik", {
   # Same seed -> same objective trajectory -> same converged loglik
   expect_equal(as.numeric(logLik(fit1)), as.numeric(logLik(fit2)),
                tolerance = 1e-14,
-               label = "same-seed Owen: identical loglik")
+               label = "same-seed permuted: identical loglik")
   expect_equal(coef(fit1), coef(fit2), tolerance = 1e-14,
-               label = "same-seed Owen: identical coef")
+               label = "same-seed permuted: identical coef")
 })

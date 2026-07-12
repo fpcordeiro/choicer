@@ -57,7 +57,8 @@ car was under-sampled. With the full set of ASCs used here, the MNL slope
 coefficients—and therefore the WTP ratios—remain consistent, but the unweighted
 constants, fitted shares, elasticity levels, and surplus levels reflect the
 sampling design rather than the population. The following outputs demonstrate
-the workflow; do not report them as population mode shares or welfare without
+the workflow; do not report them as population mode shares or
+population-average welfare without
 external population shares and WESML weights (see `vignette("wesml")`).
 
 ``` r
@@ -74,7 +75,7 @@ mc_cf <- mode_choice
 mc_cf$vcost[mc_cf$mode == "train"] <- 0.75 * mc_cf$vcost[mc_cf$mode == "train"]
 predict(fit, type = "shares", newdata = mc_cf)
 
-# Illustrative sample-weighted welfare contrast (not a population estimate)
+# Illustrative sample-average welfare contrast (not a population estimate)
 cs0 <- consumer_surplus(fit, price_var = "vcost")
 cs1 <- consumer_surplus(fit, price_var = "vcost", newdata = mc_cf)
 cs1$mean_cs - cs0$mean_cs
@@ -104,7 +105,7 @@ fit_nl <- run_nestlogit(
 )
 
 # Post-estimation
-predict(fit_nl, type = "shares")        # predicted market shares
+predict(fit_nl, type = "shares")        # aggregate fitted shares in this simulation
 elasticities(fit_nl, elast_var = "X")   # J×J elasticity matrix (nest-consistent)
 diversion_ratios(fit_nl)                # J×J diversion matrix
 # BLP share inversion: recover mean utilities matching target shares
@@ -141,19 +142,26 @@ summary(fit_hmnl)
 
 # Posterior-aware post-estimation (x2 is the price-like attribute in this DGP)
 wtp(fit_hmnl, price_var = "x2")               # posterior median + quantile interval
-consumer_surplus(fit_hmnl, price_var = "x2")  # expected consumer surplus
+consumer_surplus(fit_hmnl, price_var = "x2")  # posterior-median CS by task
 
 # Multi-chain diagnostics and posterior-predictive fit
 b_chains <- lapply(fit_hmnl$chains, function(ch) ch$b)
 rhat(b_chains, rank = TRUE)
 ess(b_chains)
+mcse(b_chains)
 ppc_shares(fit_hmnl)
 ```
 
 For serious posterior work, use multiple chains, inspect rank-normalized R-hat,
 bulk/tail ESS, MCSE and trace plots for all reported blocks, and increase the run
-length until the slowest block is stable. A one-chain split diagnostic is weaker
-evidence because it cannot reveal disagreement between independent runs.
+length until the slowest block is stable. choicer's chains use distinct seeds but
+the same data-driven initialization, so they are not deliberately overdispersed;
+a one-chain split diagnostic is weaker still because it cannot reveal disagreement
+between separately simulated runs.
+
+For HMNL/HMNP, v0.2.0 retains every chain in `fit$chains` for diagnostics but
+uses chain 1 for the top-level posterior summaries and post-estimation methods;
+it does not pool chains automatically.
 
 The Bayesian multinomial probit `run_mnprobit()` (non-hierarchical, class
 `choicer_mnp`) is fit the same way, via `prior=`/`mcmc=` instead of an
@@ -215,6 +223,6 @@ Several excellent R packages estimate discrete-choice models:
 choicer's distinguishing focus is a fast C++ core with analytical gradients and
 Hessians, and one consistent post-estimation toolkit aimed at the demand and
 welfare quantities applied economists report: elasticities, diversion,
-willingness to pay, consumer surplus, counterfactual shares, and share
+willingness to pay, consumer surplus, counterfactual aggregate shares, and share
 inversion, with the matching robust, clustered, and choice-based-sampling
 inference.

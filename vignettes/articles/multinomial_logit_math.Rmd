@@ -34,6 +34,7 @@ This document provides a detailed mathematical description of the multinomial lo
 |--------|-------------|
 | $i = 1, \ldots, N$ | Index for individuals (choice situations) |
 | $j = 1, \ldots, J_i$ | Index for alternatives available to individual $i$ |
+| $C_i$ | Choice set for situation $i$; it contains $M_i=J_i$ inside alternatives and, when requested, the implicit outside alternative 0 |
 | $j_i$ | The alternative chosen by individual $i$ |
 | $w_i$ | Weight for individual $i$ |
 | $X_{ij}$ | Row vector of covariates for individual $i$ and alternative $j$ ($1 \times K$) |
@@ -85,6 +86,11 @@ P_{ij} = \frac{\exp(V_{ij})}{\sum_{k=1}^{J_i} \exp(V_{ik})}
 $$
 
 If an outside option is included, the denominator includes $\exp(V_{i0}) = \exp(0) = 1$.
+The outside option is implicit: it has no row in $X$, no free coefficient, and is
+prepended internally to the vector of inside utilities.  Global alternative IDs
+(`alt_idx`) need not equal an alternative's local row position in $C_i$; the former map
+ASCs across situations, whereas `choice_idx` records the local chosen position (or 0 for
+the outside option).
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 
@@ -250,7 +256,12 @@ $\mathbf{BB}_i$ and $\mathbf{DD}_i$ are symmetric. The implementation accumulate
 
 The existing final symmetrization `global_hess = 0.5*(global_hess + global_hess^T)` remains as a numerical tidy-up.
 
-**Complexity.** The block assembly costs $O(J \cdot K^2 / 2)$ for BB, $O(J \cdot K)$ for BD scatter, and $O(J_\delta^2 / 2)$ for DD — versus $O(J \cdot (K + J_\delta)^2)$ for the naive dense outer product. The asymptotic gain scales as $(1 + J_\delta/K)^2$, which is material when the number of free ASC parameters is comparable to or larger than $K$.
+**Complexity.** For situation $i$, the block assembly costs
+$O(m_iK^2)$ for BB, $O(m_iK)$ for BD scatter, and $O(J_\delta^2)$ for DD, versus
+$O(m_i(K+J_\delta)^2)$ for a naive dense outer product for every alternative. Constant
+factors are reduced by triangular accumulation in the symmetric blocks. The exact speedup
+depends on $m_i$, $K$, and $J_\delta$; it is largest when the ASC block is large enough
+that repeating its dense outer products over alternatives would dominate.
 
 ### 4.4 ASC Normalization and Indexing
 
@@ -322,15 +333,29 @@ $$
 E_{jm}^k = -\beta_k \cdot x_{imk} \cdot P_{im}
 $$
 
-### 5.3 Aggregate Elasticities
+### 5.3 Weighted Average of Individual Elasticities
 
-The implementation computes weighted average elasticities across all individuals:
+The implementation computes a weighted average of the *individual probability
+elasticities*:
 
 $$
 \bar{E}_{jm}^k = \frac{\sum_{i=1}^{N} w_i \cdot E_{ijm}^k}{\sum_{i=1}^{N} w_i}
 $$
 
 where $E_{ijm}^k$ is the elasticity for individual $i$.
+
+This estimand is not, in general, the elasticity of the aggregate share
+$s_j=\sum_iw_iP_{ij}/\sum_iw_i$.  The latter is
+
+$$
+\frac{\partial s_j}{\partial x_{m,k}}\frac{x_{m,k}}{s_j},
+$$
+
+and requires a definition of the common market-level perturbation $x_{m,k}$ when the
+attribute varies over individuals.  `elasticities()` deliberately reports the average
+of individual elasticities above; rows index responding alternatives and columns index
+perturbed alternatives.  With an outside option, index 0 is included in the returned
+matrix; its attribute value is zero, so the outside-option perturbation column is zero.
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 
@@ -425,7 +450,7 @@ where $\hat{s}_j(\delta)$ is the predicted market share for alternative $j$.
 
 ### 7.2 Contraction Mapping Algorithm
 
-Berry, Levinsohn, and Pakes (1995) show that the following iteration converges to the solution:
+The Berry--Levinsohn--Pakes fixed-point iteration is:
 
 $$
 \delta_j^{(t+1)} = \delta_j^{(t)} + \log(s_j) - \log(\hat{s}_j^{(t)})
@@ -437,13 +462,34 @@ $$
 \delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
 $$
 
-### 7.3 Implementation Details
+The standard convergence result presumes a feasible vector of strictly positive shares
+and the usual connected-substitutes conditions.  The low-level kernel checks positivity
+and length but does not check that target shares sum to one; a target outside the share
+simplex need not correspond to any utility vector.
 
-1. **Initialization**: Start with initial guess $\delta^{(0)}$
-2. **Prediction**: Compute predicted shares $\hat{s}(\delta^{(t)})$ using `mnl_predict_shares_internal`
-3. **Update**: Apply the contraction: $\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})$
-4. **Convergence**: Check if $\max_j |\delta_j^{(t+1)} - \delta_j^{(t)}| < \text{tol}$
-5. **Normalization**: Subtract $\delta_1$ from all ASCs to maintain identification
+### 7.3 Full-Vector Normalization and Implementation Details
+
+The contraction operates on a *full* vector of mean utilities, which differs from the
+free ASC block stored in the fitted parameter vector:
+
+1. **No outside option.** `delta` has length $J$ (the `blp()` method prepends the
+   normalized zero to the fitted length-$(J-1)$ ASC block).  The initial vector and final
+   result are normalized by subtracting their first element.  The returned vector has
+   length $J$ and therefore includes the baseline zero; it is not the length-$(J-1)$
+   free-parameter block.
+2. **Outside option.** The supplied and returned `delta` vectors have length $J$ and
+   contain inside alternatives only.  Internally the kernel prepends the outside mean
+   utility $\delta_0=0$, applies the update in the length-$(J+1)$ share space, and pins
+   the outside entry to zero after every update.  It does **not** subtract the first
+   inside ASC.
+3. **Prediction and stopping.** Predicted shares are weighted by $w_i/\sum_iw_i$.
+   Iteration stops when the largest absolute change in the full working delta vector is
+   below `tol`, or after `max_iter`.  All target shares must be strictly positive.
+
+When an outside option is present, its target share does not receive a free update; it is
+matched indirectly when the inside targets and outside target form a coherent share
+vector summing to one.  On exhaustion of `max_iter` the C++ kernel prints a warning and
+returns its last iterate rather than attaching a convergence flag.
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 
@@ -513,6 +559,8 @@ $$
 $$
 
 computed by evaluating the logsum on counterfactual data (`newdata`) and on the baseline. The normalization constant cancels in the difference.
+The routine does not impose $\alpha<0$; interpreting the denominator as positive marginal
+utility of income requires the analyst to verify the fitted price sign.
 
 ### 9.3 Delta-Method SE for the Mean Consumer Surplus
 
@@ -563,10 +611,14 @@ where $M_i$ is the number of inside alternatives. This closed form is exact for 
 **Market shares.** The maximized log-likelihood of a constants-only (ASC-only) model. When every alternative is available in every choice situation, the ASC-only model's fitted probabilities equal the observed market shares $s_j$, giving the closed form
 
 $$
-\ell_0 = \sum_{j} N_j \log(s_j)
+\ell_0 = c\sum_{j} N_j \log(s_j),
 $$
 
-with $N_j$ the choice counts (the outside option enters as its own category when present; never-chosen alternatives contribute $0 \cdot \log 0 = 0$). This closed form requires identical choice-set *composition* across individuals — equal set sizes are not sufficient — and uniform weights; otherwise an ASC-only model must be refit explicitly.
+with $N_j$ the unweighted choice counts and $c$ the common observation weight (usually
+$c=1$ after normalization).  The outside option enters as its own category when present;
+never-chosen alternatives contribute $0 \cdot \log 0 = 0$. This closed form requires
+identical choice-set *composition* across individuals — equal set sizes are not sufficient
+— and uniform weights; otherwise an ASC-only model must be refit explicitly.
 
 ### 10.2 Hit Rate
 
@@ -579,6 +631,9 @@ $$
 $$
 
 With an outside option, the outside good competes for the maximum with probability $P_{i0} = 1 - \sum_j P_{ij}$, and a predicted outside choice is a hit when the outside good was in fact chosen ($j_i = 0$).
+Ties among inside alternatives are resolved by the first local row (`which.max` in R).
+The outside option replaces that inside winner only when its probability is strictly
+larger, not when tied.
 
 *Code reference: [R/gof.R](https://github.com/fpcordeiro/choicer/blob/main/R/gof.R)*
 
@@ -656,17 +711,31 @@ stratum-centered estimator is **out of scope** here. See Manski & McFadden (1981
 design-based treatment and Cosslett (1981) for the asymptotically efficient
 conditional-maximum-likelihood alternative.
 
-### 11.5 Implementation
+### 11.5 Implementation and Cluster-Robust Extension
 
-The per-individual score accumulated inside `mnl_bhhh_parallel` is **weight-free**, so the
-two summed matrices are obtained from the existing exports evaluated at $\hat\theta$:
+The common post-estimation path first obtains the $N\times p$ matrix $S$ whose row $i$ is
+the **weight-free** score $s_i$ from `mnl_scores_parallel`.  It then forms
 
-| Matrix | Call |
-|--------|------|
-| Bread $A = \sum_i w_i(-H_i)$ | `mnl_loglik_hessian_parallel(..., weights = w)` |
-| Meat $B = \sum_i w_i^{2} s_i s_i^{\top}$ | `mnl_bhhh_parallel(..., weights = w^2)` |
+$$
+A=\texttt{mnl\_loglik\_hessian\_parallel}(\widehat\theta;w),
+\qquad B=(\operatorname{diag}(w)S)^T(\operatorname{diag}(w)S).
+$$
 
-and combined in R as $V = A^{-1} B A^{-1}$. User-facing entry points: `wesml_weights()`
+The eager fit-time path is algebraically identical and may obtain $B$ by calling the
+BHHH accumulator with `weights = w^2`.  Both routes combine the matrices as
+$V=A^{-1}BA^{-1}$.
+
+For cluster labels $g(i)$, `se_method = "cluster"` replaces the meat by
+
+$$
+B_{\mathrm{cluster}}
+=\sum_g\left(\sum_{i:g(i)=g}w_is_i\right)
+       \left(\sum_{i:g(i)=g}w_is_i\right)^T.
+$$
+
+No $G/(G-1)$ or other finite-cluster correction is applied.  Clustering changes the
+estimated covariance, not the likelihood or point estimate. User-facing entry points:
+`wesml_weights()`
 computes the Manski--Lerman weights from the population shares $Q$, while
 `sample_by_choice()` draws a choice-based sample and attaches those weights;
 `run_mnlogit(..., se_method = "sandwich")`
@@ -675,7 +744,7 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc. Passing
 choice situation (validated constant within `id`), and a provenance guard prevents a
 WESML-labeled sample from being silently fit unweighted.
 
-*Code reference: `mnl_bhhh_parallel()` in [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mnl_scores_parallel()` / `mnl_bhhh_parallel()` in [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, and `.assemble_score_vcov()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 
@@ -688,9 +757,10 @@ The full parameter vector $\theta$ is organized as:
 | Block | Indices | Length | Description |
 |-------|---------|--------|-------------|
 | $\beta$ | $[0, K)$ | $K$ | Coefficients for design matrix $X$ |
-| $\delta$ | $[K, K + J_{asc})$ | $J-1$ or $J$ | Alternative-specific constants |
+| $\delta$ | $[K, K + J_{asc})$ | $0$, $J-1$, or $J$ | Free alternative-specific constants |
 
-where $J_{asc} = J - 1$ without outside option (first ASC normalized to 0), or $J_{asc} = J$ with outside option.
+where $J_{asc}=0$ when `use_asc = FALSE`, $J_{asc} = J - 1$ without outside
+option (first ASC normalized to 0), or $J_{asc} = J$ with outside option.
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 
@@ -698,7 +768,8 @@ where $J_{asc} = J - 1$ without outside option (first ASC normalized to 0), or $
 
 - **Design matrix $X$**: Stacked matrix of dimension $(\sum_i M_i) \times K$, where $M_i$ is the number of (inside) alternatives for individual $i$
 - **Alternative indices**: 1-based indexing in R, converted to 0-based in C++
-- **Choice indices**: 1-based for inside alternatives, 0 for outside option when included
+- **Choice indices**: 1-based *local row positions within each situation's block* for
+  inside alternatives, 0 for the outside option when included
 - **Prefix sums $S$**: Used for efficient indexing into the stacked data: $S_i = \sum_{j < i} M_j$
 
 ### 12.3 OpenMP Parallelization
@@ -712,12 +783,21 @@ The implementation parallelizes over individuals using OpenMP:
 
 ### 12.4 Negated Objectives
 
-The C++ functions return:
+The likelihood/gradient kernel and analytical-Hessian kernel return, respectively:
 - $-\ell(\theta)$ (negated log-likelihood)
 - $-\nabla\ell(\theta)$ (negated gradient)
 - $-\nabla^2\ell(\theta)$ (negated Hessian)
 
 This is for compatibility with minimization routines (e.g., `nloptr`) that expect a loss function to minimize rather than a likelihood to maximize.
+
+### 12.5 Finite-Value Guards
+
+If a situation's chosen log probability is non-finite, the likelihood kernel substitutes
+$-10^{10}$ for that contribution and emits one warning after leaving the OpenMP region.
+If the assembled negated objective is still non-finite, it returns $10^{10}$ and a zero
+gradient; isolated non-finite gradient entries are set to zero. These sentinels let a line
+search backtrack from pathological trial parameters and are not part of the regular
+finite-utility likelihood.
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 

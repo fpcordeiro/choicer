@@ -38,6 +38,19 @@
 
 ## Corrections
 
+- `blp()` for an MXL fit using `draws = "generate"` now carries the fitted
+  draw count, seed, and digit-permutation setting through every contraction
+  evaluation. Previously that path could evaluate counterfactual shares with
+  fallback draw metadata rather than the simulation design used for the fit.
+- On-the-fly MXL draws now accept all 128 prime-base dimensions implemented by
+  the generator (the prior guard rejected the 128th dimension); 129 or more
+  random coefficients still fail early with an explicit limit.
+- HMNL prediction and welfare now use a taskwise max-shifted softmax/logsum, so
+  extreme counterfactual utilities remain finite. Counterfactual compensating
+  variation accepts explicit non-negative task weights and matches baseline
+  and policy choice situations by (`person_col`, `id_col`) before subtraction;
+  it now rejects added, dropped, or substituted tasks instead of pairing them
+  silently by sorted position.
 - The documentation previously claimed that MCMC draws from the Gibbs
   samplers (`run_mnprobit()`, `run_hmnlogit()`, `run_hmnprobit()`) are
   bitwise reproducible regardless of the OpenMP thread count. Independent
@@ -128,8 +141,8 @@
   Train 2010) and DGPs `simulate_hmnl_data()` / `simulate_hmnp_data()`.
 - Post-estimation on the shared `choicer_hb` class, all posterior-draw
   based: `predict()` (population/individual, entry counterfactuals via the
-  posterior-predictive `delta`; HMNP probabilities by exact 1-D
-  Gauss-Hermite quadrature), `wtp()` (posterior median + quantile
+  posterior-predictive `delta`; HMNP probabilities by deterministic 20-node
+  1-D Gauss-Hermite approximation), `wtp()` (posterior median + quantile
   intervals), `logsum()` / `consumer_surplus()` (HMNL-only; probit Emax is
   roadmapped), `elasticities()` / `diversion_ratios()` (common-random-path
   perturbation engine including the outside option), `recovery_table()`,
@@ -213,7 +226,7 @@
   and the classical MSL asymptotics (fixed-`S` bias, `S` growth conditions) in
   the mixed logit math note.
 
-## Mixed logit — on-the-fly randomized Halton draws
+## Mixed logit — on-the-fly digit-permuted Halton draws
 
 - `run_mxlogit()` gains three new arguments: `draws`, `seed`, and `scramble`.
   - `draws = "store"` (default) keeps the existing behavior: a full
@@ -222,10 +235,13 @@
     computed on the fly in C++ from a compact seed, eliminating the O(N)
     `eta_draws` cube. This is the recommended choice when N is large or memory
     is constrained.
-  - `scramble = "owen"` (default when `draws = "generate"`) applies Owen (2017)
-    digit scrambling to the Halton sequence for better high-dimensional
-    uniformity; recommended for K_w > 5 (Bhat 2003). `scramble = "none"`
-    reproduces the randtoolbox sequence exactly and is intended for testing.
+  - `scramble = "permuted"` (default when `draws = "generate"`) applies one
+    seeded permutation per dimension and base-digit position, shared across
+    sequence indices. This is a deterministic position-wise digit permutation,
+    not Owen's nested-uniform scramble, and no standard randomized-QMC
+    unbiasedness or replicate-error guarantee is claimed. The historical value
+    `"owen"` remains as a deprecated alias for compatibility.
+    `scramble = "none"` reproduces the randtoolbox sequence exactly.
   - `seed` sets the integer master seed for the on-the-fly generator; if
     `NULL` (default), a seed is drawn from R's RNG so `set.seed()` governs
     reproducibility. Ignored when `draws = "store"`.
