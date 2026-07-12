@@ -57,9 +57,10 @@ dt[, nest := ifelse(alt <= 2, "A", "B")]
 dt[, choice := 0L]
 dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-elas <- nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+elas <- choicer:::nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
   elast_var_idx = 1L)
 elas
 }
 }
+\keyword{internal}

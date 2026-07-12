@@ -79,3 +79,4 @@ and draws, so the diversion ratio depends on which attribute is perturbed.
 For a variable with a fixed coefficient the dependence again vanishes
 (the constant cancels); for a random-coefficient variable it does not.
 }
+\keyword{internal}

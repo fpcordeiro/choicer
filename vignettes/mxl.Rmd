@@ -17,7 +17,9 @@ a single coefficient on each random attribute, choicer estimates a *distribution
 of coefficients. Substitution then reflects both observed covariates and the
 estimated distribution of tastes. Estimation is by simulated maximum likelihood
 using Halton draws, with the likelihood, gradient and Hessian evaluated in
-parallel C++.
+parallel C++. `run_mxlogit()` currently estimates a **cross-sectional**
+simulated likelihood: each choice situation receives its own taste draw. It is
+not a frequentist panel mixed-logit likelihood.
 
 A useful way to see the mechanism is to write the mixed-logit probability as a
 logit kernel averaged over the taste distribution,
@@ -150,16 +152,35 @@ Two consequences are worth keeping in front of you:
   identify the taste distribution is the hierarchical Bayesian logit,
   [`run_hmnlogit()`](hb.html).
 
-Practical defenses follow directly: report sensitivity to the number of draws,
-starting values, and distributional assumptions; compare substitution and welfare
-under a simpler baseline; and prefer **bounded or sign-constrained mixing
-distributions** (triangular, censored normal) so a tail cannot run away;
-**estimate in WTP-space** (Train & Weeks, 2005) to sidestep the ratio-of-normals
-pathology; or use a **latent-class** specification when a handful of discrete
-types is more credible than a continuous distribution. None of these is free —
-each trades one restriction for another — but each puts the restriction in a
-place you can defend. The broader tradeoff is laid out in
-[Choosing among choice models](choicer.html#choosing-among-choice-models).
+## A research checklist
+
+For a reportable `run_mxlogit()` application:
+
+1. Fit a transparent MNL benchmark, scale poorly conditioned covariates, and use
+   its estimates to inform explicit `theta_init` values.
+2. Run several manually supplied starting values and retain their objective,
+   convergence code and substantive outputs. choicer does not yet automate
+   multistart estimation.
+3. Increase `S` until coefficients, covariance elements, standard errors, WTP,
+   elasticities and diversion ratios are stable—not merely until the optimizer
+   reports convergence.
+4. Compare choicer's supported normal and shifted-lognormal restrictions where
+   economically meaningful, and show what their tails imply for signs and WTP.
+5. Compare the analytical-Hessian and BHHH results; use robust or WESML inference
+   for weighting/misspecification and cluster inference for repeated sampling
+   units as appropriate.
+6. Treat clustering of panel tasks as an inference correction only. If tastes
+   should persist within person, use `run_hmnlogit()` so the likelihood itself
+   uses that repetition.
+7. Compare substitution and welfare with the MNL or NL benchmark and state which
+   data variation, rather than the mixing distribution alone, earns the change.
+
+Bounded/censored mixing distributions, WTP-space estimation, and latent-class
+logit can be useful alternative modeling strategies, but they are **not
+implemented in choicer v0.2.0**. They require another implementation today and
+are roadmap candidates here; they should not be presented as options to
+`run_mxlogit()`. The broader tradeoff is laid out in [Choosing among choice
+models](choicer.html#choosing-among-choice-models).
 
 ## References
 

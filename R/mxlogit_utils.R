@@ -733,7 +733,7 @@ run_mxlogit <- function(
 }
 
 
-#' Prepare inputs for `mxl_loglik_gradient_parallel()`
+#' Prepare inputs for mixed logit estimation
 #'
 #' Prepares and validates inputs for mixed logit estimation routine.
 #'

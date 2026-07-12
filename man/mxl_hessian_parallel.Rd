@@ -84,9 +84,10 @@ dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 eta <- get_halton_normals(50, d$N, ncol(d$W))
 theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
-H <- mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+H <- choicer:::mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
   rc_correlation = FALSE, rc_mean = FALSE)
 dim(H)
 }
 }
+\keyword{internal}

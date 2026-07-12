@@ -142,19 +142,8 @@ reference:
       - set_num_threads
       - thread_info
       - get_halton_normals
-      - build_var_mat
-      - jacobian_vech_Sigma
+      - mxl_blp_contraction
+      - nl_blp_contraction
   - title: Data
     contents:
       - mode_choice
-  - title: Low-level C++ kernels
-    desc: >
-      Direct access to the C++ likelihood, gradient, Hessian and post-estimation
-      kernels. Most users do not need these.
-    contents:
-      - starts_with("mnl_")
-      - starts_with("mxl_")
-      - starts_with("nl_")
-      - mnp_gibbs
-      - hmnl_gibbs
-      - hmnp_gibbs

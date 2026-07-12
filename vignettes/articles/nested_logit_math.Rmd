@@ -1,6 +1,10 @@
 ---
 title: "The math behind choicer: nested logit"
 output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The math behind choicer: nested logit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
 
@@ -86,7 +90,7 @@ evidence of especially strong within-nest substitution.
 
 **Singleton nests** (nests with exactly one alternative) have $\lambda_k$ fixed to 1 and are not estimated. Only non-singleton nests contribute $\lambda$ parameters to $\theta$.
 
-*Code reference: [nestlogit.cpp:61-104](../src/nestlogit.cpp#L61-L104)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 1.4 Alternative-Specific Constants (ASCs)
 
@@ -95,7 +99,7 @@ The ASC identification follows the same convention as MNL:
 - **Without outside option** (`include_outside_option = FALSE`): The first inside alternative's ASC is fixed to zero ($\delta_1 = 0$). The parameter vector contains $J-1$ free ASC parameters.
 - **With outside option** (`include_outside_option = TRUE`): The outside option serves as the reference with $V_{i0} = 0$. All $J$ inside alternatives have free ASC parameters.
 
-*Code reference: [nestlogit.cpp:107-135](../src/nestlogit.cpp#L107-L135)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -167,7 +171,7 @@ $$
 
 where $D_i = \sum_l \exp(\lambda_l \log I_l)$ (plus 1 if an outside option is present).
 
-*Code reference: [nestlogit.cpp:235-260](../src/nestlogit.cpp#L235-L260)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 2.6 Log-Likelihood
 
@@ -179,7 +183,7 @@ $$
 
 where $\theta = (\beta, \lambda, \delta)$ and $j_i$ is the alternative chosen by individual $i$.
 
-*Code reference: [nestlogit.cpp:263-266](../src/nestlogit.cpp#L263-L266)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 2.7 Log-Sum-Exp Trick for Numerical Stability
 
@@ -195,7 +199,7 @@ where $V_{\max,k} = \max_{j \in B_k} V_{ij}/\lambda_k$.
 
 **Across-nest denominator.** The denominator $D_i = \sum_l \exp(\lambda_l \log I_l)$ is similarly stabilized by subtracting $\max_l \lambda_l \log I_l$ before exponentiation.
 
-*Code reference: [nestlogit.cpp:190-230](../src/nestlogit.cpp#L190-L230)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 2.8 Relation to Other Nested-Logit Parameterizations
 
@@ -239,7 +243,7 @@ $$
 \text{grad\_vec}[a] = -P_{ia} + \left(1 - \frac{1}{\lambda_{k_i}}\right) \mathbf{1}_{a \in B_{k_i}} P(a \mid k_i) + \frac{1}{\lambda_{k_i}} \mathbf{1}_{a = j_i}
 $$
 
-*Code reference: [nestlogit.cpp:284-295](../src/nestlogit.cpp#L284-L295)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 3.2 Gradient with Respect to $\beta$
 
@@ -251,7 +255,7 @@ $$
 
 The full gradient is accumulated as a single BLAS matrix-vector product, identically to MNL.
 
-*Code reference: [nestlogit.cpp:297-298](../src/nestlogit.cpp#L297-L298)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 3.3 Gradient with Respect to $\delta$
 
@@ -263,7 +267,7 @@ $$
 
 The same free-ASC convention as MNL applies (first inside alternative's ASC excluded when no outside option).
 
-*Code reference: [nestlogit.cpp:300-312](../src/nestlogit.cpp#L300-L312)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 3.4 Gradient with Respect to $\lambda_k$
 
@@ -307,7 +311,7 @@ $$
 
 The common factor $\log I_k - \bar{V}_k / \lambda_k$ is labeled `term_in_brackets` in the code.
 
-*Code reference: [nestlogit.cpp:314-342](../src/nestlogit.cpp#L314-L342)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -405,7 +409,7 @@ The chosen-nest correction $C_{a,b}$ is nonzero only when both $a$ and $b$ are i
 
 *Implementation note:* The implementation materializes $Q_i$ as an explicit $m_i \times m_i$ matrix, which is efficient for typical choice set sizes ($J \leq 20$). The outer-product decomposition used for the beta-beta block (§4.3) avoids forming this matrix explicitly for the $K \times K$ accumulation.
 
-*Code reference: [nestlogit.cpp:563–601](../src/nestlogit.cpp#L563-L601)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -453,7 +457,7 @@ $$
 
 **MNL limit check.** At $\lambda_k = 1$ for all $k$: Term B $= \sum_k \mathbf{S}^{(2)}_k = \mathbf{X}_i^T \mathrm{diag}(P_i) \mathbf{X}_i$; Term C vanishes; the formula yields the standard MNL expression $w_i(\mathbf{X}_i^T \mathrm{diag}(P_i) \mathbf{X}_i - \bar{\mathbf{x}}_i \bar{\mathbf{x}}_i^T)$.
 
-*Code reference: [nestlogit.cpp:651–682](../src/nestlogit.cpp#L651-L682)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -476,7 +480,7 @@ Both blocks reuse the same $Q_i$ matrix computed in §4.2. No additional auxilia
 
 **ASC normalization.** Without an outside option, the first inside alternative's ASC is fixed to zero: free-ASC alternatives satisfy `alt_idx0[a] > 0`, mapped to theta positions `delta_start_idx + alt_idx0[a] - 1`.
 
-*Code reference: [nestlogit.cpp:604–648](../src/nestlogit.cpp#L604-L648)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -534,7 +538,7 @@ $$
 
 Both are filled symmetrically. Singleton nests (theta index $= -1$) contribute no rows or columns to these blocks.
 
-*Code reference: [nestlogit.cpp:684–750](../src/nestlogit.cpp#L684-L750)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -576,7 +580,7 @@ The chosen-nest diagonal differs from the non-chosen formula because the $(\bar{
 
 When the outside option is chosen ($k_i = -1$), all lambda diagonals use the non-chosen formula.
 
-*Code reference: [nestlogit.cpp:755–791](../src/nestlogit.cpp#L755-L791)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -617,7 +621,7 @@ All six blocks are accumulated in a **single parallel pass** over individuals. T
 
 **Per-individual weights.** Every contribution is multiplied by $w_i$ (WESML weight; equals 1 for unweighted data).
 
-*Code reference: [nestlogit.cpp:404–810](../src/nestlogit.cpp#L404-L810)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -635,7 +639,7 @@ The full parameter vector $\theta$ is organized as:
 
 where $K_\lambda$ is the number of non-singleton nests and $J_{\text{asc}} = J - 1$ without outside option or $J$ with outside option.
 
-*Code reference: [nestlogit.cpp:57-135](../src/nestlogit.cpp#L57-L135)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 5.2 Singleton Nest Handling
 
@@ -646,7 +650,7 @@ At startup, the implementation identifies which nests are singletons (contain ex
 
 This ensures that the NL model degenerates gracefully to MNL on a per-nest basis when nests are singletons.
 
-*Code reference: [nestlogit.cpp:61-104](../src/nestlogit.cpp#L61-L104)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 5.3 Data Organization
 
@@ -656,7 +660,7 @@ This ensures that the NL model degenerates gracefully to MNL on a per-nest basis
 - **`choice_idx`**: 1-based index of the chosen inside alternative; 0 for outside option.
 - **Prefix sums $S$**: Used for efficient slicing into the stacked data: $S_i = \sum_{j < i} M_j$.
 
-*Code reference: [nestlogit.cpp:137-146](../src/nestlogit.cpp#L137-L146)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 5.4 Base Utility Pre-computation
 
@@ -669,7 +673,7 @@ if use_asc: base_util += delta[alt_idx0]
 
 This avoids redundant matrix-vector products inside the per-individual loop.
 
-*Code reference: [nestlogit.cpp:144-146](../src/nestlogit.cpp#L144-L146)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 5.5 OpenMP Parallelization
 
@@ -679,7 +683,7 @@ The implementation parallelizes over individuals using OpenMP:
 - Thread results are combined using `#pragma omp critical` sections.
 - Dynamic scheduling balances load across individuals with varying choice set sizes.
 
-*Code reference: [nestlogit.cpp:152-353](../src/nestlogit.cpp#L152-L353)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 5.6 Negated Objectives
 
@@ -689,7 +693,7 @@ The C++ function returns:
 
 for compatibility with minimization routines (e.g., `nloptr`) that minimize a loss function rather than maximize a likelihood.
 
-*Code reference: [nestlogit.cpp:356-359](../src/nestlogit.cpp#L356-L359)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -709,7 +713,7 @@ $$
 \hat{s}_j = \frac{\sum_{i=1}^{N} w_i \, P_{ij}}{\sum_{i=1}^{N} w_i}
 $$
 
-*Code reference: [nestlogit.cpp:521-708](../src/nestlogit.cpp#L521-L708)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -752,7 +756,7 @@ Substituting the three cases:
 
 The implementation accumulates $w_i \cdot E_{ij,ia}^k$ across individuals and divides by $\sum_i w_i$ to produce weighted average elasticities.
 
-*Code reference: [nestlogit.cpp:749-892](../src/nestlogit.cpp#L749-L892)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -829,7 +833,7 @@ $$
 
 which is the MNL diversion ratio (§6.3 of the MNL document).
 
-*Code reference: [nestlogit.cpp:927-1073](../src/nestlogit.cpp#L927-L1073)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ---
 
@@ -875,7 +879,7 @@ After convergence the returned $\delta$ is re-centered so that the baseline is i
 
 **Note on the `lambda` argument.** `nl_blp_contraction` expects a *full* length-$n_{\text{nests}}$ vector where singleton nests have their entry set to 1. This differs from the estimated parameter block $\lambda$ in $\theta$, which contains only non-singleton entries. The caller is responsible for expanding the estimated lambdas into the full vector before invoking the contraction.
 
-*Code reference: [nestlogit.cpp:1115-1186](../src/nestlogit.cpp#L1115-L1186)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 6.5 Willingness to Pay
 
@@ -891,7 +895,7 @@ $$
 
 with $\hat{V}_{(k,p)}$ the $2 \times 2$ block of the coefficient covariance. The nest parameters $\lambda$ rescale within-nest substitution but do not enter the ratio of marginal utilities, so they affect WTP only through the estimated covariance of $(\beta_k, \alpha)$. ASCs may also be used as the numerator ($-\delta_j/\alpha$). See §8 of the MNL document for the full derivation and caveats.
 
-*Code reference: [R/wtp.R](../R/wtp.R)*
+*Code reference: [R/wtp.R](https://github.com/fpcordeiro/choicer/blob/main/R/wtp.R)*
 
 ### 6.6 Consumer Surplus and the Nested Logsum
 
@@ -918,7 +922,7 @@ $$
 
 with the same caveats: no income effects, and CS levels inherit the ASC normalization, so only differences across scenarios (counterfactual `newdata` vs. baseline) are meaningful. The implementation reports point estimates for NL (the delta-method SE of the mean CS is currently provided for MNL only; Krinsky–Robb resampling of the coefficients is the practical interval method here).
 
-*Code reference: [R/surplus.R](../R/surplus.R)*
+*Code reference: [R/surplus.R](https://github.com/fpcordeiro/choicer/blob/main/R/surplus.R)*
 
 ### 6.7 Goodness of Fit
 
@@ -929,7 +933,7 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 - **Market-shares null** (constants-only closed form): $\ell_0 = \sum_j N_j \log(s_j)$; requires identical choice-set composition across individuals and uniform weights. The constants-only model is itself an MNL — at $\beta = 0$ and free ASCs the nest structure is undetermined — so the same closed form applies.
 - **Hit rate**: weighted share of choice situations whose observed choice has the highest predicted NL probability; with an outside option the outside good competes with $P_{i0} = 1 - \sum_j P_{ij}$.
 
-*Code reference: [R/gof.R](../R/gof.R)*
+*Code reference: [R/gof.R](https://github.com/fpcordeiro/choicer/blob/main/R/gof.R)*
 
 ---
 
@@ -1020,7 +1024,7 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc. Passing
 choice situation (validated constant within `id`), and a provenance guard prevents a
 WESML-labeled sample from being silently fit unweighted.
 
-*Code reference: `nl_bhhh_parallel()` in [src/nestlogit.cpp](../src/nestlogit.cpp); `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](../R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](../R/sampling.R).*
+*Code reference: `nl_bhhh_parallel()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp); `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 

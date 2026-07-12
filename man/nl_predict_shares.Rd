@@ -50,8 +50,9 @@ dt[, nest := ifelse(alt <= 2, "A", "B")]
 dt[, choice := 0L]
 dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-shares <- nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+shares <- choicer:::nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
   fit$data$M, fit$data$weights, fit$data$nest_idx, use_asc = TRUE)
 shares
 }
 }
+\keyword{internal}

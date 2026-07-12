@@ -22,7 +22,8 @@ likelihoods, analytical gradients and Hessians are written in C++ with OpenMP pa
 so estimation is fast and scales to specifications with hundreds of
 alternative-specific constants. Just as important, *one consistent
 post-estimation interface* takes you from a fitted model to the quantities you
-actually report: market shares, elasticities, diversion ratios,
+actually report: fitted shares (population shares when the sampling design
+supports that interpretation), elasticities, diversion ratios,
 willingness-to-pay with standard errors, and the welfare effects of a policy
 counterfactual.
 
@@ -224,12 +225,14 @@ discipline the corresponding parameters.
 | **Multinomial logit** | Included covariates and observed heterogeneity across choice situations. | The maintained utility index and the absence of unobserved closeness among alternatives. Individual-level diversion is proportional to fitted choice probabilities. |
 | **Nested logit** | Shared unobservables within pre-specified nests, summarized by one dissimilarity parameter per nest. | The nesting tree and the random-utility interpretation of the estimated dissimilarity parameters. Correlation exists only where the tree permits it. |
 | **Mixed logit** | A mixing distribution $f(\beta)$ for tastes, possibly with correlated random coefficients. | The distributional family, its tails, simulation accuracy, and the variation that identifies heterogeneity: repeated choices, rich market or choice-set variation, or experimental variation. |
-| **Multinomial probit** | A covariance matrix for utility-difference shocks. | Scale normalization, a rapidly growing covariance parameterization, MCMC diagnostics and a clear rule for extending the covariance structure in counterfactual choice sets. Alternative-specific regressors are the exclusion restrictions that identify the covariance (Keane 1992). |
-| **Hierarchical Bayes (HMNL/HMNP)** | Panel-identified taste heterogeneity $\beta_i \sim N(b, W)$ plus partially-pooled alternative effects $\delta_j = z_j'\theta + \xi_j$. | The priors, MCMC convergence, and — for entry counterfactuals — the exchangeability of the entrant's unobserved quality $\xi$ with the incumbents'. Repeated choices per person are the variation that earns the taste distribution. |
+| **Multinomial probit** | A covariance matrix for utility-difference shocks. | Scale normalization, a rapidly growing covariance parameterization, and MCMC diagnostics. Alternative-specific regressors are the exclusion restrictions that identify the covariance (Keane 1992). choicer does not yet provide MNP prediction or a rule for transporting covariance to counterfactual choice sets. |
+| **Hierarchical MNL** | Panel-identified taste heterogeneity $\beta_i \sim N(b, W)$ plus partially-pooled alternative effects $\delta_j = z_j'\theta + \xi_j$, with iid EV1 choice shocks. | The priors, MCMC convergence, and—for entry counterfactuals—the exchangeability of entrant residual quality with incumbents. Repeated choices per person are the variation that earns the taste distribution. |
+| **Hierarchical MNP** | The same panel tastes and alternative hierarchy, with iid normal utility-level shocks and a stochastic outside option. | Per-draw scale normalization, normal-only random coefficients, and the iid shock restriction. Unlike `run_mnprobit()`, HMNP does not estimate an unrestricted utility-difference covariance; expected-maximum welfare is not implemented. |
 
 A few principles follow.
 
-- **Start from the estimand.** If the object is an own-price elasticity on the
+- **Start from the estimand.** Is the target a slope, WTP ratio, substitution pattern,
+   population share, welfare contrast, or entry effect? If the object is an own-price elasticity on the
   observed menu, a transparent MNL or nested logit may be the right empirical
   discipline. If the object is merger diversion, entry, exit, or individual-level
   welfare under a changed menu, the model must say who is close to whom.
@@ -239,17 +242,29 @@ A few principles follow.
   covariance. Without that variation, flexibility is still present, but it is
   coming from the maintained distribution, tree or covariance structure.
 
+- **Understand the restrictions.** What is normalized, excluded, pooled, or supplied
+   by the error distribution, mixing distribution, or nesting tree?
+
+- **Identifying variation:** Which within-choice-set, across-market, panel, or
+   sampling-design variation identifies the extra flexibility over the baseline?
+
 - **Use the simplest model that carries the relevant margin.** A thin
   cross-section with one choice per person and a fixed menu rarely identifies a
   rich distribution of tastes. A well-motivated nest may be more credible than a
   weakly identified random-coefficients specification; a panel or BLP-style
   setting may justify the richer model.
 
+- **Inference:** Are observations independent, clustered, weighted by a
+   choice-based design, or summarized by posterior uncertainty?
+
 - **Report substitution, not just fit.** For policy work, the relevant output is
   often the diversion matrix, WTP distribution or welfare change, not only the
   likelihood. Compare those objects across plausible specifications. If the
   policy conclusion moves with the nesting tree or the tail of $f(\beta)$, that
   sensitivity is part of the result.
+
+- **Estimation stress test:** Are results stable across scaling, starts,
+   simulation draws, MCMC seeds/chains, and plausible specifications?
 
 One question is prior to everything in the table: is the price coefficient
 itself credibly identified? If prices respond to unobserved demand — the

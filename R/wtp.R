@@ -243,8 +243,10 @@
 #' The price variable must have a \emph{fixed} coefficient. A random price
 #' coefficient is rejected: the ratio of two random coefficients generally has
 #' no finite moments (the denominator has positive density at 0), so mean or
-#' median WTP computed from location parameters would be meaningless. Use a
-#' fixed price coefficient, or estimate the model in WTP space.
+#' median WTP computed from location parameters would be meaningless. In
+#' \code{choicer}, use a fixed price coefficient. WTP-space estimation is not
+#' currently implemented; it is an alternative specification available in
+#' other software rather than an option supplied by this function.
 #'
 #' @param object A fitted model object (\code{choicer_mnl}, \code{choicer_mxl},
 #'   or \code{choicer_nl}).
@@ -297,8 +299,8 @@ wtp.choicer_mxl <- function(object, price_var, attr_vars = NULL,
       price_var %in% w_names) {
     stop("Random price coefficients are not supported: the WTP ratio of two ",
          "random coefficients generally has no finite moments. Use a fixed ",
-         "price coefficient (a 'covariate_cols' variable) or estimate the ",
-         "model in WTP space.")
+         "price coefficient (a 'covariate_cols' variable). choicer does not ",
+         "currently estimate WTP space models.")
   }
   .wtp_price_index(object, price_var)
   rows <- .wtp_resolve_rows(object, price_var, attr_vars, w_names = w_names)

@@ -77,8 +77,10 @@ construction and are excluded from the table.
 The price variable must have a \emph{fixed} coefficient. A random price
 coefficient is rejected: the ratio of two random coefficients generally has
 no finite moments (the denominator has positive density at 0), so mean or
-median WTP computed from location parameters would be meaningless. Use a
-fixed price coefficient, or estimate the model in WTP space.
+median WTP computed from location parameters would be meaningless. In
+\code{choicer}, use a fixed price coefficient. WTP-space estimation is not
+currently implemented; it is an alternative specification available in
+other software rather than an option supplied by this function.
 }
 \section{Methods (by class)}{
 \itemize{

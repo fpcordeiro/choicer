@@ -27,11 +27,11 @@
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
 //' theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
-//' result <- mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+//' result <- choicer:::mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
 //'   d$choice_idx, d$M, d$weights)
 //' result$objective  # negative log-likelihood
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 Rcpp::List mnl_loglik_gradient_parallel(
     const arma::vec& theta,
@@ -214,11 +214,11 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' B <- mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//' B <- choicer:::mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$choice_idx, fit$data$M, fit$data$weights)
 //' dim(B)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mnl_bhhh_parallel(
     const arma::vec& theta,
@@ -466,11 +466,11 @@ arma::mat mnl_scores_parallel(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' pred <- mnl_predict(coef(fit), fit$data$X, fit$data$alt_idx,
+//' pred <- choicer:::mnl_predict(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$M, use_asc = TRUE)
 //' head(pred$choice_prob)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 Rcpp::List mnl_predict(
     const arma::vec& theta,
@@ -634,11 +634,11 @@ arma::vec mnl_predict_shares_internal(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' shares <- mnl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+//' shares <- choicer:::mnl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$M, fit$data$weights, use_asc = TRUE)
 //' shares
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::vec mnl_predict_shares(
     const arma::vec& theta,            // K + J - 1 or K + J vector with model parameters
@@ -827,11 +827,11 @@ arma::vec blp_contraction(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' H <- mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//' H <- choicer:::mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$choice_idx, fit$data$M, fit$data$weights)
 //' dim(H)
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mnl_loglik_hessian_parallel(
     const arma::vec& theta,
@@ -1041,11 +1041,11 @@ arma::mat mnl_loglik_hessian_parallel(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' elas <- mnl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//' elas <- choicer:::mnl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$choice_idx, fit$data$M, fit$data$weights, elast_var_idx = 1L)
 //' elas
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mnl_elasticities_parallel(
     const arma::vec& theta,
@@ -1211,11 +1211,11 @@ arma::mat mnl_elasticities_parallel(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' dr <- mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//' dr <- choicer:::mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 //'   fit$data$M, fit$data$weights)
 //' dr
 //' }
-//' @export
+//' @keywords internal
 // [[Rcpp::export]]
 arma::mat mnl_diversion_ratios_parallel(
     const arma::vec& theta,

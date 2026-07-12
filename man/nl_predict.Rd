@@ -47,8 +47,9 @@ dt[, nest := ifelse(alt <= 2, "A", "B")]
 dt[, choice := 0L]
 dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-pred <- nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
+pred <- choicer:::nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
   fit$data$nest_idx, use_asc = TRUE)
 head(pred$choice_prob)
 }
 }
+\keyword{internal}

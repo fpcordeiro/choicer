@@ -1,6 +1,10 @@
 ---
 title: "The math behind choicer: mixed logit"
 output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The math behind choicer: mixed logit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
 
@@ -250,7 +254,7 @@ $$
 
 where $\tilde{w}_i^s = W_i^T \mathbf{d}_i^s \in \mathbb{R}^{K_w}$ (`Wt_diff` in the code) is computed once and shared across the $\mu$ and $L$ blocks. The $\delta$ block uses an irregular alt-index scatter and is kept as a loop.
 
-*Code reference: [mxlogit.cpp:325-398](../src/mxlogit.cpp#L325-L398)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ### 3.3 Gradient of Simulated Log-Likelihood
 
@@ -266,7 +270,7 @@ $$
 \nabla_\theta \ell = \sum_{i=1}^{N} w_i \cdot \frac{\sum_s P_{ij_i}^s \cdot g_i^s}{\sum_s P_{ij_i}^s}
 $$
 
-*Code reference: [mxlogit.cpp:400-409](../src/mxlogit.cpp#L400-L409)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ### 3.4 Utility Derivatives by Parameter Block
 
@@ -278,7 +282,7 @@ $$
 
 Summing over alternatives: $\sum_j d_{ij}^s X_{ij}^T = X_i^T \mathbf{d}_i^s$.
 
-*Code reference: [mxlogit.cpp:343-352](../src/mxlogit.cpp#L343-L352)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 #### 3.4.2 Random Coefficient Means ($\mu$)
 
@@ -294,7 +298,7 @@ $$
 
 Both cases are captured by `dmu_final_dmu(p)` ($= 1$ for normal, $= \exp(\mu_p)$ for log-normal). Summing over alternatives: $g_\mu = \tilde{w}_i^s \odot \text{dmu\_final\_dmu}$.
 
-*Code reference: [mxlogit.cpp:355-359](../src/mxlogit.cpp#L355-L359)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 #### 3.4.3 Cholesky Parameters ($L$)
 
@@ -339,7 +343,7 @@ $$
 
 For the diagonal case, all $K_w$ parameters are computed simultaneously as `Wt_diff % dgamma_final_dgamma % L.diag() % eta_i_s`. For the full correlated case, `Wt_p = Wt_diff(p) * dgamma_final_dgamma(p)` is factored out per row $p$.
 
-*Code reference: [mxlogit.cpp:361-381](../src/mxlogit.cpp#L361-L381)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 #### 3.4.4 Alternative-Specific Constants ($\delta$)
 
@@ -349,7 +353,7 @@ $$
 
 where $\delta_1 = 0$ (normalized) if no outside option, or all $\delta_j$ for $j \geq 1$ are free if outside option is included. The sum over alternatives is a simple scatter (one non-zero contribution per alternative), implemented as a loop.
 
-*Code reference: [mxlogit.cpp:383-398](../src/mxlogit.cpp#L383-L398)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 
@@ -374,7 +378,7 @@ $$
 \nabla^2_\theta \ell = \sum_{i=1}^{N} w_i \cdot H_i
 $$
 
-*Code reference: [mxlogit.cpp:809-815](../src/mxlogit.cpp#L809-L815)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ### 4.2 Per-Draw Hessian
 
@@ -393,7 +397,7 @@ In the code, this is computed as:
 
 Then: $H_i^s = -\text{sum\_Pzz} + \text{sum\_Pz} \cdot \text{sum\_Pz}' + \text{sum\_diff\_H\_V}$
 
-*Code reference: [mxlogit.cpp:802](../src/mxlogit.cpp#L802)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ### 4.3 Second Derivatives of Utility
 
@@ -406,7 +410,7 @@ $$
 \frac{\partial^2 V_{ij}^s}{\partial \mu_p^2} = W_{ijp} \cdot \exp(\mu_p)
 $$
 
-*Code reference: [mxlogit.cpp:725-727](../src/mxlogit.cpp#L725-L727)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 #### 4.3.2 Cholesky Diagonal Parameters ($\ell_{pp}$)
 
@@ -427,7 +431,7 @@ $$
 
 where $\frac{\partial^2 \gamma_p^s}{\partial \ell_{pp}^2} = L_{pp} \cdot \eta_p^s$.
 
-*Code reference: [mxlogit.cpp:783-786](../src/mxlogit.cpp#L783-L786)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 #### 4.3.3 Cholesky Cross-Derivatives ($\ell_{pq}$, $\ell_{pr}$)
 
@@ -440,7 +444,7 @@ $$
 
 Note: since both $q < p$ and $r < p$, both derivatives $\partial L_{pq}/\partial \ell_{pq} = 1$ and $\partial L_{pr}/\partial \ell_{pr} = 1$ (off-diagonal elements are unconstrained).
 
-*Code reference: [mxlogit.cpp:757-765](../src/mxlogit.cpp#L757-L765)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 
@@ -686,7 +690,7 @@ $$
 V_\Sigma = J \cdot V_\ell \cdot J'
 $$
 
-*Code reference: [mxlogit.cpp:462-474](../src/mxlogit.cpp#L462-L474)*
+*Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ### 5.3 OpenMP Parallelization
 
@@ -773,7 +777,7 @@ $$
 \bar{E}_{jm}^k = \frac{\sum_{i=1}^{N} w_i \cdot E_{ijm}^k}{\sum_{i=1}^{N} w_i}
 $$
 
-*Code reference: [mxlogit.cpp:mxl_elasticities_parallel](../src/mxlogit.cpp)*
+*Code reference: [mxlogit.cpp:mxl_elasticities_parallel](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 
@@ -850,7 +854,7 @@ Because $\beta_{ik}^s$ varies across $(i, s)$, it cannot be pulled out of the su
 
 **Implementation.** Cross-products $P_{ij}^s P_{im}^s$ and $P_{ij}^s(1 - P_{ij}^s)$ must be accumulated *inside* the per-draw loop, multiplied by $\beta_{ik}^s$ at that point, and only then averaged across draws and weighted by $w_i$. Computing $(\overline{P}_{ij})(\overline{P}_{im})$ or $\beta_{ik}^s$-weighted averages computed outside the draw loop is biased.
 
-*Code reference: [mxlogit.cpp:mxl_diversion_ratios_parallel](../src/mxlogit.cpp)*
+*Code reference: [mxlogit.cpp:mxl_diversion_ratios_parallel](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 
@@ -904,7 +908,7 @@ $$
 4. **Convergence**: Check if $\max_j |\delta_j^{(t+1)} - \delta_j^{(t)}| < \text{tol}$
 5. **Normalization**: Subtract $\delta_1$ from all ASCs to maintain identification
 
-*Code reference: [mxlogit.cpp:mxl_blp_contraction](../src/mxlogit.cpp)*
+*Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 
@@ -1006,7 +1010,7 @@ for any stored `vcov`. User-facing entry points: `wesml_weights()` and
 `sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
 estimates with the robust variance; `wesml_vcov()` returns it post hoc.
 
-*Code reference: `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](../R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](../R/sampling.R).*
+*Code reference: `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 
@@ -1056,7 +1060,7 @@ The median is preferred to the mean, $\exp(\mu_k) + \exp(\sigma_k^2/2)$ with $\s
 
 If the price coefficient itself is random, the WTP ratio $-\beta_k/\alpha(\eta)$ generally has **no finite moments**: a normally distributed $\alpha$ has positive density in any neighborhood of zero, so $E|{-\beta_k/\alpha}| = \infty$, and location summaries computed from the estimated parameters would be meaningless. The implementation refuses a random `price_var` and suggests either a fixed price coefficient or estimation in *WTP space* (reparameterizing utility as $\alpha(p_{ij} + \mathrm{WTP}^T x_{ij})$ so that WTPs are estimated directly; Train & Weeks 2005).
 
-*Code reference: [R/wtp.R](../R/wtp.R)*
+*Code reference: [R/wtp.R](https://github.com/fpcordeiro/choicer/blob/main/R/wtp.R)*
 
 ---
 
@@ -1092,7 +1096,7 @@ $$
 
 A random price coefficient is rejected for the same no-finite-moments reason as in §10.3 ($1/(-\alpha(\eta))$ has no finite expectation). As in the MNL case, the formula assumes no income effects, and CS levels inherit the ASC normalization — only differences across counterfactual scenarios are meaningful. The implementation reports point estimates for MXL (the delta-method SE of the mean CS is currently provided for MNL only); Krinsky–Robb resampling of $\hat\theta$ from its asymptotic distribution is the practical interval method.
 
-*Code reference: [R/surplus.R](../R/surplus.R); kernel in [src/mxlogit.cpp](../src/mxlogit.cpp) (`mxl_logsum`)*
+*Code reference: [R/surplus.R](https://github.com/fpcordeiro/choicer/blob/main/R/surplus.R); kernel in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp) (`mxl_logsum`)*
 
 ---
 
@@ -1105,7 +1109,7 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 - **Market-shares null** (constants-only closed form): $\ell_0 = \sum_j N_j \log(s_j)$, valid only for identical choice-set composition and uniform weights. The constants-only model contains no random coefficients, so the MNL closed form applies unchanged.
 - **Hit rate**: weighted share of choice situations whose observed choice has the highest *simulated* probability $\bar{P}_{ij} = \frac{1}{S}\sum_s P_{ij}^s$; with an outside option, the kernel returns the simulated outside probability directly and the outside good competes for the maximum.
 
-*Code reference: [R/gof.R](../R/gof.R)*
+*Code reference: [R/gof.R](https://github.com/fpcordeiro/choicer/blob/main/R/gof.R)*
 
 ---
 

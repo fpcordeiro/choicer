@@ -50,8 +50,9 @@ dt[, choice := 0L]
 dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
 theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
-result <- mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+result <- choicer:::mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
   d$choice_idx, d$M, d$weights)
 result$objective  # negative log-likelihood
 }
 }
+\keyword{internal}

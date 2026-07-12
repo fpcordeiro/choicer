@@ -7,7 +7,14 @@
 [![R-CMD-check](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-`choicer` provides fast estimation of discrete-choice models for applied economics. Likelihoods, analytical gradients and Hessians are implemented in C++ with OpenMP parallelism, scaling efficiently to specifications with many alternative-specific constants. Post-estimation routines return predicted shares, own- and cross-price elasticities, diversion ratios, willingness-to-pay with delta-method standard errors, goodness-of-fit measures, counterfactual predictions, and the BLP contraction. Inference options include robust (Huber-White / WESML) and cluster-robust standard errors, recomputable post hoc via `vcov()` without refitting. Supports multinomial logit (MNL), mixed logit (MXL), and nested logit (NL), plus Bayesian multinomial probit (MNP) and hierarchical Bayesian multinomial logit and probit (HMNL, HMNP) via Gibbs sampling; more models will be added.
+`choicer` provides fast discrete-choice estimation for applied economics. MNL,
+cross-sectional MXL, and NL use C++ likelihoods, analytical gradients and
+Hessians, and OpenMP parallelism. MNP, HMNL, and HMNP use dedicated C++ MCMC
+kernels and posterior diagnostics. A common research interface covers fitted
+shares, elasticities, diversion, willingness to pay, welfare, counterfactuals,
+and BLP inversion wherever each model supports the economic object. Frequentist
+inference includes analytical-Hessian, BHHH, robust/WESML, and cluster-robust
+covariances, recomputable through `vcov()` without refitting.
 
 ## Installation
 
@@ -43,9 +50,20 @@ fit <- run_mnlogit(
 )
 
 summary(fit)
+```
+
+`mode_choice` is a **choice-based sample**: minority modes were over-sampled and
+car was under-sampled. With the full set of ASCs used here, the MNL slope
+coefficients—and therefore the WTP ratios—remain consistent, but the unweighted
+constants, fitted shares, elasticity levels, and surplus levels reflect the
+sampling design rather than the population. The following outputs demonstrate
+the workflow; do not report them as population mode shares or welfare without
+external population shares and WESML weights (see `vignette("wesml")`).
+
+``` r
 
 # Post-estimation
-predict(fit, type = "shares")           # predicted market shares
+predict(fit, type = "shares")           # fitted sample shares, not population shares
 elasticities(fit, elast_var = "vcost")  # own- and cross-price elasticities
 diversion_ratios(fit)                   # diversion ratio matrix
 wtp(fit, price_var = "vcost")           # willingness-to-pay with delta-method SEs
@@ -56,7 +74,7 @@ mc_cf <- mode_choice
 mc_cf$vcost[mc_cf$mode == "train"] <- 0.75 * mc_cf$vcost[mc_cf$mode == "train"]
 predict(fit, type = "shares", newdata = mc_cf)
 
-# Welfare: change in expected consumer surplus from the counterfactual
+# Illustrative sample-weighted welfare contrast (not a population estimate)
 cs0 <- consumer_surplus(fit, price_var = "vcost")
 cs1 <- consumer_surplus(fit, price_var = "vcost", newdata = mc_cf)
 cs1$mean_cs - cs0$mean_cs
@@ -115,6 +133,7 @@ fit_hmnl <- run_hmnlogit(
     covariate_cols     = c("x1", "x2"),
     person_col         = "pid",
     alt_covariate_cols = "z1",
+    chains             = 2,
     mcmc               = list(R = 4000, burn = 1000, thin = 2)
 )
 
@@ -124,10 +143,17 @@ summary(fit_hmnl)
 wtp(fit_hmnl, price_var = "x2")               # posterior median + quantile interval
 consumer_surplus(fit_hmnl, price_var = "x2")  # expected consumer surplus
 
-# MCMC diagnostics
-rhat(fit_hmnl$draws$b)       # split R-hat for the population-mean draws
-ppc_shares(fit_hmnl)         # observed vs. posterior-predictive choice shares
+# Multi-chain diagnostics and posterior-predictive fit
+b_chains <- lapply(fit_hmnl$chains, function(ch) ch$b)
+rhat(b_chains, rank = TRUE)
+ess(b_chains)
+ppc_shares(fit_hmnl)
 ```
+
+For serious posterior work, use multiple chains, inspect rank-normalized R-hat,
+bulk/tail ESS, MCSE and trace plots for all reported blocks, and increase the run
+length until the slowest block is stable. A one-chain split diagnostic is weaker
+evidence because it cannot reveal disagreement between independent runs.
 
 The Bayesian multinomial probit `run_mnprobit()` (non-hierarchical, class
 `choicer_mnp`) is fit the same way, via `prior=`/`mcmc=` instead of an
@@ -144,7 +170,36 @@ optimizer; see `?run_mnprobit`.
 | Hierarchical Bayesian MNL | `run_hmnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `wtp()`, `logsum()`, `consumer_surplus()`, `recovery_table()` |
 | Hierarchical Bayesian MNP | `run_hmnprobit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `wtp()`, `recovery_table()` |
 
-All fitted models support `summary()`, `coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, and `nobs()`. `summary()` reports McFadden R2 and the hit rate alongside the usual fit statistics, and `predict()` accepts `newdata` (a long data.frame or a modified design list) for counterfactual and policy prediction, even on fits with `keep_data = FALSE`. The Bayesian models (`choicer_mnp`, and `choicer_hmnl`/`choicer_hmnp` under the shared `choicer_hb` class) are posterior-draws objects rather than `choicer_fit` models: they support `summary()`, `coef()`, `vcov()`, and `nobs()`, but not `logLik()`, `AIC()`, or `BIC()`. Among the hierarchical models, `logsum()` and `consumer_surplus()` are available for the hierarchical logit only (the probit expected-maximum counterpart is roadmapped).
+The frequentist `choicer_fit` models (MNL, MXL, NL) support `summary()`,
+`coef()`, `vcov()`, `logLik()`, `AIC()`, `BIC()`, `nobs()`, goodness-of-fit,
+and counterfactual `predict(newdata = )`. Bayesian `choicer_mnp` and
+`choicer_hb` objects are posterior-draws objects: they support `summary()`,
+`coef()`, `vcov()`, and `nobs()`, but not likelihood-based AIC/BIC. MNP does
+not yet have prediction or economic post-estimation; HMNL and HMNP have their
+own posterior prediction and substitution methods.
+
+### Capability map
+
+| Capability | MNL | MXL | NL | MNP | HMNL | HMNP |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Panel likelihood / persistent person tastes | — | — | — | — | yes | yes |
+| Flexible unobserved substitution | iid EV1 benchmark | random tastes | nested shocks | full differenced-normal covariance | panel tastes | panel tastes; iid normal shocks |
+| WESML / cluster-robust frequentist inference | yes | yes | yes | — | — | — |
+| Counterfactual prediction | yes | yes | yes | — | yes | yes |
+| Elasticities and diversion | yes | yes | yes | — | yes | yes |
+| Logsum / consumer-surplus welfare | yes | yes | yes | — | yes | — |
+| Entry prediction for unseen alternatives | — | — | — | — | yes | yes |
+| Native multi-chain posterior diagnostics | — | — | — | — | yes | yes |
+
+### Current boundaries
+
+The frequentist MXL likelihood is cross-sectional: clustering repeated tasks
+repairs inference, not the likelihood or estimand; use HMNL for persistent panel
+tastes. v0.2.0 does not estimate WTP-space models, bounded/censored mixing
+distributions, latent classes, or merger simulations. MNP returns posterior
+coefficient and covariance summaries but not prediction, substitution, or
+welfare. HMNP restricts utility-level shocks to iid normals and has prediction
+but no expected-maximum/logsum welfare implementation.
 
 ## Alternative packages
 

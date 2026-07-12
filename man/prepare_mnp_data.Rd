@@ -2,7 +2,7 @@
 % Please edit documentation in R/mnprobit_utils.R
 \name{prepare_mnp_data}
 \alias{prepare_mnp_data}
-\title{Prepare inputs for \code{mnp_gibbs()}}
+\title{Prepare inputs for Bayesian multinomial probit estimation}
 \usage{
 prepare_mnp_data(
   data,

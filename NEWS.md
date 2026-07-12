@@ -1,5 +1,16 @@
 # choicer 0.2.0
 
+## Public API cleanup (breaking)
+
+- Low-level C++ likelihood, gradient, Hessian, score, prediction,
+  post-estimation, and Gibbs-sampler wrappers are now internal implementation
+  details rather than exported package functions. High-level fitting,
+  preparation, S3 post-estimation, simulation, and recovery APIs are unchanged.
+  The expert-facing raw BLP contractions, `get_halton_normals()`,
+  `set_num_threads()`, and `thread_info()` remain public. With no downstream
+  CRAN dependencies, v0.2.0 is the least disruptive point to narrow this
+  surface before applications depend on unstable kernel signatures.
+
 ## Robust and clustered standard errors (MNL / MXL / NL)
 
 - `vcov()` on a fitted MNL, MXL, or NL model gains `type =` and `cluster =`
@@ -34,6 +45,17 @@
   fixed thread count, and across different thread counts are invariant only
   up to floating-point reduction-order round-off (~1e-15), not bitwise. All
   man pages, vignettes, and NEWS entries now state the correct guarantee.
+- Documentation now distinguishes the frequentist models' analytical
+  derivatives from the Bayesian C++ samplers, labels `run_mxlogit()` as a
+  cross-sectional simulated likelihood, and no longer directs users to
+  WTP-space estimation or bounded/censored mixing distributions as if choicer
+  implemented them. The README also labels `mode_choice` shares and welfare as
+  sample-design quantities unless external population shares and WESML weights
+  are supplied.
+- The MNP tutorial no longer recommends unavailable user-specified starts and
+  now states its current post-estimation boundary. HMNP documentation now makes
+  explicit that it uses iid utility-level normal shocks rather than the full
+  differenced-error covariance estimated by `run_mnprobit()`.
 
 ## Hierarchical Bayes (HMNL/HMNP) convergence diagnostics and multi-chain performance
 

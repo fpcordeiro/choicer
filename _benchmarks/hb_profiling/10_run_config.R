@@ -58,6 +58,12 @@ stopifnot(model %in% c("hmnl", "hmnp", "mnprobit"))
 library(choicer, lib.loc = lib_dir)
 choicer::set_num_threads(threads)
 
+# This worker intentionally profiles internal compiled kernels.
+mnl_loglik_gradient_parallel <- choicer:::mnl_loglik_gradient_parallel
+hmnl_gibbs <- choicer:::hmnl_gibbs
+hmnp_gibbs <- choicer:::hmnp_gibbs
+mnp_gibbs <- choicer:::mnp_gibbs
+
 t_setup_start <- Sys.time()
 
 result <- list(

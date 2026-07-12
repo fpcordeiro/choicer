@@ -21,6 +21,7 @@ Reconstruct variance matrix L from L_params
 }
 \examples{
 L_params <- c(log(1.0), 0.3, log(0.5))
-Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
+Sigma <- choicer:::build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
 Sigma  # 2x2 covariance matrix
 }
+\keyword{internal}

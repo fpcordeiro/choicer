@@ -32,7 +32,13 @@ Every MNL, MXL and NL fit exposes four estimators through one interface:
 
 Here the unit $i$ is the *choice situation*. If the same person supplies
 several situations, cluster on the person. No small-sample correction is
-applied, so the number of clusters should be reasonably large.
+applied—not a degrees-of-freedom multiplier, leverage correction, or few-cluster
+reference distribution—so the number of clusters should be reasonably large.
+With few clusters, the asymptotic cluster sandwich can be seriously
+anti-conservative; choicer does not currently implement CR2, a wild-cluster
+bootstrap, or randomization inference. Those designs require an external
+small-sample procedure or a research design with a defensible higher-level
+sampling argument.
 
 ```{r setup}
 library(choicer)

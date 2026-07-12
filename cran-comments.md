@@ -12,7 +12,20 @@ documentation claim about thread-count reproducibility of MCMC draws.
 
 ## R CMD check results
 
-0 errors | 0 warnings | 0 notes
+Current local release-candidate results:
+
+- `R CMD check`: 0 errors | 0 warnings | 0 notes
+- `R CMD check --as-cran`: 0 errors | 0 warnings | 1 note
+
+The local `--as-cran` note is:
+
+```
+Skipping checking math rendering: package 'V8' unavailable
+```
+
+This is an unavailable optional checker dependency on the local machine, not a
+package problem. The final submission candidate will be rerun in a V8-enabled
+environment and this file updated with the exact final result.
 
 Tests cap OpenMP at two threads (`OMP_THREAD_LIMIT=2`, `OMP_NUM_THREADS=2`
 in `tests/testthat.R`) in line with CRAN policy.

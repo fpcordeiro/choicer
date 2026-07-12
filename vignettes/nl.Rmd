@@ -136,6 +136,21 @@ head(blp(fit, target_shares, damping = 0.5))
 As always, `predict()`, `wtp()` and `consumer_surplus()` are available on the
 fitted object with the same syntax used throughout choicer.
 
+## Empirical checklist
+
+A reportable nested-logit specification should show the proposed tree and its
+economic rationale; report every lambda estimate and uncertainty interval;
+identify singleton nests, whose dissimilarity parameter has no within-nest
+variation to learn from; and flag estimates outside the conventional random-
+utility range `0 < lambda <= 1`. Refit plausible alternative trees and compare
+fit, diversion, elasticities, WTP, and welfare—not just the coefficient table.
+
+When using `blp()`, report convergence and sensitivity to damping. Damping is a
+numerical aid, not evidence for the tree or the economic validity of lambda. NL
+does not search over trees or estimate cross-nested substitution, so uncertainty
+about the grouping remains specification uncertainty outside the reported
+standard errors.
+
 The full derivations — the GEV likelihood, analytical gradient and Hessian,
 nest-consistent elasticities and diversion, and how choicer's
 utility-maximization-consistent parameterization relates to the non-normalized

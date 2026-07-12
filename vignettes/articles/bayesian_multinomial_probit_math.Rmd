@@ -1,6 +1,10 @@
 ---
 title: "The math behind choicer: Bayesian multinomial probit"
 output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The math behind choicer: Bayesian multinomial probit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
 
@@ -72,7 +76,7 @@ $$
 
 The "0" threshold is the base alternative's (differenced) utility.
 
-*Code reference: [mnprobit.cpp:233-243](../src/mnprobit.cpp#L233-L243)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ### 1.3 Alternative-Specific Constants and the Base Alternative
 
@@ -80,7 +84,7 @@ ASCs enter the differenced model as $p$ intercepts, one per non-base alternative
 
 Balanced choice sets are required: every choice situation must contain the same $J$ alternatives. A user who wants an outside good includes it as explicit rows with zero covariates and sets `base_alt` to its label.
 
-*Code reference: [mnprobit_utils.R (prepare_mnp_data)](../R/mnprobit_utils.R)*
+*Code reference: [mnprobit_utils.R (prepare_mnp_data)](https://github.com/fpcordeiro/choicer/blob/main/R/mnprobit_utils.R)*
 
 ---
 
@@ -112,9 +116,9 @@ computed **per draw** $r$.
 
 ### 2.3 The Package Default
 
-`choicer` implements strategy 2. Rationale: every Gibbs conditional remains standard (truncated normal, multivariate normal, inverse-Wishart), the chain navigates the posterior more freely, and the reported quantities $\tilde{\beta}, \tilde{\Sigma}$ are fully identified. The caveat, stated in McCulloch, Polson & Rossi (2000), is that the prior on the *identified* parameters is induced by the prior on the non-identified ones rather than specified directly; with the diffuse defaults below this is innocuous in practice.
+`choicer` implements strategy 2. Rationale: every Gibbs conditional remains standard (truncated normal, multivariate normal, inverse-Wishart), the chain navigates the posterior more freely, and the reported quantities $\tilde{\beta}, \tilde{\Sigma}$ are fully identified. The caveat, stated in McCulloch, Polson & Rossi (2000), is that the prior on the *identified* parameters is induced by the prior on the non-identified ones rather than specified directly. Calling the raw-scale defaults diffuse does **not** make that induced prior innocuous: scale normalization can produce consequential dependence and tail behavior, especially for covariance and correlation functionals. Applied work should examine the induced prior on $\tilde{\beta}$ and $\tilde{\Sigma}$, run prior-predictive checks, and report sensitivity to $(A, \nu, V)$.
 
-*Code reference: [mnprobit_utils.R (run_mnprobit post-processing)](../R/mnprobit_utils.R)*
+*Code reference: [mnprobit_utils.R (run_mnprobit post-processing)](https://github.com/fpcordeiro/choicer/blob/main/R/mnprobit_utils.R)*
 
 ### 2.4 What Identifies the Covariance in Practice
 
@@ -138,7 +142,7 @@ $$
 E[\Sigma] = \frac{V}{\nu - p - 1}.
 $$
 
-Defaults: $\bar{\beta} = 0$, $A = 0.01\, I_K$, $\nu = p + 3$, $V = \nu I_p$ — proper but diffuse, with prior mean of $\Sigma$ close to $I_p$.
+Defaults: $\bar{\beta} = 0$, $A = 0.01\, I_K$, $\nu = p + 3$, $V = \nu I_p$ — proper raw-scale priors, with prior mean of $\Sigma$ close to $I_p$. They should be treated as defaults to interrogate, not as evidence that the induced identified-scale prior is weak. Sensitivity is most important for covariance, correlation, and substitution conclusions when alternative-specific identifying variation is limited.
 
 ### 3.2 Augmented Joint Posterior
 
@@ -180,7 +184,7 @@ Each $w_{ij}$ is drawn from $\mathrm{TN}(m_{ij}, \tau_j^2; a, b)$ and immediatel
 
 Because the $w_i$ are conditionally independent across $i$, the sweep over choice situations is parallelized with OpenMP — this is an exact Gibbs step, not an approximation. The within-$i$ sweep over $j$ stays sequential.
 
-*Code reference: [mnprobit.cpp:204-252](../src/mnprobit.cpp#L204-L252)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ### 4.2 Coefficients: $\beta \mid w, \Sigma$
 
@@ -212,7 +216,7 @@ $$
 
 so $\operatorname{Var}(U^{-1}z) = Q^{-1}$ without ever forming $Q^{-1}$.
 
-*Code reference: [mnprobit.cpp:153-176](../src/mnprobit.cpp#L153-L176) (Gram blocks), [mnprobit.cpp:254-278](../src/mnprobit.cpp#L254-L278) (draw)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp) (Gram blocks), [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp) (draw)*
 
 ### 4.3 Covariance: $\Sigma \mid w, \beta$
 
@@ -224,7 +228,7 @@ $$
 
 $V + S$ is symmetrized before factorization to remove floating-point asymmetry.
 
-*Code reference: [mnprobit.cpp:280-292](../src/mnprobit.cpp#L280-L292)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ---
 
@@ -254,19 +258,19 @@ propose $z = \alpha + E/\lambda$ with $E \sim \mathrm{Exp}(1)$, reject $z > \bet
 
 $\bar{\Phi}$ and $\bar{\Phi}^{-1}$ are evaluated with Rmath's `pnorm`/`qnorm` (pure functions, thread-safe — only R's *RNG* is unusable in threads).
 
-*Code reference: [bayes_samplers.h:36-72](../src/bayes_samplers.h#L36-L72)*
+*Code reference: [src/bayes_samplers.h](https://github.com/fpcordeiro/choicer/blob/main/src/bayes_samplers.h)*
 
 ### 5.2 Standard Normal, Gamma, Chi-Squared
 
-- **Normal**: Marsaglia polar method — exact, no tables; generates pairs and caches the spare. *Code reference: [rng.h:69-85](../src/rng.h#L69-L85)*
-- **Gamma**$(a, 1)$: Marsaglia & Tsang (2000) squeeze method — exact for any $a \geq 1$; for $a < 1$ the boosting identity $X = \mathrm{Gamma}(a+1)\, U^{1/a}$ is used. *Code reference: [rng.h:93-113](../src/rng.h#L93-L113)*
-- **Chi-squared**$(k)$ $= 2\,\mathrm{Gamma}(k/2, 1)$, valid for non-integer $k$ (needed by Bartlett). *Code reference: [rng.h:115-117](../src/rng.h#L115-L117)*
+- **Normal**: Marsaglia polar method — exact, no tables; generates pairs and caches the spare. *Code reference: [src/rng.h](https://github.com/fpcordeiro/choicer/blob/main/src/rng.h)*
+- **Gamma**$(a, 1)$: Marsaglia & Tsang (2000) squeeze method — exact for any $a \geq 1$; for $a < 1$ the boosting identity $X = \mathrm{Gamma}(a+1)\, U^{1/a}$ is used. *Code reference: [src/rng.h](https://github.com/fpcordeiro/choicer/blob/main/src/rng.h)*
+- **Chi-squared**$(k)$ $= 2\,\mathrm{Gamma}(k/2, 1)$, valid for non-integer $k$ (needed by Bartlett). *Code reference: [src/rng.h](https://github.com/fpcordeiro/choicer/blob/main/src/rng.h)*
 
 ### 5.3 Multivariate Normal
 
 $x = \mu + Lz$ with $L$ the lower Cholesky factor of $\Sigma$ and $z \sim N(0, I)$.
 
-*Code reference: [bayes_samplers.h:75-86](../src/bayes_samplers.h#L75-L86)*
+*Code reference: [src/bayes_samplers.h](https://github.com/fpcordeiro/choicer/blob/main/src/bayes_samplers.h)*
 
 ### 5.4 Wishart and Inverse-Wishart
 
@@ -278,7 +282,7 @@ $$
 
 the draw is $W = (LT)(LT)'$. **Inverse-Wishart**$(\mathrm{df}, V)$: draw $W \sim \mathrm{Wishart}(\mathrm{df}, V^{-1})$ and return $W^{-1}$ (symmetrized).
 
-*Code reference: [bayes_samplers.h:92-130](../src/bayes_samplers.h#L92-L130)*
+*Code reference: [src/bayes_samplers.h](https://github.com/fpcordeiro/choicer/blob/main/src/bayes_samplers.h)*
 
 ---
 
@@ -302,7 +306,7 @@ $$
 
 and normalizing posterior means after averaging would be biased. By construction $\tilde{\sigma}_{11}^{(r)} = 1$ for every draw.
 
-*Code reference: [mnprobit_utils.R (run_mnprobit post-processing)](../R/mnprobit_utils.R)*
+*Code reference: [mnprobit_utils.R (run_mnprobit post-processing)](https://github.com/fpcordeiro/choicer/blob/main/R/mnprobit_utils.R)*
 
 ---
 
@@ -318,7 +322,7 @@ and normalizing posterior means after averaging would be biased. By construction
 
 The latent matrix $W$ ($p \times N$) is allocated once and swept in place for the entire run — iteration $r+1$ starts from iteration $r$'s values, which is precisely the Markov property. The systematic-utility matrix `Mu`, the residual matrix, and all $\beta$-draw workspaces are likewise pre-allocated; the hot loop performs no heap allocation. Where a stacked-vector view of a $p \times N$ matrix is needed (e.g. $X'\mathrm{vec}(\Omega W)$), Armadillo's non-copying alias constructor is used (column-major $p \times N$ memory *is* the stacked $N p$-vector).
 
-*Code reference: [mnprobit.cpp:178-201](../src/mnprobit.cpp#L178-L201)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ### 7.3 RNG Streams and Reproducibility
 
@@ -329,19 +333,19 @@ The RNG core is xoshiro256++ seeded via splitmix64 (the generator authors' recom
 
 Streams are deterministic functions of their key, so the draws are reproducible given the seed and a fixed number of OpenMP threads; across different thread counts they are invariant only up to floating-point reduction-order round-off (~1e-15), **not bitwise** (independent validation disconfirmed an earlier "bitwise, tested 1-vs-4 threads" claim). When the user does not pass `mcmc$seed`, the master seed is drawn from R's RNG, so `set.seed()` governs the run end-to-end, consistent with the rest of the package.
 
-*Code reference: [rng.h:119-131](../src/rng.h#L119-L131), [mnprobit.cpp:217](../src/mnprobit.cpp#L217)*
+*Code reference: [src/rng.h](https://github.com/fpcordeiro/choicer/blob/main/src/rng.h), [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ### 7.4 Parallelization
 
 The latent sweep runs under `#pragma omp parallel for schedule(static)` over choice situations; threads write disjoint columns of $W$ and share read-only $\Omega$ and `Mu`, so no synchronization is needed. Thread count follows the package-wide convention (`set_num_threads()` / `get_num_threads()`). The $\beta$ and $\Sigma$ draws, `Rcpp::checkUserInterrupt()`, and all error paths stay on the master thread. Unlike the frequentist likelihood engines, the Gibbs chain itself is inherently sequential across iterations; only the within-iteration sweep parallelizes.
 
-*Code reference: [mnprobit.cpp:208-216](../src/mnprobit.cpp#L208-L216)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ### 7.5 Draw Storage
 
 `betadraw` is $R_{\text{keep}} \times K$ with $R_{\text{keep}} = \lceil (R - \texttt{burn}) / \texttt{thin} \rceil$. `sigmadraw` is $R_{\text{keep}} \times p(p+1)/2$, storing the lower triangle of $\Sigma$ in row-major order $(1,1), (2,1), (2,2), (3,1), \ldots$ — the same `vech_row()` convention used by the mixed logit code, with display names `Sigma_ij`.
 
-*Code reference: [mnprobit.cpp:294-305](../src/mnprobit.cpp#L294-L305)*
+*Code reference: [src/mnprobit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnprobit.cpp)*
 
 ### 7.6 Per-Iteration Complexity
 

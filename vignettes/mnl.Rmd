@@ -110,6 +110,29 @@ substitution, random tastes or correlated utility shocks. The
 [getting-started vignette](choicer.html#choosing-among-choice-models) compares
 those choices directly.
 
+## Empirical checklist
+
+Before reporting an MNL result:
+
+- state the estimand and the within-choice-set variation that identifies each
+  coefficient; inspect signs, units, scale, and collinearity;
+- compare inverse-Hessian and robust covariance estimates, cluster repeated
+  decision makers or markets, and use WESML plus the robust sandwich when the
+  sample was drawn by the chosen alternative;
+- distinguish sample shares from population shares and document the source of
+  any external population totals;
+- inspect elasticities and diversion—not fit alone—and compare them with at least
+  one economically plausible richer substitution model when the counterfactual
+  depends on closeness among alternatives;
+- audit WTP and welfare for the sign and magnitude of the price coefficient,
+  units, functional-form restrictions, and support of the counterfactual; and
+- treat MNL as the transparent benchmark against which added heterogeneity,
+  nesting, or covariance must earn its empirical conclusions.
+
+MNL does not recover unobserved product closeness, persistent random tastes, or
+endogenous-price corrections by itself. Robust or clustered standard errors can
+repair inference under their assumptions; they do not change that estimand.
+
 ## References
 
 McFadden, D. (1974). Conditional logit analysis of qualitative choice

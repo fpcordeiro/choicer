@@ -193,7 +193,7 @@ hb_test_sigma_d2_gibbs <- function(xi, n_iter, seed, half_cauchy, s_d, c0, d0) {
 #' sim <- simulate_hmnl_data(N = 20, T = 2, J = 3, seed = 42)
 #' d <- prepare_hmnl_data(sim$data, "task", "alt", "choice",
 #'                        c("x1", "x2"), person_col = "pid")
-#' out <- hmnl_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
+#' out <- choicer:::hmnl_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
 #'   rc_dist = d$rc_dist, beta_pooled = rep(0, d$K_struct),
 #'   delta_init = rep(0, d$J), theta_init = rep(0, d$P),
 #'   b_bar = rep(0, d$K_struct), A = 0.01 * diag(d$K_struct),
@@ -204,7 +204,7 @@ hb_test_sigma_d2_gibbs <- function(xi, n_iter, seed, half_cauchy, s_d, c0, d0) {
 #'   s_init = 2.38 / sqrt(d$K_struct), accept_target = 0.234)
 #' colMeans(out$bdraw)
 #' }
-#' @export
+#' @keywords internal
 hmnl_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, rc_dist, beta_pooled, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, R, burn, thin, seed, keep_beta_i, s_init, accept_target, trace = 0L) {
     .Call(`_choicer_hmnl_gibbs`, X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, rc_dist, beta_pooled, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, R, burn, thin, seed, keep_beta_i, s_init, accept_target, trace)
 }
@@ -273,7 +273,7 @@ hmnl_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, 
 #' sim <- simulate_hmnp_data(N = 30, T = 2, J = 3, seed = 42)
 #' d <- prepare_hmnp_data(sim$data, "task", "alt", "choice",
 #'                        c("x1", "x2"), person_col = "pid")
-#' out <- hmnp_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
+#' out <- choicer:::hmnp_gibbs(d$X, d$Z, d$M, d$choice_pos, TRUE, d$alt_of_row, d$Ti,
 #'   delta_init = rep(0, d$J), theta_init = rep(0, d$P),
 #'   b_bar = rep(0, d$K_struct), A = 0.01 * diag(d$K_struct),
 #'   nu = d$K_struct + 3, V = (d$K_struct + 3) * diag(d$K_struct),
@@ -283,7 +283,7 @@ hmnl_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, 
 #'   keep_beta_i = 1)
 #' colMeans(out$bdraw / sqrt(as.numeric(out$sigma2draw)))
 #' }
-#' @export
+#' @keywords internal
 hmnp_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, a0, s0, R, burn, thin, seed, keep_beta_i, trace = 0L) {
     .Call(`_choicer_hmnp_gibbs`, X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, a0, s0, R, burn, thin, seed, keep_beta_i, trace)
 }
@@ -313,11 +313,11 @@ hmnp_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, 
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
 #' theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
-#' result <- mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+#' result <- choicer:::mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
 #'   d$choice_idx, d$M, d$weights)
 #' result$objective  # negative log-likelihood
 #' }
-#' @export
+#' @keywords internal
 mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
@@ -353,11 +353,11 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' B <- mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#' B <- choicer:::mnl_bhhh_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$choice_idx, fit$data$M, fit$data$weights)
 #' dim(B)
 #' }
-#' @export
+#' @keywords internal
 mnl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_bhhh_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
@@ -385,11 +385,11 @@ mnl_scores_parallel <- function(theta, X, alt_idx, choice_idx, M, use_asc = TRUE
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' pred <- mnl_predict(coef(fit), fit$data$X, fit$data$alt_idx,
+#' pred <- choicer:::mnl_predict(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$M, use_asc = TRUE)
 #' head(pred$choice_prob)
 #' }
-#' @export
+#' @keywords internal
 mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_predict`, theta, X, alt_idx, M, use_asc, include_outside_option)
 }
@@ -414,11 +414,11 @@ mnl_predict <- function(theta, X, alt_idx, M, use_asc = TRUE, include_outside_op
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' shares <- mnl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+#' shares <- choicer:::mnl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$M, fit$data$weights, use_asc = TRUE)
 #' shares
 #' }
-#' @export
+#' @keywords internal
 mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_predict_shares`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
 }
@@ -477,11 +477,11 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' H <- mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#' H <- choicer:::mnl_loglik_hessian_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$choice_idx, fit$data$M, fit$data$weights)
 #' dim(H)
 #' }
-#' @export
+#' @keywords internal
 mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
 }
@@ -511,11 +511,11 @@ mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weight
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' elas <- mnl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#' elas <- choicer:::mnl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$choice_idx, fit$data$M, fit$data$weights, elast_var_idx = 1L)
 #' elas
 #' }
-#' @export
+#' @keywords internal
 mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_elasticities_parallel`, theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
 }
@@ -544,11 +544,11 @@ mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' dr <- mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#' dr <- choicer:::mnl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$M, fit$data$weights)
 #' dr
 #' }
-#' @export
+#' @keywords internal
 mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_mnl_diversion_ratios_parallel`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
 }
@@ -598,13 +598,13 @@ mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
-#' out <- mnp_gibbs(d$X, d$y, d$p,
+#' out <- choicer:::mnp_gibbs(d$X, d$y, d$p,
 #'   beta_bar = rep(0, d$K), A = 0.01 * diag(d$K),
 #'   nu = d$p + 3, V = (d$p + 3) * diag(d$p),
 #'   R = 500, burn = 100, thin = 1, seed = 42)
 #' colMeans(out$betadraw)
 #' }
-#' @export
+#' @keywords internal
 mnp_gibbs <- function(X, y, p, beta_bar, A, nu, V, R, burn, thin, seed, trace = 0L) {
     .Call(`_choicer_mnp_gibbs`, X, y, p, beta_bar, A, nu, V, R, burn, thin, seed, trace)
 }
@@ -645,9 +645,9 @@ build_L_mat <- function(L_params, K_w, rc_correlation) {
 #' @returns matrix equal to LL', where L is the choleski decomposition of random coefficient matrix
 #' @examples
 #' L_params <- c(log(1.0), 0.3, log(0.5))
-#' Sigma <- build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
+#' Sigma <- choicer:::build_var_mat(L_params, K_w = 2, rc_correlation = TRUE)
 #' Sigma  # 2x2 covariance matrix
-#' @export
+#' @keywords internal
 build_var_mat <- function(L_params, K_w, rc_correlation) {
     .Call(`_choicer_build_var_mat`, L_params, K_w, rc_correlation)
 }
@@ -695,12 +695,12 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' eta <- get_halton_normals(50, d$N, ncol(d$W))
 #' K_x <- ncol(d$X); K_w <- ncol(d$W); J <- nrow(d$alt_mapping)
 #' theta <- rep(0, K_x + K_w + J - 1)
-#' result <- mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
+#' result <- choicer:::mxl_loglik_gradient_parallel(theta, d$X, d$W, d$alt_idx,
 #'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, K_w),
 #'   rc_correlation = FALSE, rc_mean = FALSE)
 #' result$objective
 #' }
-#' @export
+#' @keywords internal
 mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -713,9 +713,9 @@ mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, we
 #' @returns Jacobian (dVech(Sigma) / dTheta)
 #' @examples
 #' L_params <- c(log(0.8), 0.2, log(0.6))
-#' J_mat <- jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
+#' J_mat <- choicer:::jacobian_vech_Sigma(L_params, K_w = 2, rc_correlation = TRUE)
 #' dim(J_mat)  # 3 x 3 for K_w=2 correlated
-#' @export
+#' @keywords internal
 jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
     .Call(`_choicer_jacobian_vech_Sigma`, L_params, K_w, rc_correlation)
 }
@@ -761,12 +761,12 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 #' eta <- get_halton_normals(50, d$N, ncol(d$W))
 #' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
-#' H <- mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+#' H <- choicer:::mxl_hessian_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
 #'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
 #'   rc_correlation = FALSE, rc_mean = FALSE)
 #' dim(H)
 #' }
-#' @export
+#' @keywords internal
 mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -820,12 +820,12 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 #' eta <- get_halton_normals(50, d$N, ncol(d$W))
 #' theta <- rep(0, ncol(d$X) + ncol(d$W) + nrow(d$alt_mapping) - 1)
-#' H <- mxl_bhhh_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
+#' H <- choicer:::mxl_bhhh_parallel(theta, d$X, d$W, d$alt_idx, d$choice_idx,
 #'   d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
 #'   rc_correlation = FALSE, rc_mean = FALSE)
 #' dim(H)
 #' }
-#' @export
+#' @keywords internal
 mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -859,7 +859,7 @@ mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, 
 #' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 #'   simulated mean of the deterministic + W*gamma component), and, when
 #'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
-#' @export
+#' @keywords internal
 mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_predict`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -910,11 +910,11 @@ mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlat
 #' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 #' eta <- get_halton_normals(50, d$N, ncol(d$W))
 #' fit <- run_mxlogit(input_data = d, eta_draws = eta)
-#' ls <- mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
+#' ls <- choicer:::mxl_logsum(coef(fit), d$X, d$W, d$alt_idx, d$M, eta,
 #'   rc_dist = rep(0L, ncol(d$W)), rc_correlation = FALSE, rc_mean = FALSE)
 #' head(ls)
 #' }
-#' @export
+#' @keywords internal
 mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_logsum`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -944,7 +944,7 @@ mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlati
 #'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns Vector of length J (or J+1 with outside option) of predicted shares.
-#' @export
+#' @keywords internal
 mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_predict_shares`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -984,7 +984,7 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
 #'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
-#' @export
+#' @keywords internal
 mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -1078,13 +1078,13 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, 
 #' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
 #' eta <- get_halton_normals(50, d$N, ncol(d$W))
 #' fit <- run_mxlogit(input_data = d, eta_draws = eta)
-#' elas <- mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
+#' elas <- choicer:::mxl_elasticities_parallel(coef(fit), d$X, d$W, d$alt_idx,
 #'   d$choice_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
 #'   elast_var_idx = 1L, is_random_coef = FALSE,
 #'   rc_correlation = FALSE, rc_mean = FALSE)
 #' elas
 #' }
-#' @export
+#' @keywords internal
 mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
@@ -1119,11 +1119,11 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 #' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 #' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-#' result <- nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+#' result <- choicer:::nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
 #'   d$choice_idx, d$nest_idx, d$M, d$weights)
 #' result$objective
 #' }
-#' @export
+#' @keywords internal
 nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
 }
@@ -1167,11 +1167,11 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 #' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 #' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-#' B <- nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+#' B <- choicer:::nl_bhhh_parallel(theta, d$X, d$alt_idx, d$choice_idx,
 #'   d$nest_idx, d$M, d$weights)
 #' dim(B)
 #' }
-#' @export
+#' @keywords internal
 nl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_bhhh_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
 }
@@ -1208,11 +1208,11 @@ nl_scores_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, use_a
 #' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
 #' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
 #' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-#' H <- nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
+#' H <- choicer:::nl_loglik_numeric_hessian(theta, d$X, d$alt_idx, d$choice_idx,
 #'   d$nest_idx, d$M, d$weights)
 #' dim(H)
 #' }
-#' @export
+#' @keywords internal
 nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, eps = 1e-6) {
     .Call(`_choicer_nl_loglik_numeric_hessian`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, eps)
 }
@@ -1257,11 +1257,11 @@ nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M
 #' K_x <- ncol(d$X)
 #' K_l <- sum(table(d$nest_idx) > 1)   # number of non-singleton nests (= 2)
 #' theta <- c(rep(0, K_x), rep(0.8, K_l), rep(0, J - 1))
-#' H <- nl_loglik_hessian_parallel(theta, d$X, d$alt_idx, d$choice_idx,
+#' H <- choicer:::nl_loglik_hessian_parallel(theta, d$X, d$alt_idx, d$choice_idx,
 #'   d$nest_idx, d$M, d$weights)
 #' dim(H)
 #' }
-#' @export
+#' @keywords internal
 nl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
 }
@@ -1288,11 +1288,11 @@ nl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, 
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#' pred <- nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
+#' pred <- choicer:::nl_predict(coef(fit), fit$data$X, fit$data$alt_idx, fit$data$M,
 #'   fit$data$nest_idx, use_asc = TRUE)
 #' head(pred$choice_prob)
 #' }
-#' @export
+#' @keywords internal
 nl_predict <- function(theta, X, alt_idx, M, nest_idx, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_predict`, theta, X, alt_idx, M, nest_idx, use_asc, include_outside_option)
 }
@@ -1320,11 +1320,11 @@ nl_predict <- function(theta, X, alt_idx, M, nest_idx, use_asc = TRUE, include_o
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#' shares <- nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
+#' shares <- choicer:::nl_predict_shares(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$M, fit$data$weights, fit$data$nest_idx, use_asc = TRUE)
 #' shares
 #' }
-#' @export
+#' @keywords internal
 nl_predict_shares <- function(theta, X, alt_idx, M, weights, nest_idx, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_predict_shares`, theta, X, alt_idx, M, weights, nest_idx, use_asc, include_outside_option)
 }
@@ -1357,12 +1357,12 @@ nl_predict_shares <- function(theta, X, alt_idx, M, weights, nest_idx, use_asc =
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#' elas <- nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#' elas <- choicer:::nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
 #'   elast_var_idx = 1L)
 #' elas
 #' }
-#' @export
+#' @keywords internal
 nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_elasticities_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
 }
@@ -1394,11 +1394,11 @@ nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M,
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#' dr <- nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+#' dr <- choicer:::nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
 #'   fit$data$nest_idx, fit$data$M, fit$data$weights)
 #' dr
 #' }
-#' @export
+#' @keywords internal
 nl_diversion_ratios_parallel <- function(theta, X, alt_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_diversion_ratios_parallel`, theta, X, alt_idx, nest_idx, M, weights, use_asc, include_outside_option)
 }
