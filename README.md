@@ -2,8 +2,9 @@
 # choicer: fast discrete-choice models with a focus on economic applications
 
 <!-- badges: start -->
-[![CRAN status](https://www.r-pkg.org/badges/version/choicer)](https://CRAN.R-project.org/package=choicer)
-[![Lifecycle: stable](https://img.shields.io/badge/lifecycle-stable-brightgreen.svg)](https://lifecycle.r-lib.org/articles/stages.html#stable)
+[![CRAN version](https://www.r-pkg.org/badges/version/choicer)](https://CRAN.R-project.org/package=choicer)
+[![CRAN downloads](https://cranlogs.r-pkg.org/badges/last-month/choicer?color=blue)](https://CRAN.R-project.org/package=choicer)
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 [![R-CMD-check](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
