@@ -145,6 +145,34 @@ test_that("logsum and consumer_surplus are HMNL-only and coherent", {
   expect_length(cv, 3L)
   expect_gt(cv[["50%"]], 0)
 
+  # Task weights enter the aggregate CV rather than being silently ignored.
+  set.seed(2)
+  cs_w <- suppressWarnings(
+    consumer_surplus(fx$fit, "x2", newdata = cf, n_draws = 30,
+                     weights = rep(2, fx$fit$nobs))
+  )
+  expect_equal(attr(cs_w, "cv"), 2 * cv, tolerance = 1e-10)
+  expect_equal(attr(cs_w, "cv_weights"), rep(2, fx$fit$nobs))
+  expect_error(
+    consumer_surplus(fx$fit, "x2", newdata = cf, n_draws = 30,
+                     weights = rep(1, fx$fit$nobs - 1L)),
+    "one entry per choice situation"
+  )
+
+  # Baseline and counterfactual task columns are matched by identity, not
+  # silently by their position after sorting.
+  cf_other_tasks <- data.table::copy(cf)
+  cf_other_tasks$task <- cf_other_tasks$task + 100000L
+  expect_error(
+    consumer_surplus(fx$fit, "x2", newdata = cf_other_tasks, n_draws = 10),
+    "same choice situations"
+  )
+  cf_missing_task <- cf[task != min(task)]
+  expect_error(
+    consumer_surplus(fx$fit, "x2", newdata = cf_missing_task, n_draws = 10),
+    "expected.*tasks but found"
+  )
+
   # probit: informative refusal
   simp <- simulate_hmnp_data(N = 30, T = 2, J = 3, seed = 11)
   dp <- prepare_hmnp_data(simp$data, "task", "alt", "choice",
@@ -154,6 +182,24 @@ test_that("logsum and consumer_surplus are HMNL-only and coherent", {
   )
   expect_error(logsum(fitp), "logit-only")
   expect_error(consumer_surplus(fitp, "x2"), "logit-only")
+})
+
+test_that("HMNL probabilities and logsums are stable at extreme utilities", {
+  V <- c(1000, -1000, 800, 799)
+  task <- c(1L, 1L, 2L, 2L)
+  terms <- choicer:::.hb_logit_task_terms(V, task, 2L)
+
+  expect_true(all(is.finite(terms$p_inside)))
+  expect_true(all(is.finite(terms$p_outside)))
+  expect_true(all(is.finite(terms$logsum)))
+  expect_equal(
+    as.numeric(rowsum(terms$p_inside, task, reorder = TRUE)) +
+      terms$p_outside,
+    rep(1, 2),
+    tolerance = 1e-14
+  )
+  expect_equal(terms$logsum[1], 1000, tolerance = 1e-12)
+  expect_equal(terms$logsum[2], 800 + log1p(exp(-1)), tolerance = 1e-12)
 })
 
 test_that("elasticities and diversion ratios are internally coherent", {

@@ -52,7 +52,7 @@ mxl_predict_shares(
 on the fly from this seed.}
 
 \item{gen_scramble}{Integer scramble mode for on-the-fly generation: \code{0} =
-identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.}
+identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
 }

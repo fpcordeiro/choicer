@@ -1158,7 +1158,8 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
   } else {
     eta_draws        <- array(0, dim = c(object$draws_info$K_w, 0L, 0L))
     gen_seed_arg     <- as.integer(object$draws_info$seed)
-    gen_scramble_arg <- if (identical(object$draws_info$scramble, "owen")) 1L else 0L
+    gen_scramble_arg <- if (object$draws_info$scramble %in%
+                             c("permuted", "owen")) 1L else 0L
     gen_S_arg        <- as.integer(object$draws_info$S)
   }
 
@@ -1665,11 +1666,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  eta_draws <- get_halton_normals(
-    S = object$draws_info$S,
-    N = object$draws_info$N,
-    K_w = object$draws_info$K_w
-  )
+  gp_blp <- .mxl_gen_params(object$draws_info)
 
   mxl_blp_contraction(
     delta = delta_init,
@@ -1682,13 +1679,16 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     alt_idx = d$alt_idx,
     M = d$M,
     weights = d$weights,
-    eta_draws = eta_draws,
+    eta_draws = gp_blp$eta_draws,
     rc_dist = object$rc_dist,
     rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean,
     include_outside_option = object$include_outside_option,
     tol = tol,
-    max_iter = max_iter
+    max_iter = max_iter,
+    gen_seed = gp_blp$gen_seed,
+    gen_scramble = gp_blp$gen_scramble,
+    gen_S = gp_blp$gen_S
   )
 }
 

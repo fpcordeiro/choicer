@@ -23,10 +23,12 @@ $$U_{ijt} = x_{ijt}'\beta_i + \delta_j + \varepsilon_{ijt},
 - **Respondent level.** Each person carries one taste vector $\beta_i$ across
   all of their choice situations. This is the genuine *panel* mixed logit: by
   contrast, `run_mxlogit()` maximizes a cross-sectional simulated likelihood in
-  which every choice situation gets an independent taste draw (see the
+  which every choice situation is integrated over tastes separately, with no
+  draw held fixed across a person's likelihood contributions (see the
   [mixed logit vignette](mxl.html)). When people are observed repeatedly —
-  survey panels, scanner data, repeated hospital admissions — the repetition
-  is precisely the variation that identifies the taste distribution $W$, and
+  survey panels, scanner data, repeated hospital admissions — the repetition,
+  together with within-person attribute and menu variation, helps distinguish
+  persistent taste heterogeneity $W$ from choice-level noise, and
   the hierarchical model is the one that uses it.
 
 - **Alternative level.** Each alternative carries a mean-utility effect
@@ -115,6 +117,13 @@ posterior of $\delta_j$ and $\xi_j$ — which alternatives deliver more mean
 utility than their characteristics predict. The convergence table and
 acceptance rates are discussed next.
 
+One storage contract matters when `chains > 1`: the top-level `fit$draws`,
+coefficient summaries, quality ladder, and post-estimation methods use chain 1.
+`fit$chains` retains the hierarchical draws from every requested chain, and the
+convergence table uses all of them. Thus additional chains diagnose whether the
+reported chain-1 posterior is reproducible; choicer v0.2.0 does not pool chains
+automatically for posterior summaries or policy calculations.
+
 ## Convergence is part of the result
 
 MCMC output is only evidence about the posterior if the chains have mixed. The
@@ -149,8 +158,10 @@ mcse(b_chains)
 ```
 
 Two chains keep this vignette build manageable and permit between-chain checks;
-for a serious empirical run, four or more independently seeded chains are often
-a better default. Report the number of people, tasks per person and alternatives;
+for a serious empirical run, four or more chains are often a better default.
+choicer offsets the RNG seed across chains but currently gives them the same
+data-driven initialization, so this is not an overdispersed-start diagnostic.
+Report the number of people, tasks per person and alternatives;
 all prior scales; HMNL acceptance rates; rank-normalized R-hat; bulk and tail
 ESS; MCSE; trace plots; and posterior-predictive shares. Show prior sensitivity
 for `W` and `sigma_d2`. For entry, defend why the entrant's residual quality is
@@ -187,7 +198,8 @@ wtp(fit, price_var = "x2")
 ```
 
 `predict()` integrates shares over both the taste distribution and the
-posterior, returning credible intervals (and the outside share) for free:
+chain-1 posterior, returning posterior-predictive intervals (and the outside
+share):
 
 ```{r shares}
 set.seed(7)
@@ -209,7 +221,8 @@ posterior summaries (or full draws with `keep_beta_i = "draws"`), and
 
 Cut the price `x2` of alternative 1 by 0.25 and re-predict — no refitting.
 Reusing the RNG seed makes the baseline and counterfactual share calculations
-use the same posterior and taste draws, so the contrast is exact:
+use the same posterior and taste draws. This common-random-number pairing reduces
+Monte Carlo noise in the contrast; it does not make a finite-draw integral exact:
 
 ```{r counterfactual}
 cf <- sim$data
@@ -236,13 +249,24 @@ cs <- consumer_surplus(fit, price_var = "x2", newdata = cf, n_draws = 200)
 attr(cs, "cv")
 ```
 
-Unlike a delta-method standard error, this interval inherits the full
-posterior uncertainty — including the heterogeneity in the price coefficient
-that sits in the denominator. A wide CV interval is not a bug; it is the
-model telling you how much the welfare number depends on tastes the data pin
-down imperfectly. (`logsum()` and `consumer_surplus()` are available for the
-hierarchical *logit* only; the probit expected-maximum counterpart is on the
-roadmap.)
+The three numbers are the lower quantile, posterior median, and upper quantile
+of the **sum** of compensating variation over the prediction tasks. Supply
+`weights = rep(1 / fit$nobs, fit$nobs)` for an equally weighted mean, or a
+substantively justified task-weight vector for another aggregate. The function
+does not normalize user-supplied weights.
+
+Unlike a delta-method standard error, this interval carries posterior
+uncertainty in the logsum and in the population-mean marginal utility of income
+$-\bar\gamma_{price}$ used as the denominator. This is a population-mean money
+metric, not the posterior distribution of person-specific compensating
+variation when marginal utilities of income differ across people. The taste
+distribution still enters the integrated logsum, and for a lognormal price
+coordinate it also enters $\bar\gamma_{price} = \exp(b + W_{kk}/2)$. Report
+that aggregation choice explicitly in applications with price heterogeneity;
+an aggregate fixed-sign denominator does not by itself rule out individual
+price coefficients near or across zero.
+(`logsum()` and `consumer_surplus()` are available for the hierarchical
+*logit* only; the probit expected-maximum counterpart is on the roadmap.)
 
 ## An entry counterfactual
 
@@ -268,11 +292,11 @@ predict(fit, newdata = entry_data, n_draws = 200)
 ```
 
 The entrant takes share from every incumbent and from the outside good, and
-its credible interval is much wider than the incumbents' — properly so. The
+its credible interval is typically wider than the incumbents' — appropriately so. The
 model knows the entrant's observed characteristics but not its $\xi$, so the
 prediction integrates over $\xi_{\text{new}} \sim N(0, \sigma_d^2)$: the
-uncertainty about unobserved quality *is* the dominant uncertainty about an
-entrant, and the posterior predictive says so rather than hiding it. The
+uncertainty about unobserved quality can be a dominant uncertainty about an
+entrant, and the posterior predictive exposes it rather than hiding it. The
 maintained assumption is exchangeability — the entrant's unobserved quality is
 a draw from the same population as the incumbents'.
 
@@ -318,10 +342,12 @@ fitp <- run_hmnprobit(
 summary(fitp)
 ```
 
-The identified probit coefficients live on a different scale from the logit's:
-the EV1 shock has standard deviation $\pi/\sqrt{6} \approx 1.28$ against the
-probit's 1, so multiplying the probit coefficients by $\pi/\sqrt{6}$ puts the
-two models' estimates on comparable footing:
+The identified probit coefficients live on a different scale from the logit's.
+A common variance-matching rule notes that the EV1 shock has standard deviation
+$\pi/\sqrt{6} \approx 1.28$ against the probit's 1, and therefore multiplies
+probit coefficients by $\pi/\sqrt{6}$ for a rough comparison. This is not an
+exact transformation: normal and Type-I extreme-value shocks have different
+shapes, and coefficients also need matched utility specifications and data:
 
 ```{r scale}
 rbind(
@@ -330,10 +356,11 @@ rbind(
 )
 ```
 
-The `choicer_hb` post-estimation suite — `predict()` (probabilities by exact
-one-dimensional Gauss-Hermite quadrature), `wtp()`, `elasticities()`,
-`diversion_ratios()`, `ppc_shares()`, `recovery_table()` — works identically
-on the probit fit. The exceptions are `logsum()` and `consumer_surplus()`,
+The `choicer_hb` post-estimation suite — `predict()` (probabilities by a
+deterministic fixed-node one-dimensional Gauss-Hermite approximation), `wtp()`,
+`elasticities()`, `diversion_ratios()`, `ppc_shares()`, `recovery_table()` — is
+available through the same interfaces on the probit fit. The exceptions are
+`logsum()` and `consumer_surplus()`,
 which are logit-only as noted above.
 
 ## Further reading

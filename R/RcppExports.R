@@ -20,7 +20,7 @@ halton_inv_normal_cdf <- function(p) {
     .Call(`_choicer_halton_inv_normal_cdf`, p)
 }
 
-#' Generate an n x dim matrix of uniform scrambled-Halton draws for testing
+#' Generate an n x dim matrix of uniform digit-permuted Halton draws for testing
 #'
 #' Returns an n x dim matrix using global indices 1..n (one row per index,
 #' one column per dimension). For scramble=0 (compat mode) the result
@@ -28,8 +28,9 @@ halton_inv_normal_cdf <- function(p) {
 #'
 #' @param n Number of Halton points (rows).
 #' @param dim Number of dimensions (columns).
-#' @param seed Master seed for Owen scrambling (coerced to uint64_t). Ignored when scramble=0.
-#' @param scramble 0 = identity (compat), 1 = Owen digit scrambling.
+#' @param seed Master seed for position-wise digit permutations (coerced to uint64_t).
+#'   Ignored when scramble=0.
+#' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
 #' @return n x dim arma::mat of uniform [0,1) values.
 #' @noRd
 halton_generate_uniform <- function(n, dim, seed, scramble) {
@@ -47,8 +48,8 @@ halton_generate_uniform <- function(n, dim, seed, scramble) {
 #' @param S   Number of draws per individual.
 #' @param N   Number of individuals.
 #' @param K_w Number of random-coefficient dimensions.
-#' @param seed Master seed for Owen scrambling (coerced to uint64_t).
-#' @param scramble 0 = identity (compat), 1 = Owen digit scrambling.
+#' @param seed Master seed for position-wise digit permutations (coerced to uint64_t).
+#' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
 #' @return K_w x (S*N) arma::mat of standard-normal draws.
 #' @noRd
 halton_generate_normal <- function(S, N, K_w, seed, scramble) {
@@ -675,7 +676,7 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns List with loglikelihood and gradient evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -742,7 +743,7 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns Hessian evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -798,7 +799,7 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns n_params x n_params PSD matrix representing the observed information
 #'   matrix estimated by the outer product of gradients (same sign convention
@@ -854,7 +855,7 @@ mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, 
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 #'   simulated mean of the deterministic + W*gamma component), and, when
@@ -890,7 +891,7 @@ mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlat
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns Vector of length N with the simulated expected logsum per choice
 #'   situation.
@@ -941,7 +942,7 @@ mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlati
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 #' @keywords internal
@@ -981,7 +982,7 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 #' @keywords internal
@@ -1012,6 +1013,12 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' @param include_outside_option whether outside option is included
 #' @param tol convergence tolerance (default 1e-8)
 #' @param max_iter maximum iterations (default 1000)
+#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
+#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
+#'   on the fly from this seed.
+#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
+#'   identity permutations, \code{1} = seeded position-wise digit permutations.
+#' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns vector with converged delta (ASC) values
 #' @examples
 #' \donttest{
@@ -1033,8 +1040,8 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' delta
 #' }
 #' @export
-mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L) {
-    .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter)
+mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S)
 }
 
 #' Compute aggregate elasticities for mixed logit model
@@ -1063,7 +1070,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, 
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = Owen (2017) digit scrambling.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns J x J matrix of aggregate elasticities
 #' @examples

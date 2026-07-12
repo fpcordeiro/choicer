@@ -34,8 +34,10 @@ $$
 
 where $j(i)$ is the alternative chosen by situation $i$, $Q_j$ is the population
 share choosing alternative $j$, and $H_j$ is the corresponding sample share.
-Maximizing the weighted log-likelihood $\sum_i w_i \log P_i$ recovers the
-population parameters. choicer provides two helpers:
+Under the maintained choice model, exogenous within-stratum sampling, correct
+population shares, and common support, maximizing the weighted log-likelihood
+$\sum_i w_i \log P_i$ targets the population parameters. choicer provides two
+helpers:
 
 - `sample_by_choice()` draws a choice-based sample from a population frame and
   attaches WESML weights.
@@ -140,7 +142,18 @@ common <- list(
   scale_vars      = "sd"
 )
 
-fit_unweighted <- do.call(run_mxlogit, c(common, list(se_method = "bhhh")))
+# sample_by_choice() records WESML provenance, and choicer deliberately applies
+# its attached weights automatically. Strip that provenance on a copy to create
+# the deliberately misspecified unweighted benchmark.
+cb_unweighted <- copy(cb)
+attr(cb_unweighted, "choice_sampling") <- NULL
+common_unweighted <- common
+common_unweighted$data <- cb_unweighted
+
+fit_unweighted <- do.call(
+  run_mxlogit,
+  c(common_unweighted, list(se_method = "bhhh"))
+)
 
 fit_wesml <- do.call(run_mxlogit, c(common, list(
   weights_col = ".wesml_weight",
@@ -174,9 +187,12 @@ colnames(share_compare) <- names(Q)
 round(share_compare, 3)
 ```
 
-The WESML fit reproduces the population shares `Q`, while the unweighted fit
-reproduces the equalized *sample* shares — a direct picture of the bias the
-correction removes. In a single finite sample the WESML estimates need not be
+Here `predict(..., type = "shares")` uses each fit's stored aggregation weights.
+The WESML-weighted fitted shares therefore track the population shares `Q`, while
+the unweighted fit tracks the equalized *sample* shares — a direct picture of the
+bias the correction removes. Exact equality is not required in a finite sample
+with simulated probabilities and numerical optimization. In a single finite
+sample the WESML estimates need not be
 closer to the truth parameter by parameter, but they target the population
 likelihood under the choice-based sampling design.
 
@@ -193,9 +209,11 @@ mean-1 normalization above.
 summary(fit_wesml)
 ```
 
-The same robust variance is available post hoc on any fitted mixed logit via
-`wesml_vcov()`, so you can obtain choice-based-sampling standard errors even
-from a fit estimated with `se_method = "hessian"` without refitting. More
+The same robust variance is available post hoc via `wesml_vcov()` on any fitted
+mixed logit whose stored data already contain the WESML weights, so you can
+obtain choice-based-sampling standard errors even from a weighted fit estimated
+with `se_method = "hessian"` without refitting. `wesml_vcov()` cannot turn an
+unweighted point estimate into a WESML estimate. More
 generally, `vcov(fit, type = "robust")` computes the identical sandwich, and
 `type = "cluster"` extends it to within-cluster dependence — the full menu of
 variance estimators, and when each is the right choice, is the subject of

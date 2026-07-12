@@ -8,133 +8,307 @@ vignette: >
 ---
 
 
-This document describes the hierarchical Bayesian multinomial logit (HMNL) as implemented in `src/hmnlogit.cpp`, with shared hierarchical-Bayes infrastructure in `src/hb_internal.h`, sampling primitives in `src/bayes_samplers.h`, and the RNG core in `src/rng.h`. The R-side entry point is `run_hmnlogit()`.
+This article gives a self-contained description of the hierarchical Bayesian multinomial logit (HMNL) implemented by `run_hmnlogit()` and `src/hmnlogit.cpp`. Shared hierarchical conditionals are in `src/hb_internal.h`; sampling and RNG primitives are in `src/bayes_samplers.h` and `src/rng.h`. Equations below describe the implementation, including its identification convention, adaptive Metropolis targets, retained draws, and numerical approximations.
 
-## Table of Contents
+## 1. Indices, data, and dimensions
 
-1. [Notation](#notation)
-2. [Model Definition](#1-model-definition)
-3. [Identification](#2-identification)
-4. [Priors and Joint Posterior](#3-priors-and-joint-posterior)
-5. [The Gibbs Sampler](#4-the-gibbs-sampler)
-6. [Sampling Primitives](#5-sampling-primitives)
-7. [Post-Processing and Reported Quantities](#6-post-processing-and-reported-quantities)
-8. [Implementation Details](#7-implementation-details)
-9. [References](#references)
+Respondents are $i=1,\ldots,N$. Respondent $i$ faces tasks $t=1,\ldots,T_i$. Let $C_{it}\subseteq\{1,\ldots,J\}$ denote the observed set of **inside** alternatives and let $o$ denote an implicit outside option. Choice sets may be unbalanced. For an inside row $(i,t,j)$,
 
----
+- $x_{ijt}\in\mathbb R^K$ is the structural design vector; no ASC dummies are included;
+- $z_j\in\mathbb R^P$ is the time-invariant alternative-level design, whose first element is an intercept;
+- $y_{it}\in C_{it}\cup\{o\}$ is the observed choice.
 
-## Notation
+`person_col` defines respondents. If it is absent, every task is assigned its own respondent and $T_i=1$. The data engine stores inside rows only, plus task sizes, respondent task counts, the chosen within-task position (zero for outside), and the global alternative index of every row.
 
-| Symbol | Description |
-|---|---|
-| $i = 1, \dots, N$ | respondents (each carries one $\beta_i$) |
-| $t = 1, \dots, T_i$ | choice situations (tasks) of respondent $i$; $T_i = 1$ is the cross-sectional mode |
-| $j = 1, \dots, J$ | inside alternatives; $o$ denotes the implicit outside option |
-| $x_{ijt}$ | $K$-vector of structural covariates (no ASC dummies) |
-| $z_j$ | $P$-vector of alternative-level covariates (intercept first) |
-| $\beta_i$ | respondent-level coefficients on the chain scale |
-| $\gamma_{ik}$ | utility-scale coefficient: $\beta_{ik}$ (normal) or $e^{\beta_{ik}}$ (log-normal), per `rc_dist` |
-| $b, W$ | population mean and covariance of $\beta_i$ |
-| $\delta_j$ | alternative-level effect (mean utility vs the outside good) |
-| $\theta, \sigma_d^2$ | mean-function coefficients and variance of $\xi_j = \delta_j - z_j'\theta$ |
+## 2. Utility, heterogeneity, and likelihood
 
-## 1. Model Definition
+For coordinate $k$, define the map from the Gaussian chain scale to the utility scale
 
-Utilities with i.i.d. type-1 extreme value (Gumbel) shocks:
+$$
+g_k(\beta_{ik})=
+\begin{cases}
+\beta_{ik},&\texttt{rc\_dist}_k=0,\\
+\exp(\beta_{ik}),&\texttt{rc\_dist}_k=1.
+\end{cases}
+$$
 
-$$U_{ijt} = x_{ijt}'\gamma_i + \delta_j + \varepsilon_{ijt}, \qquad U_{iot} = \varepsilon_{iot}, \qquad \varepsilon \sim \text{EV1},$$
+Write $\gamma_i=g(\beta_i)$ elementwise. Utilities are
 
-so the choice probabilities are the softmax against the outside anchor,
+$$
+U_{ijt}=x_{ijt}'\gamma_i+\delta_j+\varepsilon_{ijt},\qquad
+U_{iot}=\varepsilon_{iot},
+$$
 
-$$P(y_{it} = j) = \frac{e^{V_{ijt}}}{1 + \sum_{k \in C_{it}} e^{V_{ikt}}}, \qquad V_{ijt} = x_{ijt}'\gamma_i + \delta_j,$$
+where every $\varepsilon$, including the outside shock, is iid type-I extreme value with unit scale and variance $\pi^2/6$. Let
 
-with $C_{it}$ the (possibly unbalanced) inside choice set and the $1$ the outside option's $e^0$.
+$$
+v_{ijt}=x_{ijt}'\gamma_i+\delta_j,qquad
+D_{it}=1+\sum_{k\in C_{it}}\exp(v_{ikt}).
+$$
 
-Two random-effect levels, deliberately decoupled:
+Then
 
-- **Respondent level:** $\beta_i \sim N(b, W)$ over the $K$ structural covariates only. $W$ is $K \times K$ — the genuine mixed-logit object. Log-normal coordinates keep the hierarchy normal on the log scale and enter utility exponentiated.
-- **Alternative level (BLP-style):** $\delta_j = z_j'\theta + \xi_j$, $\xi_j \sim N(0, \sigma_d^2)$. One scalar variance regardless of $J$; $\xi_j$ is the micro-Bayesian counterpart of BLP's unobserved product quality. Partial pooling regularizes noisy alternative effects by shrinking each $\delta_j$ toward its characteristics-based mean and yields a posterior predictive for alternatives outside the estimation sample (entry counterfactuals in `predict()`). With sparse per-alternative data, that stability is purchased under the maintained Gaussian exchangeability and mean-function assumptions; it is not a generic consistency guarantee. Researchers should vary $Z$ and the prior on $\sigma_d$, and examine whether entrant conclusions are driven by shrinkage.
+$$
+p_{ijt}=\Pr(y_{it}=j\mid\beta_i,\delta)=\frac{\exp(v_{ijt})}{D_{it}},
+\qquad
+p_{iot}=\frac1{D_{it}}.
+$$
 
-Keeping the ASCs out of $\beta_i$ is the scalability decision: it removes the $O((K+J)^3)$ per-respondent Cholesky and the $O(J^2)$ ASC covariance block a dense specification would carry, replacing them with a length-$J$ vector gathered by row index.
+With $c_{it}$ the chosen inside row, or absent when outside is chosen, respondent $i$ contributes
 
-## 2. Identification
+$$
+\ell_i(\beta_i,\delta)
+=\sum_{t=1}^{T_i}\left[
+\mathbf 1\{y_{it}\ne o\}v_{ic_{it}t}-\log D_{it}
+\right].
+$$
 
-Two distinct redundancies are handled differently:
+There are two deliberately distinct random-effect levels:
 
-- **Scale.** The EV1 shock variance is fixed ($\pi^2/6$), so the logit has no free scale — no normalization step is needed (contrast the HMNP).
-- **Location.** Adding a constant to every inside $\delta_j$ cancels in the softmax *unless* an outside option with systematic utility 0 breaks the invariance. Version 1 requires the implicit outside option, so the $\delta$ level is genuinely identified — $\delta_j$ is mean utility relative to the outside good and the mean-function intercept $\theta_0$ is the average inside-good quality vs outside. No base alternative, no sum-to-zero constraint. The level is *well* identified only insofar as the outside share is informative: with a tiny outside share the level posterior is diffuse (the shape — cross-alternative contrasts — remains tight).
+$$
+\beta_i\mid b,W\sim N_K(b,W),
+$$
 
-Statistical expectations by data structure: $b$ and $(\theta, \sigma_d^2, \delta)$ are estimated equally well in panels and cross-sections ($\delta$ is global, pooled across everyone); $W$ is identified in cross-sections through covariate variation and functional form but concentrates slower and leans more on its prior.
+and
 
-## 3. Priors and Joint Posterior
+$$
+\delta_j=z_j'\theta+\xi_j,qquad
+\xi_j\mid\sigma_d^2\stackrel{ind}{\sim}N(0,\sigma_d^2).
+$$
 
-$$b \sim N(\bar b, A^{-1}), \quad W \sim \mathcal{IW}(\nu, V), \quad \theta \sim N(\bar\theta, A_\theta^{-1}),$$
+$W$ describes cross-respondent heterogeneity in structural tastes. It never contains the $J$ alternative effects. The scalar $\sigma_d^2$ describes dispersion of alternative quality around the maintained mean function $z_j'\theta$. This separation avoids a dense $(K+J)$-dimensional respondent covariance and supplies partial pooling and a predictive distribution for a new alternative. It is a maintained exchangeability model, not a guarantee that sparse-alternative estimates are consistent. Entry results can be sensitive to $Z$ and to the prior on $\sigma_d$.
 
-with defaults $\bar b = 0$, $A = 0.01 I$, $\nu = K + 3$, $V = \nu I$, $\bar\theta = 0$, $A_\theta = 0.01 I$. For the alternative-effect scale, the default is a **half-Cauchy**: $\sigma_d \sim C^+(0, s_d)$ via the Makalic–Schmidt inverse-gamma scale mixture
+## 3. Identification and empirical content
 
-$$\sigma_d^2 \mid a_d \sim \mathcal{IG}(\tfrac12, 1/a_d), \qquad a_d \sim \mathcal{IG}(\tfrac12, 1/s_d^2),$$
+The EV1 scale is fixed, so utility scale is identified by assumption. The systematic utility of the outside option is fixed to zero. Consequently, shifting every inside $\delta_j$ by a common constant changes inside-versus-outside probabilities and is not an invariance. The package therefore estimates all $J$ inside effects without a base-alternative or sum-to-zero restriction. $\delta_j$ is quality relative to the outside good; the intercept in $\theta$ locates average inside quality relative to outside.
 
-which keeps full conjugacy while avoiding the $\mathcal{IG}(\epsilon, \epsilon)$ near-zero pathology (Gelman 2006). A plain $\mathcal{IG}(c_0, d_0)$ fallback is exposed (`sd_prior$half_cauchy = FALSE`).
+Without the outside option, adding a constant to all available alternatives would leave the softmax unchanged. For this reason v0.2.0 requires `include_outside_option = TRUE`. Even with the formal anchor, little observed outside choice can make the common level weakly informed while leaving inside-to-inside contrasts much more precise.
 
-The labels “diffuse” and “weakly informative” are not substitutes for a sensitivity analysis. In particular, $V$ and $\nu$ shape heterogeneity in $W$, while $s_d$ controls how aggressively sparse alternative effects are pooled toward $Z\theta$. Report prior-predictive implications and rerun substantively important taste, substitution, welfare, and entry results under defensible alternative scales.
+Panel repetition reveals persistent respondent heterogeneity because the same $\beta_i$ governs all $T_i$ tasks. With $T_i=1$, $W$ is learned through the mixture shape, covariate and choice-set variation, and the parametric Gaussian assumption. It is therefore generally less empirically disciplined than in a rich panel. Similarly, $\theta$ and $\sigma_d^2$ require enough alternatives and variation in $Z$; many observations of a few products do not substitute for cross-product variation in the second-level regression.
 
-The joint posterior over $(\{\beta_i\}, b, W, \delta, \theta, \sigma_d^2, a_d)$ multiplies the logit likelihood by the two Gaussian hierarchies and the priors above.
+If a price-like regressor is correlated with $\xi_j$, the likelihood is exogenous only conditional on $Z$. `cf_residual_col` appends a user-supplied first-stage residual to $x_{ijt}$ as a normal-coordinate control function. The package does not estimate that first stage and does not propagate its estimation uncertainty.
 
-## 4. The Gibbs Sampler
+## 4. Priors and posterior kernel
 
-One systematic-scan iteration:
+The hierarchy uses
 
-**(0) Cache rebuild** (work-shared over respondents, fixed order): linear predictors $v$, level-form task denominators $D_t = 1 + \sum_{\text{inside}} e^v$, per-task and per-respondent log-likelihoods. Rebuilt every iteration — needed anyway because the $\beta$ phase changes them, and it bounds incremental floating-point drift to a single sweep.
+$$
+b\sim N_K(\bar b,A^{-1}),\qquad
+W\sim IW_K(\nu,V),\qquad
+\theta\sim N_P(\bar\theta,A_\theta^{-1}).
+$$
 
-**(a) $\beta_i$ — adaptive RW-Metropolis** (work-shared over respondents). Proposal $\beta^* = \beta_i + s_i L^{-T} z$ with $LL' = H_i + W^{-1}$, where $H_i$ is the respondent information at the pooled MNL MLE,
+Here $A$ and $A_\theta$ are precisions. The inverse-Wishart convention is
 
-$$H_i = \sum_{t} \Big( \sum_j p_{jt} x_{jt} x_{jt}' - \bar x_t \bar x_t' \Big), \qquad \bar x_t = \sum_j p_{jt} x_{jt},$$
+$$
+p(W)\propto |W|^{-(\nu+K+1)/2}
+\exp\{-\tfrac12\operatorname{tr}(VW^{-1})\},
+$$
 
-computed once at startup with probabilities at $(\hat\gamma_{\text{pooled}}, \delta_{\text{init}})$, the outside option contributing probability mass at $x = 0$. For log-normal coordinates $H_i$ is Jacobian-adjusted to the chain scale (row and column $k$ scaled by $\hat\gamma_k$). Acceptance uses one fresh likelihood pass over the respondent's own rows (non-finite $\Rightarrow$ auto-reject, which guards $e^\beta$ overflow) plus the prior quadratic forms $\tfrac12[(\beta_i - b)'W^{-1}(\beta_i - b) - (\beta^* - b)'W^{-1}(\beta^* - b)]$. $\log s_i$ is Robbins–Monro-adapted toward 0.234 during burn-in with gain $(r+1)^{-0.6}$, clamped to $[\log 0.01, \log 10]$, and frozen at the end of burn-in.
+which is proper for the engine's allowed $\nu\ge K$ and has mean $V/(\nu-K-1)$ only when $\nu>K+1$. Defaults are $\bar b=0$, $A=0.01I_K$, $\nu=K+3$, $V=\nu I_K$, $\bar\theta=0$, and $A_\theta=0.01I_P$. Thus the default raw prior mean of $W$ is $(K+3)I_K/2$, not $I_K$.
 
-**(b) $\delta_j$ — strictly serial RW-Metropolis sweep** (master thread). The $\delta_j$ full conditionals are **coupled through the shared softmax denominators** — every task containing several inside alternatives ties their $\delta$'s together — so a work-shared (synchronous) update across $j$ would not leave the posterior invariant. Each update must see the latest $\delta$ and caches. The sweep stays cheap: for a proposal $\delta_j^* = \delta_j + s_{\delta j} z$, the log-likelihood change over the tasks containing $j$ is
+By default $\sigma_d\sim C^+(0,s_d)$. The implementation uses the Makalic--Schmidt representation, in the inverse-gamma shape--scale convention
 
-$$\Delta \ell = \sum_{t \ni j} \Big[ (\delta_j^* - \delta_j)\, \mathbb{1}\{y_t = j\} - \log(D_t - e_{jt} + e^*_{jt}) + \log D_t \Big]$$
+$$
+\sigma_d^2\mid a_d\sim IG(1/2,1/a_d),\qquad
+a_d\sim IG(1/2,1/s_d^2),
+$$
 
-from the cached $D_t$ and $e_{jt} = e^{v_{jt}}$ — $O(1)$ per affected task; an accepted move updates the caches in place so $\delta_{j+1}$ sees the latest state. ($D_t \ge 1$ always because of the outside term, so $\log D_t$ is safe.) The Gaussian prior is $N(z_j'\theta, \sigma_d^2)$; the scalar acceptance target is 0.44. Contrast the HMNP, whose $\delta_j$ conditionals are conditionally independent given the augmented utilities and are drawn in parallel — the asymmetry is documented in `src/hb_internal.h`.
+where $X\sim IG(a,d)$ means $1/X\sim\operatorname{Gamma}(a,\text{rate}=d)$. Setting `sd_prior$half_cauchy = FALSE` instead gives $\sigma_d^2\sim IG(c_0,d_0)$.
 
-**(c) Hierarchy** (master thread, conjugate):
+Up to constants, the posterior density is
 
-- $b \mid \beta, W \sim N\big((A + N W^{-1})^{-1}(A\bar b + W^{-1}\sum_i \beta_i),\; (A + N W^{-1})^{-1}\big)$
-- $W \mid \beta, b \sim \mathcal{IW}\big(\nu + N,\; V + \sum_i (\beta_i - b)(\beta_i - b)'\big)$
-- $\theta \mid \delta, \sigma_d^2 \sim N\big((A_\theta + Z'Z/\sigma_d^2)^{-1}(A_\theta\bar\theta + Z'\delta/\sigma_d^2),\; \cdot\big)$
-- $\sigma_d^2 \mid \delta, \theta, a_d \sim \mathcal{IG}(\tfrac12 + \tfrac J2,\; 1/a_d + \tfrac12\sum_j \xi_j^2)$ and $a_d \mid \sigma_d^2 \sim \mathcal{IG}(1,\; 1/s_d^2 + 1/\sigma_d^2)$ (the half-Cauchy mixture), with $\xi = \delta - Z\theta$.
+$$
+\begin{aligned}
+p(&\beta_{1:N},b,W,\delta,\theta,\sigma_d^2,a_d\mid y)\propto
+\exp\left\{\sum_i\ell_i(\beta_i,\delta)\right\}
+\prod_i\phi_K(\beta_i;b,W)\\
+&\times\prod_j\phi(\delta_j;z_j'\theta,\sigma_d^2)
+p(b)p(W)p(\theta)p(\sigma_d^2\mid a_d)p(a_d),
+\end{aligned}
+$$
 
-**Initialization.** $\beta_i$ start at the pooled MNL MLE over the structural covariates (computed through the existing frequentist kernel with the implicit outside option; log-normal coordinates transformed with a warn-and-clamp $\log(\max(\hat\gamma_k, 0.05))$); $\delta$ at shrunk log choice-share contrasts $\log\big((n_j + \tfrac12)/(n_o + \tfrac12)\big)$; $\theta$ at the OLS regression of $\delta_{\text{init}}$ on $Z$.
+with the last two factors replaced by the plain inverse-gamma prior when requested. Prior-predictive checks should cover taste magnitudes, implied shares, $W$, the quality ladder, and entrant quality—not merely individual hyperparameters in isolation.
 
-## 5. Sampling Primitives
+## 5. One Metropolis-within-Gibbs iteration
 
-Worker threads may never call BLAS/LAPACK or the R API (see §7), so the per-respondent proposal uses the hand-rolled dense Cholesky, triangular solves, and precision-parameterized MVN draw in `src/hb_internal.h` (`hb_chol_lower`, `hb_back_solve`, `hb_mvn_precision_draw`), all with caller-owned scratch to avoid hot-loop allocation. Master-side conjugate draws use `draw_b_conditional`, `draw_W_conditional` (via `riwishart_nothrow`), `draw_theta_conditional`, and `draw_sigma_d2_conditional`. Inverse-gamma draws are `scale / rgamma(shape)` from the Xoshiro256++ stream — never R's RNG.
+The chain is a systematic scan. It rebuilds $v_{ijt}$, $\exp(v_{ijt})$, $D_{it}$, task log likelihoods, and respondent log likelihoods at the start of every iteration.
 
-## 6. Post-Processing and Reported Quantities
+### 5.1 Respondent coefficients
 
-`run_hmnlogit()` reports the posterior of $b$ (coefficients / SE / vcov from the draws), the $\theta$ and $\sigma_d^2$ summaries, the posterior-mean $W$, the **quality ladder** — per-alternative posteriors of $\delta_j$ and $\xi_j = \delta_j - z_j'\theta$ — accumulated online (Welford), the per-respondent $\beta_i$ summaries per `keep_beta_i`, acceptance diagnostics, and the split-$\widehat R$ table over chains (`rhat()`). Post-estimation methods (`predict`, `wtp`, `logsum`, `consumer_surplus`, `elasticities`, `diversion_ratios`, `ppc_shares`) integrate over the posterior draws; new alternatives in `predict(newdata=)` receive a posterior-predictive $\delta_{\text{new}} \sim N(z_{\text{new}}'\theta_r, \sigma_{d,r}^2)$ per draw.
+For respondent $i$, the exact conditional target is
 
-**Convergence diagnostics.** Beyond split-$\widehat R$, the fitted object retains every requested chain's hierarchical draws (`object$chains`), which feed the rank-normalized diagnostics of Vehtari, Gelman, Simpson, Carpenter & Bürkner (2021): `rhat(draws, rank = TRUE)` (rank-normalized, folded $\widehat R$; `rank = FALSE`, the default, keeps the original split-$\widehat R$), `ess()` (bulk and tail effective sample size), and `mcse()` (Monte Carlo standard error of the posterior mean or median). `summary()` prints these in one consolidated table spanning $b$, $\theta$, $\sigma_d^2$, and a single worst-case row summarizing all $J$ $\delta_j$ — the alternative-effect block is the most at risk of poor mixing, since it is updated by a serial random-walk Metropolis sweep (§4, §7). `traceplot()` plots any of these chains for visual inspection.
+$$
+\log\pi_i(\beta_i)=\ell_i(\beta_i,\delta)
+-\tfrac12(\beta_i-b)'W^{-1}(\beta_i-b)+\text{constant}.
+$$
 
-**Endogeneity.** If a price-like covariate is correlated with $\xi_j$, the estimates are exogenous only conditional on $Z$. The preps accept a user-supplied first-stage residual (`cf_residual_col`, Petrin–Train 2010) that enters $X$ as an ordinary covariate; the first stage is not run by the package and posterior uncertainty does not propagate first-stage error (joint Bayesian IV is roadmapped).
+The proposal is symmetric:
 
-## 7. Implementation Details
+$$
+\beta_i^*=\beta_i+s_iL_i^{-T}z,qquad z\sim N_K(0,I_K),
+$$
 
-The kernel follows the `src/mnprobit.cpp` engine contract:
+where $L_iL_i'=H_i+W^{-1}$. Thus its covariance is $s_i^2(H_i+W^{-1})^{-1}$. $H_i$ is fixed once at startup. At the pooled initialization, for each task,
 
-- **One persistent OpenMP parallel region** for the whole chain; the $\beta$ phase and cache rebuild are work-shared over respondents (each task belongs to exactly one respondent, so all cache slots are respondent-owned); the serial $\delta$ sweep, hierarchy draws, recording, trace, and the interrupt poll run in a master block between barriers.
-- **RNG partition** per iteration $r$ via `make_stream(seed, r, tag)`: tag $i$ = respondent $i$'s MH work; tag $2N + j$ = $\delta_j$; tags $2N + J + \{0,1,2,3\}$ = $b, W, \theta, \sigma_d^2$. The master block is based at $2N + J$ (not $3N$), so the partition is collision-free for any $J$, including $J > N$.
-- **Thread-count reproducibility:** per-(iteration, unit) RNG streams, fixed-order accumulation of every cross-respondent quantity on the master thread, and the master-only $\delta$ sweep make the draws reproducible given the seed and a fixed thread count; across different thread counts they are invariant only up to floating-point reduction-order round-off (~1e-15), not bitwise (independent validation disconfirmed an earlier "bitwise, tested 1-vs-4 threads" claim).
-- **Abort protocol:** worker-side failures set an abort code in a critical section; every thread re-checks after barriers and exits together; `Rcpp::stop` fires after the region. User interrupts are polled every 100 iterations on the master thread.
+$$
+H_{it}=\sum_{j\in C_{it}}p_{ijt}x_{ijt}x_{ijt}'
+-\bar x_{it}\bar x_{it}',qquad
+\bar x_{it}=\sum_{j\in C_{it}}p_{ijt}x_{ijt},
+$$
+
+and $H_i=\sum_tH_{it}$. The omitted outside vector is zero but its probability remains in the denominator. For log-normal coordinate $k$, row and column $k$ of $H_i$ are multiplied by $\exp(\beta_{k,\mathrm{pooled}})$, implementing the local Jacobian transformation from utility to chain scale.
+
+Because the proposal is symmetric,
+
+$$
+\log\alpha_i=ell_i(\beta_i^*,\delta)-\ell_i(\beta_i,\delta)
++\tfrac12\left[q_i-q_i^*\right],
+$$
+
+where $q_i=(\beta_i-b)'W^{-1}(\beta_i-b)$. Non-finite candidate likelihoods are rejected. During burn-in only,
+
+$$
+\log s_i^{(r+1)}=\operatorname{clip}_{[\log .01,\log 10]}
+\left(\log s_i^{(r)}+(r+1)^{-0.6}\{\min(1,e^{\log\alpha_i})-a_\beta\}\right),
+$$
+
+where $a_\beta$ defaults to 0.234. Adaptation stops after burn-in.
+
+### 5.2 Alternative effects
+
+The $\delta_j$ conditionals are not independent because alternatives in the same task share $D_{it}$. They are therefore updated in a strictly serial random-walk sweep. Propose $\delta_j^*=\delta_j+s_{\delta j}z$. Let $e_{ijt}=\exp(v_{ijt})$, $d=\delta_j^*-\delta_j$, and
+
+$$D_{it}^*=D_{it}-e_{ijt}+e_{ijt}e^d.$$
+
+Only tasks containing $j$ change, giving
+
+$$
+\Delta\ell_j=\sum_{(i,t):j\in C_{it}}
+\left[d\,\mathbf1\{y_{it}=j\}+\log D_{it}-\log D_{it}^*\right].
+$$
+
+With $m_j=z_j'\theta$,
+
+$$
+\log\alpha_{\delta j}=\Delta\ell_j+
+\frac{(\delta_j-m_j)^2-(\delta_j^*-m_j)^2}{2\sigma_d^2}.
+$$
+
+On acceptance the utility and denominator caches are updated immediately, so the next alternative conditions on the new state. $\log s_{\delta j}$ follows the same burn-in Robbins--Monro rule with fixed target 0.44 and the same $[0.01,10]$ scale clamp.
+
+### 5.3 Conjugate hierarchy
+
+Let $P_b=A+NW^{-1}$ and $r_b=A\bar b+W^{-1}\sum_i\beta_i$. Then
+
+$$b\mid\cdot\sim N_K(P_b^{-1}r_b,P_b^{-1}),$$
+
+$$W\mid\cdot\sim IW_K\left(\nu+N,V+\sum_i(\beta_i-b)(\beta_i-b)'\right).$$
+
+For the alternative mean function, let
+
+$$P_\theta=A_\theta+Z'Z/\sigma_d^2,qquad
+r_\theta=A_\theta\bar\theta+Z'\delta/\sigma_d^2.$$
+
+Then $\theta\mid\cdot\sim N_P(P_\theta^{-1}r_\theta,P_\theta^{-1})$. Writing $\xi=\delta-Z\theta$, the half-Cauchy mixture gives
+
+$$
+\sigma_d^2\mid\cdot\sim IG\left(\frac{J+1}{2},\frac1{a_d}+\frac12\xi'\xi\right),
+\qquad
+a_d\mid\cdot\sim IG\left(1,\frac1{s_d^2}+\frac1{\sigma_d^2}\right).
+$$
+
+Under the fallback prior, $\sigma_d^2\mid\cdot\sim IG(c_0+J/2,d_0+\xi'\xi/2)$.
+
+## 6. Initialization
+
+The R wrapper first estimates a pooled MNL over the structural columns, with the alternative effects excluded from that pooled optimization. Normal coordinates start at that estimate. A log-normal coordinate is transformed to $\log\max(\hat\gamma_k,0.05)$; estimates below 0.05 trigger a warning and clamp. Every $\beta_i$ and $b$ starts at this chain-scale vector; $W=I_K$ and $\sigma_d^2=a_d=1$.
+
+If $n_j$ is the number of choices of inside alternative $j$ and $n_o$ the outside count,
+
+$$\delta_j^{(0)}=\log\frac{n_j+1/2}{n_o+1/2}.$$
+
+$\theta^{(0)}$ is the QR least-squares solution regressing $\delta^{(0)}$ on $Z$. These are starting values, not pseudo-count priors.
+
+## 7. Retained quantities and diagnostics
+
+For each chain the kernel retains thinned draws of $b$, `vech`$(W)$, $\delta$, $\theta$, $\sigma_d^2$, and the log likelihood. Chain 1 supplies the top-level summaries and `object$draws`; all chains are retained in `object$chains`. `keep_beta_i="means"` uses Welford updates for chain-1 respondent posterior means and SDs. `"draws"` additionally keeps the chain-1 $K\times N\times R_{keep}$ cube returned on the object, although all chains' cubes coexist temporarily during sequential fitting. The memory guard estimates $1.9\times8KNR_{keep}$ bytes per chain and multiplies by the requested number of chains.
+
+`summary()` reports rank-normalized folded split-$\widehat R$, bulk ESS, tail ESS, and MCSE for $b$, $\theta$, and $\sigma_d^2$, plus the worst $\widehat R$ among all $J$ columns of $\delta$. Fit-time warnings test every $\delta_j$ as well as the small blocks at $\widehat R>1.01$ or bulk ESS below 400. `vech(W)` is retained in every chain but is not included in this automatic table or warning; covariance heterogeneity is often among the slowest and weakest-identified quantities, so researchers should pass the per-chain `w_vech` matrices to `rhat()`/`ess()` explicitly and inspect sensitivity. The built-in thresholds are screening rules, not proofs of convergence. Multiple chains, traces, Monte Carlo error, prior sensitivity, and posterior predictive checks remain necessary.
+
+## 8. Post-estimation mathematics and limits
+
+All methods use evenly selected chain-1 draws. At population level, each posterior draw $r$ is paired with one simulation
+
+$$\beta^{(r)}\sim N(b^{(r)},W^{(r)}),$$
+
+so integration over taste heterogeneity is a one-draw-per-posterior-draw Monte Carlo average, not exact quadrature. At individual level, stored $\beta_i^{(r)}$ draws are used when available; otherwise posterior-mean $\beta_i$ is a plug-in. New alternative $a$ receives an independent draw
+
+$$\delta_a^{(r)}\sim N(z_a'\theta^{(r)},\sigma_d^{2(r)}).$$
+
+These post-estimation simulations use R's RNG, so `set.seed()` controls their reproducibility.
+
+For a log-normal coordinate, the posterior-draw population mean coefficient used by `wtp()` is
+
+$$E(\gamma_k\mid b^{(r)},W^{(r)})=exp\{b_k^{(r)}+W_{kk}^{(r)}/2\};$$
+
+normal coordinates use $b_k^{(r)}$. WTP draw ratios are $-\bar\gamma_a^{(r)}/\bar\gamma_p^{(r)}$ and are summarized by medians and equal-tailed intervals.
+
+For HMNL the conditional expected maximum, apart from the Euler constant common to states, is
+
+$$L_{it}^{(r)}=\log\left(1+\sum_{j\in C_{it}}e^{v_{ijt}^{(r)}}\right).$$
+
+The implementation evaluates this without forming an unsafe $e^{v}$ at the
+original scale. With
+
+$$m_{it}^{(r)}=\max\left\{0,\max_{j\in C_{it}}v_{ijt}^{(r)}\right\},$$
+
+it computes
+
+$$L_{it}^{(r)}=m_{it}^{(r)}+\log\left[
+e^{-m_{it}^{(r)}}+\sum_{j\in C_{it}}
+e^{v_{ijt}^{(r)}-m_{it}^{(r)}}\right],$$
+
+and obtains the inside and outside probabilities from the same scaled
+denominator. Thus R-side prediction and welfare remain finite even when a
+counterfactual utility is outside the direct numerical range of `exp()`.
+
+`logsum()` averages these simulated draws. `consumer_surplus()` divides by $-\bar\gamma_{price}^{(r)}$ and reports posterior medians and intervals; counterfactual CV uses the same simulated $\beta$ path for baseline and policy data. For optional non-negative task weights $q_{it}$, the aggregate CV draw is
+
+$$CV^{(r)}=\frac{\sum_{i,t}q_{it}
+  \{L_{it,1}^{(r)}-L_{it,0}^{(r)}\}}
+ {-\bar\gamma_{price}^{(r)}}.$$
+
+Equal task weights are the default. This calculation is appropriate only when
+the chosen price coefficient has a defensible, resolved sign and units; the
+weights define aggregation and do not repair a misspecified sampling or price
+process. The code requires the policy and baseline panels to contain exactly
+the same choice situations, matches them by `(person_col, id_col)` rather than
+by row position, and then applies unnamed weights in the baseline prepared
+data's sorted task order. Alternative rows and complete tasks may therefore be
+reordered without changing the welfare contrast; adding or dropping tasks is
+rejected because it changes the aggregation population.
+
+`elasticities()` and `diversion_ratios()` are aggregate finite-difference objects, not analytic individual derivatives. For each inside alternative $j$, the selected covariate is multiplied by $1+\epsilon$, probabilities are recomputed with common random numbers, and
+
+$$E_{kj}=\frac{\{s_k^{pert(j)}-s_k\}/s_k}{\epsilon},\qquad
+DR(j\to k)=\frac{s_k^{pert(j)}-s_k}{-(s_j^{pert(j)}-s_j)}.$$
+
+The outside option is included as a receiving alternative. `ppc_shares()` compares observed take rates with posterior predictive share intervals; matching shares alone is not a comprehensive model check.
+
+## 9. Computational contract
+
+The chain runs inside one persistent OpenMP region. Cache rebuilds and respondent proposals are work-shared; the $\delta$ sweep, hierarchy draws, recording, and interrupt polling are master-only. Worker code uses hand-written Cholesky and triangular solves and does not call the R API or threaded BLAS. Sufficient statistics are accumulated in fixed respondent or alternative order.
+
+At iteration $r$, `make_stream(seed,r,tag)` assigns tags $i$ to respondent proposals, $2N+j$ to $\delta_j$, and $2N+J+\{0,1,2,3\}$ to $b,W,\theta,\sigma_d^2$. The unused $N+i$ block is reserved for HMNP coefficient draws. Chains run sequentially with seeds `seed`, `seed+1`, and so on. Draws are reproducible for a fixed seed and thread configuration; source comments conservatively allow cross-thread-count differences at floating-point reduction order, so users should not treat byte identity across toolchains or thread counts as an API promise.
 
 ## References
 
-- Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841–890.
-- Gelman, A. (2006). Prior distributions for variance parameters in hierarchical models. *Bayesian Analysis*, 1(3), 515–534.
-- Makalic, E., & Schmidt, D. F. (2016). A simple sampler for the horseshoe estimator. *IEEE Signal Processing Letters*, 23(1), 179–182.
-- Petrin, A., & Train, K. (2010). A control function approach to endogeneity in consumer choice models. *Journal of Marketing Research*, 47(1), 3–13.
-- Roberts, G. O., Gelman, A., & Gilks, W. R. (1997). Weak convergence and optimal scaling of random walk Metropolis algorithms. *Annals of Applied Probability*, 7(1), 110–120.
+- Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841--890.
+- Gelman, A. (2006). Prior distributions for variance parameters in hierarchical models. *Bayesian Analysis*, 1(3), 515--534.
+- Makalic, E., & Schmidt, D. F. (2016). A simple sampler for the horseshoe estimator. *IEEE Signal Processing Letters*, 23(1), 179--182.
+- Petrin, A., & Train, K. (2010). A control function approach to endogeneity in consumer choice models. *Journal of Marketing Research*, 47(1), 3--13.
+- Roberts, G. O., Gelman, A., & Gilks, W. R. (1997). Weak convergence and optimal scaling of random walk Metropolis algorithms. *Annals of Applied Probability*, 7(1), 110--120.
 - Rossi, P. E., Allenby, G. M., & McCulloch, R. (2005). *Bayesian Statistics and Marketing*. Wiley.
-- Train, K. (2009). *Discrete Choice Methods with Simulation* (2nd ed.). Cambridge University Press.
+- Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.). Cambridge University Press.
+- Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C. (2021). Rank-normalization, folding, and localization: an improved $\widehat R$ for assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667--718.

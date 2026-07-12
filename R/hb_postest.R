@@ -84,6 +84,8 @@
       X = d$X,
       task_of_row = rep(seq_along(d$M), times = d$M),
       n_tasks = d$n_tasks,
+      task_keys = d$task_keys %||% as.character(seq_len(d$n_tasks)),
+      task_keys_exact = !is.null(d$task_keys),
       alt_label = as.character(
         d$alt_mapping[d$alt_mapping$alt_int > 0, ][[spec$alt_col]]
       )[d$alt_of_row],
@@ -97,7 +99,7 @@
     ))
   }
 
-  dt <- data.table::as.data.table(newdata)
+  dt <- data.table::as.data.table(newdata)[]
   needed <- unique(c(spec$person_col, spec$id_col, spec$alt_col,
                      spec$covariate_cols, spec$alt_covariate_cols,
                      spec$cf_residual_col))
@@ -114,12 +116,12 @@
 
   ord_cols <- c(spec$person_col, spec$id_col, spec$alt_col)
   data.table::setorderv(dt, ord_cols)
-  task_key <- if (is.null(spec$person_col)) {
-    as.character(dt[[spec$id_col]])
-  } else {
-    paste(dt[[spec$person_col]], dt[[spec$id_col]], sep = "\r")
-  }
+  task_key <- .hb_task_keys(
+    dt[[spec$id_col]],
+    if (!is.null(spec$person_col)) dt[[spec$person_col]]
+  )
   task_of_row <- as.integer(factor(task_key, levels = unique(task_key)))
+  task_keys <- unique(task_key)
 
   X <- as.matrix(dt[, x_cols, with = FALSE])
   if (!all(is.finite(X))) stop("`newdata` covariates must be finite.")
@@ -159,6 +161,8 @@
     X = X,
     task_of_row = task_of_row,
     n_tasks = max(task_of_row),
+    task_keys = task_keys,
+    task_keys_exact = TRUE,
     alt_label = alt_label,
     known_idx = known_idx,
     z_new = z_new,
@@ -203,12 +207,35 @@
 #' V is the inside-row utility index; returns a list with `p_inside` (per
 #' row) and `p_outside` (per task).
 #' @noRd
+.hb_logit_task_terms <- function(V, task_of_row, n_tasks) {
+  rows_by_task <- split(seq_along(V), task_of_row)
+  vmax <- vapply(rows_by_task, function(rows) max(V[rows]), numeric(1L))
+  if (length(vmax) != n_tasks) {
+    stop("Internal error: every prediction task must contain an inside row.",
+         call. = FALSE)
+  }
+
+  # The outside option has systematic utility zero. Subtract the taskwise
+  # maximum over {0, V_1, ..., V_J} before exponentiating, so both probabilities
+  # and logsums remain finite even for utilities far outside exp()'s range.
+  shift <- pmax(0, vmax)
+  e_inside <- exp(V - shift[task_of_row])
+  e_outside <- exp(-shift)
+  denom <- e_outside +
+    as.numeric(rowsum(e_inside, task_of_row, reorder = TRUE))
+
+  list(
+    p_inside = e_inside / denom[task_of_row],
+    p_outside = e_outside / denom,
+    logsum = shift + log(denom)
+  )
+}
+
+#' @noRd
 .hb_task_probs <- function(V, task_of_row, n_tasks, model, gh = NULL) {
   if (model == "hmnl") {
-    eV <- exp(V)
-    denom <- 1 + as.numeric(rowsum(eV, task_of_row, reorder = TRUE))
-    p_inside <- eV / denom[task_of_row]
-    return(list(p_inside = p_inside, p_outside = 1 / denom))
+    terms <- .hb_logit_task_terms(V, task_of_row, n_tasks)
+    return(terms[c("p_inside", "p_outside")])
   }
   # HMNP: Gauss-Hermite over the common shock argument, per task.
   p_inside <- numeric(length(V))
@@ -459,11 +486,14 @@ logsum.choicer_hmnl <- function(object, newdata = NULL, n_draws = 200L, ...) {
     beta <- object$draws$b[r, ] + drop(L %*% stats::rnorm(K))
     V <- drop(rd$X %*% .hb_gamma(beta, rc)) +
       .hb_delta_row(object, rd, r, delta_new)
-    denom <- 1 + as.numeric(rowsum(exp(V), rd$task_of_row, reorder = TRUE))
-    ls_draws[s, ] <- log(denom)
+    ls_draws[s, ] <- .hb_logit_task_terms(
+      V, rd$task_of_row, rd$n_tasks
+    )$logsum
   }
   out <- colMeans(ls_draws)
   attr(out, "draws") <- ls_draws
+  attr(out, "task_keys") <- rd$task_keys
+  attr(out, "task_keys_exact") <- rd$task_keys_exact
   out
 }
 
@@ -487,7 +517,13 @@ logsum.choicer_hmnp <- function(object, newdata = NULL, ...) {
 #'   \eqn{(\mathrm{logsum}_{new} - \mathrm{logsum}_{base}) /
 #'   (-\bar\gamma_{price})} summed over tasks. Requires a fixed-sign price
 #'   coefficient; the posterior-median ratio discipline of
-#'   [wtp.choicer_hb()] applies.
+#'   [wtp.choicer_hb()] applies. When `newdata` is supplied, `weights` is an
+#'   optional non-negative length-`n_tasks` vector used in the aggregate CV;
+#'   equal task weights are the default. The counterfactual must contain the
+#'   same choice situations as the estimation data, identified by
+#'   (`person_col`, `id_col`) (or `id_col` when `person_col = NULL`); rows and
+#'   tasks may be reordered. Unnamed `weights` follow the baseline tasks'
+#'   sorted (`person_col`, `id_col`) order used by the prepared data.
 #' @export
 consumer_surplus.choicer_hmnl <- function(object, price_var, newdata = NULL,
                                           level = 0.95, weights = NULL,
@@ -522,9 +558,36 @@ consumer_surplus.choicer_hmnl <- function(object, price_var, newdata = NULL,
     logsum.choicer_hmnl(object, newdata = newdata, n_draws = n_draws)
   }
 
+  # A welfare contrast is defined only for the same choice situations under
+  # two states. Match by retained task identity, never merely by column
+  # position. Older serialized fits lack task_keys; for those, preserve the
+  # historical sorted-order contract but still fail clearly on unequal sizes.
+  target_order <- seq_along(cs_target)
+  if (!is.null(newdata)) {
+    base_keys <- attr(ls_base, "task_keys")
+    target_keys <- attr(cs_target, "task_keys")
+    exact_keys <- isTRUE(attr(ls_base, "task_keys_exact")) &&
+      isTRUE(attr(cs_target, "task_keys_exact"))
+    if (length(base_keys) != length(target_keys)) {
+      stop("`newdata` must contain exactly the same choice situations as ",
+           "the estimation data for compensating variation; expected ",
+           length(base_keys), " tasks but found ", length(target_keys), ".",
+           call. = FALSE)
+    }
+    if (exact_keys) {
+      target_order <- match(base_keys, target_keys)
+      if (anyNA(target_order) || anyDuplicated(target_keys)) {
+        stop("`newdata` must contain exactly the same choice situations as ",
+             "the estimation data for compensating variation, identified ",
+             "by (`person_col`, `id_col`).", call. = FALSE)
+      }
+    }
+  }
+
   alpha_q <- (1 - level) / 2
   a_draws <- -gprice[idx]                 # marginal utility of income
-  cs_draws <- attr(cs_target, "draws") / a_draws
+  target_draws <- attr(cs_target, "draws")[, target_order, drop = FALSE]
+  cs_draws <- target_draws / a_draws
   cs_task <- apply(cs_draws, 2, stats::median)
   out <- data.table::data.table(
     task = seq_along(cs_task),
@@ -533,10 +596,16 @@ consumer_surplus.choicer_hmnl <- function(object, price_var, newdata = NULL,
     upper = apply(cs_draws, 2, stats::quantile, probs = 1 - alpha_q)
   )
   if (!is.null(newdata)) {
-    cv_draws <- rowSums(attr(cs_target, "draws") - attr(ls_base, "draws")) /
-      a_draws
+    task_weights <- .validate_pred_weights(weights, ncol(cs_draws))
+    if (any(task_weights < 0) || sum(task_weights) <= 0) {
+      stop("For hierarchical-logit compensating variation, `weights` must ",
+           "be non-negative with a positive sum.", call. = FALSE)
+    }
+    delta_ls <- target_draws - attr(ls_base, "draws")
+    cv_draws <- drop(delta_ls %*% task_weights) / a_draws
     data.table::setattr(out, "cv", stats::quantile(
       cv_draws, probs = c(alpha_q, 0.5, 1 - alpha_q)))
+    data.table::setattr(out, "cv_weights", task_weights)
   }
   out[]
 }

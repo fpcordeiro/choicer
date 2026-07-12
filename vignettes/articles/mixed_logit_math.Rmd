@@ -42,10 +42,10 @@ This document provides a detailed mathematical description of the mixed logit (r
 | $\beta$ | Fixed coefficient vector ($K_x \times 1$) |
 | $\mu$ | Mean parameters for random coefficients ($K_w \times 1$) |
 | $L$ | Lower-triangular Cholesky factor ($K_w \times K_w$) |
-| $\Sigma = LL'$ | Covariance matrix of random coefficients |
+| $\Sigma = LL'$ | Covariance matrix of the latent Gaussian deviations (and of realized coefficients only in the all-normal case) |
 | $\delta_j$ | Alternative-specific constant (ASC) for alternative $j$ |
-| $\eta_i$ | Standard normal draw vector for individual $i$ ($K_w \times 1$) |
-| $\gamma_i = L\eta_i$ | Random coefficient deviations for individual $i$ |
+| $\eta_i^s$ | Standard-normal integration draw for choice situation $i$ and draw $s$ ($K_w \times 1$) |
+| $\gamma_i^s = L\eta_i^s$ | Latent Gaussian random-coefficient deviation |
 
 ---
 
@@ -63,7 +63,8 @@ where:
 - $X_{ij}\beta$ captures the systematic utility from fixed coefficients
 - $W_{ij}\mu^*$ captures the mean contribution of random coefficients
 - $W_{ij}\gamma_i^{s*}$ captures the individual-specific random deviation
-- $\delta_j$ is the alternative-specific constant (with one normalized to zero for identification)
+- $\delta_j$ is the alternative-specific constant (the first inside ASC is normalized
+  without an outside option; with an outside option all inside ASCs are free)
 
 ### 1.2 Random Coefficient Structure
 
@@ -79,7 +80,12 @@ $$
 \gamma_i^s \sim N(0, \Sigma), \quad \text{where } \Sigma = LL'
 $$
 
-The Cholesky parameterization ensures $\Sigma$ is always positive semi-definite.
+For finite parameter values the exponentiated diagonal makes $L$ nonsingular, so
+$\Sigma$ is positive definite (positive semidefinite in the limiting sense as a diagonal
+element tends to zero). Here $\Sigma$ is the covariance of the *latent Gaussian*
+deviation $\gamma$. It is the covariance of the realized coefficient vector only when
+all entries are normal. After any componentwise log-normal transformation, the realized
+coefficient covariance is a nonlinear function of $L$ and is not $LL'$.
 
 ### 1.3 Distribution Transformations
 
@@ -96,6 +102,12 @@ $$
 $$
 
 > **Note:** This is a *shifted* log-normal parameterization: $\beta_k = \exp(\mu_k) + \exp(L_k \eta)$, which differs from the textbook parameterization $\beta_k = \exp(\mu_k + L_k \eta)$.
+
+When `rc_mean = FALSE`, $\mu^*=0$ for every distribution. Thus a normal random
+coefficient is centered at zero, while a log-normal random coefficient is
+$\exp((L\eta)_k)$ and has median one. Correlation is introduced on the latent-normal
+scale by the rows of $L$; componentwise transformations then induce a generally
+non-Gaussian joint coefficient distribution.
 
 ### 1.4 Cholesky Parameterization
 
@@ -126,9 +138,17 @@ The parameter vector for $L$ has length:
 
 ### 1.5 Variable Scaling
 
-**Motivation.** When columns of $X$ and $W$ span very different magnitudes — e.g., a price variable in thousands alongside a binary dummy — the Hessian becomes ill-conditioned, L-BFGS step sizes mismatch across parameter blocks, and $\exp(X\beta)$ can overflow before the log-sum-exp normalization kicks in. Dividing each column by its sample standard deviation removes data-unit dependence from the Hessian condition number and can substantially accelerate convergence.
+**Motivation.** When columns of $X$ and $W$ span very different magnitudes — e.g., a price variable in thousands alongside a binary dummy — the Hessian can become ill-conditioned and L-BFGS step sizes can mismatch across parameter blocks. Dividing columns by comparable scale denominators reduces this unit-driven conditioning problem and can substantially accelerate convergence; it does not guarantee a well-conditioned Hessian when the design is intrinsically weak or collinear.
 
-**Why centering is omitted.** Subtracting a column mean from $X$ shifts every utility by the same global constant $-\beta_k \cdot \overline{X_{\cdot k}}$, which cancels in the soft-max within each choice situation; the analogous argument carries through for $W$ at every draw of $\eta$. The likelihood, gradient, and Hessian are therefore invariant under global column centering, and the Z-transformation reduces to scale-by-SD as far as the optimizer is concerned. We skip centering on practical grounds: it destroys the 0/1 structure of dummy columns in the stored design matrices (complicating inspection and downstream tooling) and adds bookkeeping for column means with no estimation benefit.
+**Why centering is omitted.** Without an outside option, subtracting a global column mean
+from every alternative shifts every utility in a situation by the same amount, which
+cancels from the softmax; the same argument applies draw by draw to $W$. With an implicit
+outside option fixed at utility zero, however, an inside-only common shift does **not**
+cancel against the outside. A fixed-$X$ shift can be offset only by a compensating shift
+to every inside ASC when those ASCs are present, and a random $W$ shift cannot generally
+be absorbed by fixed ASCs. The implementation therefore does not center: it divides by a
+scale denominator only. This preserves the exact outside-option specification as well as
+the 0/1 structure of dummy columns and avoids unnecessary mean bookkeeping.
 
 **The transformation.** Let $s_k^X = \widehat{\text{sd}}(X_{\cdot k})$ and $s_k^W = \widehat{\text{sd}}(W_{\cdot k})$. Define scaled matrices
 
@@ -146,7 +166,14 @@ Estimation runs on $(\tilde X, \tilde W)$. Let $\tilde\beta, \tilde\mu, \tilde\e
 | $\ell_{pq}$ (Cholesky off-diagonal, $p > q$) | $\tilde\ell_{pq} / s_p^W$ |
 | $\text{ASC}_j$ | $\widetilde{\text{ASC}}_j$ (unchanged) |
 
-For the Cholesky rows: scaling column $p$ of $\tilde W$ by $1/s_p^W$ means row $p$ of $L$ must be scaled by $s_p^W$ to keep utilities $\tilde W_{ijk} \cdot (L\eta)_k$ invariant. On the diagonal — where $L_{pp}$ is stored as $\ell_{pp} = \log L_{pp}$ — this multiplicative scaling becomes an additive shift ($\ell_{pp} = \tilde\ell_{pp} - \log s_p^W$); for off-diagonal entries it is a direct multiplicative rescaling ($\ell_{pq} = \tilde\ell_{pq} / s_p^W$). Note that the scale factor is keyed on the *row* index $p$ in both cases — i.e., on the random-coefficient associated with the chosen-row $W$ column — not on the column index $q$.
+For the Cholesky rows, $\tilde W_p=W_p/s_p^W$ implies
+$L^{\mathrm{scaled}}_{p\cdot}=s_p^W L^{\mathrm{natural}}_{p\cdot}$ to preserve
+$W_p(L\eta)_p$. Therefore the back-transform divides row $p$ by $s_p^W$. On the
+diagonal — where $L_{pp}$ is stored as $\ell_{pp} = \log L_{pp}$ — division becomes an
+additive shift ($\ell_{pp}^{\mathrm{natural}} = \tilde\ell_{pp} - \log s_p^W$); for
+off-diagonal entries it is direct division
+($\ell_{pq}^{\mathrm{natural}} = \tilde\ell_{pq} / s_p^W$). Note that the scale factor is
+keyed on the *row* index $p$ in both cases, not on the column index $q$.
 
 **Variance-covariance.** The back-transform is linear in the stored parameters, so the delta method gives
 
@@ -157,6 +184,16 @@ where $J$ is the diagonal Jacobian of the natural-from-scaled map: entries are $
 **Log-normal random coefficients.** The shifted log-normal parameterization $\beta_k = \exp(\mu_k) + \exp((L\eta)_k)$ does not admit a closed-form back-transform under multiplicative column scaling: dividing the full distribution of $\beta_k$ by $s_k^W$ cannot be re-expressed as a single shifted log-normal with shifted $(\mu_k, L_{k,\cdot})$, because the two $\exp$ terms cannot share a common scale factor. The implementation therefore passes log-normal $W$ columns through unscaled: $s_k^W := 1$ whenever `rc_dist[k] == 1`. The user retains responsibility for choosing reasonable units for log-normal RC variables.
 
 **Alternative scale denominators.** The `scale_vars` option also accepts `"mad"` (`stats::mad`, equal to $1.4826 \times \text{median}|X_{\cdot k} - \text{median}(X_{\cdot k})|$) and `"iqr"` (`stats::IQR(x) / 1.349`); both are SD-equivalent under normality and yield the same Jacobian construction as `"sd"` — only the per-column denominator $s_k^X$ (or $s_k^W$) differs. The robust denominators are preferable when heavy-tailed columns cause the sample SD to be dominated by outliers.
+
+### 1.6 Sampling Unit and Cross-Sectional Mixing
+
+In this implementation $i$ indexes a **choice situation**, and the likelihood integrates
+a separate coefficient distribution for each situation. Reusing a person identifier as
+though several tasks formed a panel does not create a shared latent coefficient across
+those tasks. Consequently `run_mxlogit()` is a cross-sectional mixed-logit likelihood;
+cluster-robust standard errors can allow score dependence across repeated tasks but cannot
+turn that likelihood into a panel random-coefficients model. The package's panel
+random-coefficients path is `run_hmnlogit()`.
 
 ---
 
@@ -208,15 +245,29 @@ To avoid numerical overflow/underflow, the implementation uses:
 
    Applied iteratively across draws $s$.
 
-### 2.5 Statistical Properties of the MSL Estimator
+### 2.5 Statistical Properties of the Finite-Draw Criterion
 
-The simulated probability $\bar{P}_{ij_i}$ is an unbiased simulator of the true mixed-logit probability, but the log-likelihood uses its *logarithm*, and by Jensen's inequality $\mathbb{E}[\log \bar{P}] < \log \mathbb{E}[\bar{P}]$. The simulated log-likelihood is therefore biased for any finite number of draws, and the MSL estimator inherits a bias of order $O(1/S)$ — the second-order term of the expansion of $\log \bar{P}$ around $P$, proportional to the simulation variance of $\bar{P}$. The classical results (Hajivassiliou & Ruud 1994; Lee 1995; Gouriéroux & Monfort 1996; Train 2009, Ch. 10) are:
+For independent pseudo-random draws, $\bar P_{ij_i}$ is an unbiased simulator of the
+exact mixed-logit probability. Its logarithm is not: Jensen's inequality gives
+$\mathbb E[\log\bar P]<\log\mathbb E[\bar P]$ when the simulator is nondegenerate, and a
+second-order expansion gives the familiar $O(S^{-1})$ criterion bias. Under the regularity
+conditions in Hajivassiliou and Ruud (1994), Lee (1995), Gouriéroux and Monfort (1996),
+and Train (2009, Ch. 10), the classical pseudo-random MSL benchmarks are:
 
 - **Fixed $S$**: MSL is inconsistent — the simulation bias does not vanish as $N \to \infty$.
 - **$S \to \infty$ with $N$** (at any rate): MSL is consistent.
-- **$S$ rising faster than $\sqrt{N}$**: MSL is asymptotically equivalent to exact maximum likelihood — the simulation noise is $o_p(N^{-1/2})$, the $\sqrt{N}$-normal limit distribution is that of the exact MLE, and the usual Hessian/BHHH variance estimators apply.
+- **$S$ rising faster than $\sqrt{N}$**: MSL is asymptotically equivalent to exact maximum likelihood — simulation bias is $o(N^{-1/2})$ and simulation variance is negligible under the maintained draw scheme.
 
-Quasi-Monte Carlo draws improve the constants, not these conditions: Halton sequences and their Owen-scrambled randomization (§5.4) reduce the simulation variance of $\bar{P}$ at a given $S$ by an order of magnitude or more relative to pseudo-random draws (Bhat 2003), which is why a few hundred Halton draws often match thousands of pseudo-random ones. The practical discipline follows directly — treat $S$ as part of the specification: increase it until the estimates *and* their standard errors stabilize, and if the parameters of interest (typically the Cholesky block) still move with $S$, report that sensitivity as part of the result. `mc_asymptotics()` operationalizes the consistency, asymptotic-normality, coverage, and information-matrix-equality claims as testable Monte Carlo diagnostics.
+`choicer` uses a Halton sequence rather than independent pseudo-random draws (§5.4), so
+the first sentence above is not a literal property of its deterministic store-mode
+simulator, and the pseudo-random rate conditions should not be quoted as an exact theorem
+for this implementation. Quasi-Monte Carlo often reduces integration error markedly at
+a given $S$ (Bhat 2003), but its error depends on integrand smoothness, dimension,
+sequence construction, and randomization. The operational implication is to treat $S$
+and, for generated scrambled draws, the seed as part of the numerical specification;
+increase $S$ until estimates, the Cholesky block, the objective, and standard errors
+stabilize. `mc_asymptotics()` supplies Monte Carlo diagnostics rather than a proof that a
+particular finite-$S$ fit satisfies exact-ML asymptotics.
 
 ---
 
@@ -433,16 +484,33 @@ where $\frac{\partial^2 \gamma_p^s}{\partial \ell_{pp}^2} = L_{pp} \cdot \eta_p^
 
 *Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
-#### 4.3.3 Cholesky Cross-Derivatives ($\ell_{pq}$, $\ell_{pr}$)
+#### 4.3.3 Cholesky Cross-Derivatives Within a Row
 
-For off-diagonal elements with the same row $p$ but different columns $q \neq r$ (both $< p$):
+Let $q\neq r$ with $q,r\leq p$ and define
 
-This contributes through the log-normal transformation (when applicable):
 $$
-\frac{\partial^2 V_{ij}^s}{\partial \ell_{pq} \partial \ell_{pr}} = W_{ijp} \cdot \gamma_p^{s*} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pq}} \cdot \frac{\partial \gamma_p^s}{\partial \ell_{pr}}
+a_{pq}^s=\frac{\partial\gamma_p^s}{\partial\ell_{pq}}
+=d_{pq}\eta_q^s,
+\qquad
+d_{pq}=\begin{cases}L_{pp}&q=p,\\1&q<p.\end{cases}
 $$
 
-Note: since both $q < p$ and $r < p$, both derivatives $\partial L_{pq}/\partial \ell_{pq} = 1$ and $\partial L_{pr}/\partial \ell_{pr} = 1$ (off-diagonal elements are unconstrained).
+Distinct Cholesky parameters affect the same transformed coefficient only when they
+belong to the same row $p$. Their cross derivative is
+
+$$
+\frac{\partial^2 V_{ij}^s}{\partial \ell_{pq} \partial \ell_{pr}}
+=W_{ijp}\,f_p''(\gamma_p^s)\,a_{pq}^s a_{pr}^s,
+$$
+
+where $f_p(\gamma)=\gamma$ for a normal coefficient and
+$f_p(\gamma)=\exp(\gamma)$ for a log-normal coefficient. Hence the cross derivative is
+zero for normal coefficients and equals
+$W_{ijp}\exp(\gamma_p^s)a_{pq}^sa_{pr}^s$ for log-normal coefficients. This expression
+also covers a diagonal/off-diagonal pair (say $q=p,r<p$); restricting both indices to be
+off-diagonal would omit terms that the C++ Hessian includes. Cross derivatives across
+different rows of $L$ are zero. The separate shifted term $\exp(\mu_p)$ implies no
+$\mu$--$L$ cross derivative.
 
 *Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
@@ -670,7 +738,11 @@ The full parameter vector $\theta$ is organized as:
 | $\beta$ | $[0, K_x)$ | $K_x$ | Fixed coefficients |
 | $\mu$ | $[K_x, K_x + K_w)$ | $K_w$ (if `rc_mean=TRUE`) | Random coefficient means |
 | $L$ | next block | $K_w(K_w+1)/2$ or $K_w$ | Cholesky parameters |
-| $\delta$ | remaining | $J-1$ or $J$ | ASCs |
+| $\delta$ | remaining | $0$, $J-1$, or $J$ | Free ASCs |
+
+The ASC length is zero when `use_asc = FALSE`, $J-1$ without an outside option, and
+$J$ with an outside option. The low-level parser requires at least one fixed-coefficient
+column ($K_x>0$), even when the substantive focus is entirely on random coefficients.
 
 ### 5.2 Delta Method for Variance Parameters
 
@@ -701,13 +773,57 @@ The implementation parallelizes over individuals using OpenMP:
 
 ### 5.4 Practical Notes
 
-1. **Negated Objectives**: The C++ functions return $-\ell(\theta)$ and $-\nabla\ell(\theta)$ (and $-\nabla^2\ell(\theta)$ for the Hessian) for compatibility with minimization routines that expect a loss function.
+1. **Negated Objectives**: `mxl_loglik_gradient_parallel` returns $-\ell(\theta)$ and
+   $-\nabla\ell(\theta)$; `mxl_hessian_parallel` returns
+   $-\nabla^2\ell(\theta)$. The BHHH kernel instead returns the positive-semidefinite
+   information approximation $\sum_iw_is_is_i^T$.
 
 2. **ASC Identification**: When `include_outside_option = FALSE`, the first inside alternative's ASC ($\delta_1$) is fixed to zero for identification. When `include_outside_option = TRUE`, all inside ASCs are free parameters (the outside option with $V=0$ serves as the reference).
 
 3. **Gradient vectorization**: The per-draw gradient is computed without a per-alternative loop. After forming $\mathbf{d}_i^s = \mathbf{e}_{j_i} - P_i^s$, the $\beta$ and $\mu$/$L$ blocks are evaluated with two BLAS dgemv calls ($X_i^T \mathbf{d}_i^s$ and $W_i^T \mathbf{d}_i^s$). The delta block uses an irregular scatter and remains a loop.
 
-4. **Draw source (RQMC mode)**: By default (`draws = "store"` in `run_mxlogit()`), the $K_w \times S \times N$ Halton cube is pre-materialized via `randtoolbox::halton` and stored in memory. With `draws = "generate"`, each individual's $S$ draws are computed on the fly by the C++ `HaltonGen` class using the same radical-inverse formula, so the integrand and all math in this document are unchanged — only the source of $\eta_i^s$ differs. Owen (2017) digit scrambling (`scramble = "owen"`, the default for generate mode) randomizes the Halton sequence by applying a per-digit permutation table derived from a master seed, yielding RQMC draws with better uniformity in high dimensions (Bhat 2003).
+4. **Exact draw layout and source**: In both modes, situation $i$ receives the contiguous
+   global indices $n=(i-1)S+s$ for $s=1,\ldots,S$; dimension $k$ uses the $k$th prime
+   base and the resulting uniform is mapped through the standard-normal inverse CDF. In
+   `draws = "store"`, `randtoolbox::halton(n = N*S, dim = K_w, normal = TRUE)` is
+   materialized as a $K_w\times S\times N$ cube during estimation. The fitted object
+   retains only `draws_info` metadata and post-estimation regenerates the cube; it does
+   not retain the cube itself. This mode is deterministic and has no seed or scramble.
+   In `draws = "generate"`, `HaltonGen` computes the radical inverse on demand.
+   `scramble = "none"` uses identity permutations and is tested against the
+   `randtoolbox` sequence. `scramble = "permuted"` (the default) constructs one
+   independently seeded Fisher--Yates permutation for every (dimension, digit-position)
+   pair and shares that table across sequence indices. Evaluation stops after the last
+   nonzero base-$b$ digit, so trailing zero digits remain unchanged. This is **not** Owen
+   nested-uniform scrambling: the digit permutation does not depend on the preceding
+   digit prefix, and the construction does not make each point marginally uniform.
+   Consequently it carries no standard RQMC unbiasedness, variance-rate, or
+   replicate-based error-estimation guarantee. The historical API value `"owen"` is a
+   deprecated alias for `"permuted"`; old fitted objects carrying that serialized label
+   remain readable. The result is deterministic conditional on the seed and independent
+   of OpenMP scheduling. Numerical sensitivity should be assessed by increasing $S$ and,
+   for permuted draws, varying the seed. Generate mode is available only through the
+   convenience data workflow; the advanced `input_data` workflow requires an explicit
+   `eta_draws` cube.
+
+5. **Finite-value guards**: The likelihood/gradient kernel replaces a non-finite global
+   negated objective by $10^{10}$ and a zero gradient, allowing the optimizer's line
+   search to backtrack; isolated non-finite gradient entries are zeroed. The Hessian
+   contributes situation $i$ only when
+   $\widehat P_i^{\mathrm{sum}}=\sum_sP_{ij_i}^s>10^{-12}$. These are numerical failure
+   guards, not changes to the mathematical criterion in its regular finite region.
+
+### 5.5 Data Layout
+
+- $X$ has $\sum_iM_i$ rows and is sliced by prefix sums into situation blocks.
+- $W$ may be row-aligned with $X$ or have one row per global inside alternative; the
+  internal `make_W_i()` either slices the situation block or gathers rows by the global
+  1-based `alt_idx`. The convenience R workflow constructs the row-aligned form.
+- `choice_idx` is a 1-based local row position within each situation block, or 0 for an
+  implicit outside choice. `alt_idx` is instead the global alternative ID used to gather
+  ASCs and alternative-level $W$ rows.
+- Stored draws have dimensions $K_w\times S\times N$. Generate-mode kernels receive an
+  empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
 
 ---
 
@@ -769,13 +885,19 @@ $$
 E_{jm}^k = \frac{1}{\bar{P}_{ij}} \cdot \frac{1}{S} \sum_{s=1}^{S} \left( -\beta_{ik}^s \cdot w_{imk} \cdot P_{ij}^s \cdot P_{im}^s \right)
 $$
 
-### 6.4 Aggregate Elasticities
+### 6.4 Weighted Average of Individual Elasticities
 
-The implementation computes weighted average elasticities across all individuals:
+The implementation computes weighted average *individual probability elasticities*:
 
 $$
 \bar{E}_{jm}^k = \frac{\sum_{i=1}^{N} w_i \cdot E_{ijm}^k}{\sum_{i=1}^{N} w_i}
 $$
+
+This is not generally the elasticity of an aggregate share under a common market-level
+perturbation. Rows index responding alternatives and columns perturbed alternatives. The
+kernel sets a contribution to zero when $\bar P_{ij}\leq10^{-12}$ and divides the
+accumulated matrix by total weight over all situations; with ordinary finite utilities,
+the threshold is only a numerical guard.
 
 *Code reference: [mxlogit.cpp:mxl_elasticities_parallel](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
@@ -888,7 +1010,7 @@ and $P_{ij}^s(\delta)$ is the probability for individual $i$, alternative $j$, a
 
 ### 8.3 Contraction Mapping Algorithm
 
-Berry, Levinsohn, and Pakes (1995) show that the following iteration converges to the solution:
+The Berry--Levinsohn--Pakes fixed-point iteration is:
 
 $$
 \delta_j^{(t+1)} = \delta_j^{(t)} + \log(s_j) - \log(\hat{s}_j^{(t)})
@@ -900,13 +1022,26 @@ $$
 \delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
 $$
 
+The target must be feasible and strictly positive. The kernel checks positivity of the
+inside target and predicted shares but does not verify that the full target sums to one.
+
 ### 8.4 Implementation Details
 
-1. **Initialization**: Start with initial guess $\delta^{(0)}$
-2. **Prediction**: Compute predicted shares $\hat{s}(\delta^{(t)})$ using `mxl_predict_shares_internal`
-3. **Update**: Apply the contraction: $\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})$
-4. **Convergence**: Check if $\max_j |\delta_j^{(t+1)} - \delta_j^{(t)}| < \text{tol}$
-5. **Normalization**: Subtract $\delta_1$ from all ASCs to maintain identification
+1. **No outside option.** `delta` may be the full length-$J$ vector or the free
+   length-$(J-1)$ block; the latter is padded with a leading zero. The first element is
+   subtracted initially and after every update, and the returned vector has length $J$
+   with its baseline entry equal to zero.
+2. **Outside option.** `delta` has length $J$ and contains inside ASCs only. The outside
+   utility remains zero, the update uses only the inside components of target and
+   predicted shares, and no inside ASC is re-centered. A coherent target outside share
+   is matched only indirectly because all shares sum to one.
+3. **Stopping.** The residual is the largest absolute inside-delta change. On reaching
+   `max_iter`, the kernel prints a warning and returns the last completed iterate.
+
+The public `blp.choicer_mxl()` method resolves the fitted draw metadata through
+`.mxl_gen_params()`: store-mode fits regenerate the materialized plain-Halton cube, while
+generate-mode fits pass the original seed, permutation mode, and $S$ to the contraction
+kernel. Share inversion therefore uses the same deterministic integration rule as the fit.
 
 *Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
@@ -993,24 +1128,34 @@ stratum-centered (design-based) estimator is **out of scope** here. See Manski &
 (1981) for the design-based treatment and Cosslett (1981) for the asymptotically efficient
 conditional-maximum-likelihood alternative.
 
-### 9.5 Implementation
+### 9.5 Implementation and Cluster-Robust Extension
 
-No new C++ is required. The per-individual score accumulated inside `mxl_bhhh_parallel`
-is weight-free, so the two summed matrices are obtained from the existing exports
-evaluated at $\hat{\theta}$:
+The common post-estimation path computes the $N\times p$ matrix $S$ of weight-free scores
+with `mxl_scores_parallel`, using the fit's stored or generated draw metadata, and forms
 
-| Matrix | Call |
-|--------|------|
-| Bread $A = \sum_i w_i(-H_i)$ | `mxl_hessian_parallel(..., weights = w)` |
-| Meat $B = \sum_i w_i^{2} s_i s_i^{\top}$ | `mxl_bhhh_parallel(..., weights = w^2)` |
+$$
+A=\texttt{mxl\_hessian\_parallel}(\widehat\theta;w),
+\qquad B=(\operatorname{diag}(w)S)^T(\operatorname{diag}(w)S).
+$$
 
-and combined in R as $V = A^{-1} B A^{-1}$. The variable-scaling back-transform
+The eager fit-time path is algebraically identical and can obtain the meat from the BHHH
+kernel with `weights = w^2`. The matrices are combined as $V = A^{-1} B A^{-1}$. For
+clusters $g(i)$, the alternative meat is
+
+$$
+B_{\mathrm{cluster}}=\sum_g
+\left(\sum_{i:g(i)=g}w_is_i\right)
+\left(\sum_{i:g(i)=g}w_is_i\right)^T,
+$$
+
+with no finite-cluster correction. Clustering changes inference, not the cross-sectional
+likelihood described in §1.6. The variable-scaling back-transform
 ($\S$1.5) and the Cholesky-to-$\Sigma$ delta method ($\S$5.2) apply on top, exactly as
 for any stored `vcov`. User-facing entry points: `wesml_weights()` and
 `sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
 estimates with the robust variance; `wesml_vcov()` returns it post hoc.
 
-*Code reference: `compute_sandwich_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mxl_scores_parallel()` / `mxl_bhhh_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, and `.assemble_score_vcov()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 
@@ -1058,7 +1203,15 @@ The median is preferred to the mean, $\exp(\mu_k) + \exp(\sigma_k^2/2)$ with $\s
 
 ### 10.3 Random Price Coefficients Are Rejected
 
-If the price coefficient itself is random, the WTP ratio $-\beta_k/\alpha(\eta)$ generally has **no finite moments**: a normally distributed $\alpha$ has positive density in any neighborhood of zero, so $E|{-\beta_k/\alpha}| = \infty$, and location summaries computed from the estimated parameters would be meaningless. The implementation refuses a random `price_var` and suggests either a fixed price coefficient or estimation in *WTP space* (reparameterizing utility as $\alpha(p_{ij} + \mathrm{WTP}^T x_{ij})$ so that WTPs are estimated directly; Train & Weeks 2005).
+The implementation requires `price_var` to be a fixed-coefficient column of $X$ and
+rejects every random price coefficient. For a normally distributed denominator this is
+substantively important: positive density arbitrarily close to zero generally makes
+$E|\beta_k/\alpha|$ diverge. That no-moment argument does **not** cover every possible
+mixing distribution—for example, inverse moments of a sign-constrained log-normal can be
+finite—but `wtp()` still does not simulate the joint ratio distribution, account for its
+correlation, or report its quantiles. Thus the rejection is both a specification guard
+for normal price mixing and an implementation boundary for other distributions. WTP-space
+estimation (Train and Weeks 2005) is not implemented in `choicer` v0.2.0.
 
 *Code reference: [R/wtp.R](https://github.com/fpcordeiro/choicer/blob/main/R/wtp.R)*
 
@@ -1068,7 +1221,11 @@ If the price coefficient itself is random, the WTP ratio $-\beta_k/\alpha(\eta)$
 
 ### 11.1 Expected Logsum
 
-Conditional on a coefficient realization $\beta(\eta)$, the logsum is the MNL expression $\log \sum_j \exp(V_{ij}(\eta))$. The mixed logit logsum integrates over the mixing distribution:
+Conditional on a coefficient realization $\beta(\eta)$, expected maximum utility over
+the iid type-I extreme-value errors is
+$\log \sum_j \exp(V_{ij}(\eta))+\gamma_E$, where $\gamma_E$ is Euler's constant. As in
+the other package methods, `logsum()` omits this scenario-invariant additive constant.
+The mixed-logit logsum integrates over the mixing distribution:
 
 $$
 \mathrm{logsum}_i = \mathbb{E}_\eta\left[\log \sum_{j \in C_i} \exp\big(V_{ij}(\eta)\big)\right]
@@ -1084,7 +1241,11 @@ $$
 \frac{1}{S}\sum_s \mathrm{lse}(V^s) \;\geq\; \mathrm{lse}\left(\frac{1}{S}\sum_s V^s\right),
 $$
 
-with strict inequality for any nondegenerate $\Sigma$: taking the logsum of *draw-averaged* utilities (as returned by the prediction kernel) systematically understates the expected logsum. A dedicated C++ kernel (`mxl_logsum`) therefore computes the per-draw logsum and averages across draws.
+with strict inequality when the draws induce non-common variation in utilities. A
+nondegenerate $\Sigma$ alone is not sufficient for strictness: if the random contribution
+is the same additive shift for every available alternative, log-sum-exp is affine in that
+direction and equality holds. A dedicated C++ kernel (`mxl_logsum`) computes the per-draw
+logsum and then averages across draws.
 
 ### 11.2 Expected Consumer Surplus
 
@@ -1094,7 +1255,14 @@ $$
 \mathbb{E}[CS_i] = \frac{\mathrm{logsum}_i}{-\alpha}
 $$
 
-A random price coefficient is rejected for the same no-finite-moments reason as in §10.3 ($1/(-\alpha(\eta))$ has no finite expectation). As in the MNL case, the formula assumes no income effects, and CS levels inherit the ASC normalization — only differences across counterfactual scenarios are meaningful. The implementation reports point estimates for MXL (the delta-method SE of the mean CS is currently provided for MNL only); Krinsky–Robb resampling of $\hat\theta$ from its asymptotic distribution is the practical interval method.
+A random price coefficient is rejected for the capability and specification reasons in
+§10.3; the divergence argument applies directly to normal price mixing but not to every
+sign-constrained distribution. As in MNL, the formula assumes no income effects. The
+routine does not enforce $\alpha<0$; the economic interpretation as positive marginal
+utility of income requires the analyst to verify that sign. CS levels inherit the ASC
+normalization, so only differences across counterfactual scenarios are meaningful. The
+implementation reports point estimates for MXL (the delta-method SE of mean CS is
+currently provided for MNL only); Krinsky--Robb resampling is a practical interval method.
 
 *Code reference: [R/surplus.R](https://github.com/fpcordeiro/choicer/blob/main/R/surplus.R); kernel in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp) (`mxl_logsum`)*
 
@@ -1106,7 +1274,10 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 
 - **McFadden pseudo R²**: $R^2 = 1 - \ell(\hat\theta)/\ell_0$, adjusted $R^2_{\text{adj}} = 1 - (\ell(\hat\theta) - K)/\ell_0$, with $K$ counting all estimated parameters ($\beta$, $\mu$, Cholesky block, ASCs).
 - **Equal-shares null** (default; exact for unbalanced choice sets and weights): $\ell_0 = -\sum_i w_i \log(M_i + \mathbf{1}_{\text{outside}})$.
-- **Market-shares null** (constants-only closed form): $\ell_0 = \sum_j N_j \log(s_j)$, valid only for identical choice-set composition and uniform weights. The constants-only model contains no random coefficients, so the MNL closed form applies unchanged.
+- **Market-shares null** (constants-only closed form):
+  $\ell_0 = c\sum_j N_j \log(s_j)$, where $c$ is the common weight, valid only
+  for identical choice-set composition and uniform weights. The constants-only model
+  contains no random coefficients, so the MNL closed form applies unchanged.
 - **Hit rate**: weighted share of choice situations whose observed choice has the highest *simulated* probability $\bar{P}_{ij} = \frac{1}{S}\sum_s P_{ij}^s$; with an outside option, the kernel returns the simulated outside probability directly and the outside good competes for the maximum.
 
 *Code reference: [R/gof.R](https://github.com/fpcordeiro/choicer/blob/main/R/gof.R)*
@@ -1123,7 +1294,6 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 - Gouriéroux, C., & Monfort, A. (1996). *Simulation-Based Econometric Methods*. Oxford University Press.
 - Hajivassiliou, V. A., & Ruud, P. A. (1994). Classical estimation methods for LDV models using simulation. In R. F. Engle & D. L. McFadden (Eds.), *Handbook of Econometrics*, Vol. 4 (pp. 2383-2441). North-Holland.
 - Lee, L.-F. (1995). Asymptotic bias in simulated maximum likelihood estimation of discrete choice models. *Econometric Theory*, 11(3), 437-483.
-- Owen, A. B. (2017). A randomized Halton algorithm in R. arXiv:1706.02808.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
 - Manski, C. F., & McFadden, D. (1981). Alternative estimators and sample designs for discrete choice analysis. In *Structural Analysis of Discrete Data with Econometric Applications*. MIT Press.
 - Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based samples. *Econometrica*, 49(5), 1289-1316.

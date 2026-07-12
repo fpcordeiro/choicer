@@ -21,6 +21,21 @@
 #   * cf_residual_col (Petrin-Train control function) is appended to X as an
 #     ordinary covariate; provenance is recorded in data_spec.
 
+#' Stable internal keys for hierarchical-Bayes choice situations
+#'
+#' Length-prefixing makes the composite key unambiguous even when identifiers
+#' contain the separator. The keys are deliberately internal: user-facing
+#' output continues to use the original person/task columns.
+#' @noRd
+.hb_task_keys <- function(id, person = NULL) {
+  id_chr <- enc2utf8(as.character(id))
+  id_key <- paste0(nchar(id_chr, type = "bytes"), ":", id_chr)
+  if (is.null(person)) return(id_key)
+
+  person_chr <- enc2utf8(as.character(person))
+  paste0(nchar(person_chr, type = "bytes"), ":", person_chr, "|", id_key)
+}
+
 #' Shared panel preparation for the hierarchical Bayes preps
 #'
 #' Internal workhorse behind [prepare_hmnl_data()] and [prepare_hmnp_data()].
@@ -195,6 +210,14 @@
   dt[, idx_in_group := seq_len(.N), by = task_by]
   dt[, task_idx := .GRP, by = task_by]      # 1..n_tasks in sorted order
 
+  # Retain sorted task identities so welfare counterfactuals can match the
+  # baseline and policy states by identity rather than silently by position.
+  task_identity <- unique(dt[, ..task_by])
+  task_keys <- .hb_task_keys(
+    task_identity[[id_col]],
+    if (!is.null(person_col)) task_identity[["HB_PERSON"]]
+  )
+
   ## Task-constant covariates ---------------------------------------------------
   ## A covariate with no within-task variation is unidentified WITHOUT an
   ## outside good (it cancels from every softmax/utility contrast and
@@ -323,6 +346,7 @@
     choice_pos  = choice_pos,
     Ti          = Ti,
     person_ids  = person_ids,
+    task_keys   = task_keys,
     N_persons   = N_persons,
     n_tasks     = n_tasks,
     J           = as.integer(J),

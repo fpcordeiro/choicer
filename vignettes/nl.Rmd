@@ -14,8 +14,9 @@ options(digits = 4)
 
 Nested logit groups alternatives into *nests* of close substitutes. Within a
 nest, alternatives share an unobserved component, so substitution is stronger
-inside a nest than across nests. Each nest has a positive dissimilarity
-parameter λ. The usual random-utility interpretation of
+inside a nest than across nests. Each non-singleton nest has a positive
+dissimilarity parameter λ; singleton nests have λ fixed at 1 because no
+within-nest variation can identify it. The usual random-utility interpretation of
 nested logit focuses on `0 < λ <= 1`: λ = 1 gives the MNL limit, and smaller λ
 means tighter substitution inside the nest. choicer imposes λ > 0 rather than an
 upper bound. Estimates above one are mathematically computable but imply negative
@@ -139,14 +140,17 @@ fitted object with the same syntax used throughout choicer.
 ## Empirical checklist
 
 A reportable nested-logit specification should show the proposed tree and its
-economic rationale; report every lambda estimate and uncertainty interval;
-identify singleton nests, whose dissimilarity parameter has no within-nest
-variation to learn from; and flag estimates outside the conventional random-
-utility range `0 < lambda <= 1`. Refit plausible alternative trees and compare
+economic rationale; report every estimated lambda and uncertainty interval;
+identify singleton nests, whose lambda is fixed at 1 by choicer because there is
+no within-nest variation to learn from; and flag estimates outside the
+conventional random-utility range `0 < lambda <= 1`. Refit plausible alternative trees and compare
 fit, diversion, elasticities, WTP, and welfare—not just the coefficient table.
 
-When using `blp()`, report convergence and sensitivity to damping. Damping is a
-numerical aid, not evidence for the tree or the economic validity of lambda. NL
+When using `blp()`, verify that shares reconstructed from the returned mean
+utilities match the target within the stated tolerance, and report sensitivity
+to damping. (The current return value is the utility vector, not a convergence
+diagnostics object.) Damping is a numerical aid, not evidence for the tree or
+the economic validity of lambda. NL
 does not search over trees or estimate cross-nested substitution, so uncertainty
 about the grouping remains specification uncertainty outside the reported
 standard errors.

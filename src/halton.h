@@ -4,7 +4,7 @@
 //   HALTON_PRIMES[]       — 128-prime table (primes[k] is the base for dimension k)
 //   radical_inverse()     — van der Corput radical-inverse function
 //   inv_normal_cdf()      — Wichura (1988) AS241 PPND16 inverse normal CDF
-//   struct HaltonGen      — Owen digit-scrambled Halton generator with fill_eta_i()
+//   struct HaltonGen      — position-wise digit-permuted Halton generator
 //
 // DESIGN CONTRACT:
 //   - Header-only: all functions are inline or templated; no .cpp counterpart.
@@ -161,10 +161,19 @@ inline double inv_normal_cdf(double p) {
 }
 
 // ============================================================================
-// §2.5–2.6 Owen digit scrambling and HaltonGen
+// §2.5–2.6 Position-wise digit permutations and HaltonGen
 //
 // scramble_mode = 0: identity permutations (compat mode, matches randtoolbox exactly)
-// scramble_mode = 1: Owen (2017) digit scrambling via Fisher–Yates + splitmix64
+// scramble_mode = 1: seeded Fisher–Yates digit permutation for every
+// (dimension k, digit position d), shared across all sequence indices.
+//
+// This is NOT Owen's nested-uniform scramble: Owen's permutation at position d
+// depends on the preceding d-digit prefix, whereas perm[k][d] does not. Also,
+// scrambled_halton_uniform() stops when n == 0, so implicit trailing zero
+// digits are left unchanged instead of being permuted. Consequently this
+// construction must not be advertised with standard RQMC marginal-uniformity,
+// unbiasedness, variance-rate, or replicate-error guarantees. The public R
+// value "owen" is retained only as a deprecated compatibility alias for mode 1.
 //
 // HALTON_MAX_DIGITS = 64 is a conservative upper bound on the number of base-b
 // digits needed for any practical sequence index (covers indices up to b^64).
@@ -175,7 +184,7 @@ static const int HALTON_MAX_DIGITS = 64;
 struct HaltonGen {
     int S;
     int K_w;
-    int scramble_mode;  // 0 = identity (none/compat), 1 = Owen digit scrambling
+    int scramble_mode;  // 0 = identity; 1 = position-wise digit permutation
 
     // perm[k][d][j]: permuted digit j at digit-position d for dimension k
     // perm[k][d] is a std::vector<uint32_t> of size HALTON_PRIMES[k]
@@ -189,8 +198,8 @@ struct HaltonGen {
     // Main constructor: build permutation tables from master seed.
     //   seed          — master seed (uint64_t)
     //   S_            — number of draws per individual
-    //   K_w_          — number of random-coefficient dimensions (< HALTON_N_PRIMES)
-    //   scramble_mode_— 0 = identity, 1 = Owen digit scrambling
+    //   K_w_          — number of random-coefficient dimensions (<= HALTON_N_PRIMES)
+    //   scramble_mode_— 0 = identity, 1 = position-wise digit permutation
     HaltonGen(uint64_t seed, int S_, int K_w_, int scramble_mode_)
         : S(S_), K_w(K_w_), scramble_mode(scramble_mode_),
           perm(K_w_)
@@ -221,7 +230,8 @@ struct HaltonGen {
         }
     }
 
-    // Compute one scrambled Halton draw in [0, 1) for dimension k, index n (1-based).
+    // Compute one digit-permuted Halton draw in [0, 1) for dimension k, index n.
+    // Only the explicit base-b digits of n are processed; trailing zeros are not.
     // In identity mode (scramble_mode = 0), reduces to radical_inverse(n, HALTON_PRIMES[k]).
     inline double scrambled_halton_uniform(uint64_t n, int k) const {
         uint32_t b = HALTON_PRIMES[k];

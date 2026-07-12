@@ -33,7 +33,7 @@ double halton_inv_normal_cdf(double p) {
     return inv_normal_cdf(p);
 }
 
-//' Generate an n x dim matrix of uniform scrambled-Halton draws for testing
+//' Generate an n x dim matrix of uniform digit-permuted Halton draws for testing
 //'
 //' Returns an n x dim matrix using global indices 1..n (one row per index,
 //' one column per dimension). For scramble=0 (compat mode) the result
@@ -41,12 +41,16 @@ double halton_inv_normal_cdf(double p) {
 //'
 //' @param n Number of Halton points (rows).
 //' @param dim Number of dimensions (columns).
-//' @param seed Master seed for Owen scrambling (coerced to uint64_t). Ignored when scramble=0.
-//' @param scramble 0 = identity (compat), 1 = Owen digit scrambling.
+//' @param seed Master seed for position-wise digit permutations (coerced to uint64_t).
+//'   Ignored when scramble=0.
+//' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
 //' @return n x dim arma::mat of uniform [0,1) values.
 //' @noRd
 // [[Rcpp::export]]
 arma::mat halton_generate_uniform(int n, int dim, double seed, int scramble) {
+    if (dim < 1 || dim > HALTON_N_PRIMES) {
+        Rcpp::stop("dim must be between 1 and %d.", HALTON_N_PRIMES);
+    }
     HaltonGen gen(static_cast<uint64_t>(seed), 1, dim, scramble);
     arma::mat out(n, dim);
     for (int row = 0; row < n; ++row) {
@@ -69,12 +73,15 @@ arma::mat halton_generate_uniform(int n, int dim, double seed, int scramble) {
 //' @param S   Number of draws per individual.
 //' @param N   Number of individuals.
 //' @param K_w Number of random-coefficient dimensions.
-//' @param seed Master seed for Owen scrambling (coerced to uint64_t).
-//' @param scramble 0 = identity (compat), 1 = Owen digit scrambling.
+//' @param seed Master seed for position-wise digit permutations (coerced to uint64_t).
+//' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
 //' @return K_w x (S*N) arma::mat of standard-normal draws.
 //' @noRd
 // [[Rcpp::export]]
 arma::mat halton_generate_normal(int S, int N, int K_w, double seed, int scramble) {
+    if (K_w < 1 || K_w > HALTON_N_PRIMES) {
+        Rcpp::stop("K_w must be between 1 and %d.", HALTON_N_PRIMES);
+    }
     HaltonGen gen(static_cast<uint64_t>(seed), S, K_w, scramble);
     arma::mat out(K_w, static_cast<arma::uword>(S) * static_cast<arma::uword>(N));
     arma::mat eta_i;

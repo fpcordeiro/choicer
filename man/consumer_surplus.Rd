@@ -135,7 +135,13 @@ the estimation data (\code{attr(, "cv")}), i.e. the posterior of
 \eqn{(\mathrm{logsum}_{new} - \mathrm{logsum}_{base}) /
 (-\bar\gamma_{price})} summed over tasks. Requires a fixed-sign price
 coefficient; the posterior-median ratio discipline of
-\code{\link[=wtp.choicer_hb]{wtp.choicer_hb()}} applies.
+\code{\link[=wtp.choicer_hb]{wtp.choicer_hb()}} applies. When \code{newdata} is supplied, \code{weights} is an
+optional non-negative length-\code{n_tasks} vector used in the aggregate CV;
+equal task weights are the default. The counterfactual must contain the
+same choice situations as the estimation data, identified by
+(\code{person_col}, \code{id_col}) (or \code{id_col} when \code{person_col = NULL}); rows and
+tasks may be reordered. Unnamed \code{weights} follow the baseline tasks'
+sorted (\code{person_col}, \code{id_col}) order used by the prepared data.
 
 \item \code{consumer_surplus(choicer_hmnp)}: Not available for the probit (see
 \code{\link[=logsum.choicer_hmnp]{logsum.choicer_hmnp()}}); roadmapped via simulated Emax.

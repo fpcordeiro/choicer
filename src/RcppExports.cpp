@@ -690,8 +690,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_blp_contraction
-arma::vec mxl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::mat& W, const arma::vec& beta, const arma::vec& mu, const arma::vec& L_params, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool include_outside_option, const double tol, const int max_iter);
-RcppExport SEXP _choicer_mxl_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP WSEXP, SEXP betaSEXP, SEXP muSEXP, SEXP L_paramsSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP include_outside_optionSEXP, SEXP tolSEXP, SEXP max_iterSEXP) {
+arma::vec mxl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::mat& W, const arma::vec& beta, const arma::vec& mu, const arma::vec& L_params, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool include_outside_option, const double tol, const int max_iter, const int gen_seed, const int gen_scramble, const int gen_S);
+RcppExport SEXP _choicer_mxl_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP WSEXP, SEXP betaSEXP, SEXP muSEXP, SEXP L_paramsSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP include_outside_optionSEXP, SEXP tolSEXP, SEXP max_iterSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -712,7 +712,10 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
     Rcpp::traits::input_parameter< const double >::type tol(tolSEXP);
     Rcpp::traits::input_parameter< const int >::type max_iter(max_iterSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_blp_contraction(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter));
+    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
+    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_blp_contraction(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1004,7 +1007,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_logsum", (DL_FUNC) &_choicer_mxl_logsum, 14},
     {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 15},
     {"_choicer_mxl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mxl_diversion_ratios_parallel, 17},
-    {"_choicer_mxl_blp_contraction", (DL_FUNC) &_choicer_mxl_blp_contraction, 17},
+    {"_choicer_mxl_blp_contraction", (DL_FUNC) &_choicer_mxl_blp_contraction, 20},
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 18},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
     {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 9},

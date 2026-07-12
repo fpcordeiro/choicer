@@ -70,7 +70,7 @@ The full demand and welfare toolkit is available on the fitted object. Treating
 `x2` as price:
 
 ```{r post}
-predict(fit, type = "shares")        # predicted market shares
+predict(fit, type = "shares")        # aggregate fitted shares in these data
 elasticities(fit, elast_var = "x2")  # own- and cross-price elasticities
 diversion_ratios(fit)                # where demand goes
 wtp(fit, price_var = "x2")           # willingness to pay, with delta-method SEs
