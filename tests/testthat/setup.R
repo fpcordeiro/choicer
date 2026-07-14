@@ -3,6 +3,13 @@
 
 library(data.table)
 
+# CRAN allows at most two simultaneous threads.  These runtime caps cover
+# explicit calls to `set_num_threads()` in individual tests as well as the
+# data.table thread pool; the environment variables in tests/testthat.R cap
+# both libraries before they are loaded.
+set_num_threads(2L)
+data.table::setDTthreads(2L)
+
 # Helper to create nested logit inputs from prepare_nl_data() (used in multiple test files)
 # Creates 6 explicit alternatives in 3 nests:
 #   Nest "A": j=0 (singleton, zero covariates — acts as outside option)

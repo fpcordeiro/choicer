@@ -54,23 +54,25 @@ test_that("mnp_gibbs honours thinning", {
 })
 
 test_that("mnp_gibbs draws are seed-reproducible and thread-invariant", {
+  on.exit(set_num_threads(2L), add = TRUE)
+
   dt <- create_small_mnl_data()
   d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
   args <- make_gibbs_args(d)
 
   set_num_threads(1)
   out1 <- do.call(mnp_gibbs, args)
-  set_num_threads(4)
-  out4 <- do.call(mnp_gibbs, args)
+  set_num_threads(2)
+  out2 <- do.call(mnp_gibbs, args)
 
   # Bitwise identical across thread counts: each (iteration, observation)
   # task has its own RNG stream, so scheduling cannot affect the draws
-  expect_identical(out1$betadraw, out4$betadraw)
-  expect_identical(out1$sigmadraw, out4$sigmadraw)
+  expect_identical(out1$betadraw, out2$betadraw)
+  expect_identical(out1$sigmadraw, out2$sigmadraw)
 
   # Same seed twice -> identical; different seed -> different
   out_again <- do.call(mnp_gibbs, args)
-  expect_identical(out4$betadraw, out_again$betadraw)
+  expect_identical(out2$betadraw, out_again$betadraw)
   args2 <- args
   args2$seed <- 999
   expect_false(identical(do.call(mnp_gibbs, args2)$betadraw, out1$betadraw))

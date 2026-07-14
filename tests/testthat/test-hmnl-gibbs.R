@@ -71,32 +71,36 @@ test_that("hmnl_gibbs returns correctly shaped, finite draws", {
 })
 
 test_that("hmnl_gibbs draws are seed-reproducible and thread-invariant", {
+  on.exit(set_num_threads(2L), add = TRUE)
+
   fx <- make_hmnl_fixture()
   args <- make_hmnl_args(fx$d)
 
   set_num_threads(1)
   out1 <- do.call(hmnl_gibbs, args)
-  set_num_threads(4)
-  out4 <- do.call(hmnl_gibbs, args)
+  set_num_threads(2)
+  out2 <- do.call(hmnl_gibbs, args)
 
   # Bitwise identical across thread counts: per-(iteration, unit) RNG
   # streams + fixed-order accumulation + the serial delta sweep.
-  expect_identical(out1$bdraw, out4$bdraw)
-  expect_identical(out1$wdraw, out4$wdraw)
-  expect_identical(out1$deltadraw, out4$deltadraw)
-  expect_identical(out1$thetadraw, out4$thetadraw)
-  expect_identical(out1$sigma_d2draw, out4$sigma_d2draw)
-  expect_identical(out1$loglik_trace, out4$loglik_trace)
+  expect_identical(out1$bdraw, out2$bdraw)
+  expect_identical(out1$wdraw, out2$wdraw)
+  expect_identical(out1$deltadraw, out2$deltadraw)
+  expect_identical(out1$thetadraw, out2$thetadraw)
+  expect_identical(out1$sigma_d2draw, out2$sigma_d2draw)
+  expect_identical(out1$loglik_trace, out2$loglik_trace)
 
   # Same seed twice -> identical; different seed -> different
   out_again <- do.call(hmnl_gibbs, args)
-  expect_identical(out4$bdraw, out_again$bdraw)
+  expect_identical(out2$bdraw, out_again$bdraw)
   args2 <- args
   args2$seed <- 999
   expect_false(identical(do.call(hmnl_gibbs, args2)$bdraw, out1$bdraw))
 })
 
 test_that("hmnl_gibbs is thread-invariant in the J > N regime", {
+  on.exit(set_num_threads(2L), add = TRUE)
+
   # 10 respondents, 25 alternatives: the master RNG tags (2N + J + 0..3)
   # sit beyond every delta tag only because the base is 2N + J, not 3N.
   sim <- simulate_hmnl_data(N = 10, T = 1, J = 25, seed = 5,
@@ -108,11 +112,11 @@ test_that("hmnl_gibbs is thread-invariant in the J > N regime", {
 
   set_num_threads(1)
   out1 <- do.call(hmnl_gibbs, args)
-  set_num_threads(4)
-  out4 <- do.call(hmnl_gibbs, args)
-  expect_identical(out1$bdraw, out4$bdraw)
-  expect_identical(out1$deltadraw, out4$deltadraw)
-  expect_identical(out1$sigma_d2draw, out4$sigma_d2draw)
+  set_num_threads(2)
+  out2 <- do.call(hmnl_gibbs, args)
+  expect_identical(out1$bdraw, out2$bdraw)
+  expect_identical(out1$deltadraw, out2$deltadraw)
+  expect_identical(out1$sigma_d2draw, out2$sigma_d2draw)
 })
 
 test_that("hmnl_gibbs keep_beta_i modes are consistent", {

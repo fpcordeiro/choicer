@@ -14,16 +14,20 @@ documentation claim about thread-count reproducibility of MCMC draws.
 
 - local macOS: `R CMD check --as-cran choicer_0.2.0.tar.gz`
   - 0 errors | 0 warnings | 0 notes
-- win-builder R-devel:
+- previous win-builder R-devel (before the spelling dictionary):
   - 0 errors | 0 warnings | 1 note
   - `counterfactuals` in `DESCRIPTION` is a correctly spelled, standard econometric term.
 
-Both checks used the version-stamped `choicer_0.2.0.tar.gz`. The local
-`--as-cran` run included CRAN incoming-feasibility, HTML-manual/math-rendering,
-examples including `--run-donttest`, tests, and vignette rebuilding.
+The current local `--as-cran` run used a freshly rebuilt
+`choicer_0.2.0.tar.gz` with the spelling and thread-cap fixes. It included CRAN
+incoming-feasibility, HTML-manual/math-rendering, examples including
+`--run-donttest`, tests, and vignette rebuilding. A fresh win-builder R-devel
+check should be run before resubmission; `.aspell/defaults.R` registers the
+legitimate term `counterfactuals` for the incoming DESCRIPTION spell check.
 
-Tests cap OpenMP at two threads (`OMP_THREAD_LIMIT=2`, `OMP_NUM_THREADS=2`
-in `tests/testthat.R`) in line with CRAN policy.
+Tests cap OpenMP and data.table at two threads in line with CRAN policy:
+environment variables are set before loading the package in `tests/testthat.R`,
+and authoritative runtime caps are set in `tests/testthat/setup.R`.
 
 ## Downstream dependencies
 
