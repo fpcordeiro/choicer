@@ -26,6 +26,9 @@
 *.knit.md
 # R Environment Variables
 .Renviron
+# CRAN submission receipt
+CRAN-SUBMISSION
+### Other project files ###
 CLAUDE.md
 AGENTS.md
 .claude/*
