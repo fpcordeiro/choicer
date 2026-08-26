@@ -593,9 +593,7 @@ Rcpp::List hmnp_gibbs(const arma::mat& X,
       }   // implied barrier
 
       // --- (d) Hierarchy + variance draws + recording (master) --------------
-#ifdef _OPENMP
-#pragma omp master
-#endif
+      CHOICER_OMP_MASKED
       {
         {
           Xoshiro256pp rng_bb = make_stream(

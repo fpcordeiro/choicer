@@ -8,6 +8,22 @@
 #include <omp.h>
 #endif
 
+// ---------------------------------------------------------------------------
+// Primary-thread block.
+//
+// OpenMP 5.1 deprecated `master` in favour of `masked`; GCC 16 warns on the
+// old spelling. `masked` with no `filter` clause is semantically identical --
+// the block runs on the primary thread (filter(0)) with no implied barrier --
+// so we simply emit whichever spelling the compiler in hand expects. Without
+// OpenMP it expands to nothing: the sole thread is already the primary one.
+#ifndef _OPENMP
+#  define CHOICER_OMP_MASKED
+#elif _OPENMP >= 202011
+#  define CHOICER_OMP_MASKED _Pragma("omp masked")
+#else
+#  define CHOICER_OMP_MASKED _Pragma("omp master")
+#endif
+
 // Function Declarations ------------------------------------------------------
 Rcpp::IntegerVector compute_prefix_sum(const Rcpp::IntegerVector& M);
 
