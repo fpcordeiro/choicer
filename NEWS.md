@@ -1,3 +1,24 @@
+# choicer 0.2.1
+
+Patch release addressing a compilation warning reported by CRAN's GCC check
+flavors. No user-visible behavior, API, or numerical results change.
+
+## Compilation
+
+- Replaced the seven `#pragma omp master` directives in the Gibbs samplers and
+  thread-introspection helpers with a `CHOICER_OMP_MASKED` macro that emits
+  `masked` on OpenMP 5.1 and later, `master` on earlier versions, and nothing
+  when the package is built without OpenMP. OpenMP 5.1 deprecated `master` in
+  favor of `masked`, and GCC 16 — now the compiler on the
+  `r-devel-linux-x86_64-fedora-gcc` and `r-devel-linux-x86_64-debian-gcc`
+  check flavors — warns on the old spelling, which `R CMD check` reports as a
+  significant install warning, escalating the check result to WARNING.
+  `masked` with no `filter` clause is semantically identical to `master`: the
+  block runs on the primary thread with no implied barrier, so the samplers'
+  fixed-order reductions, barrier structure, and
+  no-R-API-off-the-primary-thread contract are unchanged, as are posterior
+  draws for a given seed and thread count.
+
 # choicer 0.2.0
 
 ## Public API cleanup (breaking)

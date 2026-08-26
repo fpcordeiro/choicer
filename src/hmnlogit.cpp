@@ -550,9 +550,7 @@ Rcpp::List hmnl_gibbs(const arma::mat& X,
       // Startup guard: the initial state must have a finite loglik (a bad
       // beta_pooled / delta_init would otherwise poison the MH ratios).
       if (r == 0) {
-#ifdef _OPENMP
-#pragma omp master
-#endif
+        CHOICER_OMP_MASKED
         {
           for (int i = 0; i < N; ++i) {
             if (!std::isfinite(ll_pers(i))) {
@@ -667,9 +665,7 @@ Rcpp::List hmnl_gibbs(const arma::mat& X,
       if (abort_code != ABORT_NONE) break;
 
       // --- (b) delta phase (SERIAL, master) + (c) hierarchy + recording -----
-#ifdef _OPENMP
-#pragma omp master
-#endif
+      CHOICER_OMP_MASKED
       {
         // Prior means z_j' theta, fixed alternative order (theta is fixed
         // for the whole sweep -- it is redrawn only after delta).

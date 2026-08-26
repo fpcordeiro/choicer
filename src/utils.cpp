@@ -18,7 +18,7 @@ Rcpp::List collect_thread_info() {
   int active_threads = 1;
 #pragma omp parallel
   {
-#pragma omp master
+    CHOICER_OMP_MASKED
     {
       active_threads = omp_get_num_threads();
     }
@@ -66,7 +66,7 @@ void get_num_threads() {
   #else
   #pragma omp parallel
   {
-    #pragma omp master
+    CHOICER_OMP_MASKED
     {
       Rprintf("  OpenMP version (_OPENMP)       %d\n", _OPENMP);
       Rprintf("  omp_get_num_threads()          %d\n", omp_get_num_threads());

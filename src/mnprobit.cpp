@@ -316,9 +316,7 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
       // sum_i X_i' Omega w_i); drawn via Cholesky solves, no inverse formed.
       // Master-only; the X' (Omega w) products are hand-rolled in a fixed
       // order so results do not depend on the BLAS or the thread count.
-#ifdef _OPENMP
-#pragma omp master
-#endif
+      CHOICER_OMP_MASKED
       {
         Xoshiro256pp rng_beta = make_stream(useed, r, static_cast<uint64_t>(N));
         Q = A;
@@ -378,9 +376,7 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
       }   // implied barrier: Mu complete before the Sigma step
 
       // --- (c) Sigma | w, beta: IW(nu + N, V + S), S = sum_i eps_i eps_i' ----
-#ifdef _OPENMP
-#pragma omp master
-#endif
+      CHOICER_OMP_MASKED
       {
         Xoshiro256pp rng_sigma = make_stream(useed, r, static_cast<uint64_t>(N) + 1);
         S.zeros();
