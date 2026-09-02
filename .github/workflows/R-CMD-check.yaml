@@ -50,6 +50,7 @@ jobs:
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
 
 
+
   # GCC 16 check flavor. CRAN's r-devel-linux-x86_64-{fedora,debian}-gcc run
   # GCC 16, which the matrix above does not cover: ubuntu-latest ships GCC
   # 13/14 and macOS uses clang, all of which set _OPENMP below 202011 and so
@@ -78,22 +79,27 @@ jobs:
           cat("R:       ", R.version.string, "\n")
           cat("compiler:", system("gcc --version | head -1", intern = TRUE), "\n")
           cat("pandoc:  ", Sys.which("pandoc"), "\n")
+          cat("cmake:   ", Sys.which("cmake"), "\n")
         shell: Rscript {0}
 
-      # The container points `repos` at an r-hub prebuilt binary repo whose
-      # artifacts 404 for this R/platform pair. install.packages does not fall
-      # back to source when a *listed* binary fails to download -- it warns and
-      # carries on -- so set CRAN globally for every install below.
-      - name: Install dependencies
-        run: |
-          options(repos = c(CRAN = "https://cloud.r-project.org"))
-          install.packages(c("remotes", "rcmdcheck"))
-          remotes::install_deps(dependencies = TRUE)
-        shell: Rscript {0}
+      # nloptr builds a vendored NLopt with CMake whenever pkg-config cannot
+      # find a system copy, and the image ships neither. Without this the job
+      # fails on a missing hard dependency rather than on anything to do with
+      # the package under test.
+      - name: Install system dependencies
+        run: dnf install -y cmake
+        shell: bash
 
-      # A silently incomplete install shows up much later as a confusing
-      # failure inside R CMD build (e.g. "vignette builder 'knitr' not found").
-      # Fail here instead, naming what is missing.
+      # Use r-hub's own action rather than installing by hand: it resolves this
+      # image's binary repo, installs pandoc, and goes through pak, which
+      # handles system requirements. Plain install.packages() against CRAN does
+      # not work here -- several packages have no working source build on
+      # R-devel + GCC 16, and install.packages() only warns when a listed
+      # binary fails to download, so a partial install looks like a success.
+      - uses: r-hub/actions/setup-deps@v1
+
+      # A silently incomplete install otherwise surfaces much later as an
+      # unrelated-looking failure inside R CMD build. Fail here, naming it.
       - name: Verify check prerequisites
         run: |
           need <- c("rcmdcheck", "knitr", "rmarkdown", "testthat", "numDeriv",
