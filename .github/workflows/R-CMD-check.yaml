@@ -72,9 +72,15 @@ jobs:
     steps:
       - uses: r-hub/actions/checkout@v1
 
+      # The container points `repos` at an r-hub prebuilt binary repo whose
+      # artifacts 404 for this R/platform pair. install.packages does not fall
+      # back to source when a *listed* binary fails to download, so pin CRAN
+      # here and let rcmdcheck build from source. install_deps resolves its own
+      # repos and works against the container default.
       - name: Install dependencies
         run: |
-          install.packages(c("remotes", "rcmdcheck"))
+          install.packages(c("remotes", "rcmdcheck"),
+                           repos = "https://cloud.r-project.org")
           remotes::install_deps(dependencies = TRUE)
         shell: Rscript {0}
 
@@ -93,5 +99,7 @@ jobs:
       # OpenMP masked/master fix compiles clean on the flavor that flagged it.
       - name: Show compile log
         if: always()
-        run: cat check/*.Rcheck/00install.out
+        run: |
+          cat check/*.Rcheck/00install.out \
+            || echo "(no install log - check did not reach the install step)"
         shell: bash
