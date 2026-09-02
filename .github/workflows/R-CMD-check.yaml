@@ -49,6 +49,7 @@ jobs:
           upload-snapshots: true
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
 
+
   # GCC 16 check flavor. CRAN's r-devel-linux-x86_64-{fedora,debian}-gcc run
   # GCC 16, which the matrix above does not cover: ubuntu-latest ships GCC
   # 13/14 and macOS uses clang, all of which set _OPENMP below 202011 and so
@@ -72,16 +73,37 @@ jobs:
     steps:
       - uses: r-hub/actions/checkout@v1
 
+      - name: Platform info
+        run: |
+          cat("R:       ", R.version.string, "\n")
+          cat("compiler:", system("gcc --version | head -1", intern = TRUE), "\n")
+          cat("pandoc:  ", Sys.which("pandoc"), "\n")
+        shell: Rscript {0}
+
       # The container points `repos` at an r-hub prebuilt binary repo whose
       # artifacts 404 for this R/platform pair. install.packages does not fall
-      # back to source when a *listed* binary fails to download, so pin CRAN
-      # here and let rcmdcheck build from source. install_deps resolves its own
-      # repos and works against the container default.
+      # back to source when a *listed* binary fails to download -- it warns and
+      # carries on -- so set CRAN globally for every install below.
       - name: Install dependencies
         run: |
-          install.packages(c("remotes", "rcmdcheck"),
-                           repos = "https://cloud.r-project.org")
+          options(repos = c(CRAN = "https://cloud.r-project.org"))
+          install.packages(c("remotes", "rcmdcheck"))
           remotes::install_deps(dependencies = TRUE)
+        shell: Rscript {0}
+
+      # A silently incomplete install shows up much later as a confusing
+      # failure inside R CMD build (e.g. "vignette builder 'knitr' not found").
+      # Fail here instead, naming what is missing.
+      - name: Verify check prerequisites
+        run: |
+          need <- c("rcmdcheck", "knitr", "rmarkdown", "testthat", "numDeriv",
+                    "future.apply", "goftest", "nloptr", "data.table",
+                    "randtoolbox", "Rcpp", "RcppArmadillo")
+          miss <- need[!vapply(need, requireNamespace, logical(1), quietly = TRUE)]
+          if (length(miss)) {
+            stop("missing packages: ", paste(miss, collapse = ", "))
+          }
+          cat("all", length(need), "prerequisites present\n")
         shell: Rscript {0}
 
       - name: R CMD check
