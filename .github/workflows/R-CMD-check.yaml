@@ -48,3 +48,50 @@ jobs:
         with:
           upload-snapshots: true
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
+
+  # GCC 16 check flavor. CRAN's r-devel-linux-x86_64-{fedora,debian}-gcc run
+  # GCC 16, which the matrix above does not cover: ubuntu-latest ships GCC
+  # 13/14 and macOS uses clang, all of which set _OPENMP below 202011 and so
+  # never exercise the OpenMP 5.1 deprecation diagnostics. choicer 0.2.0 was
+  # put into WARN by exactly that gap. `error_on = "warning"` is what makes
+  # this job useful: rcmdcheck surfaces install-step "significant warnings"
+  # (compiler warnings) and fails the job on them, rather than passing with a
+  # WARNING the way the check itself would.
+  gcc16:
+    runs-on: ubuntu-latest
+
+    name: r-hub gcc16 (r-devel)
+
+    container:
+      image: ghcr.io/r-hub/containers/gcc16:latest
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+
+    steps:
+      - uses: r-hub/actions/checkout@v1
+
+      - name: Install dependencies
+        run: |
+          install.packages(c("remotes", "rcmdcheck"))
+          remotes::install_deps(dependencies = TRUE)
+        shell: Rscript {0}
+
+      - name: R CMD check
+        run: |
+          rcmdcheck::rcmdcheck(
+            args      = c("--no-manual", "--as-cran"),
+            build_args = c("--no-manual"),
+            error_on  = "warning",
+            check_dir = "check"
+          )
+        shell: Rscript {0}
+
+      # Printed unconditionally: this is the log CRAN scrapes for "Found the
+      # following significant warnings", so it is the direct evidence that the
+      # OpenMP masked/master fix compiles clean on the flavor that flagged it.
+      - name: Show compile log
+        if: always()
+        run: cat check/*.Rcheck/00install.out
+        shell: bash
