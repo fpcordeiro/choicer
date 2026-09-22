@@ -159,7 +159,7 @@ the same data-driven initialization, so they are not deliberately overdispersed;
 a one-chain split diagnostic is weaker still because it cannot reveal disagreement
 between separately simulated runs.
 
-For HMNL/HMNP, v0.2.0 retains every chain in `fit$chains` for diagnostics but
+For HMNL/HMNP, choicer retains every chain in `fit$chains` for diagnostics but
 uses chain 1 for the top-level posterior summaries and post-estimation methods;
 it does not pool chains automatically.
 
