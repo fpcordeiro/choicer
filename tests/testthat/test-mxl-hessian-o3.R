@@ -77,7 +77,6 @@ TOL_O3_SCALE <- 1e-10  # weight-scaling linearity max|H(2w) - 2*H(w)|
 
   if (include_outside_option) {
     J_inside <- J
-    n_cols   <- N * (J_inside + 1L)
     dt <- data.table::data.table(
       id  = rep(seq_len(N), each = J_inside + 1L),
       alt = rep(0:J_inside, N),

@@ -122,19 +122,16 @@ Rcpp::List mxl_loglik_gradient_parallel(
   const int K_w = W.n_cols;
   const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
-  const int L_size =
-      rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
-
-  // Parameter block start indices (used below to assemble the gradient)
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
 
   // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
+  // Reuse the parser's layout when assembling derivatives.
+  const int idx_beta_start = par.idx_beta_start;
+  const int idx_mu_start = par.idx_mu_start;
+  const int idx_L_start = par.idx_L_start;
+  const int idx_delta_start = par.idx_delta_start;
   // In generate mode bypass the cube check; otherwise validate normally.
   if (gen_seed < 0) {
     validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
@@ -508,17 +505,16 @@ arma::mat mxl_hessian_parallel(
   const int K_w = W.n_cols;
   const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
-  const int L_size = rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w;
 
-  // === 1. Parameter Parsing (shared helper; validates theta) ===
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
-
+  // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
+  // Reuse the parser's layout when assembling derivatives.
+  const int idx_beta_start = par.idx_beta_start;
+  const int idx_mu_start = par.idx_mu_start;
+  const int idx_L_start = par.idx_L_start;
+  const int idx_delta_start = par.idx_delta_start;
   if (gen_seed < 0) {
     validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
                         &weights, &choice_idx);
@@ -998,19 +994,16 @@ arma::mat mxl_bhhh_parallel(
   const int K_w = W.n_cols;
   const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
-  const int L_size =
-      rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
-
-  // Parameter block start indices (used below to assemble the scores)
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
 
   // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
+  // Reuse the parser's layout when assembling derivatives.
+  const int idx_beta_start = par.idx_beta_start;
+  const int idx_mu_start = par.idx_mu_start;
+  const int idx_L_start = par.idx_L_start;
+  const int idx_delta_start = par.idx_delta_start;
   if (gen_seed < 0) {
     validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
                         &weights, &choice_idx);
@@ -1241,19 +1234,16 @@ arma::mat mxl_scores_parallel(
   const int K_w = W.n_cols;
   const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
   const int n_params = theta.n_elem;
-  const int L_size =
-      rc_correlation ? (K_w * (K_w + 1)) / 2 : K_w; // Size of L block
-
-  // Parameter block start indices (used below to assemble the scores)
-  const int idx_beta_start = 0;
-  const int idx_mu_start = K_x;
-  const int idx_L_start = rc_mean ? K_x + K_w : K_x;
-  const int idx_delta_start = idx_L_start + L_size;
 
   // Parse theta into parameter blocks (shared helper; validates theta)
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
+  // Reuse the parser's layout when assembling derivatives.
+  const int idx_beta_start = par.idx_beta_start;
+  const int idx_mu_start = par.idx_mu_start;
+  const int idx_L_start = par.idx_L_start;
+  const int idx_delta_start = par.idx_delta_start;
   if (gen_seed < 0) {
     validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
                         nullptr, &choice_idx);

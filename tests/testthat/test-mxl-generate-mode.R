@@ -259,7 +259,6 @@ test_that("the deprecated owen label canonicalizes without breaking old objects"
   K_w    <- ncol(inputs$W)
   J      <- nrow(inputs$alt_mapping)
   L_size <- if (rc_correlation) K_w * (K_w + 1L) / 2L else K_w
-  mu_size <- if (rc_mean) K_w else 0L
   S_val  <- 30L
   rc_dist <- rep(as.integer(rc_dist_type), K_w)
 

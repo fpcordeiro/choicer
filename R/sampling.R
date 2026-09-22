@@ -6,6 +6,59 @@
 
 # --- internal helpers --------------------------------------------------------
 
+#' Resolve fitted-model sampling provenance and weighted-inference guards
+#'
+#' Called after optimization and before covariance assembly so all logit
+#' wrappers retain the same warning and error order.
+#' @param weights Resolved per-situation fitting weights.
+#' @param se_method Selected standard-error method.
+#' @param cs_meta Original choice-sampling provenance, or NULL.
+#' @param has_input Whether the fit uses the prepared-input pathway.
+#' @param prepare_fn Model-specific preparation function name for error guidance.
+#' @returns Sampling metadata list, or NULL for uniform weights without provenance.
+#' @noRd
+.resolve_choice_sampling <- function(weights, se_method, cs_meta, has_input,
+                                     prepare_fn) {
+  weights_nonuniform <- length(unique(weights)) > 1
+  if (weights_nonuniform && se_method == "bhhh") {
+    warning("Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG ",
+            "standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is ",
+            "NOT a valid choice-based-sampling (WESML) correction; the correct ",
+            "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
+            "inference.",
+            call. = FALSE)
+  } else if (weights_nonuniform && !se_method %in% c("sandwich", "cluster")) {
+    warning("Non-uniform weights detected. If these are sampling/WESML ",
+            "weights, use se_method = 'sandwich' for valid inference.",
+            call. = FALSE)
+  }
+  choice_sampling <- if (!is.null(cs_meta)) {
+    utils::modifyList(as.list(cs_meta),
+                      list(se_method = se_method, weights_applied = weights_nonuniform))
+  } else if (weights_nonuniform) {
+    list(scheme = "user", se_method = se_method, weights_applied = TRUE)
+  } else {
+    NULL
+  }
+  if (!is.null(cs_meta) && !weights_nonuniform) {
+    if (has_input) {
+      stop("`input_data` is flagged as a WESML choice-based sample (it carries ",
+           "`choice_sampling` provenance), but the resolved weights are uniform. ",
+           "Fitting would produce an invalid unweighted estimator mislabeled as ",
+           "WESML. To proceed, either bake the non-uniform WESML weights into ",
+           "`input_data` via ", prepare_fn, "(weights = ) / ",
+           prepare_fn, "(weights_col = ), ",
+           "or, if you deliberately want an unweighted fit, strip the provenance with ",
+           "`attr(input_data, \"choice_sampling\") <- NULL`.",
+           call. = FALSE)
+    }
+    warning("WESML provenance is present but the applied weights are uniform; the fit ",
+            "is effectively unweighted and is NOT a WESML-corrected estimator.",
+            call. = FALSE)
+  }
+  choice_sampling
+}
+
 #' Validate the id / alt / choice columns of a long choice data set
 #' @noRd
 .validate_choice_columns <- function(dt, id_col, alt_col, choice_col,

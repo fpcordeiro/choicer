@@ -15,7 +15,6 @@ make_panel_mnl <- function(N_persons = 30L, T_per = 4L, J = 3L, seed = 42) {
   )
   dt[, `:=`(x1 = stats::rnorm(.N), x2 = stats::rnorm(.N))]
   dt[, person := rep(rep(seq_len(N_persons), each = T_per), each = J)[seq_len(.N)]]
-  beta_true <- c(0.8, -0.5)
   dt[, V := 0.8 * x1 - 0.5 * x2]
   dt[, prob := exp(V) / sum(exp(V)), by = id]
   dt[, choice := as.integer(alt == sample(alt, 1, prob = prob)), by = id]
