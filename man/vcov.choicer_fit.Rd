@@ -13,15 +13,17 @@
 \code{"hessian"}, \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.}
 
 \item{cluster}{Cluster labels for \code{type = "cluster"}, one per choice
-situation. Alignment to the prepared (id-sorted) choice situations is
+situation (collapsed to one per decision maker for a panel mixed logit
+fit). Alignment to the prepared (id-sorted) choice situations is
 handled as follows:
 \itemize{
 \item \strong{Named} (recommended): names are matched against the
 choice-situation ids, so the vector is safe in any order. Build it by
 naming your per-situation labels with the id values.
-\item \strong{Unnamed}: taken to be in the prepared, id-sorted order; a
-warning flags that assumption. A vector of per-alternative (row-level)
-length is rejected.
+\item \strong{Unnamed}: taken to be in the prepared order (ascending
+id), with a warning; for a panel fit whose prepared order (decision
+maker, then id) differs from id order, an unnamed vector is
+rejected — name it by choice-situation id or use \code{cluster_col}.
 }
 Defaults to the labels stored at fit time via \code{cluster_col} (already
 aligned). Supplying \code{cluster} without \code{type} implies
@@ -51,18 +53,25 @@ variance under choice-based weighting.}
 scores. Requires \code{cluster} (or a fit made with
 \code{cluster_col}). No small-sample correction is applied.}
 }
-Here \eqn{i} indexes \emph{choice situations}. For repeated choices by the
-same decision maker (panel data), cluster on the decision maker.
+Here \eqn{i} indexes \emph{likelihood units}: choice situations, or
+decision makers for a mixed logit fitted with \code{person_col} (panel
+likelihood). For repeated choices by the same decision maker in a
+cross-sectional fit, cluster on the decision maker.
 }
 \details{
-Note (mixed logit): clustering repairs the \emph{inference}, not the
-\emph{estimand}. \code{run_mxlogit()} treats each choice situation as an
-independent draw from the mixing distribution (a cross-sectional MSL
-likelihood, not the panel product form), so on panel data the point
-estimates target that cross-sectional model; \code{type = "cluster"} makes
-their standard errors robust to within-person dependence but does not turn
-the fit into a panel mixed logit. For panel random coefficients use
-\code{\link{run_hmnlogit}} (\code{person_col}).
+Note (mixed logit): without \code{person_col}, clustering repairs the
+\emph{inference}, not the \emph{likelihood}. The cross-sectional
+likelihood treats each choice situation as an independent draw from the
+mixing distribution; on panel data it is a composite likelihood that
+still targets the population taste distribution \eqn{f(\beta \mid
+\theta)}, just inefficiently. \code{type = "cluster"} makes the point
+estimates' standard errors robust to within-person dependence but does
+not recover the efficiency of the panel likelihood (\code{person_col}).
+With \code{person_col} the scores are per decision maker, so
+\code{type = "robust"} is already clustered by decision maker; cluster
+labels must then nest decision makers (be constant within each), and
+\code{type = "cluster"} adds something only for coarser groups such as
+households or markets.
 }
 \examples{
 \donttest{

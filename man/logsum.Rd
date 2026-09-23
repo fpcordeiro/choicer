@@ -37,8 +37,9 @@ Bayes methods; thinned evenly from the kept draws).}
 }
 \value{
 Numeric vector with one logsum per choice situation. With a
-data.frame \code{newdata}, choice situations are ordered by id (as in
-\code{predict()}).
+data.frame \code{newdata}, choice situations are ordered by id (by
+decision maker first for a panel mixed logit whose \code{person_col} is
+present in \code{newdata}), as in \code{predict()}.
 }
 \description{
 Computes the expected maximum utility ("logsum" or inclusive value) for each

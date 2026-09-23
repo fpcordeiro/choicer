@@ -16,13 +16,14 @@ prepare_mxl_data(
   include_outside_option = FALSE,
   rc_correlation = FALSE,
   weights_col = NULL,
-  cluster_col = NULL
+  cluster_col = NULL,
+  person_col = NULL
 )
 }
 \arguments{
 \item{data}{Data frame containing choice data}
 
-\item{id_col}{Name of the column identifying choice situations (individuals)}
+\item{id_col}{Name of the column identifying choice situations}
 
 \item{alt_col}{Name of the column identifying alternatives}
 
@@ -32,7 +33,11 @@ prepare_mxl_data(
 
 \item{random_var_cols}{Vector of names of columns to be used as random variables}
 
-\item{weights}{Optional vector of weights for each choice situation. If NULL, equal weights are used. All weights must be finite and strictly positive.}
+\item{weights}{Optional vector of weights, one per choice situation in the
+prepared order (ascending id; see Details). If NULL, equal weights are
+used. All weights
+must be finite and strictly positive. With \code{person_col} they are
+decision-maker weights and must be constant within each decision maker.}
 
 \item{outside_opt_label}{Label for the outside option (if any). If NULL, no outside option is assumed.}
 
@@ -40,12 +45,25 @@ prepare_mxl_data(
 
 \item{rc_correlation}{Logical indicating whether random coefficients are correlated. Default is FALSE.}
 
-\item{weights_col}{Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation, finite and strictly positive). Mutually exclusive with \code{weights}.}
+\item{weights_col}{Optional name of a column in \code{data} holding a
+per-row weight (constant within each choice situation, and within each
+decision maker when \code{person_col} is used; finite and strictly
+positive). Mutually exclusive with \code{weights}.}
 
 \item{cluster_col}{Optional name of a column in \code{data} holding cluster
 labels for cluster-robust standard errors. Must be constant within each
-\code{id_col}; collapsed to one label per choice situation and returned as
-\code{cluster}.}
+\code{id_col}, and within each decision maker when \code{person_col} is
+used (clusters must nest decision makers); collapsed to one label per
+choice situation and returned as \code{cluster}.}
+
+\item{person_col}{Optional name of the column identifying decision makers
+(respondents). When supplied, all choice situations of a decision maker
+share one draw of the random coefficients (panel likelihood);
+\code{id_col} must still identify choice situations uniquely across the
+data set. \code{NULL} (default) makes each choice situation its own
+decision maker (cross-sectional likelihood). Choice-based (WESML) samples
+are not supported with \code{person_col}: their weights vary with the
+chosen alternative, not by decision maker.}
 }
 \value{
 A \code{choicer_data_mxl} object (list) containing:
@@ -59,15 +77,29 @@ A \code{choicer_data_mxl} object (list) containing:
 \item \code{weights}: Vector of weights.
 \item \code{cluster}: Vector of cluster labels (or \code{NULL}).
 \item \code{situation_ids}: Choice-situation ids in prepared (sorted) order.
+\item \code{Ti}: Number of choice situations of each decision maker, in
+prepared order (\code{NULL} without \code{person_col}).
+\item \code{person_ids}: Decision-maker ids in prepared order (\code{NULL}
+without \code{person_col}).
 \item \code{include_outside_option}: Logical flag.
 \item \code{rc_correlation}: Logical flag.
 \item \code{alt_mapping}: data.table mapping alternatives to summary statistics.
 \item \code{dropped_cols}: Names of columns dropped due to collinearity, if any.
-\item \code{data_spec}: List with column-name metadata.
+\item \code{data_spec}: List with column-name metadata (incl. \code{person_col}).
 }
 }
 \description{
 Prepares and validates inputs for mixed logit estimation routine.
+}
+\details{
+Rows are ordered by choice-situation id and, within a situation, by
+alternative. With \code{person_col}, rows are ordered by decision maker
+first, then by situation id and alternative, so that each decision maker's
+situations are contiguous. A positional \code{weights} vector is read in
+the prepared order, which is ascending id in the cross-section; with
+\code{person_col} it is accepted only when the prepared order is also
+ascending id, and an error otherwise points to \code{weights_col}, which is
+aligned by id and is the safer interface.
 }
 \examples{
 library(data.table)

@@ -47,6 +47,27 @@
 #'     \code{input_data} and \code{eta_draws}.}
 #' }
 #'
+#' \strong{Cross-section vs panel.} With \code{person_col}, each decision
+#' maker \eqn{n} draws one taste vector \eqn{\beta_n} from the mixing
+#' distribution \eqn{f(\beta \mid \theta)} and keeps it in all of their choice
+#' situations \eqn{t = 1, \dots, T_n}. The likelihood integrates the product
+#' of their conditional logit probabilities (Revelt and Train 1998),
+#' \deqn{L_n(\theta) = \int \prod_{t=1}^{T_n} P_{nt}(j_{nt} \mid \beta)
+#'   f(\beta \mid \theta) \, d\beta,}
+#' simulated with \code{S} draws per decision maker, so repeated choices
+#' speak to each decision maker's tastes, and
+#' \code{\link{conditional_tastes}} recovers what they reveal. Without
+#' \code{person_col} (the default), each choice situation is an independent
+#' draw from the mixing distribution: \eqn{L_i(\theta) = \int P_i(j_i \mid
+#' \beta) f(\beta \mid \theta) \, d\beta}. That is the right model when tastes
+#' are redrawn in every situation (or each decision maker chooses once). On
+#' panel data with stable tastes it is a composite (pseudo-) likelihood: it
+#' still targets the population mixing distribution, but it ignores the
+#' within-person correlation of choices, so it is less efficient, its
+#' standard errors must be clustered by decision maker (\code{cluster_col}),
+#' and its log-likelihood, AIC and BIC are not comparable with those of the
+#' panel fit.
+#'
 #' @param data Data frame containing choice data (convenience workflow).
 #'   Mutually exclusive with \code{input_data}.
 #' @param id_col Name of the column identifying choice situations.
@@ -56,11 +77,19 @@
 #' @param random_var_cols Vector of column names for random coefficients.
 #' @param input_data List output from \code{\link{prepare_mxl_data}} (advanced
 #'   workflow). Mutually exclusive with \code{data}.
-#' @param eta_draws Array of shape K_w x S x N with standard normal draws.
-#'   Required for the advanced workflow; auto-generated from \code{S} in the
-#'   convenience workflow.
-#' @param S Integer number of Halton draws per individual (convenience workflow
-#'   only). Default 100.
+#' @param eta_draws Array of shape K_w x S x U with standard normal draws, one
+#'   K_w x S block per likelihood unit: U is the number of decision makers
+#'   when \code{input_data} was prepared with \code{person_col}
+#'   (\code{length(input_data$Ti)}), and the number of choice situations
+#'   otherwise. Required for the advanced workflow; auto-generated from
+#'   \code{S} in the convenience workflow. Post-hoc methods
+#'   (\code{vcov(fit, type = )}, \code{\link{conditional_tastes}}, prediction)
+#'   regenerate Halton draws with \code{\link{get_halton_normals}} from the
+#'   recorded draw count, so build \code{eta_draws} with it for them to
+#'   reproduce the estimation draws.
+#' @param S Integer number of Halton draws per decision maker, or per choice
+#'   situation without \code{person_col} (convenience workflow only). Default
+#'   100.
 #' @param rc_dist Integer vector indicating distribution of random coefficients
 #'   (0 = normal, 1 = log-normal). Default: all normal.
 #' @param rc_mean Logical indicating whether to estimate means for random
@@ -108,15 +137,22 @@
 #'   robust variance under uniform weights. BHHH scales better to large
 #'   problems (many alternatives or simulation draws) but may underestimate
 #'   standard errors in finite samples or away from the optimum. Any of these
-#'   can also be recomputed post hoc via \code{vcov(fit, type = )}. Note that
-#'   clustering repairs the inference, not the estimand: the MXL likelihood
-#'   treats each choice situation as an independent draw from the mixing
-#'   distribution; for panel random coefficients use
-#'   \code{\link{run_hmnlogit}}.
+#'   can also be recomputed post hoc via \code{vcov(fit, type = )}. Without
+#'   \code{person_col}, clustering repairs the inference, not the likelihood:
+#'   the cross-sectional likelihood still treats each choice situation as an
+#'   independent draw from the mixing distribution, and on panel data is a
+#'   less efficient composite likelihood for the same taste distribution.
+#'   With \code{person_col} the likelihood unit is the decision maker, so
+#'   scores are per decision maker and
+#'   \code{"sandwich"} is already robust to dependence across a decision
+#'   maker's choice situations; \code{"cluster"} is then needed only for
+#'   coarser groups (e.g. households or markets) that nest decision makers.
 #' @param cluster_col Optional name of a column in \code{data} holding cluster
 #'   labels for cluster-robust standard errors (e.g. a person id when the same
-#'   decision maker contributes several choice situations). Must be constant
-#'   within each \code{id_col}. Supplying \code{cluster_col} without an explicit
+#'   decision maker contributes several choice situations to a
+#'   cross-sectional fit). Must be constant within each \code{id_col}, and
+#'   within each decision maker when \code{person_col} is used (clusters must
+#'   nest decision makers). Supplying \code{cluster_col} without an explicit
 #'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param scale_vars Pre-estimation column scaling for design matrices. One of
 #'   \code{"none"} (default), \code{"sd"} (sample standard deviation),
@@ -136,8 +172,15 @@
 #'   (\code{rc_dist == 1}) are passed through unchanged, since the shifted
 #'   log-normal parameterization does not admit a closed-form back-transform
 #'   under multiplicative scaling.
-#' @param weights Optional weight vector (convenience workflow). If \code{NULL},
+#' @param weights Optional weight vector (convenience workflow), one weight per
+#'   choice situation in ascending-id order (see
+#'   \code{\link{prepare_mxl_data}}). With \code{person_col}, situations are
+#'   reordered by decision maker, so a positional vector is accepted only when
+#'   that leaves the id order unchanged; otherwise supply
+#'   \code{weights_col}. If \code{NULL},
 #'   equal weights are used. All weights must be finite and strictly positive.
+#'   With \code{person_col} they are decision-maker weights, constant within
+#'   each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.
 #' @param weights_col Optional name of a column in \code{data} holding a per-row
 #'   weight (constant within each choice situation, finite and strictly positive).
 #'   Mutually exclusive with
@@ -150,14 +193,18 @@
 #'   \code{weights} nor \code{weights_col} is supplied, the recorded weight
 #'   column is auto-detected and applied (with a message); if that column is
 #'   absent the call errors rather than silently fitting an unweighted model
-#'   under a WESML label.
+#'   under a WESML label. With \code{person_col} the weight must also be
+#'   constant within each decision maker, and WESML is not supported:
+#'   choice-based weights vary with the chosen alternative across a decision
+#'   maker's situations, so they cannot weight the panel likelihood.
 #' @param outside_opt_label Label for the outside option (convenience workflow).
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
 #' @param draws Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
-#'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times N} Halton cube
-#'   (existing behavior, exact reproducibility). \code{"generate"} computes each
-#'   individual's draws on-the-fly in C++ from a stored seed, eliminating the O(N)
+#'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube, one
+#'   block per likelihood unit (\code{U} decision makers with \code{person_col}, choice
+#'   situations otherwise; existing behavior, exact reproducibility). \code{"generate"}
+#'   computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 #'   cube; recommended for memory-constrained or large-N settings. With
 #'   \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
 #'   dimension receives a seeded permutation shared across sequence indices.
@@ -181,10 +228,26 @@
 #'   the returned object for post-estimation functions.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
 #'   instead.
+#' @param person_col Optional name of the column in \code{data} identifying
+#'   decision makers (respondents). When supplied, all choice situations of a
+#'   decision maker share one draw of the random coefficients (panel
+#'   likelihood); \code{id_col} must still identify choice situations uniquely
+#'   across the data set. \code{NULL} (default) makes each choice situation its
+#'   own decision maker (cross-sectional likelihood). Convenience workflow
+#'   only; in the advanced workflow pass \code{person_col} to
+#'   \code{\link{prepare_mxl_data}}.
 #' @returns A \code{choicer_mxl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
-#'   \code{nobs()}.
+#'   \code{nobs()}. A panel fit (\code{person_col}) also carries
+#'   \code{n_persons}, the number of decision makers; \code{nobs()} remains
+#'   the number of choice situations, which is also the \eqn{n} in BIC's
+#'   \eqn{\log n} penalty.
+#' @references Revelt, D. and Train, K. (1998). Mixed logit with repeated
+#'   choices: households' choices of appliance efficiency level.
+#'   \emph{Review of Economics and Statistics} 80(4), 647-657.
+#' @seealso \code{\link{conditional_tastes}}, \code{\link{run_hmnlogit}} (the
+#'   hierarchical Bayes counterpart)
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -233,7 +296,8 @@ run_mxlogit <- function(
     keep_data = TRUE,
     nloptr_opts = NULL,
     weights_col = NULL,
-    cluster_col = NULL
+    cluster_col = NULL,
+    person_col = NULL
 ) {
   cl <- match.call()
 
@@ -290,6 +354,11 @@ run_mxlogit <- function(
          "Bake cluster labels into `input_data` via ",
          "prepare_mxl_data(cluster_col = ).")
   }
+  if (has_input && !is.null(person_col)) {
+    stop("`person_col` is only supported in the convenience (data) workflow. ",
+         "Bake the panel structure into `input_data` via ",
+         "prepare_mxl_data(person_col = ).")
+  }
 
   if (has_data) {
     # Convenience workflow: validate required column-name arguments
@@ -300,7 +369,9 @@ run_mxlogit <- function(
     }
     # WESML provenance present but no weights supplied: auto-adopt the recorded
     # weight column, or error -- never silently fit unweighted under a WESML label.
-    if (has_data && !is.null(cs_meta) && is.null(weights) && is.null(weights_col)) {
+    # (With person_col, prepare_mxl_data() rejects WESML provenance outright.)
+    if (has_data && !is.null(cs_meta) && is.null(person_col) &&
+        is.null(weights) && is.null(weights_col)) {
       wn <- cs_meta$weight_name
       if (!is.null(wn) && wn %in% names(data)) {
         weights_col <- wn
@@ -326,11 +397,15 @@ run_mxlogit <- function(
       outside_opt_label = outside_opt_label,
       include_outside_option = include_outside_option,
       rc_correlation = rc_correlation,
-      cluster_col = cluster_col
+      cluster_col = cluster_col,
+      person_col = person_col
     )
     K_w <- ncol(input_data$W)
     if (draws == "store") {
-      eta_draws <- get_halton_normals(S, input_data$N, K_w)
+      # One K_w x S draw block per likelihood unit: per decision maker with
+      # person_col, per choice situation otherwise.
+      n_units <- length(.unit_first(input_data))
+      eta_draws <- get_halton_normals(S, n_units, K_w)
     } else {
       # generate mode: no cube ever materialized; empty placeholder
       eta_draws <- array(0, dim = c(K_w, 0L, 0L))
@@ -348,6 +423,9 @@ run_mxlogit <- function(
     if (is.null(eta_draws)) {
       stop("'eta_draws' is required when using 'input_data' (advanced workflow).")
     }
+    # `S` is a convenience-workflow argument; record the draws actually used so
+    # post-hoc methods regenerate the same Halton blocks.
+    S <- dim(eta_draws)[2L]
   }
 
   if (se_method == "cluster" && is.null(input_data$cluster)) {
@@ -523,7 +601,8 @@ run_mxlogit <- function(
       include_outside_option = input_data$include_outside_option,
       gen_seed = gen_seed_cpp,
       gen_scramble = gen_scramble_cpp,
-      gen_S = gen_S_cpp
+      gen_S = gen_S_cpp,
+      Ti = input_data$Ti
     )
   }
 
@@ -554,10 +633,11 @@ run_mxlogit <- function(
   # Compute vcov eagerly using the selected SE method.
   # For "sandwich" (robust / WESML) standard errors, form V = A^{-1} B A^{-1}
   # with bread A = weighted negated Hessian and meat B = weight-squared OPG
-  # (pass weights^2 to the BHHH routine, whose per-individual score is
+  # (pass weights^2 to the BHHH routine, whose per-unit score is
   # weight-free). For "cluster", the meat is the outer product of
-  # within-cluster sums of weighted scores. Computed in scaled space; the
-  # back-transform below applies.
+  # within-cluster sums of weighted scores. Scores, weights and cluster labels
+  # are per likelihood unit (decision maker with person_col). Computed in
+  # scaled space; the back-transform below applies.
   if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- mxl_hessian_parallel(
       theta = theta_hat, X = input_data$X, W = input_data$W,
@@ -566,7 +646,8 @@ run_mxlogit <- function(
       rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
+      Ti = input_data$Ti
     )
     B_meat <- if (se_method == "sandwich") {
       mxl_bhhh_parallel(
@@ -576,7 +657,8 @@ run_mxlogit <- function(
         rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
         use_asc = use_asc,
         include_outside_option = input_data$include_outside_option,
-        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
+        Ti = input_data$Ti
       )
     } else {
       S_scores <- mxl_scores_parallel(
@@ -586,9 +668,12 @@ run_mxlogit <- function(
         rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
         use_asc = use_asc,
         include_outside_option = input_data$include_outside_option,
-        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
+        Ti = input_data$Ti
       )
-      .score_meat(S_scores, input_data$weights, "cluster", input_data$cluster)
+      u <- .unit_first(input_data)
+      .score_meat(S_scores, input_data$weights[u], "cluster",
+                  .to_units(input_data$cluster, input_data, "`cluster_col`"))
     }
     vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {
@@ -608,7 +693,8 @@ run_mxlogit <- function(
       rc_mean = rc_mean,
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
+      Ti = input_data$Ti
     ),
     bhhh = mxl_bhhh_parallel(
       theta = theta_hat,
@@ -624,7 +710,8 @@ run_mxlogit <- function(
       rc_mean = rc_mean,
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp
+      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
+      Ti = input_data$Ti
     )
   )
   vcov_result <- invert_hessian(hess)
@@ -656,7 +743,9 @@ run_mxlogit <- function(
     colnames(sigma_mat) <- w_names
   }
 
-  # Draws info (metadata only, not the full array)
+  # Draws info (metadata only, not the full array). N is the number of choice
+  # situations, the draw-block count of the per-situation prediction sites;
+  # estimation-type sites use one block per likelihood unit (.unit_first()).
   draws_info <- list(
     S       = S,
     N       = input_data$N,
@@ -697,7 +786,9 @@ run_mxlogit <- function(
         M = input_data$M,
         weights = input_data$weights,
         cluster = input_data$cluster,
-        situation_ids = input_data$situation_ids
+        situation_ids = input_data$situation_ids,
+        Ti = input_data$Ti,
+        person_ids = input_data$person_ids
       )
     },
     draws_info = draws_info,
@@ -709,7 +800,8 @@ run_mxlogit <- function(
     scale_vars = scale_vars,
     sX = sX,
     sW = sW,
-    choice_sampling = choice_sampling
+    choice_sampling = choice_sampling,
+    n_persons = if (!is.null(input_data$Ti)) length(input_data$Ti)
   )
 }
 
@@ -718,21 +810,46 @@ run_mxlogit <- function(
 #'
 #' Prepares and validates inputs for mixed logit estimation routine.
 #'
+#' Rows are ordered by choice-situation id and, within a situation, by
+#' alternative. With \code{person_col}, rows are ordered by decision maker
+#' first, then by situation id and alternative, so that each decision maker's
+#' situations are contiguous. A positional \code{weights} vector is read in
+#' the prepared order, which is ascending id in the cross-section; with
+#' \code{person_col} it is accepted only when the prepared order is also
+#' ascending id, and an error otherwise points to \code{weights_col}, which is
+#' aligned by id and is the safer interface.
+#'
 #' @param data Data frame containing choice data
-#' @param id_col Name of the column identifying choice situations (individuals)
+#' @param id_col Name of the column identifying choice situations
 #' @param alt_col Name of the column identifying alternatives
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)
 #' @param covariate_cols Vector of names of columns to be used as covariates
 #' @param random_var_cols Vector of names of columns to be used as random variables
-#' @param weights Optional vector of weights for each choice situation. If NULL, equal weights are used. All weights must be finite and strictly positive.
-#' @param weights_col Optional name of a column in \code{data} holding a per-row weight (constant within each choice situation, finite and strictly positive). Mutually exclusive with \code{weights}.
+#' @param weights Optional vector of weights, one per choice situation in the
+#'   prepared order (ascending id; see Details). If NULL, equal weights are
+#'   used. All weights
+#'   must be finite and strictly positive. With \code{person_col} they are
+#'   decision-maker weights and must be constant within each decision maker.
+#' @param weights_col Optional name of a column in \code{data} holding a
+#'   per-row weight (constant within each choice situation, and within each
+#'   decision maker when \code{person_col} is used; finite and strictly
+#'   positive). Mutually exclusive with \code{weights}.
 #' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param rc_correlation Logical indicating whether random coefficients are correlated. Default is FALSE.
 #' @param cluster_col Optional name of a column in \code{data} holding cluster
 #'   labels for cluster-robust standard errors. Must be constant within each
-#'   \code{id_col}; collapsed to one label per choice situation and returned as
-#'   \code{cluster}.
+#'   \code{id_col}, and within each decision maker when \code{person_col} is
+#'   used (clusters must nest decision makers); collapsed to one label per
+#'   choice situation and returned as \code{cluster}.
+#' @param person_col Optional name of the column identifying decision makers
+#'   (respondents). When supplied, all choice situations of a decision maker
+#'   share one draw of the random coefficients (panel likelihood);
+#'   \code{id_col} must still identify choice situations uniquely across the
+#'   data set. \code{NULL} (default) makes each choice situation its own
+#'   decision maker (cross-sectional likelihood). Choice-based (WESML) samples
+#'   are not supported with \code{person_col}: their weights vary with the
+#'   chosen alternative, not by decision maker.
 #' @returns A `choicer_data_mxl` object (list) containing:
 #'   \itemize{
 #'     \item `X`: Fixed-coefficient design matrix (sum(M) x K_x).
@@ -744,11 +861,15 @@ run_mxlogit <- function(
 #'     \item `weights`: Vector of weights.
 #'     \item `cluster`: Vector of cluster labels (or `NULL`).
 #'     \item `situation_ids`: Choice-situation ids in prepared (sorted) order.
+#'     \item `Ti`: Number of choice situations of each decision maker, in
+#'       prepared order (`NULL` without `person_col`).
+#'     \item `person_ids`: Decision-maker ids in prepared order (`NULL`
+#'       without `person_col`).
 #'     \item `include_outside_option`: Logical flag.
 #'     \item `rc_correlation`: Logical flag.
 #'     \item `alt_mapping`: data.table mapping alternatives to summary statistics.
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
-#'     \item `data_spec`: List with column-name metadata.
+#'     \item `data_spec`: List with column-name metadata (incl. `person_col`).
 #'   }
 #' @examples
 #' library(data.table)
@@ -774,13 +895,22 @@ prepare_mxl_data <- function(
     include_outside_option = FALSE,
     rc_correlation = FALSE,
     weights_col = NULL,
-    cluster_col = NULL
+    cluster_col = NULL,
+    person_col = NULL
 ) {
 
   ## Preliminary housekeeping --------------------------------------------------
   # Capture any choice-based-sampling provenance before column drops / coercion,
   # so it can be carried onto the returned object for the advanced pathway.
   cs_provenance <- attr(data, "choice_sampling")
+  if (!is.null(person_col) && !is.null(cs_provenance)) {
+    stop("`person_col` cannot be used with a choice-based (WESML) sample: ",
+         "WESML weights are defined per choice situation (they vary with the ",
+         "chosen alternative), so they cannot weight the panel likelihood ",
+         "sum_n w_n log L_n, which has one weight per decision maker. Fit the ",
+         "cross-sectional likelihood with the WESML weights instead, clustering ",
+         "on the decision maker via `cluster_col`.", call. = FALSE)
+  }
   dt <- data.table::as.data.table(data)[]
 
   # Check if all relevant variables are available
@@ -790,6 +920,7 @@ prepare_mxl_data <- function(
   }
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
   if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
+  if (!is.null(person_col)) needed <- c(needed, person_col)
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
@@ -826,6 +957,20 @@ prepare_mxl_data <- function(
   if (any(bad_choice))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
+  ## Panel: choice situations nest in decision makers. Checked before the
+  ## per-id choice counts, which would misfire if ids restart within persons.
+  if (!is.null(person_col)) {
+    n_persons_per_id <- dt[, data.table::uniqueN(get(person_col)), by = id_col][["V1"]]
+    if (any(n_persons_per_id != 1L)) {
+      stop("Each '", id_col, "' must belong to exactly one '", person_col,
+           "': `id_col` must identify choice situations uniquely across ",
+           "decision makers, but ", sum(n_persons_per_id != 1L), " id(s) ",
+           "appear under several. If situation ids restart within each ",
+           "decision maker, build a unique id, e.g. paste(", person_col, ", ",
+           id_col, ").", call. = FALSE)
+    }
+  }
+
   ## Exactly one '1' per choice situation
   by_id <- dt[, .(chosen = sum(get(choice_col))), by = id_col]
   if (include_outside_option == FALSE && any(by_id$chosen != 1)) {
@@ -850,7 +995,9 @@ prepare_mxl_data <- function(
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id
   ##   between ids   : ascending id
-  data.table::setorderv(dt, c(id_col, "alt_int"))
+  ##   with person_col, first by decision maker, so that each decision maker's
+  ##   situations are contiguous (the kernels' unit layout)
+  data.table::setorderv(dt, c(person_col, id_col, "alt_int"))
 
   ## index of each row within its choice set
   dt[, idx_in_group := seq_len(.N), by = id_col]
@@ -883,6 +1030,26 @@ prepare_mxl_data <- function(
   ## N: number of individuals / choice situations
   ids <- dt[, get(id_col)][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
   N   <- length(ids)
+
+  ## Panel layout: Ti[u] consecutive situations for decision maker u, in
+  ## sorted person order; NULL in the cross-section.
+  Ti <- person_ids <- NULL
+  if (!is.null(person_col)) {
+    person <- .collapse_situation_col(dt, person_col, id_col, ids)
+    person_ids <- unique(person)
+    person_pos <- match(person, person_ids)
+    Ti <- tabulate(person_pos, length(person_ids))
+    stopifnot(!is.unsorted(person_pos))  # contiguous by construction (sort)
+    # A positional `weights` vector is read in the prepared order, which is
+    # now decision maker first; unless that is also ascending-id order, a
+    # vector built in id order would be silently misaligned.
+    if (!is.null(weights) && !.ids_sorted(ids)) {
+      stop("With `person_col`, choice situations are reordered by decision ",
+           "maker, so a positional `weights` vector is ambiguous. Supply the ",
+           "weights as a column via `weights_col` (aligned by id).",
+           call. = FALSE)
+    }
+  }
 
   ## Collapse a row-level weight column to one weight per choice situation.
   ## Done AFTER ordering/filtering so alignment is by id, never by position.
@@ -939,6 +1106,12 @@ prepare_mxl_data <- function(
          call. = FALSE)
   }
 
+  ## Panel: the likelihood has one term per decision maker, so weights and
+  ## cluster labels must be constant within each (identity otherwise).
+  units <- list(M = M, Ti = Ti)
+  .to_units(weights, units, "Weights")
+  .to_units(cluster, units, "`cluster_col`")
+
   ## Alternative summary -------------------------------------------------------
 
   if (include_outside_option) {
@@ -969,6 +1142,7 @@ prepare_mxl_data <- function(
     length(choice_idx) == N,
     length(M)          == N,
     length(weights)    == N,
+    is.null(Ti) || sum(Ti) == N,
     all(is.finite(X)),
     all(is.finite(W))
   )
@@ -985,6 +1159,8 @@ prepare_mxl_data <- function(
       weights     = weights,
       cluster     = cluster,
       situation_ids = ids,
+      Ti          = Ti,
+      person_ids  = person_ids,
       include_outside_option = include_outside_option,
       rc_correlation = rc_correlation,
       alt_mapping = alt_mapping[],
@@ -995,7 +1171,8 @@ prepare_mxl_data <- function(
         choice_col = choice_col,
         covariate_cols = covariate_cols,
         random_var_cols = random_var_cols,
-        outside_opt_label = outside_opt_label
+        outside_opt_label = outside_opt_label,
+        person_col = person_col
       )
     ),
     class = "choicer_data_mxl"
@@ -1010,8 +1187,9 @@ prepare_mxl_data <- function(
 #'
 #' Create halton normal draws in appropriate format for mixed logit estimation
 #'
-#' @param S Number of draws for each choice situation
-#' @param N number of choice situations
+#' @param S Number of draws per draw unit
+#' @param N number of draw units: choice situations, or decision makers for a
+#'   panel fit (\code{person_col} in \code{\link{run_mxlogit}})
 #' @param K_w dimension of random coefficients (number of columns in W matrix)
 #' @returns K_w x S x N array with halton standard normal draws
 #' @examples
@@ -1056,8 +1234,12 @@ get_halton_normals <- function(S, N, K_w) {
 #' cube from the stored metadata.
 #'
 #' @param draws_info List from a fitted choicer_mxl object.
+#' @param N Number of draw blocks. Prediction sites keep the default, one block
+#'   per choice situation; estimation-type sites (Hessian, scores, conditional
+#'   tastes) pass the number of likelihood units, `length(.unit_first(d))`,
+#'   which is the number of decision makers for a panel fit.
 #' @noRd
-.mxl_gen_params <- function(draws_info) {
+.mxl_gen_params <- function(draws_info, N = draws_info$N) {
   mode <- draws_info$mode %||% "store"
   if (mode == "generate") {
     list(
@@ -1070,7 +1252,7 @@ get_halton_normals <- function(S, N, K_w) {
     )
   } else {
     list(
-      eta_draws    = get_halton_normals(draws_info$S, draws_info$N, draws_info$K_w),
+      eta_draws    = get_halton_normals(draws_info$S, N, draws_info$K_w),
       gen_seed     = -1L,
       gen_scramble = 1L,
       gen_S        = 0L

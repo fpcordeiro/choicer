@@ -34,7 +34,8 @@ run_mxlogit(
   keep_data = TRUE,
   nloptr_opts = NULL,
   weights_col = NULL,
-  cluster_col = NULL
+  cluster_col = NULL,
+  person_col = NULL
 )
 }
 \arguments{
@@ -54,12 +55,20 @@ Mutually exclusive with \code{input_data}.}
 \item{input_data}{List output from \code{\link{prepare_mxl_data}} (advanced
 workflow). Mutually exclusive with \code{data}.}
 
-\item{eta_draws}{Array of shape K_w x S x N with standard normal draws.
-Required for the advanced workflow; auto-generated from \code{S} in the
-convenience workflow.}
+\item{eta_draws}{Array of shape K_w x S x U with standard normal draws, one
+K_w x S block per likelihood unit: U is the number of decision makers
+when \code{input_data} was prepared with \code{person_col}
+(\code{length(input_data$Ti)}), and the number of choice situations
+otherwise. Required for the advanced workflow; auto-generated from
+\code{S} in the convenience workflow. Post-hoc methods
+(\code{vcov(fit, type = )}, \code{\link{conditional_tastes}}, prediction)
+regenerate Halton draws with \code{\link{get_halton_normals}} from the
+recorded draw count, so build \code{eta_draws} with it for them to
+reproduce the estimation draws.}
 
-\item{S}{Integer number of Halton draws per individual (convenience workflow
-only). Default 100.}
+\item{S}{Integer number of Halton draws per decision maker, or per choice
+situation without \code{person_col} (convenience workflow only). Default
+100.}
 
 \item{rc_dist}{Integer vector indicating distribution of random coefficients
 (0 = normal, 1 = log-normal). Default: all normal.}
@@ -116,11 +125,16 @@ inverse-Hessian and ordinary BHHH are invalid; it reduces to the usual
 robust variance under uniform weights. BHHH scales better to large
 problems (many alternatives or simulation draws) but may underestimate
 standard errors in finite samples or away from the optimum. Any of these
-can also be recomputed post hoc via \code{vcov(fit, type = )}. Note that
-clustering repairs the inference, not the estimand: the MXL likelihood
-treats each choice situation as an independent draw from the mixing
-distribution; for panel random coefficients use
-\code{\link{run_hmnlogit}}.}
+can also be recomputed post hoc via \code{vcov(fit, type = )}. Without
+\code{person_col}, clustering repairs the inference, not the likelihood:
+the cross-sectional likelihood still treats each choice situation as an
+independent draw from the mixing distribution, and on panel data is a
+less efficient composite likelihood for the same taste distribution.
+With \code{person_col} the likelihood unit is the decision maker, so
+scores are per decision maker and
+\code{"sandwich"} is already robust to dependence across a decision
+maker's choice situations; \code{"cluster"} is then needed only for
+coarser groups (e.g. households or markets) that nest decision makers.}
 
 \item{scale_vars}{Pre-estimation column scaling for design matrices. One of
 \code{"none"} (default), \code{"sd"} (sample standard deviation),
@@ -141,8 +155,15 @@ Columns of \code{W} associated with log-normal random coefficients
 log-normal parameterization does not admit a closed-form back-transform
 under multiplicative scaling.}
 
-\item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
-equal weights are used. All weights must be finite and strictly positive.}
+\item{weights}{Optional weight vector (convenience workflow), one weight per
+choice situation in ascending-id order (see
+\code{\link{prepare_mxl_data}}). With \code{person_col}, situations are
+reordered by decision maker, so a positional vector is accepted only when
+that leaves the id order unchanged; otherwise supply
+\code{weights_col}. If \code{NULL},
+equal weights are used. All weights must be finite and strictly positive.
+With \code{person_col} they are decision-maker weights, constant within
+each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.}
 
 \item{outside_opt_label}{Label for the outside option (convenience workflow).}
 
@@ -150,9 +171,10 @@ equal weights are used. All weights must be finite and strictly positive.}
 (convenience workflow).}
 
 \item{draws}{Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
-\code{"store"} pre-materializes the full \eqn{K_w \times S \times N} Halton cube
-(existing behavior, exact reproducibility). \code{"generate"} computes each
-individual's draws on-the-fly in C++ from a stored seed, eliminating the O(N)
+\code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube, one
+block per likelihood unit (\code{U} decision makers with \code{person_col}, choice
+situations otherwise; existing behavior, exact reproducibility). \code{"generate"}
+computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 cube; recommended for memory-constrained or large-N settings. With
 \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
 dimension receives a seeded permutation shared across sequence indices.
@@ -193,19 +215,36 @@ alignment is by id rather than by position. Convenience workflow only. If
 \code{weights} nor \code{weights_col} is supplied, the recorded weight
 column is auto-detected and applied (with a message); if that column is
 absent the call errors rather than silently fitting an unweighted model
-under a WESML label.}
+under a WESML label. With \code{person_col} the weight must also be
+constant within each decision maker, and WESML is not supported:
+choice-based weights vary with the chosen alternative across a decision
+maker's situations, so they cannot weight the panel likelihood.}
 
 \item{cluster_col}{Optional name of a column in \code{data} holding cluster
 labels for cluster-robust standard errors (e.g. a person id when the same
-decision maker contributes several choice situations). Must be constant
-within each \code{id_col}. Supplying \code{cluster_col} without an explicit
+decision maker contributes several choice situations to a
+cross-sectional fit). Must be constant within each \code{id_col}, and
+within each decision maker when \code{person_col} is used (clusters must
+nest decision makers). Supplying \code{cluster_col} without an explicit
 \code{se_method} selects \code{se_method = "cluster"}.}
+
+\item{person_col}{Optional name of the column in \code{data} identifying
+decision makers (respondents). When supplied, all choice situations of a
+decision maker share one draw of the random coefficients (panel
+likelihood); \code{id_col} must still identify choice situations uniquely
+across the data set. \code{NULL} (default) makes each choice situation its
+own decision maker (cross-sectional likelihood). Convenience workflow
+only; in the advanced workflow pass \code{person_col} to
+\code{\link{prepare_mxl_data}}.}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).
 Standard S3 methods available: \code{summary()}, \code{coef()},
 \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
-\code{nobs()}.
+\code{nobs()}. A panel fit (\code{person_col}) also carries
+\code{n_persons}, the number of decision makers; \code{nobs()} remains
+the number of choice situations, which is also the \eqn{n} in BIC's
+\eqn{\log n} penalty.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.
@@ -220,6 +259,27 @@ Two workflows are supported:
 \code{\link{get_halton_normals}} yourself, then pass the results via
 \code{input_data} and \code{eta_draws}.}
 }
+
+\strong{Cross-section vs panel.} With \code{person_col}, each decision
+maker \eqn{n} draws one taste vector \eqn{\beta_n} from the mixing
+distribution \eqn{f(\beta \mid \theta)} and keeps it in all of their choice
+situations \eqn{t = 1, \dots, T_n}. The likelihood integrates the product
+of their conditional logit probabilities (Revelt and Train 1998),
+\deqn{L_n(\theta) = \int \prod_{t=1}^{T_n} P_{nt}(j_{nt} \mid \beta)
+  f(\beta \mid \theta) \, d\beta,}
+simulated with \code{S} draws per decision maker, so repeated choices
+speak to each decision maker's tastes, and
+\code{\link{conditional_tastes}} recovers what they reveal. Without
+\code{person_col} (the default), each choice situation is an independent
+draw from the mixing distribution: \eqn{L_i(\theta) = \int P_i(j_i \mid
+\beta) f(\beta \mid \theta) \, d\beta}. That is the right model when tastes
+are redrawn in every situation (or each decision maker chooses once). On
+panel data with stable tastes it is a composite (pseudo-) likelihood: it
+still targets the population mixing distribution, but it ignores the
+within-person correlation of choices, so it is less efficient, its
+standard errors must be clustered by decision maker (\code{cluster_col}),
+and its log-likelihood, AIC and BIC are not comparable with those of the
+panel fit.
 }
 \examples{
 \donttest{
@@ -237,4 +297,13 @@ fit <- run_mxlogit(
 )
 summary(fit)
 }
+}
+\references{
+Revelt, D. and Train, K. (1998). Mixed logit with repeated
+choices: households' choices of appliance efficiency level.
+\emph{Review of Economics and Statistics} 80(4), 647-657.
+}
+\seealso{
+\code{\link{conditional_tastes}}, \code{\link{run_hmnlogit}} (the
+hierarchical Bayes counterpart)
 }

@@ -166,9 +166,12 @@ simulate_mnl_data <- function(N = 5000,
 #' mean shifter `mu`. Random coefficients are parameterized via the lower
 #' Cholesky factor of `Sigma`. Covariates are Uniform(-1, 1) by default;
 #' columns named in `price_cols` are drawn as `-Uniform(0.1, 3)` to mimic
-#' strictly-negative price variables.
+#' strictly-negative price variables. With `T > 1` the data are a panel:
+#' each of the `N` decision makers draws one taste vector and keeps it in all
+#' of their `T` choice situations (the model of `run_mxlogit(person_col = )`).
 #'
-#' @param N Number of choice situations.
+#' @param N Number of decision makers; equals the number of choice situations
+#'   when `T = 1`.
 #' @param J Number of inside alternatives.
 #' @param beta Fixed coefficients for `x1..x{K_x}` (length `K_x = length(beta)`).
 #' @param delta ASCs for inside alternatives (length `J`). Defaults to an
@@ -186,9 +189,20 @@ simulate_mnl_data <- function(N = 5000,
 #' @param outside_option Logical; include outside option with `alt = 0`.
 #' @param vary_choice_set Logical; if `TRUE` (default) choice set size is
 #'   sampled uniformly from `2:J`.
+#' @param T Number of choice situations per decision maker (a single integer
+#'   `>= 1`; default `1`, a cross-section). Situation ids `1..N*T` stay
+#'   globally unique, so `id_col = "id"` works with or without
+#'   `person_col = "pid"`; with `T > 1` the data gain a leading `pid` column
+#'   identifying decision makers. Choice sets, covariates and shocks are drawn
+#'   per situation. For a given seed, `T = 1` reproduces the data of earlier
+#'   versions exactly.
 #' @returns A `choicer_sim` object. `true_params` includes `beta`, `delta`,
 #'   `Sigma`, `L_params` (packed Cholesky parameters), `mu`, `rc_dist`,
-#'   `rc_correlation`.
+#'   `rc_correlation`, and `gamma_i`: the `K_w x N` matrix of realized random
+#'   coefficients (rows are the `w*` columns, columns the decision makers), on
+#'   the scale they enter utility: the realized tastes, which the conditional
+#'   means from [conditional_tastes()] can be compared with (they track them
+#'   with shrinkage). `settings` records `T`.
 #' @details Random coefficients are constructed to match the estimator's
 #'   parameterization in `src/mxlogit.cpp`. For every dimension the raw draw
 #'   is `L %*% eta` where `eta ~ N(0, I)`. A normal random coefficient
@@ -202,6 +216,9 @@ simulate_mnl_data <- function(N = 5000,
 #' \donttest{
 #' sim <- simulate_mxl_data(N = 1000, J = 4, seed = 123)
 #' print(sim)
+#' # panel: 200 decision makers x 5 choice situations
+#' panel <- simulate_mxl_data(N = 200, T = 5, J = 4, seed = 123)
+#' head(panel$data)
 #' }
 #' @export
 simulate_mxl_data <- function(N = 5000,
@@ -215,7 +232,15 @@ simulate_mxl_data <- function(N = 5000,
                               price_cols = NULL,
                               seed = 123,
                               outside_option = TRUE,
-                              vary_choice_set = TRUE) {
+                              vary_choice_set = TRUE,
+                              T = 1L) {
+  # `T` shadows TRUE in this body: never use the T/F shorthands here.
+  if (!is.numeric(T) || length(T) != 1L || !is.finite(T) || T < 1 ||
+      T != round(T)) {
+    stop("`T` must be a single integer >= 1 (choice situations per ",
+         "decision maker).")
+  }
+  T <- as.integer(T)
   if (!is.null(seed)) set.seed(seed)
   K_x <- length(beta)
   K_w <- ncol(Sigma)
@@ -238,9 +263,10 @@ simulate_mxl_data <- function(N = 5000,
   }
 
   # Random coefficients matching the estimator's parameterization in
-  # src/mxlogit.cpp (see @details). For log-normal dimensions the DGP must
-  # add exp(mu) (not mu) so recovery_table() compares like-for-like against
-  # the recovered mu parameter.
+  # src/mxlogit.cpp (see @details), one draw per decision maker. For
+  # log-normal dimensions the DGP must add exp(mu) (not mu) so
+  # recovery_table() compares like-for-like against the recovered mu
+  # parameter.
   L_true <- t(chol(Sigma))
   gamma_i <- t(L_true %*% matrix(stats::rnorm(N * K_w), nrow = K_w, ncol = N))  # N x K_w
   for (r in seq_len(K_w)) {
@@ -271,12 +297,15 @@ simulate_mxl_data <- function(N = 5000,
     log(diag(L_true))
   }
 
-  cs <- .draw_choice_set(N, J, vary = vary_choice_set)
+  # N * T choice situations; situation id belongs to decision maker
+  # (id - 1) %/% T + 1 (the identity when T = 1).
+  n_sit <- N * T
+  cs <- .draw_choice_set(n_sit, J, vary = vary_choice_set)
   alt_indices <- cs$idx
   choice_set_sizes <- cs$sizes
 
   # Inside alternatives. Insertion order: id, w1..wKw, x1..xKx, gamma1..gammaKw, alt, delta_val.
-  dt <- data.table::data.table(id = rep(seq_len(N), times = choice_set_sizes))
+  dt <- data.table::data.table(id = rep(seq_len(n_sit), times = choice_set_sizes))
   for (k in seq_len(K_w)) {
     wk <- w_names[k]
     if (!is.null(price_cols) && wk %in% price_cols) {
@@ -286,7 +315,9 @@ simulate_mxl_data <- function(N = 5000,
     }
   }
   for (k in seq_len(K_x)) dt[, (x_names[k]) := stats::runif(.N, -1, 1)]
-  for (k in seq_len(K_w)) dt[, (paste0("gamma", k)) := gamma_i[id, k]]
+  for (k in seq_len(K_w)) {
+    dt[, (paste0("gamma", k)) := gamma_i[(id - 1L) %/% T + 1L, k]]
+  }
   dt[, `:=`(
     alt       = alt_indices[[id]],
     delta_val = delta[alt_indices[[id]]]
@@ -299,6 +330,12 @@ simulate_mxl_data <- function(N = 5000,
     dt[alt == 0L, (fill_cols) := 0]
   }
   data.table::setkey(dt, id, alt)
+  # Panel: decision-maker id first; computed after the outside rows are
+  # added, so they carry it too.
+  if (T > 1L) {
+    dt[, pid := (id - 1L) %/% T + 1L]
+    data.table::setcolorder(dt, "pid")
+  }
 
   dt[, epsilon := -log(-log(stats::runif(.N)))]
   xb_expr  <- paste(sprintf("%s * beta[%d]", x_names, seq_len(K_x)), collapse = " + ")
@@ -314,10 +351,12 @@ simulate_mxl_data <- function(N = 5000,
     data        = dt,
     true_params = list(
       beta = beta, delta = delta, Sigma = Sigma, L_params = L_params,
-      mu = mu, rc_dist = rc_dist, rc_correlation = rc_correlation
+      mu = mu, rc_dist = rc_dist, rc_correlation = rc_correlation,
+      gamma_i = matrix(t(gamma_i), nrow = K_w,
+                       dimnames = list(w_names, as.character(seq_len(N))))
     ),
     settings    = list(
-      N = N, J = J, K_x = K_x, K_w = K_w,
+      N = N, T = T, J = J, K_x = K_x, K_w = K_w,
       outside_option = outside_option,
       vary_choice_set = vary_choice_set
     ),

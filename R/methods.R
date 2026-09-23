@@ -39,6 +39,9 @@ model_display_name <- function(model) {
 print.choicer_fit <- function(x, ...) {
   cat(model_display_name(x$model), "model\n")
   cat("  N obs:", x$nobs, " | Parameters:", x$n_params, "\n")
+  if (!is.null(x$n_persons)) {
+    cat("  Respondents:", x$n_persons, "(panel likelihood)\n")
+  }
   cat("  Log-likelihood:", format(x$loglik, digits = 6), "\n")
   cat("  AIC:", format(-2 * x$loglik + 2 * x$n_params, digits = 6), "\n")
   if (!is.na(x$convergence)) {
@@ -92,31 +95,40 @@ coef.choicer_fit <- function(object, ...) {
 #'     scores. Requires \code{cluster} (or a fit made with
 #'     \code{cluster_col}). No small-sample correction is applied.}
 #' }
-#' Here \eqn{i} indexes \emph{choice situations}. For repeated choices by the
-#' same decision maker (panel data), cluster on the decision maker.
+#' Here \eqn{i} indexes \emph{likelihood units}: choice situations, or
+#' decision makers for a mixed logit fitted with \code{person_col} (panel
+#' likelihood). For repeated choices by the same decision maker in a
+#' cross-sectional fit, cluster on the decision maker.
 #'
-#' Note (mixed logit): clustering repairs the \emph{inference}, not the
-#' \emph{estimand}. \code{run_mxlogit()} treats each choice situation as an
-#' independent draw from the mixing distribution (a cross-sectional MSL
-#' likelihood, not the panel product form), so on panel data the point
-#' estimates target that cross-sectional model; \code{type = "cluster"} makes
-#' their standard errors robust to within-person dependence but does not turn
-#' the fit into a panel mixed logit. For panel random coefficients use
-#' \code{\link{run_hmnlogit}} (\code{person_col}).
+#' Note (mixed logit): without \code{person_col}, clustering repairs the
+#' \emph{inference}, not the \emph{likelihood}. The cross-sectional
+#' likelihood treats each choice situation as an independent draw from the
+#' mixing distribution; on panel data it is a composite likelihood that
+#' still targets the population taste distribution \eqn{f(\beta \mid
+#' \theta)}, just inefficiently. \code{type = "cluster"} makes the point
+#' estimates' standard errors robust to within-person dependence but does
+#' not recover the efficiency of the panel likelihood (\code{person_col}).
+#' With \code{person_col} the scores are per decision maker, so
+#' \code{type = "robust"} is already clustered by decision maker; cluster
+#' labels must then nest decision makers (be constant within each), and
+#' \code{type = "cluster"} adds something only for coarser groups such as
+#' households or markets.
 #'
 #' @param object A choicer_fit object.
 #' @param type \code{NULL} (default; return the as-fitted vcov) or one of
 #'   \code{"hessian"}, \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
 #' @param cluster Cluster labels for \code{type = "cluster"}, one per choice
-#'   situation. Alignment to the prepared (id-sorted) choice situations is
+#'   situation (collapsed to one per decision maker for a panel mixed logit
+#'   fit). Alignment to the prepared (id-sorted) choice situations is
 #'   handled as follows:
 #'   \itemize{
 #'     \item \strong{Named} (recommended): names are matched against the
 #'       choice-situation ids, so the vector is safe in any order. Build it by
 #'       naming your per-situation labels with the id values.
-#'     \item \strong{Unnamed}: taken to be in the prepared, id-sorted order; a
-#'       warning flags that assumption. A vector of per-alternative (row-level)
-#'       length is rejected.
+#'     \item \strong{Unnamed}: taken to be in the prepared order (ascending
+#'       id), with a warning; for a panel fit whose prepared order (decision
+#'       maker, then id) differs from id order, an unnamed vector is
+#'       rejected — name it by choice-situation id or use \code{cluster_col}.
 #'   }
 #'   Defaults to the labels stored at fit time via \code{cluster_col} (already
 #'   aligned). Supplying \code{cluster} without \code{type} implies
@@ -518,6 +530,7 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
       message = object$message,
       elapsed_time = object$optimizer$elapsed_time,
       sigma = object$sigma,
+      n_persons = object$n_persons,
       se_method = object$se_method %||% "hessian",
       weighting = object$choice_sampling$scheme,
       weights_applied = object$choice_sampling$weights_applied,
@@ -970,7 +983,12 @@ print_footer <- function(x) {
   bic <- -2 * x$loglik + log(x$nobs) * x$n_params
   cat("AIC:", format(aic, digits = 6), " | BIC:", format(bic, digits = 6), "\n")
   print_gof_lines(x$gof)
-  cat("N:", x$nobs, " | Parameters:", x$n_params, "\n")
+  if (is.null(x$n_persons)) {
+    cat("N:", x$nobs, " | Parameters:", x$n_params, "\n")
+  } else {
+    cat("N:", x$nobs, " | Respondents:", x$n_persons,
+        " | Parameters:", x$n_params, "\n")
+  }
   if (!is.null(x$elapsed_time)) {
     cat("Optimization time:", round(x$elapsed_time, 2), "s\n")
   }
@@ -1104,7 +1122,11 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
 #'   vectors averaged across simulation draws. For "shares": a named numeric
 #'   vector of simulated market shares per alternative. With a data.frame
 #'   `newdata`, rows are ordered by id, then by fit-time alternative code
-#'   (`alt_int` in `object$alt_mapping`).
+#'   (`alt_int` in `object$alt_mapping`); for a panel fit whose `person_col`
+#'   is present in `newdata`, by decision maker first, which reproduces the
+#'   in-sample row order. Predictions are unconditional: each choice
+#'   situation integrates over the population taste distribution (see
+#'   [conditional_tastes()] for tastes conditional on observed choices).
 #' @examples
 #' \donttest{
 #' library(data.table)

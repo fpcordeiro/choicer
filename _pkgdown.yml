@@ -93,12 +93,15 @@ reference:
       - prepare_hmnl_data
       - prepare_hmnp_data
   - title: Demand and substitution
-    desc: Predicted shares, elasticities, diversion and share inversion.
+    desc: >
+      Predicted shares, elasticities, diversion, share inversion and
+      individual-level (conditional) tastes.
     contents:
       - starts_with("predict")
       - starts_with("elasticities")
       - starts_with("diversion_ratios")
       - starts_with("blp")
+      - starts_with("conditional_tastes")
   - title: Welfare
     desc: Willingness-to-pay and consumer surplus.
     contents:

@@ -97,6 +97,8 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #'   log-normal columns (\code{rc_dist[k] == 1}) carved out to 1.
 #' @param choice_sampling Optional list recording choice-based-sampling
 #'   provenance (scheme, population/sample shares, meat type), or NULL.
+#' @param n_persons Number of decision makers of a panel fit (`person_col`),
+#'   or NULL for a cross-sectional fit.
 #' @returns A choicer_mxl object (S3 class)
 #' @noRd
 new_choicer_mxl <- function(call, coefficients, loglik,
@@ -111,7 +113,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
                             se_method = "hessian",
                             scale_vars = "none",
                             sX = NULL, sW = NULL,
-                            choice_sampling = NULL) {
+                            choice_sampling = NULL,
+                            n_persons = NULL) {
   structure(
     list(
       call = call,
@@ -140,7 +143,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
       scale_vars = scale_vars,
       sX = sX,
       sW = sW,
-      choice_sampling = choice_sampling
+      choice_sampling = choice_sampling,
+      n_persons = n_persons
     ),
     class = c("choicer_mxl", "choicer_fit")
   )
@@ -570,7 +574,10 @@ compute_hessian <- function(object) {
       }
     },
     mxl = {
-      gp <- .mxl_gen_params(object$draws_info)
+      # One draw block and one Ti entry per likelihood unit: in generate mode
+      # a missing Ti would silently give cross-sectional derivatives.
+      gp <- .mxl_gen_params(object$draws_info,
+                            N = length(.unit_first(object[["data"]])))
       se_method <- object$se_method %||% "hessian"
       if (se_method == "bhhh") {
         mxl_bhhh_parallel(
@@ -587,7 +594,8 @@ compute_hessian <- function(object) {
           rc_mean = object$rc_mean,
           use_asc = object$use_asc,
           include_outside_option = object$include_outside_option,
-          gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
+          gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+          Ti = object[["data"]]$Ti
         )
       } else {
         mxl_hessian_parallel(
@@ -604,7 +612,8 @@ compute_hessian <- function(object) {
           rc_mean = object$rc_mean,
           use_asc = object$use_asc,
           include_outside_option = object$include_outside_option,
-          gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
+          gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+          Ti = object[["data"]]$Ti
         )
       }
     },
@@ -745,7 +754,7 @@ invert_hessian <- function(hess) {
 #' \code{B = sum_i w_i^2 s_i s_i'} is the weight-squared outer product of
 #' per-individual scores — the \code{"robust"} case of the shared
 #' \code{.assemble_score_vcov()} path (\code{crossprod(w * S)} over the
-#' per-situation score matrix). Valid under choice-based / WESML weighting,
+#' per-unit score matrix). Valid under choice-based / WESML weighting,
 #' where the plain inverse-Hessian is not. Supported for MNL, MXL and NL fits.
 #'
 #' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
@@ -756,17 +765,20 @@ compute_sandwich_vcov <- function(object) {
   .assemble_score_vcov(object, type = "robust")
 }
 
-#' Per-situation score matrix from stored data
+#' Per-unit score matrix from stored data
 #'
 #' Dispatches to the internal \code{*_scores_parallel} C++ kernels and returns
-#' the \code{N x p} matrix whose row \code{i} is the weight-free score of
-#' choice situation \code{i} evaluated at the fitted coefficients. For MXL,
-#' Halton draws are regenerated deterministically from \code{draws_info}
-#' (mirroring \code{compute_hessian()}).
+#' the \code{U x p} matrix whose row \code{u} is the weight-free score of
+#' likelihood unit \code{u} evaluated at the fitted coefficients. Units are
+#' choice situations, or decision makers for a panel mixed logit
+#' (\code{person_col}). For MXL, Halton draws are regenerated
+#' deterministically from \code{draws_info} (mirroring
+#' \code{compute_hessian()}).
 #'
 #' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
 #'   \code{keep_data = TRUE}.
-#' @returns Numeric matrix, \code{nobs x n_params}.
+#' @returns Numeric matrix, \code{U x n_params} (\code{U = nobs} unless the
+#'   fit is a panel mixed logit).
 #' @noRd
 compute_scores <- function(object) {
   if (is.null(object[["data"]])) {
@@ -792,7 +804,7 @@ compute_scores <- function(object) {
       include_outside_option = object$include_outside_option
     ),
     mxl = {
-      gp <- .mxl_gen_params(object$draws_info)
+      gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
       mxl_scores_parallel(
         theta = theta, X = d$X, W = d$W,
         alt_idx = d$alt_idx, choice_idx = d$choice_idx,
@@ -800,7 +812,8 @@ compute_scores <- function(object) {
         rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
         rc_mean = object$rc_mean, use_asc = object$use_asc,
         include_outside_option = object$include_outside_option,
-        gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
+        gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+        Ti = d$Ti
       )
     }
   )
@@ -839,7 +852,7 @@ compute_scores <- function(object) {
       )
     },
     mxl = {
-      gp <- .mxl_gen_params(object$draws_info)
+      gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
       mxl_hessian_parallel(
         theta = theta, X = d$X, W = d$W,
         alt_idx = d$alt_idx, choice_idx = d$choice_idx,
@@ -847,13 +860,14 @@ compute_scores <- function(object) {
         rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
         rc_mean = object$rc_mean, use_asc = object$use_asc,
         include_outside_option = object$include_outside_option,
-        gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S
+        gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+        Ti = d$Ti
       )
     }
   )
 }
 
-#' Meat matrix from a per-situation score matrix
+#' Meat matrix from a per-unit score matrix
 #'
 #' One code path for every score-based variance estimator:
 #' \describe{
@@ -868,14 +882,20 @@ compute_scores <- function(object) {
 #'     value). No small-sample (\eqn{G/(G-1)}) correction is applied.}
 #' }
 #'
-#' @param S \code{N x p} score matrix (rows are weight-free scores).
-#' @param w Length-\code{N} weight vector.
+#' @param S \code{N x p} score matrix (rows are weight-free scores of the
+#'   likelihood units: choice situations, or decision makers for a panel
+#'   mixed logit).
+#' @param w Length-\code{N} weight vector, one weight per score row.
 #' @param type One of \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
 #' @param cluster Length-\code{N} cluster labels (required for
 #'   \code{type = "cluster"}).
 #' @returns \code{p x p} meat matrix.
 #' @noRd
 .score_meat <- function(S, w, type, cluster = NULL) {
+  if (length(w) != nrow(S)) {
+    stop("Internal error: ", length(w), " weights for ", nrow(S),
+         " score rows (weights must be per likelihood unit).", call. = FALSE)
+  }
   switch(type,
     bhhh = crossprod(sqrt(w) * S),
     robust = crossprod(w * S),
@@ -969,6 +989,15 @@ compute_scores <- function(object) {
          "by choice-situation id, or set `cluster_col=` at fit time.",
          call. = FALSE)
   }
+  # A panel fit orders situations by decision maker first; unless that is
+  # also id order, unnamed labels (typically built in id order) would be
+  # silently misaligned, so require names.
+  if (!is.null(d$Ti) && !is.null(ids) && !.ids_sorted(ids)) {
+    stop("Unnamed `cluster` is ambiguous for this panel fit: its choice ",
+         "situations are ordered by decision maker (`person_col`), not by id. ",
+         "Name `cluster` by choice-situation id (see `fit$data$situation_ids`) ",
+         "or set `cluster_col=` at fit time.", call. = FALSE)
+  }
   warning("Unnamed `cluster` is assumed to be in the prepared (id-sorted) ",
           "order. Name it by choice-situation id (see `fit$data$situation_ids`) ",
           "or set `cluster_col=` at fit time to guarantee alignment.",
@@ -1006,7 +1035,10 @@ compute_scores <- function(object) {
     return(invert_hessian(.compute_bread(object)))
   }
 
-  w <- object[["data"]]$weights
+  # Scores, weights and cluster labels are per likelihood unit: choice
+  # situations, or decision makers for a panel mixed logit.
+  d <- object[["data"]]
+  w <- d$weights[.unit_first(d)]
   S <- compute_scores(object)
 
   if (identical(type, "bhhh")) {
@@ -1017,7 +1049,7 @@ compute_scores <- function(object) {
     if (is.null(cluster)) {
       # No explicit labels: use the fit-time cluster_col vector, already
       # collapsed and aligned to the prepared order.
-      cluster <- object[["data"]]$cluster
+      cluster <- d$cluster
       if (is.null(cluster)) {
         stop("Cluster-robust standard errors need cluster labels: pass ",
              "`cluster=` (named by choice-situation id) or fit with ",
@@ -1027,6 +1059,8 @@ compute_scores <- function(object) {
       # User-supplied labels: guard and realign to the prepared order.
       cluster <- .resolve_cluster(object, cluster)
     }
+    # Per situation so far; panel fits need clusters that nest decision makers.
+    cluster <- .to_units(cluster, d, "`cluster`")
   }
   B <- .score_meat(S, w, type, cluster)
   .sandwich_combine(.compute_bread(object), B)

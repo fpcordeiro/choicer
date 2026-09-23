@@ -91,7 +91,8 @@ Bayes methods).}
 }
 \value{
 A \code{choicer_cs} object: a list with \code{cs} (per-choice-
-situation surplus, length N), \code{mean_cs} (weighted mean),
+situation surplus, length N, ordered as in \code{\link{logsum}}),
+\code{mean_cs} (weighted mean),
 \code{se_mean_cs} (delta-method SE; NA for MXL/NL or when the
 variance-covariance matrix is unavailable), \code{ci} (confidence
 interval for the mean), \code{price_var}, \code{level}, and \code{n}.
