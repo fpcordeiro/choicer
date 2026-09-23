@@ -93,19 +93,27 @@ inline void validate_nl_inputs(const arma::mat& X, const arma::uvec& alt_idx,
   }
 }
 
+// eta_draws holds one K_w x S draw block per likelihood unit: per choice
+// situation in the cross-section (n_units < 0, the default), per decision
+// maker in a panel (n_units = number of decision makers).
 inline void validate_mxl_inputs(const arma::mat& X, const arma::mat& W,
                                 const arma::uvec& alt_idx,
                                 const Rcpp::IntegerVector& M,
                                 const arma::cube& eta_draws,
                                 const bool use_asc, const arma::vec& delta,
                                 const arma::vec* weights = nullptr,
-                                const arma::uvec* choice_idx = nullptr) {
+                                const arma::uvec* choice_idx = nullptr,
+                                const int n_units = -1) {
   validate_choice_data(X, alt_idx, M, use_asc, delta, weights, choice_idx);
   const int N = M.size();
   const int K_w = W.n_cols;
-  if (static_cast<int>(eta_draws.n_slices) != N) {
+  if (n_units < 0 && static_cast<int>(eta_draws.n_slices) != N) {
     Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
                eta_draws.n_slices, N);
+  }
+  if (n_units >= 0 && static_cast<int>(eta_draws.n_slices) != n_units) {
+    Rcpp::stop("eta_draws 3rd dimension (%d) does not match the number of "
+               "decision makers (%d)", eta_draws.n_slices, n_units);
   }
   if (static_cast<int>(eta_draws.n_rows) != K_w) {
     Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",

@@ -20,7 +20,8 @@ mxl_loglik_gradient_parallel(
   include_outside_option = FALSE,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L
+  gen_S = 0L,
+  Ti = NULL
 )
 }
 \arguments{
@@ -36,9 +37,12 @@ mxl_loglik_gradient_parallel(
 
 \item{M}{N x 1 vector with number of alternatives for each individual}
 
-\item{weights}{N x 1 vector with weights for each observation}
+\item{weights}{N x 1 vector with weights for each observation; when Ti is
+supplied they must be constant within each decision maker}
 
-\item{eta_draws}{Array with choice situation draws; K_w x S x N}
+\item{eta_draws}{Array of standard-normal draws, K_w x S x U, where U is the
+number of decision makers when Ti is supplied and the number of choice
+situations otherwise}
 
 \item{rc_dist}{K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal}
 
@@ -58,6 +62,11 @@ on the fly from this seed.}
 identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
+
+\item{Ti}{Optional integer vector with the number of choice situations of
+each decision maker (panel likelihood); situations must be sorted by
+decision maker. NULL (default): every choice situation is its own unit
+(cross-sectional likelihood).}
 }
 \value{
 List with loglikelihood and gradient evaluated at input arguments
@@ -65,7 +74,8 @@ List with loglikelihood and gradient evaluated at input arguments
 \description{
 Computes the log-likelihood and its gradient for the Mixed Logit model using
 OpenMP for parallelization. Allows for inclusion of alternative-specific
-constants, outside option, observation weights, correlated random coefficients.
+constants, outside option, observation weights, correlated random
+coefficients, and panel data (one draw block per decision maker, see Ti).
 }
 \note{
 For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,

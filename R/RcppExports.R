@@ -657,7 +657,8 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #'
 #' Computes the log-likelihood and its gradient for the Mixed Logit model using
 #' OpenMP for parallelization. Allows for inclusion of alternative-specific
-#' constants, outside option, observation weights, correlated random coefficients.
+#' constants, outside option, observation weights, correlated random
+#' coefficients, and panel data (one draw block per decision maker, see Ti).
 #'
 #' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
 #' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
@@ -665,8 +666,11 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param weights N x 1 vector with weights for each observation; when Ti is
+#'   supplied they must be constant within each decision maker
+#' @param eta_draws Array of standard-normal draws, K_w x S x U, where U is the
+#'   number of decision makers when Ti is supplied and the number of choice
+#'   situations otherwise
 #' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param rc_mean whether to estimate means for random coefficients. If so, mean parameters (mu) should be included in theta after beta parameters.
@@ -678,6 +682,10 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
 #'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
+#' @param Ti Optional integer vector with the number of choice situations of
+#'   each decision maker (panel likelihood); situations must be sorted by
+#'   decision maker. NULL (default): every choice situation is its own unit
+#'   (cross-sectional likelihood).
 #' @returns List with loglikelihood and gradient evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -702,8 +710,8 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' result$objective
 #' }
 #' @keywords internal
-mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
+    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
 }
 
 #' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
@@ -732,8 +740,11 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param weights N x 1 vector with weights for each observation; when Ti is
+#'   supplied they must be constant within each decision maker
+#' @param eta_draws Array of standard-normal draws, K_w x S x U, where U is the
+#'   number of decision makers when Ti is supplied and the number of choice
+#'   situations otherwise
 #' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param rc_mean whether to estimate means for random coefficients.
@@ -745,6 +756,10 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
 #'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
+#' @param Ti Optional integer vector with the number of choice situations of
+#'   each decision maker (panel likelihood); situations must be sorted by
+#'   decision maker. NULL (default): every choice situation is its own unit
+#'   (cross-sectional likelihood).
 #' @returns Hessian evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -768,15 +783,17 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' dim(H)
 #' }
 #' @keywords internal
-mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
+    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
 }
 
 #' BHHH (outer product of gradients) information matrix for Mixed Logit
 #'
 #' Computes the BHHH approximation to the observed information matrix for the
 #' Mixed Logit model: \eqn{H_{BHHH} = \sum_i w_i \cdot s_i s_i^\top}, where
-#' \eqn{s_i} is the per-individual score (gradient of \eqn{\log \bar{P}_i}).
+#' \eqn{s_i} is the score of likelihood unit i (gradient of its simulated
+#' log-likelihood \eqn{\log \bar{P}_i}; a decision maker when Ti is supplied,
+#' a choice situation otherwise).
 #' This outer product of gradients (OPG) estimator provides an alternative to
 #' the analytical Hessian for standard error computation that scales to large
 #' problems where the analytical Hessian is infeasible (e.g., many alternatives
@@ -788,8 +805,11 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
 #' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
 #' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with choice situation draws; K_w x S x N
+#' @param weights N x 1 vector with weights for each observation; when Ti is
+#'   supplied they must be constant within each decision maker
+#' @param eta_draws Array of standard-normal draws, K_w x S x U, where U is the
+#'   number of decision makers when Ti is supplied and the number of choice
+#'   situations otherwise
 #' @param rc_dist K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal
 #' @param rc_correlation whether random coefficients should be correlated
 #' @param rc_mean whether to estimate means for random coefficients.
@@ -801,6 +821,10 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
 #'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
+#' @param Ti Optional integer vector with the number of choice situations of
+#'   each decision maker (panel likelihood); situations must be sorted by
+#'   decision maker. NULL (default): every choice situation is its own unit
+#'   (cross-sectional likelihood).
 #' @returns n_params x n_params PSD matrix representing the observed information
 #'   matrix estimated by the outer product of gradients (same sign convention
 #'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -827,12 +851,16 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' dim(H)
 #' }
 #' @keywords internal
-mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
+    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
 }
 
-mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
+    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+}
+
+mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
+    .Call(`_choicer_mxl_conditional_tastes_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
 }
 
 #' Per-observation simulated choice probabilities for Mixed Logit
