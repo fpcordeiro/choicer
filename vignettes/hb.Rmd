@@ -21,15 +21,21 @@ $$U_{ijt} = x_{ijt}'\beta_i + \delta_j + \varepsilon_{ijt},
 \qquad \delta_j = z_j'\theta + \xi_j, \quad \xi_j \sim N(0, \sigma_d^2).$$
 
 - **Respondent level.** Each person carries one taste vector $\beta_i$ across
-  all of their choice situations. This is the genuine *panel* mixed logit: by
-  contrast, `run_mxlogit()` maximizes a cross-sectional simulated likelihood in
-  which every choice situation is integrated over tastes separately, with no
-  draw held fixed across a person's likelihood contributions (see the
-  [mixed logit vignette](mxl.html)). When people are observed repeatedly —
-  survey panels, scanner data, repeated hospital admissions — the repetition,
-  together with within-person attribute and menu variation, helps distinguish
-  persistent taste heterogeneity $W$ from choice-level noise, and
-  the hierarchical model is the one that uses it.
+  all of their choice situations — the Bayesian counterpart of the frequentist
+  panel mixed logit, `run_mxlogit(person_col = )` (see the
+  [mixed logit vignette](mxl.html)): both hold one taste draw fixed across a
+  person's choice situations. The frequentist panel likelihood integrates
+  $\beta_i$ out by simulation to form a marginal likelihood; HMNL's Gibbs
+  sampler instead samples $\beta_i$ itself from its full conditional at every
+  iteration, alongside $b$, $W$, $\theta$ and $\sigma_d^2$. What HMNL adds is
+  partial pooling of alternative-level effects ($\delta_j$ below) and
+  posterior, rather than asymptotic, uncertainty — at the cost of MCMC
+  convergence in place of a single optimizer run. When people are observed
+  repeatedly — survey panels, scanner data, repeated hospital admissions — the
+  repetition, together with within-person attribute and menu variation, helps
+  distinguish persistent taste heterogeneity $W$ from choice-level noise, and
+  either panel model is able to use it (the default cross-sectional likelihood
+  of either function, with every choice situation its own respondent, is not).
 
 - **Alternative level.** Each alternative carries a mean-utility effect
   $\delta_j$, partially pooled toward a characteristics-based mean $z_j'\theta$

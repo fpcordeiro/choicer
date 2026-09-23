@@ -17,11 +17,14 @@ a single coefficient on each random attribute, choicer estimates a *distribution
 of coefficients. Substitution then reflects both observed covariates and the
 estimated distribution of tastes. Estimation is by simulated maximum likelihood
 using Halton draws, with the likelihood, gradient and Hessian evaluated in
-parallel C++. `run_mxlogit()` currently estimates a **cross-sectional**
+parallel C++. By default `run_mxlogit()` estimates a **cross-sectional**
 simulated likelihood: each choice situation's probability is integrated over
-the taste distribution separately. It does not hold a simulation draw fixed
-across a person's tasks and then integrate the product of conditional
-probabilities, as a frequentist panel mixed-logit likelihood would.
+the taste distribution separately. When the same decision maker is observed
+in several choice situations, `person_col` switches to the **panel**
+likelihood instead (Revelt and Train 1998): one taste draw is held fixed
+across that person's situations and their conditional probabilities are
+integrated jointly, so repeated choices discipline the taste distribution
+directly — see *Panel data: one taste draw per decision maker* below.
 
 A useful way to see the mechanism is to write the mixed-logit probability as a
 logit kernel averaged over the taste distribution,
@@ -65,7 +68,7 @@ fit <- run_mxlogit(
   covariate_cols  = c("x1", "x2"),  # fixed coefficients
   random_var_cols = c("w1", "w2"),  # random coefficients
   rc_correlation  = TRUE,           # estimate their full covariance
-  S               = 100L,           # Halton draws per person
+  S               = 100L,           # Halton draws per choice situation (no person_col here)
   draws           = "generate",     # generate draws on the fly (low memory)
   seed            = 7L,
   scale_vars      = "sd",           # condition the Hessian across blocks
@@ -157,16 +160,184 @@ Two consequences are worth keeping in front of you:
   variation in choice sets or attributes across markets** (the BLP setting), or
   the rich, designed attribute variation of a stated-preference experiment.
   Without one of these, the random-coefficient variances are weakly identified
-  and the estimates can be fragile. Note that on panel data `run_mxlogit()`
-  does not exploit the first source: it still maximizes a *cross-sectional*
-  simulated likelihood — each choice situation is integrated separately rather
-  than sharing a taste draw across that person's likelihood contributions.
-  Cluster-robust standard errors
-  (`cluster_col=`, or `vcov(fit, type = "cluster")`; see
-  [Which standard errors, and when](inference.html)) repair the inference for
-  within-person dependence, but the model that actually *uses* the panel to
-  identify the taste distribution is the hierarchical Bayesian logit,
-  [`run_hmnlogit()`](hb.html).
+  and the estimates can be fragile. `run_mxlogit()` exploits the first source
+  when `person_col` is supplied: one taste draw is then held fixed across a
+  person's choice situations, so it is their *joint* probability that gets
+  integrated over $f(\beta)$ (Revelt and Train 1998) — see *Panel data: one
+  taste draw per decision maker* below. Without `person_col`, the default
+  cross-sectional likelihood integrates each situation separately and does not
+  use that within-person link; cluster-robust standard errors (`cluster_col=`,
+  or `vcov(fit, type = "cluster")`; see
+  [Which standard errors, and when](inference.html)) then repair the
+  *inference* for within-person dependence without changing what the point
+  estimates target. The hierarchical Bayesian logit,
+  [`run_hmnlogit()`](hb.html), is the Bayesian alternative to the panel
+  likelihood: the same taste-sharing idea, plus partial pooling of
+  alternative-level effects and posterior rather than asymptotic inference.
+
+## Panel data: one taste draw per decision maker
+
+**Estimand.** For decision maker $n$ observed in choice situations
+$t = 1, \dots, T_n$, the panel likelihood holds one taste draw
+$\beta_n \sim f(\beta \mid \theta)$ fixed across all of $n$'s situations and
+integrates their *joint* probability (Revelt and Train 1998):
+$$L_n(\theta) = \int \prod_{t=1}^{T_n} P_{nt}(j_{nt} \mid \beta)\, f(\beta \mid \theta)\, d\beta.$$
+The target is the same taste distribution $f(\beta \mid \theta)$; what
+differs is the maintained model of a person's repeated choices. The default
+likelihood integrates every situation on its own — the full likelihood when
+tastes are redrawn each situation or each person is observed once.
+
+**Why repeated choices identify $\Sigma$.** A person who keeps picking the
+same kind of alternative, situation after situation, is revealing that their
+tastes sit away from the population average and stay there — that
+persistence is exactly the variation that identifies $\Sigma$ most sharply
+(the marginals identify it too, but only through the shape of the mixture).
+The
+cross-sectional likelihood cannot see it: integrating each situation on its
+own treats a person's five consistent choices the same as five different
+people who each chose once. It still targets the same population mixing
+distribution — situation by situation, each probability is correctly
+specified, so it stays consistent (a composite, or pseudo-, likelihood) — but
+it is statistically inefficient, and the loss falls squarely on $\Sigma$.
+
+**Fitting the panel likelihood.** Point `person_col` at the respondent
+identifier; `id_col` still identifies choice situations, and must stay unique
+across the whole data set (situation ids do not restart within person). `S`
+becomes draws per decision maker rather than per choice situation, since one
+draw block is now shared across all of a person's situations. A product of
+$T_n$ per-situation probabilities is more sharply peaked in $\beta$ than a
+single choice probability and needs more draws to simulate accurately — the
+recovery script in `inst/simulations/mxl_panel_simulation.R` uses `S = 1000`
+at `T = 10`; this vignette keeps `S = 100` for speed.
+
+```{r sim-panel}
+panel_sim <- simulate_mxl_data(N = 300, T = 6, J = 4, seed = 1)
+```
+
+`T = 6` gives each of the 300 decision makers six choice situations, sharing
+one realized taste vector (`panel_sim$true_params$gamma_i[, n]`) across them.
+
+```{r fit-panel}
+panel_fit <- run_mxlogit(
+  data            = panel_sim$data,
+  id_col          = "id",
+  alt_col         = "alt",
+  choice_col      = "choice",
+  covariate_cols  = c("x1", "x2"),
+  random_var_cols = c("w1", "w2"),
+  rc_correlation  = TRUE,
+  person_col      = "pid",          # one taste draw per pid, shared across its T tasks
+  S               = 100L,           # Halton draws per decision maker
+  draws           = "generate",
+  seed            = 7L
+)
+summary(panel_fit)
+```
+
+```{r recovery-panel}
+recovery_table(panel_fit, panel_sim$true_params)
+```
+
+**What changes in inference.** With `person_col`, scores are already per
+decision maker, so `se_method = "sandwich"` (equivalently
+`vcov(panel_fit, type = "robust")`) is robust to within-person dependence out
+of the box — there is nothing left within a person to cluster on.
+`cluster_col` is for coarser groups that nest decision makers (households,
+markets); it must be constant within each person. Weights, if supplied, are
+decision-maker weights, constant within person, since the objective is
+$\sum_n w_n \log L_n$; WESML (choice-based) weights are not supported with
+`person_col`, because a choice-based weight varies with the alternative a
+person chose, which can differ across their situations. `nobs()` still counts
+choice situations; a panel fit additionally reports `n_persons`, printed as
+"Respondents" above.
+
+As a check on the efficiency argument above: refitting the same data
+cross-sectionally, clustering on `pid` for valid inference, repairs the
+standard errors' *validity* but not their size.
+
+```{r cs-contrast}
+cs_fit <- run_mxlogit(
+  data            = panel_sim$data,
+  id_col          = "id",
+  alt_col         = "alt",
+  choice_col      = "choice",
+  covariate_cols  = c("x1", "x2"),
+  random_var_cols = c("w1", "w2"),
+  rc_correlation  = TRUE,
+  cluster_col     = "pid",          # inference fix only: still one draw per situation
+  S               = 100L,
+  draws           = "generate",
+  seed            = 7L
+)
+se_ratio <- sqrt(diag(vcov(cs_fit, type = "cluster"))) / sqrt(diag(vcov(panel_fit)))
+round(se_ratio, 2)
+```
+
+The ratio sits close to one on the mean-utility parameters (`beta`, ASCs —
+about 1.0-1.2 here) but visibly above one on the Cholesky block — the cost of
+never sharing a taste draw within a person, exactly where a composite
+likelihood's efficiency loss concentrates. (`cs_fit`'s numerator is the
+cluster-robust sandwich; `panel_fit`'s denominator is the default
+analytical-Hessian SE, so the ratio also reflects that choice of estimator,
+not only the likelihood.) Because it targets a different (composite)
+likelihood, the cross-sectional fit's log-likelihood, AIC and BIC are not
+comparable to the panel fit's.
+
+**Individual-level tastes.** `conditional_tastes()` computes, for each
+decision maker, the mean and SD of $\beta_n$ conditional on the choices they
+made (Revelt and Train 2000; Train 2009, ch. 11) — the frequentist analogue of
+the hierarchical Bayesian `beta_i` summaries of [`run_hmnlogit()`](hb.html):
+
+```{r conditional-tastes}
+ct <- conditional_tastes(panel_fit)
+ct
+```
+
+```{r cs-conditional-tastes}
+cs_ct <- conditional_tastes(cs_fit)
+```
+
+Read this carefully: `ct$mean[, n]` is *not* decision maker $n$'s own
+$\beta_n$. It is the average taste among people who would make $n$'s choices,
+so it shrinks toward the population mean — more so for people with fewer
+situations — and its spread across people understates the population spread
+in $\Sigma$. The printed `revealed` and `residual` columns decompose
+population variance by the law of total variance,
+$\mathrm{Var}(\beta) = \mathrm{Var}(E[\beta \mid y]) + E[\mathrm{Var}(\beta \mid y)]$;
+they should sum to about one. This is a numerical check, not a specification
+test: the random-coefficient covariance $\Sigma$ is always freely estimated,
+so this identity is the likelihood's first-order condition for $\Sigma$ and
+holds at a converged fit whatever the true taste distribution — a departure
+points to too few draws `S` or an unconverged fit. (Here `rc_mean = FALSE`
+fixes the random-coefficient means at zero rather than estimating them
+freely; a `mean_cond` far from zero below would flag that restriction.) In
+this example the conditional means correlate
+`r round(cor(ct$mean["w1", ], panel_sim$true_params$gamma_i["w1", colnames(ct$mean)]), 2)`
+(`w1`) and
+`r round(cor(ct$mean["w2", ], panel_sim$true_params$gamma_i["w2", colnames(ct$mean)]), 2)`
+(`w2`) with the realized tastes in `panel_sim$true_params$gamma_i`. At the
+true $\theta$, shrinkage sets this correlation exactly:
+$\mathrm{cor}(E[\beta \mid y], \beta) = sd(E[\beta \mid y]) / sd(\beta) =
+\sqrt{\texttt{revealed}}$, so the same shrinkage that keeps `revealed` below
+one keeps the correlation below one too. A single choice reveals little about
+a person's tastes, so fitting without `person_col` leaves `revealed` much
+smaller —
+`r round(cs_ct$population["w1", "revealed"], 2)` vs.
+`r round(ct$population["w1", "revealed"], 2)` for `w1`,
+`r round(cs_ct$population["w2", "revealed"], 2)` vs.
+`r round(ct$population["w2", "revealed"], 2)` for `w2` — than with repeated
+choices; conditional means only earn their keep with repeated choices.
+
+Using conditional means as regressors in a second-stage analysis is worse
+than merely ignoring their sampling and simulation error: the draw weights
+behind each conditional mean are not exported, so regressing on `ct$mean`
+directly measures tastes with error and biases the second-stage coefficient
+toward zero (attenuation), on top of understating its standard error. Prefer
+entering the observables in utility instead — interactions with the
+random-coefficient columns, or `rc_mean` shifts — or, if a second-stage
+regression is unavoidable, propagate the uncertainty with a
+decision-maker-level bootstrap rather than treating conditional means as if
+they were data.
 
 ## A research checklist
 
@@ -185,9 +356,13 @@ For a reportable `run_mxlogit()` application:
 5. Compare the analytical-Hessian and BHHH results; use robust or WESML inference
    for weighting/misspecification and cluster inference for repeated sampling
    units as appropriate.
-6. Treat clustering of panel tasks as an inference correction only. If tastes
-   should persist within person, use `run_hmnlogit()` so the likelihood itself
-   uses that repetition.
+6. On panel data, decide what you can defend about tastes within a person
+   before choosing the standard error: fit `person_col` when tastes can be
+   defended as constant within a decision maker's situations, and keep the
+   clustered cross-sectional fit when they cannot — it relies only on each
+   situation's marginal and pays in precision, mostly on $\Sigma$. Add
+   `run_hmnlogit()` when partially-pooled alternative effects or posterior
+   uncertainty are wanted too.
 7. Compare substitution and welfare with the MNL or NL benchmark and state which
    data variation, rather than the mixing distribution alone, earns the change.
 
@@ -206,6 +381,10 @@ McFadden, D. and Train, K. (2000). Mixed MNL models for discrete response.
 Revelt, D. and Train, K. (1998). Mixed logit with repeated choices:
 households' choices of appliance efficiency level. *Review of Economics and
 Statistics*, 80(4), 647-657.
+
+Revelt, D. and Train, K. (2000). Customer-specific taste parameters and mixed
+logit: households' choice of electricity supplier. Working Paper E00-274,
+Department of Economics, University of California, Berkeley.
 
 Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
 Cambridge University Press.

@@ -172,7 +172,7 @@ optimizer; see `?run_mnprobit`.
 | Model | Function | Post-estimation |
 |-------|----------|-----------------|
 | Multinomial Logit | `run_mnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
-| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
+| Mixed Logit | `run_mxlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()`, `conditional_tastes()` |
 | Nested Logit | `run_nestlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `blp()`, `wtp()`, `gof()`, `logsum()`, `consumer_surplus()` |
 | Bayesian MNP | `run_mnprobit()` | `summary()`, `coef()`, `vcov()`, `recovery_table()` |
 | Hierarchical Bayesian MNL | `run_hmnlogit()` | `predict()`, `elasticities()`, `diversion_ratios()`, `wtp()`, `logsum()`, `consumer_surplus()`, `recovery_table()` |
@@ -190,7 +190,8 @@ own posterior prediction and substitution methods.
 
 | Capability | MNL | MXL | NL | MNP | HMNL | HMNP |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| Panel likelihood / persistent person tastes | — | — | — | — | yes | yes |
+| Panel likelihood / persistent person tastes | — | yes (`person_col`) | — | — | yes | yes |
+| Individual-level (conditional) tastes | — | yes (`conditional_tastes()`) | — | — | yes (`beta_i`) | yes (`beta_i`) |
 | Flexible unobserved substitution | iid EV1 benchmark | random tastes | nested shocks | full differenced-normal covariance | panel tastes | panel tastes; iid normal shocks |
 | WESML / cluster-robust frequentist inference | yes | yes | yes | — | — | — |
 | Counterfactual prediction | yes | yes | yes | — | yes | yes |
@@ -198,6 +199,18 @@ own posterior prediction and substitution methods.
 | Logsum / consumer-surplus welfare | yes | yes | yes | — | yes | — |
 | Entry prediction for unseen alternatives | — | — | — | — | yes | yes |
 | Native multi-chain posterior diagnostics | — | — | — | — | yes | yes |
+
+MXL's panel likelihood (`run_mxlogit(person_col = )`, Revelt and Train 1998) is
+the frequentist counterpart of HMNL/HMNP's panel tastes; `conditional_tastes()`
+is likewise the frequentist counterpart of HMNL/HMNP's posterior `beta_i`
+summaries. The real difference is what each conditions on: `conditional_tastes()`
+plugs in the point estimate `theta_hat`, while the HB summaries integrate over
+the posterior of `theta` (and of `beta_i` itself) — so choicer's MXL summaries
+carry no posterior uncertainty, only a simulated conditional mean and SD at
+`theta_hat`. WESML (choice-based) weighting for MXL is
+supported only for the cross-sectional likelihood — a panel fit
+(`person_col`) rejects it, since a choice-based weight varies with the
+alternative a person chose, which can differ across their situations.
 
 ## Alternative packages
 

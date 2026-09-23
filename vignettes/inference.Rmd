@@ -30,8 +30,11 @@ Every MNL, MXL and NL fit exposes four estimators through one interface:
 | `"robust"` | Huber-White sandwich $A^{-1} B A^{-1}$ | Quasi-ML under misspecification; also *the* valid variance under WESML / choice-based weighting (the meat is the weight-squared score outer product). |
 | `"cluster"` | Sandwich over within-cluster sums of scores | Dependence across choice situations from the same decision maker, market, or sampling unit. |
 
-Here the unit $i$ is the *choice situation*. If the same person supplies
-several situations, cluster on the person. No small-sample correction is
+Here the unit $i$ is the *choice situation* — or, for a mixed logit fitted
+with `person_col` (see below), the *decision maker*: several situations
+already collapse to one scored unit, so there is nothing left within a person
+to cluster on. Otherwise, if the same person supplies several situations,
+cluster on the person. No small-sample correction is
 applied—not a degrees-of-freedom multiplier, leverage correction, or few-cluster
 reference distribution—so the number of clusters should be reasonably large.
 With few clusters, the asymptotic cluster sandwich can be seriously
@@ -103,7 +106,9 @@ are correlated within person. Note also that `"robust"` alone recovers almost
 none of this — the Huber-White sandwich guards against misspecification of
 each situation's likelihood, not against dependence *across* situations. If
 the same decision maker appears repeatedly, robust-without-clustering is the
-wrong comfort.
+wrong comfort (the exception is a mixed logit fitted with `person_col`: there
+the decision maker *is* the likelihood unit, so `"robust"` is already
+clustered by construction — see below).
 
 ## Post hoc, without refitting
 
@@ -131,22 +136,34 @@ The `cluster` vector has one entry per choice situation — here, one `pid` per
 `task` — and is named by the choice-situation id. choicer uses those names to
 realign labels safely to its prepared order.
 
-## Clustering repairs inference, not the estimand
+## Clustering repairs inference, not efficiency
 
-A caveat that matters for the mixed logit. `run_mxlogit()` maximizes a
-*cross-sectional* simulated likelihood: each choice situation's probability is
-integrated over the mixing distribution separately, rather than holding each
-simulation draw fixed across a person's tasks before integrating their joint
-probability. On panel data,
-`type = "cluster"` makes the standard errors robust to within-person
-dependence around its pseudo-true target, but the point estimates still target
-that cross-sectional model —
-clustering does not turn the fit into a panel mixed logit, in which one taste
-draw is shared across a person's choices. When the panel structure is the
-object of interest — individual-level tastes, their distribution, persistence
-— estimate the panel model instead: the hierarchical Bayesian logit
-(`run_hmnlogit()` with `person_col`), covered in the
-[hierarchical Bayes vignette](hb.html).
+A caveat that matters for the mixed logit. Without `person_col`,
+`run_mxlogit()` maximizes a *cross-sectional* simulated likelihood: each
+choice situation's probability is integrated over the mixing distribution
+separately, rather than holding one simulation draw fixed across a person's
+tasks and integrating their joint probability. On panel data this is a
+composite (pseudo-) likelihood: every situation's marginal probability is
+still correctly specified, so the point estimates stay consistent for the
+population mixing distribution, but the fit is statistically inefficient — it
+never uses the fact that the same tastes generated a person's repeated
+choices, which is exactly the within-person variation that disciplines
+$\Sigma$. `type = "cluster"` (or `cluster_col` at fit time) makes the
+standard errors valid under that within-person dependence, but leaves the
+point estimates, and their inefficiency, unchanged: clustering repairs the
+*inference*, not the *likelihood*. And because it is a different likelihood,
+its log-likelihood, AIC and BIC are not comparable to a panel fit's.
+
+When the panel structure is the object of interest — a taste distribution
+disciplined by repeated choices, not just valid standard errors around a
+composite fit — estimate the panel likelihood instead. Two options hold one
+taste draw fixed within each person (Revelt and Train 1998):
+`run_mxlogit(..., person_col = )`, covered in the
+[mixed logit vignette](mxl.html), whose scores are then already per decision
+maker, so `type = "robust"` is clustered by construction; or the hierarchical
+Bayesian logit, `run_hmnlogit(..., person_col = )`, covered in the
+[hierarchical Bayes vignette](hb.html), which adds partial pooling of
+alternative-level effects and posterior rather than asymptotic uncertainty.
 
 ## Choice-based sampling
 
@@ -172,6 +189,10 @@ cluster-robust inference. *Journal of Human Resources*, 50(2), 317-372.
 
 Manski, C. F. and Lerman, S. R. (1977). The estimation of choice
 probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
+
+Revelt, D. and Train, K. (1998). Mixed logit with repeated choices:
+households' choices of appliance efficiency level. *Review of Economics and
+Statistics*, 80(4), 647-657.
 
 White, H. (1982). Maximum likelihood estimation of misspecified models.
 *Econometrica*, 50(1), 1-25.
