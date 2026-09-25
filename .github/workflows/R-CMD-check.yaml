@@ -70,6 +70,11 @@ jobs:
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_KEEP_PKG_SOURCE: yes
+      # Skip CRAN's submission-time incoming checks, as check-r-package does for
+      # the matrix jobs. They query CRAN, so they fail this job whenever the
+      # DESCRIPTION version equals the published one ("Insufficient package
+      # version"), which has nothing to do with the GCC 16 flavor under test.
+      _R_CHECK_CRAN_INCOMING_: "false"
 
     steps:
       - uses: r-hub/actions/checkout@v1
