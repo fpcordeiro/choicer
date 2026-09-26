@@ -77,9 +77,8 @@
   longer allocates a temporary for every alternative-and-draw outer product
   or per-unit block: the draws are read in place from the store-mode cube,
   and a unit's design rows and random-coefficient draws go into reused
-  buffers. The arithmetic is unchanged (results were bit-identical in our
-  tests). On a synthetic 10^6-row panel the Hessian's heap traffic fell from
-  106 million allocations (374 GB) per call to about three thousand, a
+  buffers. On a synthetic 10^6-row panel the Hessian's heap traffic fell
+  from 106 million allocations (374 GB) per call to about three thousand, a
   gradient evaluation on 10^7 rows allocates a quarter to a third as often,
   and the kernels ran 3-24% faster in our benchmarks.
 - Each decision maker's draws are now processed in batches sized to a small
@@ -96,8 +95,22 @@
   memory on the claims panel at `S = 500` fell from 1.7 GB to 0.2 GB. A
   decision maker is split into batches only when its stacked alternative
   rows times `S` exceed 2^18 (a long panel, a choice set of hundreds of
-  alternatives, or a very large `S`); any other computes exactly what it did
-  before, and a split one agrees to rounding.
+  alternatives, or a very large `S`).
+- The estimation kernels read the stacked design's integer indices in place
+  instead of copying them on every call, and compute each decision maker's
+  base utilities (`X beta + W mu + delta`) inside the parallel loop instead
+  of for all rows up front, so a likelihood evaluation no longer allocates
+  anything the length of the stacked design (what remains is 8 bytes of row
+  offsets per choice situation, and in a panel 8 per decision maker). On
+  synthetic 10^8-row panels, peak working memory fell from about 3 GB to
+  under 0.2 GB and an evaluation ran 19% faster at `S = 25` (7-9% at
+  `S = 100`); fits at `S = 50` on 10^7 rows took 9% less time per
+  evaluation. The kernels' offsets into the stacked design are now 64-bit.
+- Together these kernel changes alter results only by floating-point
+  rounding: at most 3.4e-15 relative on our reference battery of kernel
+  configurations, and within the 1e-10 our tests allow for decision makers
+  split into draw batches. The numerical changes of substance are the
+  corrections below.
 
 ## Corrections
 
