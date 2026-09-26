@@ -71,54 +71,164 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 // underflows. lambda_us is finite whenever the utilities are.
 // ============================================================================
 
-// Unit offsets (CSR, half-open) from Ti; NULL gives the cross-section.
-// Master thread only (reads an R vector); workers see plain ints. The Ti
-// checks mirror hmnl_gibbs (src/hmnlogit.cpp): at least one respondent,
-// every Ti positive, and sum(Ti) equal to the number of choice situations.
-inline std::vector<int> mxl_unit_offsets(
-    const Rcpp::Nullable<Rcpp::IntegerVector>& Ti, const int N) {
-  if (Ti.isNull()) { // unit u = choice situation u
-    std::vector<int> off(N + 1);
-    std::iota(off.begin(), off.end(), 0);
-    return off;
-  }
-  const Rcpp::IntegerVector T_u(Ti.get());
-  if (T_u.size() == 0) {
-    Rcpp::stop("Ti must contain at least one respondent.");
-  }
-  long long total = 0;
-  for (int u = 0; u < T_u.size(); ++u) {
-    if (T_u[u] == NA_INTEGER || T_u[u] < 1) {
-      Rcpp::stop("Ti must be positive for every respondent (Ti[%d] = %s).",
-                 u + 1, T_u[u] == NA_INTEGER ? "NA" : std::to_string(T_u[u]));
-    }
-    total += T_u[u];
-  }
-  if (total != N) {
-    Rcpp::stop("sum(Ti) (%d) does not match the number of choice situations "
-               "(%d).", total, N);
-  }
-  std::vector<int> off(T_u.size() + 1, 0);
-  std::partial_sum(T_u.begin(), T_u.end(), off.begin() + 1);
-  return off;
-}
+// ============================================================================
+// Layout of the stacked design
+//
+// Offsets into the stacked design are 64-bit (mxl_off). R caps a matrix at
+// 2^31 - 1 rows, so today they only keep offset arithmetic clear of int
+// overflow; the ceiling that binds first is Armadillo's 32-bit element count
+// (RcppArmadillo's default ARMA_32BIT_WORD), and the kernels need no change
+// if that is lifted. Armadillo indices (arma::uword) are taken from them where
+// a matrix is sliced.
+// ============================================================================
+using mxl_off = std::ptrdiff_t;
 
-// Weights are decision-maker weights (objective sum_u w_u ell_u): constant
-// within each unit, whose weight is weights[off[u]]. O(N), master thread; a
-// no-op in the cross-section. NaN-aware: two NaN weights count as equal, so
-// only genuinely varying weights are reported (finiteness is checked in R).
-inline void check_unit_weights(const arma::vec& weights,
-                               const std::vector<int>& off) {
-  for (std::size_t u = 0; u + 1 < off.size(); ++u) {
-    const double w_u = weights[off[u]];
-    for (int t = off[u] + 1; t < off[u + 1]; ++t) {
-      const double w_t = weights[t];
-      if (w_t != w_u && !(std::isnan(w_t) && std::isnan(w_u))) {
-        Rcpp::stop("weights must be constant within each decision maker "
-                   "(unit %d).", u + 1);
+// The theta-independent layout of the stacked design, built and validated on
+// the primary thread by every kernel call: situation (and, in a panel, unit)
+// offsets, and pointers to the per-row alternative codes and per-situation
+// choices, read in place from the kernel's integer arguments. It is valid for
+// one kernel call only: when an argument was coerced from doubles, the integer
+// copy belongs to the Rcpp wrapper of that call. Building it is one pass over
+// the rows (in parallel above 10^6 rows) and one over the situations, about
+// 20 ms at 10^8 rows: under 1% of an evaluation, too little to repay caching.
+struct MxlLayout {
+  mxl_off n_rows = 0;            // stacked alternative rows, sum(M)
+  mxl_off N = 0;                 // choice situations
+  mxl_off U = 0;                 // likelihood units
+  mxl_off max_unit_rows = 0;     // rows of the largest unit
+  int J = 0;                     // largest alternative code
+  bool include_outside_option = false;
+  std::vector<mxl_off> row_off;  // situation t: rows [row_off[t], row_off[t+1])
+  std::vector<mxl_off> unit_off; // panel: unit u's situations [unit_off[u],
+                                 // unit_off[u+1]); empty in the cross-section
+  const int* alt = nullptr;      // row r: 1-based alternative code
+  const int* choice = nullptr;   // situation t: the kernel's choice_idx
+
+  // First situation of unit u (u = U gives N): unit u is situation u in the
+  // cross-section.
+  mxl_off unit_first(const mxl_off u) const {
+    return unit_off.empty() ? u : unit_off[u];
+  }
+  // 0-based alternative of row r, and the slot of situation t's choice in P
+  int alt0(const mxl_off r) const { return alt[r] - 1; }
+  int chosen(const mxl_off t) const {
+    return include_outside_option ? choice[t] : choice[t] - 1;
+  }
+};
+
+// Build and validate the layout, with the messages of mxl_unit_offsets() and
+// validate_choice_data(), in that order, followed by the choices' check; the
+// delta, draw and W checks follow in MxlUnitData, in validate_mxl_inputs()'s
+// order. Situations are sorted by decision maker; Ti = NULL makes every
+// situation its own unit (the cross-section).
+// The Ti checks mirror hmnl_gibbs (src/hmnlogit.cpp): at least one
+// respondent, every Ti positive, and sum(Ti) equal to the number of choice
+// situations.
+inline MxlLayout mxl_layout_build(const arma::mat& X,
+                                  const Rcpp::IntegerVector& alt_idx,
+                                  const Rcpp::IntegerVector& choice_idx,
+                                  const Rcpp::IntegerVector& M,
+                                  const arma::vec* weights,
+                                  const Rcpp::Nullable<Rcpp::IntegerVector>& Ti,
+                                  const bool include_outside_option,
+                                  const char* kernel) {
+  MxlLayout lay;
+  const mxl_off N = M.size();
+  lay.N = N;
+  lay.include_outside_option = include_outside_option;
+
+  // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL).
+  if (Ti.isNull()) {
+    lay.U = N;
+  } else {
+    const Rcpp::IntegerVector T_u(Ti.get());
+    if (T_u.size() == 0) {
+      Rcpp::stop("Ti must contain at least one respondent.");
+    }
+    lay.U = T_u.size();
+    lay.unit_off.assign(lay.U + 1, 0);
+    for (mxl_off u = 0; u < lay.U; ++u) {
+      if (T_u[u] == NA_INTEGER || T_u[u] < 1) {
+        Rcpp::stop("Ti must be positive for every respondent (Ti[%d] = %s).",
+                   u + 1,
+                   T_u[u] == NA_INTEGER ? "NA" : std::to_string(T_u[u]));
       }
+      lay.unit_off[u + 1] = lay.unit_off[u] + T_u[u];
+    }
+    if (lay.unit_off[lay.U] != N) {
+      Rcpp::stop("sum(Ti) (%d) does not match the number of choice situations "
+                 "(%d).", lay.unit_off[lay.U], N);
     }
   }
+
+  // Situations: row offsets, the design's height, the index vectors' lengths.
+  const int* m_ptr = M.begin();
+  lay.row_off.assign(N + 1, 0);
+  for (mxl_off t = 0; t < N; ++t) {
+    if (m_ptr[t] <= 0) { // NA_INTEGER is negative
+      Rcpp::stop("M must be positive for every individual (M[%d] = %d).",
+                 t + 1, m_ptr[t]);
+    }
+    lay.row_off[t + 1] = lay.row_off[t] + m_ptr[t];
+  }
+  lay.n_rows = lay.row_off[N];
+  if (lay.n_rows != static_cast<mxl_off>(X.n_rows)) {
+    Rcpp::stop("X has %d rows but sum(M) is %d.", X.n_rows, lay.n_rows);
+  }
+  if (static_cast<mxl_off>(alt_idx.size()) != lay.n_rows) {
+    Rcpp::stop("alt_idx length (%d) does not match the number of rows of X "
+               "(%d).", alt_idx.size(), X.n_rows);
+  }
+  if (weights && static_cast<mxl_off>(weights->n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)", weights->n_elem, N);
+  }
+  if (static_cast<mxl_off>(choice_idx.size()) != N) {
+    Rcpp::stop("choice_idx length (%d) does not match N (%d)",
+               choice_idx.size(), N);
+  }
+  lay.alt = alt_idx.begin();
+  lay.choice = choice_idx.begin();
+
+  // Alternative codes are 1-based; NA_INTEGER, the most negative int, fails
+  // the same check.
+  int a_min = std::numeric_limits<int>::max(), a_max = 0;
+  const int* alt = lay.alt;
+  const mxl_off n_rows = lay.n_rows;
+#ifdef _OPENMP
+#pragma omp parallel for reduction(min : a_min) reduction(max : a_max) \
+    if (n_rows > 1000000)
+#endif
+  for (mxl_off r = 0; r < n_rows; ++r) {
+    a_min = std::min(a_min, alt[r]);
+    a_max = std::max(a_max, alt[r]);
+  }
+  if (n_rows > 0 && a_min < 1) {
+    Rcpp::stop("alt_idx must use 1-based alternative indices (found %s).",
+               a_min == NA_INTEGER ? "NA" : std::to_string(a_min));
+  }
+  lay.J = a_max;
+
+  // Choices: a slot of the situation's choice set (0 = the outside option),
+  // NA tested before any arithmetic on it.
+  const int* choice = lay.choice;
+  for (mxl_off t = 0; t < N; ++t) {
+    const int c = choice[t];
+    const mxl_off slot = include_outside_option ? mxl_off(c) : mxl_off(c) - 1;
+    const mxl_off n_choices =
+        include_outside_option ? mxl_off(m_ptr[t]) + 1 : mxl_off(m_ptr[t]);
+    if (c == NA_INTEGER || slot < 0 || slot >= n_choices) {
+      Rcpp::stop("Invalid chosen alternative index for individual %d (%s)",
+                 t, kernel);
+    }
+  }
+
+  lay.max_unit_rows = 0;
+  for (mxl_off u = 0; u < lay.U; ++u) {
+    lay.max_unit_rows =
+        std::max(lay.max_unit_rows, lay.row_off[lay.unit_first(u + 1)] -
+                                        lay.row_off[lay.unit_first(u)]);
+  }
+  return lay;
 }
 
 // Draw batches. A unit's R x S matrices (WGamma, and DiffW for the score)
@@ -136,12 +246,13 @@ constexpr double MXL_BATCH_BYTES = 4.0 * 1024.0 * 1024.0;
 
 // Number of draw batches of a unit of R rows, for a kernel that keeps n_mats
 // R x B matrices (1: the unit is not split).
-inline int mxl_batch_count(const int R, const int S, const int n_mats,
+inline int mxl_batch_count(const mxl_off R, const int S, const int n_mats,
                            const int draw_batch) {
   const double b_max =
       draw_batch > 0
           ? draw_batch
-          : MXL_BATCH_BYTES / (sizeof(double) * n_mats * std::max(R, 1));
+          : MXL_BATCH_BYTES / (sizeof(double) * n_mats *
+                               static_cast<double>(std::max<mxl_off>(R, 1)));
   if (b_max >= S) return 1;
   const int b = std::max(1, static_cast<int>(b_max));
   return (S + b - 1) / b;
@@ -154,48 +265,122 @@ inline double log_add_exp(const double a, const double b) {
   return std::max(a, b) + std::log1p(std::exp(-std::fabs(a - b)));
 }
 
-// Beyond its R x B draw batches, a unit's per-thread scratch is O(R): W_u,
-// X_u, d_bar and a batch of at least one draw, about 8 R (K_x + K_w + 3)
-// bytes. An allocation failure inside the parallel region would terminate
-// R, so refuse on the primary thread when that would exceed 2 GiB, i.e. a
-// single decision maker with tens of millions of stacked rows.
-inline void check_unit_scratch(const std::vector<int>& row_off,
-                               const std::vector<int>& off, const int K_x,
-                               const int K_w) {
-  int max_R = 0;
-  for (std::size_t u = 0; u + 1 < off.size(); ++u) {
-    max_R = std::max(max_R, row_off[off[u + 1]] - row_off[off[u]]);
-  }
-  const double bytes =
-      sizeof(double) * static_cast<double>(max_R) * (K_x + K_w + 3.0);
-  if (bytes > 2.0 * 1024 * 1024 * 1024) {
-    Rcpp::stop("The largest decision maker stacks %d alternative rows, which "
-               "needs %.1f GB of scratch memory per thread. Check person_col: "
-               "it should identify decision makers, not markets.",
-               max_R, bytes / 1e9);
-  }
-}
-
-// Read-only inputs of the per-unit routines, shared by all threads: the
-// stacked data, the model at theta, the draw source and the unit layout.
-// Built on the master thread; holds no SEXP.
+// Everything the per-unit routines read, shared by all threads: the stacked
+// design and its layout, the parameters at theta, the draw source and the
+// model flags. Construct it once per kernel call, on the primary thread: it
+// owns what it derives (the layout, the parsed parameters and the Halton
+// generator) and validates the inputs, each check O(1) or one pass over the
+// rows or the situations. Holds no SEXP.
 struct MxlUnitData {
   const arma::mat& X;
   const arma::mat& W;              // row-aligned with X, or J x K_w
-  const arma::uvec& alt_idx0;      // 0-based alternative of each stacked row
-  const arma::uvec& choice_idx;    // per situation, as passed to the kernel
-  const arma::vec& base_util;      // X beta + W mu_final + delta, per row
-  const std::vector<int>& row_off; // situation t: rows [row_off[t], row_off[t+1])
-  const std::vector<int>& off;     // unit u: situations [off[u], off[u+1])
   const arma::cube& eta_draws;     // store mode: slice u
-  const HaltonGen& gen;            // generate mode: Halton block u + 1
-  const MxlParams& par;
   const arma::uvec& rc_dist;
+  const MxlParams par;
+  const MxlLayout lay;
+  HaltonGen gen;                   // generate mode: Halton block u + 1
   const int n_params;
   const int S;                     // draws per unit
   const int draw_batch;            // > 0: draws per batch (tests); 0: automatic
   const bool use_generate, rc_correlation, rc_mean, use_asc,
-      include_outside_option;
+      include_outside_option, alt_level_W;
+
+  MxlUnitData(const arma::vec& theta, const arma::mat& X_, const arma::mat& W_,
+              const Rcpp::IntegerVector& alt_idx,
+              const Rcpp::IntegerVector& choice_idx,
+              const Rcpp::IntegerVector& M, const arma::vec* weights,
+              const arma::cube& eta_draws_, const arma::uvec& rc_dist_,
+              const bool rc_correlation_, const bool rc_mean_,
+              const bool use_asc_, const bool include_outside_option_,
+              const int gen_seed, const int gen_scramble, const int gen_S,
+              const Rcpp::Nullable<Rcpp::IntegerVector>& Ti,
+              const int draw_batch_, const char* kernel)
+      : X(X_), W(W_), eta_draws(eta_draws_), rc_dist(rc_dist_),
+        // Parse theta into parameter blocks (shared helper; validates theta
+        // and the length of rc_dist)
+        par(parse_mxl_theta(theta, X_.n_cols, W_.n_cols, rc_dist_,
+                            rc_correlation_, rc_mean_, use_asc_,
+                            include_outside_option_)),
+        lay(mxl_layout_build(X_, alt_idx, choice_idx, M, weights, Ti,
+                             include_outside_option_, kernel)),
+        n_params(theta.n_elem),
+        S(gen_seed >= 0 ? gen_S : static_cast<int>(eta_draws_.n_cols)),
+        draw_batch(draw_batch_),
+        use_generate(gen_seed >= 0), rc_correlation(rc_correlation_),
+        rc_mean(rc_mean_), use_asc(use_asc_),
+        include_outside_option(include_outside_option_),
+        alt_level_W(W_.n_rows != X_.n_rows) {
+    const int K_w = W.n_cols;
+    if (use_asc && lay.n_rows > 0 &&
+        static_cast<int>(par.delta.n_elem) < lay.J) {
+      Rcpp::stop("Theta's delta (ASC) block implies %d alternatives but "
+                 "alt_idx references alternative %d.", par.delta.n_elem,
+                 lay.J);
+    }
+    if (use_generate) {
+      if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+      if (K_w > HALTON_N_PRIMES) {
+        Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or "
+                   "extend the primes table.");
+      }
+    } else {
+      // eta_draws holds one K_w x S draw block per likelihood unit.
+      if (Ti.isNull() && static_cast<mxl_off>(eta_draws.n_slices) != lay.N) {
+        Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
+                   eta_draws.n_slices, lay.N);
+      }
+      if (Ti.isNotNull() && static_cast<mxl_off>(eta_draws.n_slices) != lay.U) {
+        Rcpp::stop("eta_draws 3rd dimension (%d) does not match the number "
+                   "of decision makers (%d)", eta_draws.n_slices, lay.U);
+      }
+      if (static_cast<int>(eta_draws.n_rows) != K_w) {
+        Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
+                   eta_draws.n_rows, K_w);
+      }
+    }
+    if (alt_level_W && lay.n_rows > 0 &&
+        static_cast<mxl_off>(W.n_rows) < lay.J) {
+      Rcpp::stop("W must be row-aligned with X (%d rows) or contain one row "
+                 "per global alternative (at least %d rows); got %d rows.",
+                 X.n_rows, lay.J, W.n_rows);
+    }
+    if (weights && !lay.unit_off.empty()) {
+      // Weights are decision-maker weights (objective sum_u w_u ell_u):
+      // constant within each unit, whose weight is weights[unit_first(u)].
+      // NaN-aware: two NaN weights count as equal (finiteness is checked in
+      // R).
+      for (mxl_off u = 0; u < lay.U; ++u) {
+        const double w_u = (*weights)[lay.unit_off[u]];
+        for (mxl_off t = lay.unit_off[u] + 1; t < lay.unit_off[u + 1]; ++t) {
+          const double w_t = (*weights)[t];
+          if (w_t != w_u && !(std::isnan(w_t) && std::isnan(w_u))) {
+            Rcpp::stop("weights must be constant within each decision maker "
+                       "(unit %d).", u + 1);
+          }
+        }
+      }
+    }
+    // Beyond its R x B draw batches, a unit's per-thread scratch is O(R):
+    // X_u, W_u, the base utilities, d_bar and a batch of at least one draw,
+    // about 8 R (K_x + K_w + 4) bytes. An allocation failure inside the
+    // parallel region would terminate R, so refuse here when that would
+    // exceed 2 GiB, i.e. one decision maker with tens of millions of rows.
+    const double bytes = sizeof(double) *
+                         static_cast<double>(lay.max_unit_rows) *
+                         (X.n_cols + K_w + 4.0);
+    if (bytes > 2.0 * 1024 * 1024 * 1024) {
+      Rcpp::stop("The largest decision maker stacks %d alternative rows, "
+                 "which needs %.1f GB of scratch memory per thread. Check "
+                 "person_col: it should identify decision makers, not "
+                 "markets.", lay.max_unit_rows, bytes / 1e9);
+    }
+    if (use_generate) {
+      // Constructed here, outside the parallel region; read-only after.
+      gen = HaltonGen(static_cast<uint64_t>(gen_seed), S, K_w, gen_scramble);
+    }
+  }
+  MxlUnitData(const MxlUnitData&) = delete;
+  MxlUnitData& operator=(const MxlUnitData&) = delete;
 };
 
 // Thread-private state of the unit in hand; declare it inside the parallel
@@ -208,15 +393,16 @@ struct MxlUnitScratch {
   MxlUnitScratch() = default;
   MxlUnitScratch(const MxlUnitScratch&) = delete;
   MxlUnitScratch& operator=(const MxlUnitScratch&) = delete;
-  int t0 = 0, t1 = 0;   // situations [t0, t1)
-  int r0 = 0, R = 0;    // stacked rows [r0, r0 + R)
+  mxl_off t0 = 0, t1 = 0; // situations [t0, t1)
+  mxl_off r0 = 0, R = 0;  // stacked rows [r0, r0 + R)
   int nb = 1, s0 = 0;   // draw batches of the unit; first draw in WGamma
-  int wg_r0 = 0;        // unit row of WGamma's first row (0, or a situation's)
+  mxl_off wg_r0 = 0;    // unit row of WGamma's first row (0, or a situation's)
   const double* eta = nullptr; // K_w x S draws: eta_buf, or cube slice u
   arma::mat eta_buf;    // generate mode: the unit's Halton block
+  arma::mat X_u;        // R x K_x
   arma::mat W_u;        // R x K_w
   arma::mat W_t;        // m_t x K_w: one situation's rows (Hessian, long units)
-  arma::mat X_u;        // R x K_x (score only)
+  arma::vec bu;         // R: base utilities X_u beta + W_u mu_final + delta
   arma::mat Gamma;      // K_w x S random-coefficient draws (Gamma_final)
   arma::mat Dgamma1;    // K_w x S first derivative of the RC transform
   arma::mat Dgamma2;    // K_w x S second derivative (Hessian only)
@@ -240,37 +426,55 @@ inline const arma::mat mxl_eta_view(const MxlUnitData& ud,
                    true);
 }
 
-// Load unit u into the thread's buffers: W_u (a row block of a row-aligned W,
-// or the unit's alternatives' rows of an alternative-level W), the draws
-// eta_u (cube slice u in place, or on-the-fly Halton block u + 1),
+// 0-based alternative codes of the loaded unit's rows, for scatter_delta_grad.
+struct MxlUnitAlt0 {
+  const int* alt; // 1-based codes from the unit's first row
+  int operator[](const int j) const { return alt[j] - 1; }
+};
+
+// Load unit u into the thread's buffers: its rows of X and W (for an
+// alternative-level W, the rows of its alternatives), the base utilities
+// X_u beta + W_u mu_final + delta of those rows (per unit, inside the
+// parallel region: nothing of the stacked length is formed per evaluation),
+// the draws eta_u (cube slice u in place, or on-the-fly Halton block u + 1),
 // Gamma_u = L eta_u with the derivatives of its transform (Dgamma1 unless
 // only the draws themselves are needed), and the unit's draw batch size for
 // a kernel that keeps n_mats R x B matrices.
-inline void mxl_unit_load(const MxlUnitData& ud, const int u,
+inline void mxl_unit_load(const MxlUnitData& ud, const mxl_off u,
                           MxlUnitScratch& sc, const int n_mats,
                           const bool with_Dgamma1 = true,
                           const bool with_Dgamma2 = false) {
-  sc.t0 = ud.off[u];
-  sc.t1 = ud.off[u + 1];
-  sc.r0 = ud.row_off[sc.t0];
-  sc.R = ud.row_off[sc.t1] - sc.r0;
-  const int r1 = sc.r0 + sc.R - 1;
+  const MxlLayout& lay = ud.lay;
+  sc.t0 = lay.unit_first(u);
+  sc.t1 = lay.unit_first(u + 1);
+  sc.r0 = lay.row_off[sc.t0];
+  sc.R = lay.row_off[sc.t1] - sc.r0;
+  const arma::uword r0 = static_cast<arma::uword>(sc.r0);
+  const arma::uword r1 = static_cast<arma::uword>(sc.r0 + sc.R - 1);
   const int K_w = ud.W.n_cols;
-  if (ud.W.n_rows == ud.X.n_rows) {
-    sc.W_u = ud.W.rows(sc.r0, r1);
+  sc.X_u = ud.X.rows(r0, r1);
+  if (!ud.alt_level_W) {
+    sc.W_u = ud.W.rows(r0, r1);
   } else {
     sc.W_u.set_size(sc.R, K_w);
     for (int k = 0; k < K_w; ++k) {
-      for (int i = 0; i < sc.R; ++i) {
-        sc.W_u(i, k) = ud.W(ud.alt_idx0[sc.r0 + i], k);
+      for (mxl_off i = 0; i < sc.R; ++i) {
+        sc.W_u(i, k) = ud.W(lay.alt0(sc.r0 + i), k);
       }
     }
   }
+  sc.bu = sc.X_u * ud.par.beta;
+  if (ud.rc_mean) sc.bu += sc.W_u * ud.par.mu_final;
+  if (ud.use_asc) {
+    for (mxl_off i = 0; i < sc.R; ++i) {
+      sc.bu[i] += ud.par.delta[lay.alt0(sc.r0 + i)];
+    }
+  }
   if (ud.use_generate) {
-    ud.gen.fill_eta_i(sc.eta_buf, u + 1);
+    ud.gen.fill_eta_i(sc.eta_buf, static_cast<int>(u + 1));
     sc.eta = sc.eta_buf.memptr();
   } else {
-    sc.eta = ud.eta_draws.slice_memptr(u);
+    sc.eta = ud.eta_draws.slice_memptr(static_cast<arma::uword>(u));
   }
   batch_gamma_draws_into(sc.Gamma, ud.par.L, mxl_eta_view(ud, sc), ud.rc_dist,
                          with_Dgamma1 ? &sc.Dgamma1 : nullptr,
@@ -292,29 +496,31 @@ inline void mxl_batch_wgamma(MxlUnitScratch& sc, const int s0, const int s1) {
 
 // WGamma for one situation of the loaded unit, its m rows from unit row r,
 // at every draw: W_u(r:r+m-1, :) Gamma in a single dgemm.
-inline void mxl_situation_wgamma(MxlUnitScratch& sc, const int r, const int m) {
+inline void mxl_situation_wgamma(MxlUnitScratch& sc, const mxl_off r,
+                                 const int m) {
   sc.s0 = 0;
   sc.wg_r0 = r;
-  sc.W_t = sc.W_u.rows(r, r + m - 1);
+  sc.W_t = sc.W_u.rows(static_cast<arma::uword>(r),
+                       static_cast<arma::uword>(r + m - 1));
   sc.WGamma = sc.W_t * sc.Gamma;
 }
 
 // Logit probabilities of situation t at draw s, in the leading m + o entries
-// of sc.P: inside utilities base_util + WGamma(rows of t, s), with the
-// outside option (V = 0) in slot 0 when present. Leaves the max-shifted
-// utilities in sc.V and returns their log-sum-exp, so that log P_ts(a) =
-// sc.V(a) - log_denom: exact wherever the utilities are finite, while P(a)
-// itself turns subnormal beyond a utility gap of about 708 and zero beyond
-// about 745. V and P only grow: sized per situation, they would bounce
-// between the heap and Armadillo's 16-element local storage whenever
-// consecutive situations straddle that size, which the draw-major loop of
+// of sc.P: inside utilities bu + WGamma(rows of t, s), with the outside
+// option (V = 0) in slot 0 when present. Leaves the max-shifted utilities in
+// sc.V and returns their log-sum-exp, so that log P_ts(a) = sc.V(a) -
+// log_denom: exact wherever the utilities are finite, while P(a) itself
+// turns subnormal beyond a utility gap of about 708 and zero beyond about
+// 745. V and P only grow: sized per situation, they would bounce between the
+// heap and Armadillo's 16-element local storage whenever consecutive
+// situations straddle that size, which the draw-major loop of
 // mxl_unit_simulate() makes happen at every draw. WGamma must hold
 // situation t at draw s: the batch containing s (mxl_batch_wgamma()), or
 // t's own rows at every draw (mxl_situation_wgamma()).
 inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
-                                  const int t, const int s) {
-  const int first = ud.row_off[t];
-  const int m = ud.row_off[t + 1] - first;          // inside alternatives
+                                  const mxl_off t, const int s) {
+  const mxl_off first = ud.lay.row_off[t] - sc.r0;      // first row in unit
+  const int m = static_cast<int>(ud.lay.row_off[t + 1] - ud.lay.row_off[t]);
   const int o = ud.include_outside_option ? 1 : 0;  // outside option: slot 0
   const int n = m + o;
   if (static_cast<int>(sc.V.n_elem) < n) {
@@ -323,9 +529,8 @@ inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
   }
   double* v = sc.V.memptr();
   if (o) v[0] = 0.0;
-  const double* bu = ud.base_util.memptr() + first;
-  const double* wg =
-      sc.WGamma.colptr(s - sc.s0) + (first - sc.r0 - sc.wg_r0);
+  const double* bu = sc.bu.memptr() + first;
+  const double* wg = sc.WGamma.colptr(s - sc.s0) + (first - sc.wg_r0);
   for (int a = 0; a < m; ++a) v[o + a] = bu[a] + wg[a];
   return stable_softmax_n(v, sc.P.memptr(), n);
 }
@@ -349,6 +554,7 @@ inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
 // exp(lambda_s), which is finite whenever the utilities are.
 inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
                                 const bool score) {
+  const MxlLayout& lay = ud.lay;
   const int S = ud.S;
   const int K_w = ud.W.n_cols;
   const int o = ud.include_outside_option ? 1 : 0; // slot of 1st inside alt
@@ -366,11 +572,11 @@ inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
     // row order (a situation-major sweep jumps R rows between draws of a
     // long panel), and lambda_s still sums the situations in order.
     for (int s = s0; s < s1; ++s) {
-      for (int t = sc.t0; t < sc.t1; ++t) {
-        const int r = ud.row_off[t] - sc.r0;             // first row of t in unit
-        const int m = ud.row_off[t + 1] - ud.row_off[t]; // inside alternatives
-        int chosen_alt = static_cast<int>(ud.choice_idx[t]); // validated serially
-        if (!ud.include_outside_option) chosen_alt -= 1;      // slot in P
+      for (mxl_off t = sc.t0; t < sc.t1; ++t) {
+        const arma::uword r =
+            static_cast<arma::uword>(lay.row_off[t] - sc.r0); // first row of t
+        const int m = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
+        const int chosen_alt = lay.chosen(t);  // slot in P, validated
         const double log_denom = mxl_situation_probs(ud, sc, t, s);
         sc.lambda(s) += sc.V(chosen_alt) - log_denom;
         if (score) {
@@ -430,11 +636,9 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
                            arma::vec& score) {
   const MxlParams& par = ud.par;
   const int K_w = ud.W.n_cols;
-  const int r1 = sc.r0 + sc.R - 1;
   score.zeros(ud.n_params);
 
-  // Beta block
-  sc.X_u = ud.X.rows(sc.r0, r1);
+  // Beta block (X_u loaded by mxl_unit_load)
   score.subvec(par.idx_beta_start, par.idx_mu_start - 1) = sc.X_u.t() * sc.d_bar;
 
   if (K_w > 0) {
@@ -468,7 +672,7 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
   // Delta block (scatter -- irregular alt-index mapping)
   if (ud.use_asc) {
     scatter_delta_grad(score, par.idx_delta_start, sc.d_bar,
-                       ud.alt_idx0.subvec(sc.r0, r1), sc.R,
+                       MxlUnitAlt0{ud.lay.alt + sc.r0}, static_cast<int>(sc.R),
                        ud.include_outside_option, 1.0);
   }
 }
@@ -536,7 +740,8 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
 // [[Rcpp::export]]
 Rcpp::List mxl_loglik_gradient_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
     const Rcpp::IntegerVector &M, const arma::vec &weights,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
@@ -544,68 +749,15 @@ Rcpp::List mxl_loglik_gradient_parallel(
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
     const int draw_batch = 0) {
-
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-  const int n_params = theta.n_elem;
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
-                                        rc_correlation, rc_mean, use_asc,
-                                        include_outside_option);
-  // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL)
-  const std::vector<int> off = mxl_unit_offsets(Ti, N);
-  const int n_units = static_cast<int>(off.size()) - 1;
-  // In generate mode bypass the cube check; otherwise validate normally.
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        &weights, &choice_idx, Ti.isNull() ? -1 : n_units);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  check_unit_weights(weights, off);
-
-  // Convenience objects shared by all threads
-  arma::uvec alt_idx0 = alt_idx - 1; // 0-based
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
-  const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  // base_util = X*beta + W*mu_final + delta, computed once for all rows
-  arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
-                                              alt_idx0, use_asc, par.delta);
-
-  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
-  // Rcpp::stop() is only safe outside parallel regions.
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_loglik_gradient_parallel)", i);
-    }
-  }
-
-  // Construct on-the-fly Halton generator (outside parallel region; no shared mutable state).
-  // In cube mode (gen_seed < 0) this object is never used.
-  const bool use_generate = (gen_seed >= 0);
-  HaltonGen halton_gen;
-  if (use_generate) {
-    halton_gen = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen, par, rc_dist, n_params, Sdraw, draw_batch,
-                       use_generate, rc_correlation, rc_mean, use_asc,
-                       include_outside_option};
-  const double log_S = std::log(static_cast<double>(Sdraw));
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_loglik_gradient_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
+  const double log_S = std::log(static_cast<double>(ud.S));
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -625,13 +777,13 @@ Rcpp::List mxl_loglik_gradient_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int u = 0; u < n_units; ++u) {
+    for (mxl_off u = 0; u < lay.U; ++u) {
       mxl_unit_load(ud, u, sc, 2);
       const double lse = mxl_unit_simulate(ud, sc, true); // log sum_s exp(lambda_s)
       mxl_unit_score(ud, sc, s_u);
 
       // ell_u = lse - log(S); unit weight = weight of its first situation
-      const double w_u = weights[off[u]];
+      const double w_u = weights[lay.unit_first(u)];
       local_loglik += w_u * (lse - log_S);
       local_grad += w_u * s_u;
     } // end unit loop
@@ -792,7 +944,8 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 // [[Rcpp::export]]
 arma::mat mxl_hessian_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
     const Rcpp::IntegerVector &M, const arma::vec &weights,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
@@ -800,57 +953,25 @@ arma::mat mxl_hessian_parallel(
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
     const int draw_batch = 0) {
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_hessian_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
   const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-  const int n_params = theta.n_elem;
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
-                                        rc_correlation, rc_mean, use_asc,
-                                        include_outside_option);
+  const int Sdraw = ud.S;
   // Reuse the parser's layout when assembling derivatives.
+  const MxlParams& par = ud.par;
   const int idx_beta_start = par.idx_beta_start;
   const int idx_mu_start = par.idx_mu_start;
   const int idx_L_start = par.idx_L_start;
   const int idx_delta_start = par.idx_delta_start;
-  // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL)
-  const std::vector<int> off = mxl_unit_offsets(Ti, N);
-  const int n_units = static_cast<int>(off.size()) - 1;
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        &weights, &choice_idx, Ti.isNull() ? -1 : n_units);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  check_unit_weights(weights, off);
   const arma::mat& L = par.L;
   const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
   const arma::vec& dmu2_final_dmu2 = par.dmu2_final_dmu2;
-
-  arma::uvec alt_idx0 = alt_idx - 1;
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
-  const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util_h = compute_base_util_mxl(X, W, par.beta, par.mu_final,
-                                                alt_idx0, use_asc, par.delta);
-
-  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_hessian_parallel)", i);
-    }
-  }
 
   // Block layout: continuous block c = [beta | mu | L], size Kc = idx_delta_start
   //               delta block d = [delta ASCs],         size Jd = n_params - idx_delta_start
@@ -858,18 +979,6 @@ arma::mat mxl_hessian_parallel(
   // (mu, L) x (mu, L) sub-block, which lives entirely within the continuous block.
   const int Kc = idx_delta_start;           // size of continuous block
   const int Jd = n_params - idx_delta_start; // size of delta block (0 when !use_asc)
-
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_h = (gen_seed >= 0);
-  HaltonGen halton_gen_h;
-  if (use_generate_h) {
-    halton_gen_h = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util_h, row_off, off,
-                       eta_draws, halton_gen_h, par, rc_dist, n_params, Sdraw, draw_batch,
-                       use_generate_h, rc_correlation, rc_mean, use_asc,
-                       include_outside_option};
 
   // Per unit u (Louis 1982), with omega_s the posterior draw weights and
   // g_s = sum_t g_ts, H_s = sum_t H_ts the per-draw score and Hessian of
@@ -942,8 +1051,8 @@ arma::mat mxl_hessian_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int u = 0; u < n_units; ++u) {
-      const double w_u = weights[off[u]]; // unit weight
+    for (mxl_off u = 0; u < lay.U; ++u) {
+      const double w_u = weights[lay.unit_first(u)]; // unit weight
 
       // --- Pass 1: posterior draw weights omega_s of the unit's choices ---
       mxl_unit_load(ud, u, sc, 1, true, true);
@@ -970,15 +1079,13 @@ arma::mat mxl_hessian_parallel(
       // rows of W_u Gamma_u (m_t x S) are formed in turn, so the thread's
       // memory grows with the largest choice set rather than the unit.
       const bool one_batch = sc.nb == 1;
-      for (int t = sc.t0; t < sc.t1; ++t) {
-        const int m_t = row_off[t + 1] - row_off[t];
+      for (mxl_off t = sc.t0; t < sc.t1; ++t) {
+        const int m_t = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
         const int num_choices = include_outside_option ? m_t + 1 : m_t;
-        if (!one_batch) mxl_situation_wgamma(sc, row_off[t] - sc.r0, m_t);
+        if (!one_batch) mxl_situation_wgamma(sc, lay.row_off[t] - sc.r0, m_t);
 
-        // chosen alternative index (validated serially above)
-        int chosen_alt = choice_idx[t];
-        if (!include_outside_option)
-          chosen_alt -= 1;
+        // chosen alternative index (validated with the layout)
+        const int chosen_alt = lay.chosen(t);
 
         // Loop over simulations (draws) s
         for (int s = 0; s < Sdraw; ++s) {
@@ -1014,14 +1121,15 @@ arma::mat mxl_hessian_parallel(
             }
 
             const int current_a_idx = include_outside_option ? a - 1 : a;
-            const int row = row_off[t] + current_a_idx; // stacked row of alt a
+            const mxl_off row = lay.row_off[t] + current_a_idx; // stacked row of alt a
             const arma::rowvec w_ap_row = sc.W_u.row(row - sc.r0);
 
             // --- Build continuous-block vector zc_a ---
             zc_a.zeros();
 
             // beta sub-block
-            zc_a.subvec(idx_beta_start, idx_mu_start - 1) = X.row(row).t();
+            zc_a.subvec(idx_beta_start, idx_mu_start - 1) =
+                sc.X_u.row(row - sc.r0).t();
 
             // mu sub-block  (nonzero only when rc_mean)
             if (rc_mean) {
@@ -1051,7 +1159,7 @@ arma::mat mxl_hessian_parallel(
             // --- Delta index for this alt (may be -1 meaning no delta entry) ---
             int j_delta = -1; // index into delta block; -1 = no entry
             if (use_asc && Jd > 0) {
-              const int id = alt_idx0[row];
+              const int id = lay.alt0(row);
               if (include_outside_option) {
                 j_delta = id;           // always valid (id >= 0)
               } else if (id > 0) {
@@ -1304,7 +1412,8 @@ arma::mat mxl_hessian_parallel(
 // [[Rcpp::export]]
 arma::mat mxl_bhhh_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
     const Rcpp::IntegerVector &M, const arma::vec &weights,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
@@ -1312,63 +1421,14 @@ arma::mat mxl_bhhh_parallel(
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
     const int draw_batch = 0) {
-
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-  const int n_params = theta.n_elem;
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
-                                        rc_correlation, rc_mean, use_asc,
-                                        include_outside_option);
-  // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL)
-  const std::vector<int> off = mxl_unit_offsets(Ti, N);
-  const int n_units = static_cast<int>(off.size()) - 1;
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        &weights, &choice_idx, Ti.isNull() ? -1 : n_units);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  check_unit_weights(weights, off);
-
-  // Convenience objects shared by all threads
-  arma::uvec alt_idx0 = alt_idx - 1; // 0-based
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
-  const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
-                                              alt_idx0, use_asc, par.delta);
-
-  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_bhhh_parallel)", i);
-    }
-  }
-
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_b = (gen_seed >= 0);
-  HaltonGen halton_gen_b;
-  if (use_generate_b) {
-    halton_gen_b = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen_b, par, rc_dist, n_params, Sdraw, draw_batch,
-                       use_generate_b, rc_correlation, rc_mean, use_asc,
-                       include_outside_option};
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_bhhh_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
 
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
@@ -1386,11 +1446,11 @@ arma::mat mxl_bhhh_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int u = 0; u < n_units; ++u) {
+    for (mxl_off u = 0; u < lay.U; ++u) {
       mxl_unit_load(ud, u, sc, 2);
       mxl_unit_simulate(ud, sc, true);
       mxl_unit_score(ud, sc, s_u);
-      local_bhhh += weights[off[u]] * s_u * s_u.t();
+      local_bhhh += weights[lay.unit_first(u)] * s_u * s_u.t();
     } // end unit loop
 
 #ifdef _OPENMP
@@ -1416,7 +1476,8 @@ arma::mat mxl_bhhh_parallel(
 // [[Rcpp::export]]
 arma::mat mxl_scores_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
     const Rcpp::IntegerVector &M,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
@@ -1424,66 +1485,18 @@ arma::mat mxl_scores_parallel(
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
     const int draw_batch = 0) {
-
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-  const int n_params = theta.n_elem;
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
-                                        rc_correlation, rc_mean, use_asc,
-                                        include_outside_option);
-  // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL)
-  const std::vector<int> off = mxl_unit_offsets(Ti, N);
-  const int n_units = static_cast<int>(off.size()) - 1;
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        nullptr, &choice_idx, Ti.isNull() ? -1 : n_units);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, nullptr, &choice_idx);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-
-  // Convenience objects shared by all threads
-  arma::uvec alt_idx0 = alt_idx - 1; // 0-based
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
-  const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
-                                              alt_idx0, use_asc, par.delta);
-
-  // --- Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_scores_parallel)", i);
-    }
-  }
-
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_s = (gen_seed >= 0);
-  HaltonGen halton_gen_s;
-  if (use_generate_s) {
-    halton_gen_s = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen_s, par, rc_dist, n_params, Sdraw, draw_batch,
-                       use_generate_s, rc_correlation, rc_mean, use_asc,
-                       include_outside_option};
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       nullptr, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_scores_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
 
   // Output: one row per likelihood unit (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
-  arma::mat scores(n_units, n_params);
+  arma::mat scores(lay.U, n_params);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1496,7 +1509,7 @@ arma::mat mxl_scores_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int u = 0; u < n_units; ++u) {
+    for (mxl_off u = 0; u < lay.U; ++u) {
       mxl_unit_load(ud, u, sc, 2);
       mxl_unit_simulate(ud, sc, true);
       mxl_unit_score(ud, sc, s_u);
@@ -1523,7 +1536,8 @@ arma::mat mxl_scores_parallel(
 // [[Rcpp::export]]
 Rcpp::List mxl_conditional_tastes_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-    const arma::uvec &alt_idx, const arma::uvec &choice_idx,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
     const Rcpp::IntegerVector &M,
     const arma::cube &eta_draws, const arma::uvec &rc_dist,
     const bool rc_correlation = true, const bool rc_mean = false,
@@ -1531,67 +1545,19 @@ Rcpp::List mxl_conditional_tastes_parallel(
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
     const int draw_batch = 0) {
-
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-  const int n_params = theta.n_elem;
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
-                                        rc_correlation, rc_mean, use_asc,
-                                        include_outside_option);
-  // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL)
-  const std::vector<int> off = mxl_unit_offsets(Ti, N);
-  const int n_units = static_cast<int>(off.size()) - 1;
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        nullptr, &choice_idx, Ti.isNull() ? -1 : n_units);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, nullptr, &choice_idx);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-
-  // Convenience objects shared by all threads
-  arma::uvec alt_idx0 = alt_idx - 1; // 0-based
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
-  const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
-                                              alt_idx0, use_asc, par.delta);
-
-  // --- Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mxl_conditional_tastes_parallel)", i);
-    }
-  }
-
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_c = (gen_seed >= 0);
-  HaltonGen halton_gen_c;
-  if (use_generate_c) {
-    halton_gen_c = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen_c, par, rc_dist, n_params, Sdraw, draw_batch,
-                       use_generate_c, rc_correlation, rc_mean, use_asc,
-                       include_outside_option};
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       nullptr, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_conditional_tastes_parallel");
+  const MxlLayout& lay = ud.lay;
+  const arma::vec& mu_final = ud.par.mu_final;
   const double na = NA_REAL; // read on the master thread
 
   // Output: one column per likelihood unit (disjoint writes, no reduction).
-  arma::mat taste_mean(K_w, n_units);
-  arma::mat taste_sd(K_w, n_units);
+  arma::mat taste_mean(W.n_cols, lay.U);
+  arma::mat taste_sd(W.n_cols, lay.U);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1605,7 +1571,7 @@ Rcpp::List mxl_conditional_tastes_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int u = 0; u < n_units; ++u) {
+    for (mxl_off u = 0; u < lay.U; ++u) {
       mxl_unit_load(ud, u, sc, 1, false);
       const double lse = mxl_unit_simulate(ud, sc, false);
       if (!std::isfinite(lse)) {
@@ -1614,7 +1580,7 @@ Rcpp::List mxl_conditional_tastes_parallel(
         continue;
       }
       gamma_bar = sc.Gamma * sc.omega;
-      taste_mean.col(u) = par.mu_final + gamma_bar;
+      taste_mean.col(u) = mu_final + gamma_bar;
       dev = sc.Gamma;                 // copied into the reused buffer
       dev.each_col() -= gamma_bar;
       dev %= dev;

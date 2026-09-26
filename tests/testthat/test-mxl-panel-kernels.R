@@ -568,6 +568,196 @@ test_that("overflowing utilities trigger the sentinel, the Hessian skip and NA t
 
 # --- Input validation --------------------------------------------------------
 
+test_that("the kernels accept double-typed index vectors", {
+  # The integer inputs are read in place when they are integer (the output of
+  # prepare_mxl_data()) and coerced once per call when they are not.
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  fx <- mxlp_long_panel_fixture()
+  fd <- fx
+  fd$alt_idx <- as.double(fx$alt_idx)
+  fd$choice_idx <- as.double(fx$choice_idx)
+  for (k in mxlp_kernels) {
+    expect_identical(mxlp_call(k, fd), mxlp_call(k, fx),
+                     label = sprintf("%s with double-typed indices", k))
+  }
+})
+
+test_that("input errors give the same message in every kernel and draw mode", {
+  # One broken input per case, in the checks' order: situations and design
+  # height, index lengths, alternative codes, choices, the delta block, the
+  # draws, an alternative-level W. The last three cases break two checks at
+  # once and pin which one reports first.
+  fx <- mxlp_cells[[1L]]   # row-aligned W, no outside option, ASCs
+  fo <- mxlp_cells[[2L]]   # outside option
+  fa <- mxlp_cells[[3L]]   # alternative-level W, ASCs
+  n <- sum(fx$M)
+  N <- fx$N
+  kname <- c(gradient = "mxl_loglik_gradient_parallel",
+             hessian = "mxl_hessian_parallel", bhhh = "mxl_bhhh_parallel",
+             scores = "mxl_scores_parallel",
+             tastes = "mxl_conditional_tastes_parallel")
+  err <- function(k, f, ...) {
+    tryCatch({
+      mxlp_call(k, f, ...)
+      "<no error>"
+    }, error = conditionMessage)
+  }
+  with_field <- function(f, name, value) {
+    f[[name]] <- value
+    f
+  }
+  bad_choice <- function(k) {
+    sprintf("Invalid chosen alternative index for individual 3 (%s)", kname[[k]])
+  }
+  delta_msg <- "Theta's delta (ASC) block implies %d alternatives but alt_idx references alternative %d."
+  cases <- list(
+    list("M = 0", with_field(fx, "M", replace(fx$M, 3L, 0L)), list(),
+         "M must be positive for every individual (M[3] = 0)."),
+    list("M = NA", with_field(fx, "M", replace(fx$M, 3L, NA_integer_)), list(),
+         "M must be positive for every individual (M[3] = -2147483648)."),
+    list("X one row short", with_field(fx, "X", fx$X[-1L, , drop = FALSE]),
+         list(), sprintf("X has %d rows but sum(M) is %d.", n - 1L, n)),
+    list("alt_idx one short", with_field(fx, "alt_idx", fx$alt_idx[-1L]),
+         list(), sprintf(paste("alt_idx length (%d) does not match the number",
+                               "of rows of X (%d)."), n - 1L, n)),
+    list("choice_idx one short",
+         with_field(fx, "choice_idx", fx$choice_idx[-1L]), list(),
+         sprintf("choice_idx length (%d) does not match N (%d)", N - 1L, N)),
+    list("alternative code 0", with_field(fx, "alt_idx", replace(fx$alt_idx, 5L, 0L)),
+         list(), "alt_idx must use 1-based alternative indices (found 0)."),
+    list("alternative code NA",
+         with_field(fx, "alt_idx", replace(fx$alt_idx, 5L, NA_integer_)), list(),
+         "alt_idx must use 1-based alternative indices (found NA)."),
+    list("alternative code -1",
+         with_field(fx, "alt_idx", replace(fx$alt_idx, 5L, -1L)), list(),
+         "alt_idx must use 1-based alternative indices (found -1)."),
+    list("choice past the set",
+         with_field(fx, "choice_idx", replace(fx$choice_idx, 4L, fx$M[4L] + 1L)),
+         list(), bad_choice),
+    list("choice NA",
+         with_field(fx, "choice_idx", replace(fx$choice_idx, 4L, NA_integer_)),
+         list(), bad_choice),
+    list("choice past the set, outside option",
+         with_field(fo, "choice_idx", replace(fo$choice_idx, 4L, fo$M[4L] + 1L)),
+         list(), bad_choice),
+    list("choice NA, outside option",
+         with_field(fo, "choice_idx", replace(fo$choice_idx, 4L, NA_integer_)),
+         list(), bad_choice),
+    list("delta block one short", fx, list(theta = fx$theta[-length(fx$theta)]),
+         sprintf(delta_msg, fx$J - 1L, fx$J)),
+    list("alternative-level W one row short",
+         with_field(fa, "W", fa$W[-fa$J, , drop = FALSE]), list(),
+         sprintf(paste("W must be row-aligned with X (%d rows) or contain one",
+                       "row per global alternative (at least %d rows); got %d",
+                       "rows."), sum(fa$M), fa$J, fa$J - 1L)),
+    list("a code past both the delta block and W: delta first",
+         with_field(fa, "alt_idx", replace(fa$alt_idx, 5L, fa$J + 1L)), list(),
+         sprintf(delta_msg, fa$J, fa$J + 1L)),
+    list("M one situation too long: Ti first",
+         with_field(fx, "M", c(fx$M, 2L)), list(),
+         sprintf(paste("sum(Ti) (%d) does not match the number of choice",
+                       "situations (%d)."), N, N + 1L)),
+    list(paste("two situations merged in M (cross-section): the weights'",
+               "length first, then choice_idx's"),
+         with_field(fx, "M", c(fx$M[1L] + fx$M[2L], fx$M[-(1:2)])),
+         list(Ti = NULL),
+         function(k) {
+           if (k %in% c("gradient", "hessian", "bhhh")) {
+             sprintf("weights length (%d) does not match N (%d)", N, N - 1L)
+           } else {
+             sprintf("choice_idx length (%d) does not match N (%d)", N, N - 1L)
+           }
+         })
+  )
+  for (cs in cases) {
+    for (gen in c(FALSE, TRUE)) {
+      for (k in mxlp_kernels) {
+        expected <- if (is.function(cs[[4L]])) cs[[4L]](k) else cs[[4L]]
+        msg <- do.call(err, c(list(k, cs[[2L]], generate = gen), cs[[3L]]))
+        expect_identical(msg, expected, label = sprintf(
+          "%s: %s (%s)", cs[[1L]], k, if (gen) "generate" else "store"))
+      }
+    }
+  }
+
+  # Weighted kernels: the weights' length.
+  for (gen in c(FALSE, TRUE)) {
+    for (k in c("gradient", "hessian", "bhhh")) {
+      expect_identical(err(k, fx, weights = fx$weights[-1L], generate = gen),
+                       sprintf("weights length (%d) does not match N (%d)",
+                               N - 1L, N),
+                       label = paste(k, "with one weight short"))
+    }
+  }
+  # Store mode: the draw cube.
+  for (k in mxlp_kernels) {
+    expect_identical(
+      err(k, fx, eta = fx$eta[, , -1L, drop = FALSE]),
+      sprintf(paste("eta_draws 3rd dimension (%d) does not match the number",
+                    "of decision makers (%d)"), fx$U - 1L, fx$U),
+      label = paste(k, "with one slice short"))
+    expect_identical(
+      err(k, fx, Ti = NULL, eta = fx$eta),
+      sprintf("eta_draws 3rd dimension (%d) does not match N (%d)", fx$U, N),
+      label = paste(k, "cross-section with one slice per decision maker"))
+    expect_identical(
+      err(k, fx, eta = array(0, c(fx$K_w + 1L, fx$S, fx$U))),
+      sprintf("eta_draws 1st dimension (%d) does not match K_w (%d)",
+              fx$K_w + 1L, fx$K_w),
+      label = paste(k, "with a draw row too many"))
+  }
+  # Generate mode: the draw count and the primes table.
+  f0 <- with_field(fx, "S", 0L)
+  fw <- fx
+  fw$W <- cbind(fx$W, matrix(0, nrow(fx$W), 129L - fx$K_w))
+  fw$K_w <- 129L
+  fw$rc_dist <- rep(0L, 129L)
+  fw$theta <- c(fx$theta[1:2], rep(log(0.5), 129L), fx$theta[-(1:(2 + fx$K_w))])
+  for (k in mxlp_kernels) {
+    expect_identical(err(k, f0, generate = TRUE),
+                     "gen_S must be positive when gen_seed >= 0",
+                     label = paste(k, "with gen_S = 0"))
+    expect_identical(err(k, fw, generate = TRUE),
+                     paste("K_w exceeds the primes table size (128); reduce",
+                           "K_w or extend the primes table."),
+                     label = paste(k, "with 129 random coefficients"))
+  }
+})
+
+test_that("alternative codes are checked in parallel above 10^6 rows", {
+  # Past 10^6 stacked rows the scan for the smallest and largest code runs
+  # in an OpenMP reduction; a bad code in the last row must still be found.
+  N <- 250001L
+  M <- rep(4L, N)
+  n <- sum(M)
+  X <- matrix(0, n, 1L)
+  alt <- rep(1:4, N)
+  call_grad <- function(alt_idx, W = matrix(0, n, 1L), use_asc = TRUE,
+                        theta = c(0, log(0.5), 0, 0, 0)) {
+    tryCatch({
+      mxl_loglik_gradient_parallel(
+        theta, X, W, alt_idx, rep(1L, N), M, rep(1, N),
+        array(0, c(1L, 0L, 0L)), 0L, rc_correlation = FALSE,
+        rc_mean = FALSE, use_asc = use_asc, include_outside_option = FALSE,
+        gen_seed = 0L, gen_scramble = 0L, gen_S = 1L)
+      "<no error>"
+    }, error = conditionMessage)
+  }
+  expect_identical(call_grad(replace(alt, n, NA_integer_)),
+                   "alt_idx must use 1-based alternative indices (found NA).")
+  expect_identical(call_grad(replace(alt, n, 0L)),
+                   "alt_idx must use 1-based alternative indices (found 0).")
+  expect_identical(call_grad(replace(alt, n, 5L)),
+                   paste("Theta's delta (ASC) block implies 4 alternatives but",
+                         "alt_idx references alternative 5."))
+  expect_identical(
+    call_grad(replace(alt, n, 5L), W = matrix(0, 4L, 1L), use_asc = FALSE,
+              theta = c(0, log(0.5))),
+    sprintf(paste("W must be row-aligned with X (%d rows) or contain one row",
+                  "per global alternative (at least 5 rows); got 4 rows."), n))
+})
+
 test_that("panel kernels reject non-positive or missing Ti entries", {
   fx <- mxlp_cells[[2L]]
   Ti <- fx$Ti
