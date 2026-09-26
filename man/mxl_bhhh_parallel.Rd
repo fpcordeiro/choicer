@@ -21,7 +21,8 @@ mxl_bhhh_parallel(
   gen_seed = -1L,
   gen_scramble = 1L,
   gen_S = 0L,
-  Ti = NULL
+  Ti = NULL,
+  draw_batch = 0L
 )
 }
 \arguments{
@@ -67,6 +68,10 @@ identity permutations (plain Halton, compat), \code{1} = seeded position-wise di
 each decision maker (panel likelihood); situations must be sorted by
 decision maker. NULL (default): every choice situation is its own unit
 (cross-sectional likelihood).}
+
+\item{draw_batch}{Integer; \code{0} (default) forms each decision maker's
+draws in batches sized to a per-thread memory budget, a positive value
+caps the number of draws per batch (for tests).}
 }
 \value{
 n_params x n_params PSD matrix representing the observed information

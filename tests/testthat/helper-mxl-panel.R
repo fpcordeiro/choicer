@@ -456,9 +456,11 @@ mxlp_kernels <- c("gradient", "hessian", "bhhh", "scores", "tastes")
 # Call one of the five MXL panel kernels on a fixture. `Ti = NULL` omits the
 # argument (the kernels' cross-sectional default); `generate = TRUE` switches
 # to on-the-fly Halton draws with identity scrambling, which reproduce
-# get_halton_normals() exactly.
+# get_halton_normals() exactly. `draw_batch` forces the kernels to form a
+# unit's draws that many at a time (the default sizes batches by memory).
 mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
-                      Ti = fx[["Ti"]], eta = fx$eta, generate = FALSE) {
+                      Ti = fx[["Ti"]], eta = fx$eta, generate = FALSE,
+                      draw_batch = NULL) {
   args <- list(theta = theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
                choice_idx = fx$choice_idx, M = fx$M)
   if (kernel %in% c("gradient", "hessian", "bhhh")) args$weights <- weights
@@ -472,6 +474,7 @@ mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
     args <- c(args, list(gen_seed = 0L, gen_scramble = 0L, gen_S = fx$S))
   }
   if (!is.null(Ti)) args$Ti <- as.integer(Ti)
+  if (!is.null(draw_batch)) args$draw_batch <- as.integer(draw_batch)
   fn <- switch(kernel,
     gradient = mxl_loglik_gradient_parallel,
     hessian  = mxl_hessian_parallel,

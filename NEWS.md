@@ -50,10 +50,11 @@
     estimation kernels, measured on the reference battery of test
     configurations); prediction kernels are bit-identical.
   - New input guards: a non-`NULL` empty `Ti` is an error, and a
-    primary-thread memory check now stops (instead of risking a crash) when a
-    single decision maker would need more than 2 GiB of per-thread scratch —
-    a signal that `person_col` identifies markets or some other
-    high-cardinality grouping rather than decision makers.
+    primary-thread memory check now stops when a single decision maker
+    stacks so many alternative rows (tens of millions) that its design rows
+    would need more than 2 GiB of scratch in every thread — a signal that
+    `person_col` identifies markets or some other high-cardinality grouping
+    rather than decision makers.
   - Alignment guards for panel fits, whose prepared situations are ordered by
     decision maker rather than by id: a positional `weights` vector and an
     unnamed post-hoc `cluster` vector are rejected (with a pointer to
@@ -81,6 +82,22 @@
   106 million allocations (374 GB) per call to about three thousand, a
   gradient evaluation on 10^7 rows allocates a quarter to a third as often,
   and the kernels ran 3-24% faster in our benchmarks.
+- Each decision maker's draws are now processed in batches sized to a small
+  per-thread memory budget, with the score accumulated across batches by a
+  streaming log-sum-exp, so a thread's working memory no longer grows with
+  the product of a decision maker's number of choice situations and the
+  number of draws `S`. The draw loop also sweeps a decision maker's rows in
+  memory order and no longer allocates per decision maker. On a synthetic
+  claims panel with heavy-tailed histories (up to 500 choice situations per
+  decision maker), peak working memory at `S = 1000` fell from 6.4 GB to
+  0.12 GB and gradient evaluations ran 40% faster; on a 10^7-row panel they
+  ran 12-25% faster at `S = 100`-`500`. The analytical Hessian no longer
+  holds a decision maker's rows-by-draws matrix either: its peak working
+  memory on the claims panel at `S = 500` fell from 1.7 GB to 0.2 GB. A
+  decision maker is split into batches only when its stacked alternative
+  rows times `S` exceed 2^18 (a long panel, a choice set of hundreds of
+  alternatives, or a very large `S`); any other computes exactly what it did
+  before, and a split one agrees to rounding.
 
 ## Corrections
 

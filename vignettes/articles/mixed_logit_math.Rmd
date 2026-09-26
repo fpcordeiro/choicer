@@ -512,14 +512,28 @@ $\beta$/$\mu$/$L$ BLAS collapse via $\tilde w^s$, and the $\delta$ scatter) is u
 $t$: `mxl_unit_simulate()` already stacks the logit residual $d_{nt}^s$ of every row of
 every situation belonging to unit $n$ into one $R_n \times S$ matrix `DiffW` ($R_n$ =
 stacked alternative rows across all of $n$'s $T_n$ situations), because $\omega_{ns}$ is a
-single per-draw weight shared by every situation in the unit. `mxl_unit_score()` then forms
-$\bar d_n = \texttt{DiffW}\,\omega_n$ (one `dgemv` over the whole stacked unit) and builds
-the $\beta$, $\mu$ and $\delta$ blocks directly from $\bar d_n$, exactly as §3.2's
-vectorized table builds them from $\mathbf d_i^s$ — the situation sum is absorbed into the
-row-stacking, and the draw sum into the matrix-vector product, in a single pass. The $L$
-block cannot collapse through $\bar d_n$ alone: its per-draw derivative couples the
-residuals with that draw's $\eta_{ns}$ (§3.4.3), so the draw sum has to happen *after* that
-coupling. `mxl_unit_score()` instead forms
+single per-draw weight shared by every situation in the unit. $\bar d_n =
+\texttt{DiffW}\,\omega_n$ then gives the $\beta$, $\mu$ and $\delta$ blocks directly,
+exactly as §3.2's vectorized table builds them from $\mathbf d_i^s$ — the situation sum is
+absorbed into the row-stacking, and the draw sum into the matrix-vector product, in a
+single pass.
+
+`DiffW` is formed $B$ draws at a time, $R_n \times B$, with $B = S$ unless the two
+$R_n \times S$ matrices (`DiffW` and $W_n \Gamma_n$) would exceed a small per-thread
+budget (4 MiB, sized to stay in cache): a unit is split into batches (of sizes differing
+by at most one draw) only when
+$R_n S > 2^{18}$, i.e. for a long panel, a choice set of hundreds of alternatives or a very
+large $S$, and a thread's memory then grows with $R_n$ rather than $R_n S$. Each batch is
+folded in before the next one overwrites it. $\bar d_n$ accumulates by a streaming
+log-sum-exp: the batch's weights $e^{\lambda_{ns} - r}$ are taken relative to the running
+log-sum-exp $r$ of the draws seen so far, the running sum is rescaled by
+$e^{r_\text{old} - r}$ whenever $r$ rises, and by $e^{r - \mathrm{LSE}_s \lambda_{ns}}$ at
+the end. Batching changes $\bar d_n$ only by rounding (about one rounding per batch), and a
+unit in one batch computes exactly the unbatched values. The $L$ block cannot collapse
+through $\bar d_n$ alone: its per-draw derivative couples the residuals with that draw's
+$\eta_{ns}$ (§3.4.3), so the draw sum has to happen
+*after* that coupling; each batch writes its columns of $W_n'\,\texttt{DiffW}$
+($K_w \times S$, small whatever $R_n$ is), and `mxl_unit_score()` then forms
 $A = \bigl((W_n' \,\texttt{DiffW} \odot D\gamma_1)\,\mathrm{diag}(\omega_n)\bigr)\,\eta_n'$
 ($K_w \times K_w$; a situation-stacked `dgemm` for the inner product, then a draw-block
 `dgemm` against $\eta_n'$), and reads $\ell_{pq}$'s score off
@@ -900,7 +914,10 @@ therefore runs two passes per unit, sharing the same draw loop that computes $\o
   per-draw log-likelihoods of the unit's choices), their log-sum-exp over draws, and
   $\omega_{ns}$ — exactly as in §3.5.
 - **Pass 2** loops situations $t$ outer, draws $s$ inner, repeating §4.4's per-alternative
-  block accumulation with $\omega_{ns}$ everywhere §4.4 used $P_{is}$:
+  block accumulation with $\omega_{ns}$ everywhere §4.4 used $P_{is}$. A unit whose draws
+  pass 1 had to split into batches ($R_n S > 2^{19}$) does not keep the $R_n \times S$
+  matrix $W_n \Gamma_n$: each situation's $m_t \times S$ rows of it are formed in turn, so
+  a thread's memory grows with the largest choice set rather than with the unit:
   - **Identity C** (linear pieces): `buf_Pzz_cc/cd/dd` and `buf_diff_HV_cc` accumulate
     $\omega_{ns}\,\mathrm{sum\_Pzz}_{nts}$ and $\omega_{ns}\,\mathrm{sum\_diff\_HV}_{nts}$ at
     *every* $(t,s)$ pair in the unit — linear accumulation does not care whether it is

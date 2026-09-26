@@ -230,6 +230,170 @@ test_that("panel kernels stay accurate when a unit's likelihood underflows", {
                     "[long panel] conditional SD vs oracle")
 })
 
+# Cells with choice sets of 2 to 24 alternatives, straddling Armadillo's
+# 16-element local storage (the kernels keep grow-only utility and probability
+# buffers across situations of different sizes).
+mxlp_wide_cells <- list(
+  mxlp_fixture("wide|n+l|corr|mean|W=row", seed = 71, J = 24L,
+               rc_dist = c(0L, 1L), rc_correlation = TRUE, rc_mean = TRUE),
+  mxlp_fixture("wide|n+n|diag|oo|W=alt", seed = 72, J = 24L,
+               include_outside_option = TRUE, W_layout = "alt",
+               weight_type = "person")
+)
+
+test_that("choice sets of more than 16 alternatives match the oracle", {
+  skip_if_not_installed("numDeriv")
+  for (fx in mxlp_wide_cells) {
+    orc <- mxlp_oracle(fx$theta, fx)
+    res <- mxlp_call("gradient", fx)
+    mxlp_expect_close(res$objective, -orc$loglik, 1e-10,
+                      sprintf("[%s] objective vs oracle", fx$name))
+    obj <- function(th) mxlp_call("gradient", fx, theta = th)$objective
+    mxlp_expect_close(res$gradient, numDeriv::grad(obj, fx$theta), TOL_GRAD,
+                      sprintf("[%s] gradient vs numDeriv", fx$name))
+    mxlp_expect_close(mxlp_call("hessian", fx),
+                      numDeriv::hessian(obj, fx$theta), TOL_HESS,
+                      sprintf("[%s] Hessian vs numDeriv", fx$name))
+    ct <- mxlp_call("tastes", fx)
+    mxlp_expect_close(ct$mean, orc$mean, 1e-10,
+                      sprintf("[%s] conditional mean vs oracle", fx$name))
+    mxlp_expect_close(ct$sd, orc$sd, 1e-10,
+                      sprintf("[%s] conditional SD vs oracle", fx$name))
+  }
+})
+
+test_that("draw batches reproduce the single-batch kernels", {
+  # A decision maker whose R x S matrices would exceed the per-thread budget
+  # has its draws processed a few at a time, the score folded in batch by
+  # batch with a streaming log-sum-exp; the Hessian instead forms each
+  # situation's draws in turn. Forcing batches of one and of at most five
+  # draws must reproduce the one-batch results up to rounding, in store and
+  # generate
+  # mode, with wide choice sets, and on the long panel whose likelihood
+  # underflows (where the streaming reference moves the most).
+  cells <- c(mxlp_cells, list(mxlp_long_panel_fixture()), mxlp_wide_cells)
+  for (fx in cells) {
+    for (k in mxlp_kernels) {
+      ref <- mxlp_call(k, fx)
+      for (b in c(1L, 5L)) {
+        mxlp_expect_close(mxlp_call(k, fx, draw_batch = b), ref, 1e-10,
+                          sprintf("[%s] %s, batches of at most %d draws",
+                                  fx$name, k, b))
+      }
+      mxlp_expect_close(mxlp_call(k, fx, generate = TRUE, draw_batch = 3L),
+                        mxlp_call(k, fx, generate = TRUE), 1e-10,
+                        sprintf(paste("[%s] %s, generate mode, batches of at",
+                                      "most 3 draws"), fx$name, k))
+    }
+  }
+})
+
+test_that("the batched path is taken, and chosen automatically past the budget", {
+  # One thread, so that a repeated call is bitwise reproducible and any
+  # difference comes from the batches. At S = 601 the long panel's second
+  # decision maker stacks 450 rows, and 450 x 601 exceeds the 2^18
+  # row-draws that fit the score kernels' budget, so they split its draws on
+  # their own, into batches of 300 and 301 draws; one forced batch of all S
+  # draws is the reference.
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  fx <- mxlp_long_panel_fixture()
+  expect_false(identical(mxlp_call("gradient", fx, draw_batch = 1L),
+                         mxlp_call("gradient", fx)))
+  fx <- mxlp_long_panel_fixture(S = 601L)
+  for (k in mxlp_kernels) {
+    mxlp_expect_close(mxlp_call(k, fx), mxlp_call(k, fx, draw_batch = fx$S),
+                      1e-10, sprintf("[S = 601] %s, automatic batches", k))
+  }
+  expect_false(identical(mxlp_call("gradient", fx),
+                         mxlp_call("gradient", fx, draw_batch = fx$S)))
+})
+
+test_that("draw batches with no positive weight are folded exactly", {
+  # Unit u's first five draws give its choices probability exactly zero: its
+  # one random coefficient enters only the chosen alternative of one
+  # situation (W = 10 there, 0 elsewhere in the unit), and those draws are
+  # -1e308, so the chosen utility overflows to -Inf. lambda_us is -Inf for
+  # s <= 5 and finite after, which batches of at most 1, 2 and 5 draws meet
+  # at every step of the streaming fold (all -Inf batches, a mixed batch, the
+  # first batch with weight). Those draws carry weight exactly zero, so the
+  # objective, scores and BHHH stay finite; the Hessian and the tastes, which
+  # multiply the -Inf draws by their zero weight, are NaN either way.
+  fx <- mxlp_fixture("neg-inf draws", seed = 91, rc_dist = 0L)
+  u <- fx$probe_units[2L]
+  off <- mxlp_unit_offsets(fx$Ti, fx$N)
+  sits <- (off[u] + 1L):off[u + 1L]
+  row0 <- c(0L, cumsum(fx$M))
+  fx$W[(row0[sits[1L]] + 1L):row0[sits[length(sits)] + 1L], 1L] <- 0
+  fx$W[row0[sits[1L]] + fx$choice_idx[sits[1L]], 1L] <- 10
+  fx$eta[1L, 1:5, u] <- -1e308
+  lam <- mxlp_oracle(fx$theta, fx)$lambda[u, ]
+  expect_true(all(lam[1:5] == -Inf) && all(is.finite(lam[-(1:5)])),
+              label = "only draws 1-5 give unit u's choices probability 0")
+  ref <- lapply(c("gradient", "scores", "bhhh"), mxlp_call, fx = fx)
+  expect_true(all(is.finite(unlist(ref))))
+  for (b in c(1L, 2L, 5L)) {
+    for (i in 1:3) {
+      k <- c("gradient", "scores", "bhhh")[i]
+      mxlp_expect_close(mxlp_call(k, fx, draw_batch = b), ref[[i]], 1e-10,
+                        sprintf("%s, batches of at most %d draws", k, b))
+    }
+  }
+})
+
+test_that("overflowing utilities give the same sentinel, skip and NaN in draw batches", {
+  for (panel in c(FALSE, TRUE)) {
+    fx <- mxlp_edge_fixture(-36, panel)
+    u <- fx$edge_unit
+    t <- fx$edge_situation
+    fx$theta[1L] <- 2
+    fx$X[sum(fx$M[seq_len(t - 1L)]) + fx$choice_idx[t], 1L] <- -1e308
+    ref_scores <- mxlp_call("scores", fx)
+    ref_hess <- mxlp_call("hessian", fx)
+    for (b in c(1L, 5L)) {
+      what <- sprintf("[%s] batches of at most %d draws", fx$name, b)
+      res <- mxlp_call("gradient", fx, draw_batch = b)
+      expect_equal(res$objective, 1e10, label = paste(what, "sentinel"))
+      expect_true(all(res$gradient == 0), label = paste(what, "zero gradient"))
+      sc <- mxlp_call("scores", fx, draw_batch = b)
+      expect_true(any(is.nan(sc[u, ])), label = paste(what, "NaN score row"))
+      expect_identical(is.nan(sc[u, ]), is.nan(ref_scores[u, ]),
+                       label = paste(what, "NaN pattern of the score row"))
+      mxlp_expect_close(sc[-u, ], ref_scores[-u, ], 1e-10,
+                        paste(what, "other score rows"))
+      mxlp_expect_close(mxlp_call("hessian", fx, draw_batch = b), ref_hess,
+                        1e-10, paste(what, "Hessian without the unit"))
+      ct <- mxlp_call("tastes", fx, draw_batch = b)
+      expect_true(all(is.na(ct$mean[, u])) && all(is.na(ct$sd[, u])),
+                  label = paste(what, "NA tastes"))
+    }
+  }
+})
+
+test_that("the raw-array softmax and log-sum-exp match Armadillo's bit for bit", {
+  # The draw loop uses stable_softmax_n() and log_sum_exp_n() on reused
+  # buffers; they must reproduce stable_softmax() and logSumExp() exactly,
+  # signed zeros, infinities and NaN included.
+  set.seed(5)
+  cases <- c(lapply(1:40, function(n) stats::rnorm(n, sd = 3)),
+             list(0, -0, c(0, -0), c(-0, 0), c(1, 1), c(-Inf, 0), c(Inf, 1),
+                  c(Inf, Inf), c(NaN, 1), c(1, NaN, 2), c(-Inf, -Inf),
+                  c(1e300, -1e300), c(-800, -700, -745),
+                  c(700, 710, 709.5, -1e308)))
+  for (v in cases) {
+    r <- choicer:::test_softmax_n(v)
+    what <- paste0("v = c(", paste(format(v), collapse = ", "), ")")
+    expect_true(identical(r$v_raw, r$v_arma, num.eq = FALSE),
+                label = paste(what, ": shifted utilities"))
+    expect_true(identical(r$p_raw, r$p_arma, num.eq = FALSE),
+                label = paste(what, ": probabilities"))
+    expect_true(identical(r$log_denom_raw, r$log_denom_arma, num.eq = FALSE),
+                label = paste(what, ": log denominator"))
+    expect_true(identical(r$lse_raw, r$lse_arma, num.eq = FALSE),
+                label = paste(what, ": log-sum-exp"))
+  }
+})
+
 # The edge fixtures put one chosen alternative `gap` utils below its
 # competitors, once in a cross-section and once inside a multi-situation
 # decision maker (see mxlp_edge_fixture()).
