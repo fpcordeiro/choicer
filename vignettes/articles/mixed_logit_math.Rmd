@@ -824,7 +824,8 @@ without changing any result; the per-alternative form is kept for auditability.
 
 After the $S$-loop for individual $i$, let $\mathrm{opg\_pz} = [G \mid F][G \mid
 F]^\top$, with the weights of §4.4.3. The Hessian $\sum_s \omega_{is}(H_{is} + (g_{is} -
-g_i)(g_{is} - g_i)^\top)$ is assembled block-by-block:
+g_i)(g_{is} - g_i)^\top)$ is assembled block-by-block into `hess_t1` (the code builds it
+in place in `opg_pz`, reading each block before overwriting it):
 
 $$
 \mathrm{hess\_t1}\big|_{\mathrm{cc}} =

@@ -340,21 +340,33 @@ inline arma::mat make_W_i(const arma::mat& W, const arma::uword x_n_rows,
 // log-normal transform applied row-wise where rc_dist == 1. Optional outputs
 // Dgamma1/Dgamma2 receive the first/second derivative of the transform
 // (ones/zeros for normal coefficients, exp(L*eta) rows for log-normal).
+// The _into form writes into a caller-owned (reused) Gamma_final.
 // ----------------------------------------------------------------------------
-inline arma::mat batch_gamma_draws(const arma::mat& L, const arma::mat& eta_i,
+inline void batch_gamma_draws_into(arma::mat& Gamma_final, const arma::mat& L,
+                                   const arma::mat& eta_i,
                                    const arma::uvec& rc_dist,
                                    arma::mat* Dgamma1 = nullptr,
                                    arma::mat* Dgamma2 = nullptr) {
-  arma::mat Gamma_final = L * eta_i; // single dgemm
+  Gamma_final = L * eta_i; // single dgemm
   if (Dgamma1) Dgamma1->ones(L.n_rows, eta_i.n_cols);
   if (Dgamma2) Dgamma2->zeros(L.n_rows, eta_i.n_cols);
   for (arma::uword k = 0; k < L.n_rows; ++k) {
-    if (rc_dist(k) == 1) { // log-normal
-      Gamma_final.row(k) = arma::exp(Gamma_final.row(k));
+    if (rc_dist(k) == 1) { // log-normal, in place (no aliasing temporary)
+      for (arma::uword s = 0; s < Gamma_final.n_cols; ++s) {
+        Gamma_final(k, s) = std::exp(Gamma_final(k, s));
+      }
       if (Dgamma1) Dgamma1->row(k) = Gamma_final.row(k);
       if (Dgamma2) Dgamma2->row(k) = Gamma_final.row(k);
     }
   }
+}
+
+inline arma::mat batch_gamma_draws(const arma::mat& L, const arma::mat& eta_i,
+                                   const arma::uvec& rc_dist,
+                                   arma::mat* Dgamma1 = nullptr,
+                                   arma::mat* Dgamma2 = nullptr) {
+  arma::mat Gamma_final;
+  batch_gamma_draws_into(Gamma_final, L, eta_i, rc_dist, Dgamma1, Dgamma2);
   return Gamma_final;
 }
 

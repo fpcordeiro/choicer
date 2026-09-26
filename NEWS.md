@@ -69,6 +69,19 @@
     now a choice: pass `person_col` to use the within-person variation the
     panel provides.
 
+## Mixed logit — kernels for population-scale data
+
+- The estimation kernels keep each thread's working arrays across decision
+  makers instead of allocating them per unit, and the analytical Hessian no
+  longer allocates a temporary for every alternative-and-draw outer product
+  or per-unit block: the draws are read in place from the store-mode cube,
+  and a unit's design rows and random-coefficient draws go into reused
+  buffers. The arithmetic is unchanged (results were bit-identical in our
+  tests). On a synthetic 10^6-row panel the Hessian's heap traffic fell from
+  106 million allocations (374 GB) per call to about three thousand, a
+  gradient evaluation on 10^7 rows allocates a quarter to a third as often,
+  and the kernels ran 3-24% faster in our benchmarks.
+
 ## Corrections
 
 The following were found while implementing the panel likelihood above and
