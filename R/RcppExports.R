@@ -289,6 +289,17 @@ hmnp_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, 
     .Call(`_choicer_hmnp_gibbs`, X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, a0, s0, R, burn, thin, seed, keep_beta_i, trace)
 }
 
+#' stable_softmax_n() and log_sum_exp_n() next to stable_softmax() and
+#' logSumExp(), for a bitwise comparison in tests
+#'
+#' @param v Numeric vector of utilities (length >= 1).
+#' @return List with the shifted utilities, probabilities and log-denominator
+#'   from both softmax versions, and both log-sum-exps of v.
+#' @noRd
+test_softmax_n <- function(v) {
+    .Call(`_choicer_test_softmax_n`, v)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
@@ -686,6 +697,9 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #'   each decision maker (panel likelihood); situations must be sorted by
 #'   decision maker. NULL (default): every choice situation is its own unit
 #'   (cross-sectional likelihood).
+#' @param draw_batch Integer; \code{0} (default) forms each decision maker's
+#'   draws in batches sized to a per-thread memory budget, a positive value
+#'   caps the number of draws per batch (for tests).
 #' @returns List with loglikelihood and gradient evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -710,8 +724,8 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' result$objective
 #' }
 #' @keywords internal
-mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
-    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
+    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
 #' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
@@ -760,6 +774,9 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #'   each decision maker (panel likelihood); situations must be sorted by
 #'   decision maker. NULL (default): every choice situation is its own unit
 #'   (cross-sectional likelihood).
+#' @param draw_batch Integer; \code{0} (default) forms each decision maker's
+#'   draws in batches sized to a per-thread memory budget, a positive value
+#'   caps the number of draws per batch (for tests).
 #' @returns Hessian evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -783,8 +800,8 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' dim(H)
 #' }
 #' @keywords internal
-mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
-    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
+    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
 #' BHHH (outer product of gradients) information matrix for Mixed Logit
@@ -825,6 +842,9 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #'   each decision maker (panel likelihood); situations must be sorted by
 #'   decision maker. NULL (default): every choice situation is its own unit
 #'   (cross-sectional likelihood).
+#' @param draw_batch Integer; \code{0} (default) forms each decision maker's
+#'   draws in batches sized to a per-thread memory budget, a positive value
+#'   caps the number of draws per batch (for tests).
 #' @returns n_params x n_params PSD matrix representing the observed information
 #'   matrix estimated by the outer product of gradients (same sign convention
 #'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -851,16 +871,16 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' dim(H)
 #' }
 #' @keywords internal
-mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
-    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
+    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
-mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
-    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
+    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
-mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
-    .Call(`_choicer_mxl_conditional_tastes_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
+    .Call(`_choicer_mxl_conditional_tastes_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
 #' Per-observation simulated choice probabilities for Mixed Logit

@@ -191,6 +191,17 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// test_softmax_n
+Rcpp::List test_softmax_n(const arma::vec& v);
+RcppExport SEXP _choicer_test_softmax_n(SEXP vSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type v(vSEXP);
+    rcpp_result_gen = Rcpp::wrap(test_softmax_n(v));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -474,8 +485,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_loglik_gradient_parallel
-Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti);
-RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP) {
+Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch);
+RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -496,7 +507,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::IntegerVector> >::type Ti(TiSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti));
+    Rcpp::traits::input_parameter< const int >::type draw_batch(draw_batchSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -514,8 +526,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_hessian_parallel
-arma::mat mxl_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti);
-RcppExport SEXP _choicer_mxl_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP) {
+arma::mat mxl_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch);
+RcppExport SEXP _choicer_mxl_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -536,13 +548,14 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::IntegerVector> >::type Ti(TiSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_hessian_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti));
+    Rcpp::traits::input_parameter< const int >::type draw_batch(draw_batchSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_hessian_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_bhhh_parallel
-arma::mat mxl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti);
-RcppExport SEXP _choicer_mxl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP) {
+arma::mat mxl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch);
+RcppExport SEXP _choicer_mxl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -563,13 +576,14 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::IntegerVector> >::type Ti(TiSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_bhhh_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti));
+    Rcpp::traits::input_parameter< const int >::type draw_batch(draw_batchSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_bhhh_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_scores_parallel
-arma::mat mxl_scores_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti);
-RcppExport SEXP _choicer_mxl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP) {
+arma::mat mxl_scores_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch);
+RcppExport SEXP _choicer_mxl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -589,13 +603,14 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::IntegerVector> >::type Ti(TiSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_scores_parallel(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti));
+    Rcpp::traits::input_parameter< const int >::type draw_batch(draw_batchSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_scores_parallel(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch));
     return rcpp_result_gen;
 END_RCPP
 }
 // mxl_conditional_tastes_parallel
-Rcpp::List mxl_conditional_tastes_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti);
-RcppExport SEXP _choicer_mxl_conditional_tastes_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP) {
+Rcpp::List mxl_conditional_tastes_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const Rcpp::IntegerVector& M, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch);
+RcppExport SEXP _choicer_mxl_conditional_tastes_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -615,7 +630,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::IntegerVector> >::type Ti(TiSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_conditional_tastes_parallel(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti));
+    Rcpp::traits::input_parameter< const int >::type draw_batch(draw_batchSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_conditional_tastes_parallel(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1010,6 +1026,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_hb_test_sigma_d2_gibbs", (DL_FUNC) &_choicer_hb_test_sigma_d2_gibbs, 7},
     {"_choicer_hmnl_gibbs", (DL_FUNC) &_choicer_hmnl_gibbs, 26},
     {"_choicer_hmnp_gibbs", (DL_FUNC) &_choicer_hmnp_gibbs, 24},
+    {"_choicer_test_softmax_n", (DL_FUNC) &_choicer_test_softmax_n, 1},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},
     {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 7},
@@ -1028,12 +1045,12 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_riwishart_cpp", (DL_FUNC) &_choicer_riwishart_cpp, 3},
     {"_choicer_build_L_mat", (DL_FUNC) &_choicer_build_L_mat, 3},
     {"_choicer_build_var_mat", (DL_FUNC) &_choicer_build_var_mat, 3},
-    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 17},
+    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 18},
     {"_choicer_jacobian_vech_Sigma", (DL_FUNC) &_choicer_jacobian_vech_Sigma, 3},
-    {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 17},
-    {"_choicer_mxl_bhhh_parallel", (DL_FUNC) &_choicer_mxl_bhhh_parallel, 17},
-    {"_choicer_mxl_scores_parallel", (DL_FUNC) &_choicer_mxl_scores_parallel, 16},
-    {"_choicer_mxl_conditional_tastes_parallel", (DL_FUNC) &_choicer_mxl_conditional_tastes_parallel, 16},
+    {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 18},
+    {"_choicer_mxl_bhhh_parallel", (DL_FUNC) &_choicer_mxl_bhhh_parallel, 18},
+    {"_choicer_mxl_scores_parallel", (DL_FUNC) &_choicer_mxl_scores_parallel, 17},
+    {"_choicer_mxl_conditional_tastes_parallel", (DL_FUNC) &_choicer_mxl_conditional_tastes_parallel, 17},
     {"_choicer_mxl_predict", (DL_FUNC) &_choicer_mxl_predict, 14},
     {"_choicer_mxl_logsum", (DL_FUNC) &_choicer_mxl_logsum, 14},
     {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 15},

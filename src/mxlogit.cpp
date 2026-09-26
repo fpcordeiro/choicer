@@ -121,23 +121,58 @@ inline void check_unit_weights(const arma::vec& weights,
   }
 }
 
-// Per-thread scratch grows with the stacked rows R_u of the largest unit:
-// WGamma and DiffW are R_u x S doubles each. An allocation failure inside
-// the parallel region would terminate R, so refuse on the primary thread
-// when the two would exceed 2 GiB, i.e. max_u R_u x S > 2^27 (134 million);
-// in the cross-section R_u = M_i, far below that for realistic data.
+// Draw batches. A unit's R x S matrices (WGamma, and DiffW for the score)
+// are formed B draws at a time, B = S unless the kernel's n_mats R x B
+// matrices would exceed MXL_BATCH_BYTES: a unit is split only when R S
+// exceeds 2^18 (2^19 when n_mats = 1), i.e. a long panel, a choice set of
+// hundreds of alternatives or a very large S, and a thread's scratch then
+// grows with R rather than R S. The S-length and K_w x S pieces (lambda, the
+// draw weights, Gamma, BW) stay whole. The budget is small because the draw
+// loop reads each batch a few times in quick succession, and a batch that
+// stays in cache is fastest. A split unit's draws are partitioned into
+// batches whose sizes differ by at most one. draw_batch > 0 caps the batch
+// size instead (tests).
+constexpr double MXL_BATCH_BYTES = 4.0 * 1024.0 * 1024.0;
+
+// Number of draw batches of a unit of R rows, for a kernel that keeps n_mats
+// R x B matrices (1: the unit is not split).
+inline int mxl_batch_count(const int R, const int S, const int n_mats,
+                           const int draw_batch) {
+  const double b_max =
+      draw_batch > 0
+          ? draw_batch
+          : MXL_BATCH_BYTES / (sizeof(double) * n_mats * std::max(R, 1));
+  if (b_max >= S) return 1;
+  const int b = std::max(1, static_cast<int>(b_max));
+  return (S + b - 1) / b;
+}
+
+// log(exp(a) + exp(b)), exact when one side is -Inf.
+inline double log_add_exp(const double a, const double b) {
+  if (a == -arma::datum::inf) return b;
+  if (b == -arma::datum::inf) return a;
+  return std::max(a, b) + std::log1p(std::exp(-std::fabs(a - b)));
+}
+
+// Beyond its R x B draw batches, a unit's per-thread scratch is O(R): W_u,
+// X_u, d_bar and a batch of at least one draw, about 8 R (K_x + K_w + 3)
+// bytes. An allocation failure inside the parallel region would terminate
+// R, so refuse on the primary thread when that would exceed 2 GiB, i.e. a
+// single decision maker with tens of millions of stacked rows.
 inline void check_unit_scratch(const std::vector<int>& row_off,
-                               const std::vector<int>& off, const int S) {
+                               const std::vector<int>& off, const int K_x,
+                               const int K_w) {
   int max_R = 0;
   for (std::size_t u = 0; u + 1 < off.size(); ++u) {
     max_R = std::max(max_R, row_off[off[u + 1]] - row_off[off[u]]);
   }
-  const double bytes = 2.0 * sizeof(double) * max_R * static_cast<double>(S);
+  const double bytes =
+      sizeof(double) * static_cast<double>(max_R) * (K_x + K_w + 3.0);
   if (bytes > 2.0 * 1024 * 1024 * 1024) {
-    Rcpp::stop("The largest decision maker stacks %d alternative rows across "
-               "%d draws, which needs %.1f GB of scratch memory per thread. "
-               "Reduce S, or check person_col: it should identify decision "
-               "makers, not markets.", max_R, S, bytes / 1e9);
+    Rcpp::stop("The largest decision maker stacks %d alternative rows, which "
+               "needs %.1f GB of scratch memory per thread. Check person_col: "
+               "it should identify decision makers, not markets.",
+               max_R, bytes / 1e9);
   }
 }
 
@@ -158,6 +193,7 @@ struct MxlUnitData {
   const arma::uvec& rc_dist;
   const int n_params;
   const int S;                     // draws per unit
+  const int draw_batch;            // > 0: draws per batch (tests); 0: automatic
   const bool use_generate, rc_correlation, rc_mean, use_asc,
       include_outside_option;
 };
@@ -174,19 +210,23 @@ struct MxlUnitScratch {
   MxlUnitScratch& operator=(const MxlUnitScratch&) = delete;
   int t0 = 0, t1 = 0;   // situations [t0, t1)
   int r0 = 0, R = 0;    // stacked rows [r0, r0 + R)
+  int nb = 1, s0 = 0;   // draw batches of the unit; first draw in WGamma
+  int wg_r0 = 0;        // unit row of WGamma's first row (0, or a situation's)
   const double* eta = nullptr; // K_w x S draws: eta_buf, or cube slice u
   arma::mat eta_buf;    // generate mode: the unit's Halton block
   arma::mat W_u;        // R x K_w
+  arma::mat W_t;        // m_t x K_w: one situation's rows (Hessian, long units)
   arma::mat X_u;        // R x K_x (score only)
   arma::mat Gamma;      // K_w x S random-coefficient draws (Gamma_final)
   arma::mat Dgamma1;    // K_w x S first derivative of the RC transform
   arma::mat Dgamma2;    // K_w x S second derivative (Hessian only)
-  arma::mat WGamma;     // R x S: W_u * Gamma
-  arma::vec V, P;       // one situation at one draw
+  arma::mat WGamma;     // R x B: W_u * Gamma, draws [s0, s0 + B); or m_t x S
+  arma::vec V, P;       // one situation at one draw: leading m + o entries
   arma::vec lambda;     // S: sum_t log P_ts(j_t)
   arma::vec omega;      // S: posterior draw weights
-  arma::mat DiffW;      // R x S unweighted residuals 1{r = j_t} - P_ts(r)
-  arma::vec d_bar;      // R: DiffW * omega
+  arma::vec w_b;        // B: a batch's draw weights, relative to ref
+  arma::mat DiffW;      // R x B unweighted residuals 1{r = j_t} - P_ts(r)
+  arma::vec d_bar;      // R: DiffW * omega, over the batches
   arma::mat BW, A;      // K_w x S and K_w x K_w: Cholesky-block collapse
   arma::rowvec omega_t; // S: omega as a row, for the Cholesky collapse
 };
@@ -204,10 +244,11 @@ inline const arma::mat mxl_eta_view(const MxlUnitData& ud,
 // or the unit's alternatives' rows of an alternative-level W), the draws
 // eta_u (cube slice u in place, or on-the-fly Halton block u + 1),
 // Gamma_u = L eta_u with the derivatives of its transform (Dgamma1 unless
-// only the draws themselves are needed), and WGamma_u = W_u Gamma_u in a
-// single dgemm.
+// only the draws themselves are needed), and the unit's draw batch size for
+// a kernel that keeps n_mats R x B matrices.
 inline void mxl_unit_load(const MxlUnitData& ud, const int u,
-                          MxlUnitScratch& sc, const bool with_Dgamma1 = true,
+                          MxlUnitScratch& sc, const int n_mats,
+                          const bool with_Dgamma1 = true,
                           const bool with_Dgamma2 = false) {
   sc.t0 = ud.off[u];
   sc.t1 = ud.off[u + 1];
@@ -234,64 +275,151 @@ inline void mxl_unit_load(const MxlUnitData& ud, const int u,
   batch_gamma_draws_into(sc.Gamma, ud.par.L, mxl_eta_view(ud, sc), ud.rc_dist,
                          with_Dgamma1 ? &sc.Dgamma1 : nullptr,
                          with_Dgamma2 ? &sc.Dgamma2 : nullptr);
-  sc.WGamma = sc.W_u * sc.Gamma;
+  sc.nb = mxl_batch_count(sc.R, ud.S, n_mats, ud.draw_batch);
 }
 
-// Logit probabilities of situation t at draw s, into sc.P: inside utilities
-// base_util + WGamma(rows of t, s), with the outside option (V = 0) in slot 0
-// when present. Leaves the max-shifted utilities in sc.V and returns their
-// log-sum-exp, so that log P_ts(a) = sc.V(a) - log_denom: exact wherever the
-// utilities are finite, while P(a) itself turns subnormal beyond a utility
-// gap of about 708 and zero beyond about 745.
+// WGamma for the draws [s0, s1) of the loaded unit: W_u Gamma(:, s0:s1-1) in
+// a single dgemm.
+inline void mxl_batch_wgamma(MxlUnitScratch& sc, const int s0, const int s1) {
+  sc.s0 = s0;
+  sc.wg_r0 = 0;
+  if (s0 == 0 && s1 == static_cast<int>(sc.Gamma.n_cols)) {
+    sc.WGamma = sc.W_u * sc.Gamma;
+  } else {
+    sc.WGamma = sc.W_u * sc.Gamma.cols(s0, s1 - 1);
+  }
+}
+
+// WGamma for one situation of the loaded unit, its m rows from unit row r,
+// at every draw: W_u(r:r+m-1, :) Gamma in a single dgemm.
+inline void mxl_situation_wgamma(MxlUnitScratch& sc, const int r, const int m) {
+  sc.s0 = 0;
+  sc.wg_r0 = r;
+  sc.W_t = sc.W_u.rows(r, r + m - 1);
+  sc.WGamma = sc.W_t * sc.Gamma;
+}
+
+// Logit probabilities of situation t at draw s, in the leading m + o entries
+// of sc.P: inside utilities base_util + WGamma(rows of t, s), with the
+// outside option (V = 0) in slot 0 when present. Leaves the max-shifted
+// utilities in sc.V and returns their log-sum-exp, so that log P_ts(a) =
+// sc.V(a) - log_denom: exact wherever the utilities are finite, while P(a)
+// itself turns subnormal beyond a utility gap of about 708 and zero beyond
+// about 745. V and P only grow: sized per situation, they would bounce
+// between the heap and Armadillo's 16-element local storage whenever
+// consecutive situations straddle that size, which the draw-major loop of
+// mxl_unit_simulate() makes happen at every draw. WGamma must hold
+// situation t at draw s: the batch containing s (mxl_batch_wgamma()), or
+// t's own rows at every draw (mxl_situation_wgamma()).
 inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
                                   const int t, const int s) {
   const int first = ud.row_off[t];
   const int m = ud.row_off[t + 1] - first;          // inside alternatives
   const int o = ud.include_outside_option ? 1 : 0;  // outside option: slot 0
-  sc.V.set_size(m + o);
+  const int n = m + o;
+  if (static_cast<int>(sc.V.n_elem) < n) {
+    sc.V.set_size(n);
+    sc.P.set_size(n);
+  }
   double* v = sc.V.memptr();
   if (o) v[0] = 0.0;
   const double* bu = ud.base_util.memptr() + first;
-  const double* wg = sc.WGamma.colptr(s) + (first - sc.r0);
+  const double* wg =
+      sc.WGamma.colptr(s - sc.s0) + (first - sc.r0 - sc.wg_r0);
   for (int a = 0; a < m; ++a) v[o + a] = bu[a] + wg[a];
-  return stable_softmax(sc.V, sc.P);
+  return stable_softmax_n(v, sc.P.memptr(), n);
 }
 
-// Draw loop of the loaded unit: lambda_s = sum_t log P_ts(j_t), each term the
-// chosen shifted utility minus the log-sum-exp from mxl_situation_probs()
-// (the multinomial logit kernels' V_choice - log_denom), never the log of a
-// probability; and, when `residuals`, the UNWEIGHTED residuals DiffW (R x S):
-// over the rows of situation t, column s holds 1{r = j_t} - P_ts(r) for the
-// inside alternatives (the outside option carries no parameter, so its slot
-// is dropped). Fills omega_s = exp(lambda_s - lse) and returns
-// lse = log sum_s exp(lambda_s), which is finite whenever the utilities are.
+// Draw loop of the loaded unit, in sc.nb batches of draws: lambda_s =
+// sum_t log P_ts(j_t), each term the chosen shifted utility minus the
+// log-sum-exp from mxl_situation_probs() (the multinomial logit kernels'
+// V_choice - log_denom), never the log of a probability. With `score`, each
+// batch's UNWEIGHTED residuals DiffW (R x B; over the rows of situation t,
+// column s holds 1{r = j_t} - P_ts(r) for the inside alternatives, the
+// outside option carrying no parameter) are folded into the score's pieces
+// before the next batch overwrites them:
+//   BW(:, batch) = W_u' DiffW                       (unweighted, K_w x B)
+//   d_bar = sum_s omega_s DiffW(:, s): for a unit in one batch, from omega
+//     after the loop, exactly as without batches; across batches, by a
+//     streaming log-sum-exp: the batch's weights exp(lambda_s - ref) are
+//     relative to the running log-sum-exp `ref` of lambda over the batches
+//     so far, d_bar is rescaled by exp(ref_old - ref) as ref rises, and at
+//     the end by exp(ref - lse). Batching changes d_bar only by rounding.
+// Fills omega_s = exp(lambda_s - lse) and returns lse = log sum_s
+// exp(lambda_s), which is finite whenever the utilities are.
 inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
-                                const bool residuals) {
-  const int S = sc.Gamma.n_cols;
+                                const bool score) {
+  const int S = ud.S;
+  const int K_w = ud.W.n_cols;
   const int o = ud.include_outside_option ? 1 : 0; // slot of 1st inside alt
+  const bool stream = score && sc.nb > 1;          // fold d_bar batch by batch
   sc.lambda.zeros(S);
-  if (residuals) sc.DiffW.set_size(sc.R, S);
-  for (int t = sc.t0; t < sc.t1; ++t) {
-    const int r = ud.row_off[t] - sc.r0;             // first row of t in unit
-    const int m = ud.row_off[t + 1] - ud.row_off[t]; // inside alternatives
-    int chosen_alt = static_cast<int>(ud.choice_idx[t]); // validated serially
-    if (!ud.include_outside_option) chosen_alt -= 1;      // slot in P
-    for (int s = 0; s < S; ++s) {
-      const double log_denom = mxl_situation_probs(ud, sc, t, s);
-      sc.lambda(s) += sc.V(chosen_alt) - log_denom;
-      if (residuals) {
-        sc.DiffW.col(s).subvec(r, r + m - 1) = -sc.P.tail(m);
-        if (chosen_alt >= o) sc.DiffW(r + chosen_alt - o, s) += 1.0;
+  if (score) sc.BW.set_size(K_w, S);
+  double ref = -arma::datum::inf; // running log-sum-exp of lambda (stream)
+  for (int k = 0; k < sc.nb; ++k) {
+    // Batch k: draws [s0, s1), sizes differing by at most one.
+    const int s0 = static_cast<int>(static_cast<long long>(k) * S / sc.nb);
+    const int s1 = static_cast<int>(static_cast<long long>(k + 1) * S / sc.nb);
+    mxl_batch_wgamma(sc, s0, s1);
+    if (score) sc.DiffW.set_size(sc.R, s1 - s0);
+    // Draws outer, situations inner: each column of the batch is swept in
+    // row order (a situation-major sweep jumps R rows between draws of a
+    // long panel), and lambda_s still sums the situations in order.
+    for (int s = s0; s < s1; ++s) {
+      for (int t = sc.t0; t < sc.t1; ++t) {
+        const int r = ud.row_off[t] - sc.r0;             // first row of t in unit
+        const int m = ud.row_off[t + 1] - ud.row_off[t]; // inside alternatives
+        int chosen_alt = static_cast<int>(ud.choice_idx[t]); // validated serially
+        if (!ud.include_outside_option) chosen_alt -= 1;      // slot in P
+        const double log_denom = mxl_situation_probs(ud, sc, t, s);
+        sc.lambda(s) += sc.V(chosen_alt) - log_denom;
+        if (score) {
+          sc.DiffW.col(s - s0).subvec(r, r + m - 1) =
+              -sc.P.subvec(o, o + m - 1);
+          if (chosen_alt >= o) sc.DiffW(r + chosen_alt - o, s - s0) += 1.0;
+        }
       }
     }
+    if (!score) continue;
+    if (K_w > 0) { // BW(:, s0:s1-1) = W_u' DiffW: one dgemm, written in place
+      arma::mat BW_b(sc.BW.colptr(s0), K_w, s1 - s0, false, true);
+      BW_b = sc.W_u.t() * sc.DiffW;
+    }
+    if (!stream) continue;
+    // Fold the batch into d_bar, relative to the running log-sum-exp.
+    const double* lambda_b = sc.lambda.memptr() + s0;
+    const double ref_new = log_add_exp(ref, log_sum_exp_n(lambda_b, s1 - s0));
+    if (ref_new == -arma::datum::inf) {  // no draw with positive weight yet
+      sc.d_bar.zeros(sc.R);
+    } else {
+      sc.w_b.set_size(s1 - s0);
+      for (int j = 0; j < s1 - s0; ++j) sc.w_b[j] = std::exp(lambda_b[j] - ref_new);
+      if (ref == -arma::datum::inf) {    // first batch with positive weight
+        sc.d_bar = sc.DiffW * sc.w_b;
+      } else {
+        sc.d_bar *= std::exp(ref - ref_new);
+        sc.d_bar += sc.DiffW * sc.w_b;
+      }
+    }
+    ref = ref_new;
   }
-  const double lse = logSumExp(sc.lambda);
+  const double lse = log_sum_exp_n(sc.lambda.memptr(), S); // = logSumExp()
   sc.omega = arma::exp(sc.lambda - lse);
+  if (score) {
+    if (!stream) {                       // one batch: the draw weights directly
+      sc.d_bar = sc.DiffW * sc.omega;    // R x 1, one dgemv
+    } else if (!std::isfinite(lse)) {    // no score, as omega has none
+      sc.d_bar.fill(arma::datum::nan);
+    } else if (ref != lse) {             // re-reference: a factor within
+      sc.d_bar *= std::exp(ref - lse);   // rounding of one
+    }
+  }
   return lse;
 }
 
 // Score of the loaded unit, s_u = sum_s omega_s sum_t g_uts, by the BLAS-3
-// collapse of the residuals. Utilities are linear in beta, mu and the ASC
+// collapse of the residuals, from the pieces mxl_unit_simulate(score = true)
+// folded batch by batch. Utilities are linear in beta, mu and the ASC
 // dummies, so those blocks need only d_bar = DiffW omega; the Cholesky block
 // couples the residuals of draw s with eta_s:
 //   beta : X_u' d_bar
@@ -304,7 +432,6 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
   const int K_w = ud.W.n_cols;
   const int r1 = sc.r0 + sc.R - 1;
   score.zeros(ud.n_params);
-  sc.d_bar = sc.DiffW * sc.omega; // R x 1, one dgemv
 
   // Beta block
   sc.X_u = ud.X.rows(sc.r0, r1);
@@ -317,8 +444,7 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
           (sc.W_u.t() * sc.d_bar) % par.dmu_final_dmu;
     }
 
-    // L block: the only block with per-draw eta coupling
-    sc.BW = sc.W_u.t() * sc.DiffW;     // K_w x S, one dgemm
+    // L block: the only block with per-draw eta coupling; BW = W_u' DiffW
     sc.BW %= sc.Dgamma1;               // Dgamma1 = 1 for normal rows
     sc.omega_t = sc.omega.t();
     sc.BW.each_row() %= sc.omega_t;    // draw weights
@@ -380,6 +506,9 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
 //'   each decision maker (panel likelihood); situations must be sorted by
 //'   decision maker. NULL (default): every choice situation is its own unit
 //'   (cross-sectional likelihood).
+//' @param draw_batch Integer; \code{0} (default) forms each decision maker's
+//'   draws in batches sized to a per-thread memory budget, a positive value
+//'   caps the number of draws per batch (for tests).
 //' @returns List with loglikelihood and gradient evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -413,7 +542,8 @@ Rcpp::List mxl_loglik_gradient_parallel(
     const bool rc_correlation = true, const bool rc_mean = false,
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue) {
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0) {
 
   // Basic dimensions
   const int N = M.size();
@@ -445,7 +575,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
   arma::uvec alt_idx0 = alt_idx - 1; // 0-based
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
   const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, Sdraw); // primary thread, before any scratch
+  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
 
   // Pre-compute base utility for all individuals (single BLAS call)
   // base_util = X*beta + W*mu_final + delta, computed once for all rows
@@ -472,7 +602,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
   }
 
   const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen, par, rc_dist, n_params, Sdraw,
+                       eta_draws, halton_gen, par, rc_dist, n_params, Sdraw, draw_batch,
                        use_generate, rc_correlation, rc_mean, use_asc,
                        include_outside_option};
   const double log_S = std::log(static_cast<double>(Sdraw));
@@ -496,7 +626,7 @@ Rcpp::List mxl_loglik_gradient_parallel(
 #pragma omp for schedule(dynamic)
 #endif
     for (int u = 0; u < n_units; ++u) {
-      mxl_unit_load(ud, u, sc);
+      mxl_unit_load(ud, u, sc, 2);
       const double lse = mxl_unit_simulate(ud, sc, true); // log sum_s exp(lambda_s)
       mxl_unit_score(ud, sc, s_u);
 
@@ -633,6 +763,9 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //'   each decision maker (panel likelihood); situations must be sorted by
 //'   decision maker. NULL (default): every choice situation is its own unit
 //'   (cross-sectional likelihood).
+//' @param draw_batch Integer; \code{0} (default) forms each decision maker's
+//'   draws in batches sized to a per-thread memory budget, a positive value
+//'   caps the number of draws per batch (for tests).
 //' @returns Hessian evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -665,7 +798,8 @@ arma::mat mxl_hessian_parallel(
     const bool rc_correlation = true, const bool rc_mean = false,
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue) {
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0) {
   // Basic dimensions
   const int N = M.size();
   const int K_x = X.n_cols;
@@ -702,7 +836,7 @@ arma::mat mxl_hessian_parallel(
   arma::uvec alt_idx0 = alt_idx - 1;
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
   const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, Sdraw); // primary thread, before any scratch
+  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util_h = compute_base_util_mxl(X, W, par.beta, par.mu_final,
@@ -733,7 +867,7 @@ arma::mat mxl_hessian_parallel(
   }
 
   const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util_h, row_off, off,
-                       eta_draws, halton_gen_h, par, rc_dist, n_params, Sdraw,
+                       eta_draws, halton_gen_h, par, rc_dist, n_params, Sdraw, draw_batch,
                        use_generate_h, rc_correlation, rc_mean, use_asc,
                        include_outside_option};
 
@@ -812,7 +946,7 @@ arma::mat mxl_hessian_parallel(
       const double w_u = weights[off[u]]; // unit weight
 
       // --- Pass 1: posterior draw weights omega_s of the unit's choices ---
-      mxl_unit_load(ud, u, sc, true, true);
+      mxl_unit_load(ud, u, sc, 1, true, true);
       const double lse = mxl_unit_simulate(ud, sc, false);
       // lse is finite whenever the utilities are (log-space probabilities),
       // so this skips only a unit whose utilities overflowed, where its
@@ -831,10 +965,15 @@ arma::mat mxl_hessian_parallel(
       opg_pz.zeros();
       g_bar.zeros();
 
-      // --- Pass 2: situations t (outer) x draws s (inner) ---
+      // --- Pass 2: situations t (outer) x draws s (inner). A unit in one
+      // draw batch reuses pass 1's WGamma; for a longer one each situation's
+      // rows of W_u Gamma_u (m_t x S) are formed in turn, so the thread's
+      // memory grows with the largest choice set rather than the unit.
+      const bool one_batch = sc.nb == 1;
       for (int t = sc.t0; t < sc.t1; ++t) {
         const int m_t = row_off[t + 1] - row_off[t];
         const int num_choices = include_outside_option ? m_t + 1 : m_t;
+        if (!one_batch) mxl_situation_wgamma(sc, row_off[t] - sc.r0, m_t);
 
         // chosen alternative index (validated serially above)
         int chosen_alt = choice_idx[t];
@@ -1133,6 +1272,9 @@ arma::mat mxl_hessian_parallel(
 //'   each decision maker (panel likelihood); situations must be sorted by
 //'   decision maker. NULL (default): every choice situation is its own unit
 //'   (cross-sectional likelihood).
+//' @param draw_batch Integer; \code{0} (default) forms each decision maker's
+//'   draws in batches sized to a per-thread memory budget, a positive value
+//'   caps the number of draws per batch (for tests).
 //' @returns n_params x n_params PSD matrix representing the observed information
 //'   matrix estimated by the outer product of gradients (same sign convention
 //'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -1168,7 +1310,8 @@ arma::mat mxl_bhhh_parallel(
     const bool rc_correlation = true, const bool rc_mean = false,
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue) {
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0) {
 
   // Basic dimensions
   const int N = M.size();
@@ -1199,7 +1342,7 @@ arma::mat mxl_bhhh_parallel(
   arma::uvec alt_idx0 = alt_idx - 1; // 0-based
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
   const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, Sdraw); // primary thread, before any scratch
+  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
@@ -1223,7 +1366,7 @@ arma::mat mxl_bhhh_parallel(
   }
 
   const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen_b, par, rc_dist, n_params, Sdraw,
+                       eta_draws, halton_gen_b, par, rc_dist, n_params, Sdraw, draw_batch,
                        use_generate_b, rc_correlation, rc_mean, use_asc,
                        include_outside_option};
 
@@ -1244,7 +1387,7 @@ arma::mat mxl_bhhh_parallel(
 #pragma omp for schedule(dynamic)
 #endif
     for (int u = 0; u < n_units; ++u) {
-      mxl_unit_load(ud, u, sc);
+      mxl_unit_load(ud, u, sc, 2);
       mxl_unit_simulate(ud, sc, true);
       mxl_unit_score(ud, sc, s_u);
       local_bhhh += weights[off[u]] * s_u * s_u.t();
@@ -1279,7 +1422,8 @@ arma::mat mxl_scores_parallel(
     const bool rc_correlation = true, const bool rc_mean = false,
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue) {
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0) {
 
   // Basic dimensions
   const int N = M.size();
@@ -1309,7 +1453,7 @@ arma::mat mxl_scores_parallel(
   arma::uvec alt_idx0 = alt_idx - 1; // 0-based
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
   const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, Sdraw); // primary thread, before any scratch
+  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
@@ -1333,7 +1477,7 @@ arma::mat mxl_scores_parallel(
   }
 
   const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen_s, par, rc_dist, n_params, Sdraw,
+                       eta_draws, halton_gen_s, par, rc_dist, n_params, Sdraw, draw_batch,
                        use_generate_s, rc_correlation, rc_mean, use_asc,
                        include_outside_option};
 
@@ -1353,7 +1497,7 @@ arma::mat mxl_scores_parallel(
 #pragma omp for schedule(dynamic)
 #endif
     for (int u = 0; u < n_units; ++u) {
-      mxl_unit_load(ud, u, sc);
+      mxl_unit_load(ud, u, sc, 2);
       mxl_unit_simulate(ud, sc, true);
       mxl_unit_score(ud, sc, s_u);
       scores.row(u) = s_u.t();
@@ -1385,7 +1529,8 @@ Rcpp::List mxl_conditional_tastes_parallel(
     const bool rc_correlation = true, const bool rc_mean = false,
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue) {
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0) {
 
   // Basic dimensions
   const int N = M.size();
@@ -1415,7 +1560,7 @@ Rcpp::List mxl_conditional_tastes_parallel(
   arma::uvec alt_idx0 = alt_idx - 1; // 0-based
   const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
   const std::vector<int> row_off(S_prefix.begin(), S_prefix.end());
-  check_unit_scratch(row_off, off, Sdraw); // primary thread, before any scratch
+  check_unit_scratch(row_off, off, K_x, K_w); // primary thread, before any scratch
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util_mxl(X, W, par.beta, par.mu_final,
@@ -1439,7 +1584,7 @@ Rcpp::List mxl_conditional_tastes_parallel(
   }
 
   const MxlUnitData ud{X, W, alt_idx0, choice_idx, base_util, row_off, off,
-                       eta_draws, halton_gen_c, par, rc_dist, n_params, Sdraw,
+                       eta_draws, halton_gen_c, par, rc_dist, n_params, Sdraw, draw_batch,
                        use_generate_c, rc_correlation, rc_mean, use_asc,
                        include_outside_option};
   const double na = NA_REAL; // read on the master thread
@@ -1461,7 +1606,7 @@ Rcpp::List mxl_conditional_tastes_parallel(
 #pragma omp for schedule(dynamic)
 #endif
     for (int u = 0; u < n_units; ++u) {
-      mxl_unit_load(ud, u, sc, false);
+      mxl_unit_load(ud, u, sc, 1, false);
       const double lse = mxl_unit_simulate(ud, sc, false);
       if (!std::isfinite(lse)) {
         taste_mean.col(u).fill(na);

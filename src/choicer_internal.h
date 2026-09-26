@@ -398,6 +398,63 @@ inline double stable_softmax(arma::vec& V, arma::vec& P) {
 }
 
 // ----------------------------------------------------------------------------
+// stable_softmax() and logSumExp() on raw arrays, for loops that keep one
+// buffer at the largest size they need. The operations are Armadillo's, in
+// Armadillo's order: the paired max scan of op_max::direct_max, the shift and
+// exp, the two-accumulator sum of arrayops::accumulate, the division. The
+// results are therefore bitwise those of stable_softmax() and logSumExp()
+// (unless Armadillo is built with -ffast-math, where it sums with a single
+// accumulator), without a vector object per call and without the temporary
+// that accu() makes of an exp() expression when Armadillo uses OpenMP.
+// ----------------------------------------------------------------------------
+inline double direct_max_n(const double* x, const int n) {
+  double max_i = -arma::datum::inf, max_j = -arma::datum::inf;
+  int i, j;
+  for (i = 0, j = 1; j < n; i += 2, j += 2) {
+    if (x[i] > max_i) max_i = x[i];
+    if (x[j] > max_j) max_j = x[j];
+  }
+  if (i < n && x[i] > max_i) max_i = x[i];
+  return (max_i > max_j) ? max_i : max_j;
+}
+
+// stable_softmax() of the n >= 1 entries of v (shifted in place), with the
+// probabilities in p; returns the log of the denominator.
+inline double stable_softmax_n(double* v, double* p, const int n) {
+  const double v_max = direct_max_n(v, n);
+  for (int i = 0; i < n; ++i) v[i] -= v_max;
+  for (int i = 0; i < n; ++i) p[i] = std::exp(v[i]);
+  double acc1 = 0.0, acc2 = 0.0;
+  int j;
+  for (j = 1; j < n; j += 2) {
+    acc1 += p[j - 1];
+    acc2 += p[j];
+  }
+  if (j - 1 < n) acc1 += p[j - 1];
+  const double sum = acc1 + acc2;
+  for (int i = 0; i < n; ++i) p[i] /= sum;
+  return std::log(sum);
+}
+
+// logSumExp() of the n entries of x, with its handling of empty input, NaN
+// and infinities.
+inline double log_sum_exp_n(const double* x, const int n) {
+  if (n == 0) return -arma::datum::inf;
+  const double a = direct_max_n(x, n);
+  if (std::isnan(a)) return arma::datum::nan;
+  if (a == arma::datum::inf) return arma::datum::inf;
+  if (a == -arma::datum::inf) return -arma::datum::inf;
+  double acc1 = 0.0, acc2 = 0.0;
+  int j;
+  for (j = 1; j < n; j += 2) {
+    acc1 += std::exp(x[j - 1] - a);
+    acc2 += std::exp(x[j] - a);
+  }
+  if (j - 1 < n) acc1 += std::exp(x[j - 1] - a);
+  return a + std::log(acc1 + acc2);
+}
+
+// ----------------------------------------------------------------------------
 // Delta-block (ASC) gradient scatter, in inside-alternative space:
 // diff_inside has one entry per inside alternative (callers with an outside
 // option pass diff_vec.subvec(1, m_i), a zero-copy subview). When there is no
