@@ -326,21 +326,35 @@ mxlp_long_panel_fixture <- function(seed = 211, T_long = 150L, S = 12L) {
 # alternative of one situation sits `gap` utils below its competitors, through
 # the first fixed covariate. The situation is the first one of an interior
 # multi-situation decision maker; `edge_situation` and `edge_unit` locate it.
-mxlp_edge_fixture <- function(gap, panel = TRUE) {
+# `layout`: an inside alternative is chosen, with the outside option present
+# ("inside") or absent ("no_outside"), or the outside option (utility 0) is
+# chosen while every inside alternative sits `-gap` utils above it
+# ("outside").
+mxlp_edge_fixture <- function(gap, panel = TRUE,
+                              layout = c("inside", "no_outside", "outside")) {
+  layout <- match.arg(layout)
   fx <- mxlp_fixture("edge", seed = 301, rc_dist = c(0L, 1L),
                      rc_correlation = TRUE, rc_mean = TRUE, use_asc = TRUE,
-                     include_outside_option = TRUE, W_layout = "row",
-                     weight_type = "person", U = 6L, J = 3L, S = 10L)
+                     include_outside_option = layout != "no_outside",
+                     W_layout = "row", weight_type = "person", U = 6L, J = 3L,
+                     S = 10L)
   fx$theta[1L] <- 0.5
   u <- fx$probe_units[2L]
   t <- sum(fx$Ti[seq_len(u - 1L)]) + 1L
   if (!panel) fx <- mxlp_cross_section(fx)
   row_off <- c(0L, cumsum(fx$M))
   rows <- (row_off[t] + 1L):row_off[t + 1L]
-  if (fx$choice_idx[t] == 0L) fx$choice_idx[t] <- 1L
-  fx$X[rows, 1L] <- 0
-  fx$X[rows[fx$choice_idx[t]], 1L] <- gap / fx$theta[1L]
-  fx$name <- sprintf("gap %g, %s", gap, if (panel) "panel" else "cross-section")
+  if (layout == "outside") {
+    fx$choice_idx[t] <- 0L
+    fx$X[rows, 1L] <- -gap / fx$theta[1L]
+  } else {
+    if (fx$choice_idx[t] == 0L) fx$choice_idx[t] <- 1L
+    fx$X[rows, 1L] <- 0
+    fx$X[rows[fx$choice_idx[t]], 1L] <- gap / fx$theta[1L]
+  }
+  fx$name <- sprintf("gap %g, %s%s", gap,
+                     if (panel) "panel" else "cross-section",
+                     if (layout == "inside") "" else paste0(", ", layout))
   fx$edge_situation <- t
   fx$edge_unit <- if (panel) u else t
   fx

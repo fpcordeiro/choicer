@@ -281,11 +281,18 @@ To avoid numerical overflow/underflow, the implementation uses:
    log-probability is first *summed across a decision maker's situations*,
    $\lambda_{ns} = \sum_{t=1}^{T_n} \log P_{ntj_{nt}}^s$, and only then does log-sum-exp run
    over draws $s$ to obtain $\ell_n(\theta) = \mathrm{LSE}_s(\lambda_{n\cdot}) - \log S$.
-   Products of many situation probabilities are therefore never formed outside log space:
-   $\lambda_{ns}$ and $\ell_n(\theta)$ stay finite whenever at least one draw gives the
-   unit's choices positive probability, even when the product over situations falls far
-   below the smallest double; accuracy is then limited by the per-draw probabilities
-   $P_{nt}^s$, which become subnormal beyond a utility gap of about 708.
+
+3. **Log-probability of the chosen alternative**: each term of $\lambda_{ns}$ is formed
+   directly in log space, as the chosen utility minus the log-sum-exp of the choice set,
+   $$
+   \log P_{ntj}^s = V_{ntj}^s - \max_k V_{ntk}^s - \log \sum_k \exp\left(V_{ntk}^s - \max_k V_{ntk}^s\right),
+   $$
+   never as the logarithm of $P_{ntj}^s$, which turns subnormal beyond a utility gap of
+   about 708 and underflows to zero beyond about 745 (the multinomial logit kernels use
+   the same form). Neither a single choice probability nor a product of many is ever
+   formed outside log space, so $\lambda_{ns}$ and $\ell_n(\theta)$ are finite, and exact,
+   whenever the utilities are finite, however poorly the parameter vector fits the
+   observed choices.
 
 ### 2.5 Statistical Properties of the Finite-Draw Criterion
 
@@ -720,34 +727,47 @@ is **not** linear in $P_{is}$, so it cannot go into a linear buffer. Instead, to
 with the OPG term $\sum_s P_{is} g_{is} g_{is}^\top$, it is handled by reformulating both
 weighted outer-product sums as a single BLAS level-3 matrix multiply.
 
-**Identity A (OPG batching).** Define the $n_\text{params} \times S$ matrix $G$ with columns
+**Identity A (OPG batching).** With the normalized draw weights
+$\omega_{is} = P_{is} / \hat P_i$, $\hat P_i = \sum_s P_{is}$, and the weighted mean score
+$g_i = \sum_s \omega_{is} g_{is}$, define the $n_\text{params} \times S$ matrix $G$ with
+columns
 
 $$
-G_{[:,s]} = \sqrt{P_{is}}\; g_{is}.
+G_{[:,s]} = \sqrt{\omega_{is}}\; (g_{is} - g_i).
 $$
 
 Then
 
 $$
-\sum_{s=1}^{S} P_{is}\, g_{is} g_{is}^\top = G G^\top.
+\sum_{s=1}^{S} \omega_{is}\, g_{is} g_{is}^\top - g_i g_i^\top = G G^\top.
 $$
 
-*Proof.* $G G^\top = \sum_s (\sqrt{P_{is}}\, g_{is})(\sqrt{P_{is}}\, g_{is})^\top = \sum_s P_{is}\, g_{is} g_{is}^\top$. The identity is exact in real arithmetic and requires only $P_{is} \geq 0$, which holds because $P_{is}$ is a softmax probability (guaranteed by `stable_softmax`).
+*Proof.* $G G^\top = \sum_s \omega_{is} (g_{is} - g_i)(g_{is} - g_i)^\top = \sum_s
+\omega_{is} g_{is} g_{is}^\top - g_i g_i^\top$, because $\sum_s \omega_{is} = 1$. The
+identity requires only $\omega_{is} \geq 0$, which holds because $P_{is}$ is a softmax
+probability (guaranteed by `stable_softmax`). It folds the OPG term and the final
+$- g_i g_i^\top$ of the Hessian (§4.4.5) into one product, and the centered form is
+also the numerically stable one: the weights sum to one only to the absolute precision of
+their log-scale arguments, and the uncentered difference multiplies that error by
+$g_{is} g_{is}^\top$, which is large when the chosen alternative sits far below its
+competitors.
 
 **Identity B (sum-Pz outer-product batching).** Define the $n_\text{params} \times S$
 matrix $F$ with columns
 
 $$
-F_{[:,s]} = \sqrt{P_{is}}\;\bigl[\mathrm{sum\_Pz\_c}_{is};\;\mathrm{sum\_Pz\_d}_{is}\bigr].
+F_{[:,s]} = \sqrt{\omega_{is}}\;\bigl[\mathrm{sum\_Pz\_c}_{is};\;\mathrm{sum\_Pz\_d}_{is}\bigr].
 $$
 
 Then
 
 $$
-\sum_{s=1}^{S} P_{is}\;\mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top = F F^\top.
+\sum_{s=1}^{S} \omega_{is}\;\mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top = F F^\top,
 $$
 
-The proof is identical to Identity A.
+by the same expansion without the centering. The linear buffers of §4.4.2 are likewise
+accumulated with $\omega_{is}$ in place of $P_{is}$, which divides them by $\hat P_i$ once
+and for all.
 
 **Combined BLAS-3 form.** Concatenating $G$ and $F$ into $[G \mid F] \in
 \mathbb{R}^{n_\text{params} \times 2S}$ and forming one matrix product gives
@@ -802,9 +822,9 @@ without changing any result; the per-alternative form is kept for auditability.
 
 #### 4.4.5 Final Assembly and Symmetry
 
-After the $S$-loop for individual $i$, define $\hat{P}_i = \sum_s P_{is}$ and let
-$\mathrm{opg\_pz} = [G \mid F][G \mid F]^\top$. The numerator $\sum_s P_{is}(g_{is}
-g_{is}^\top + H_{is})$ is assembled block-by-block:
+After the $S$-loop for individual $i$, let $\mathrm{opg\_pz} = [G \mid F][G \mid
+F]^\top$, with the weights of §4.4.3. The Hessian $\sum_s \omega_{is}(H_{is} + (g_{is} -
+g_i)(g_{is} - g_i)^\top)$ is assembled block-by-block:
 
 $$
 \mathrm{hess\_t1}\big|_{\mathrm{cc}} =
@@ -825,14 +845,13 @@ $$
 $$
 
 The cd block is rectangular ($K_c \times J_d$) and not symmetric, so both the cd and dc
-sub-matrices are written explicitly into `hess_t1`. Finalization uses the normalized draw
-weight $\omega_{is} \equiv P_{is}/\hat P_i$ in place of a separate division by $\hat P_i$,
-matching §4.5's Louis-identity assembly:
+sub-matrices are written explicitly into `hess_t1`. The normalized draw weight
+$\omega_{is} \equiv P_{is}/\hat P_i$ replaces a separate division by $\hat P_i$, and the
+centered $G$ of Identity A already carries $- g_i g_i^\top$, matching §4.5's
+Louis-identity assembly:
 
 $$
-g_i = \sum_{s=1}^S \omega_{is}\, g_i^s,
-\qquad
-H_i = \mathrm{hess\_t1} - g_i g_i^\top,
+H_i = \mathrm{hess\_t1},
 \qquad
 \mathrm{local\_hess} \mathrel{+}= w_i H_i.
 $$
@@ -841,7 +860,7 @@ $$
 full-matrix approach: `buf_Pzz_cc` and `buf_diff_HV_cc` are accumulated as full symmetric
 matrices (the existing per-alternative loop writes both $(r, p)$ and $(p, r)$ positions
 for off-diagonal $L$-$L$ entries in `sum_diff_H_V_cc`, and this is retained unchanged),
-and the outer product $g_i g_i^\top$ is computed in full. An alternative upper-triangle-only
+and $G G^\top$ is formed in full. An alternative upper-triangle-only
 strategy — accumulating only the upper triangle in the cc buffers and mirroring once
 before the OpenMP critical merge — would halve the work for those buffers. It was deferred
 because the asymmetric cd block requires explicit transposition regardless, and the
@@ -891,32 +910,39 @@ therefore runs two passes per unit, sharing the same draw loop that computes $\o
     situation's $S$-loop — situations' outer products are added, never combined before
     squaring: $\sum_t F_t F_t^\top = \sum_t \sum_s \omega_{ns}\,\mathrm{sum\_Pz}_{nts}\,
     \mathrm{sum\_Pz}_{nts}^\top$.
-  - **Identity A** (`G_stash`, the score outer product): column $s$ instead *accumulates*
-    $g_{nts}$ across every situation in the unit, and only after the situation loop ends is
-    it scaled by $\sqrt{\omega_{ns}}$ and squared once: $G G^\top = \sum_s
-    \omega_{ns}\bigl(\sum_t g_{nts}\bigr)\bigl(\sum_t g_{nts}\bigr)^\top = \sum_s
-    \omega_{ns}\, g_{ns} g_{ns}^\top$ — the situation sum must happen *before* squaring
-    here, the opposite order from Identity B, because it is the person's total score that
-    enters the outer product, not each situation's on its own.
   - $\bar g_n$ (`g_bar`) accumulates $\omega_{ns}\, g_{nts}$ over every $(t,s)$ pair, the
     same double sum as §3.5's $\bar g_n = \sum_s \omega_{ns} g_{ns}$.
+  - **Identity A** (`G_stash`, the score outer product): column $s$ instead *accumulates*
+    $g_{nts}$ across every situation in the unit, and only after the situation loop ends is
+    it centered at $\bar g_n$, scaled by $\sqrt{\omega_{ns}}$ and squared once:
+    $G G^\top = \sum_s \omega_{ns} (g_{ns} - \bar g_n)(g_{ns} - \bar g_n)^\top$ with
+    $g_{ns} = \sum_t g_{nts}$ — the situation sum must happen *before* squaring here, the
+    opposite order from Identity B, because it is the person's total score that enters the
+    outer product, not each situation's on its own. Since the $\omega_{ns}$ sum to one,
+    this is the Louis identity's $\sum_s \omega_{ns} g_{ns} g_{ns}^\top - \bar g_n \bar
+    g_n^\top$, computed without its cancellation: the weights sum to one only to the
+    absolute precision of $\lambda_{ns}$ (about $10^{-11}$ at $\lambda_{ns} = -10^5$), and
+    the uncentered form multiplies that error by $g_{ns} g_{ns}^\top$, large for a choice
+    far below its competitors.
 
 Final assembly mirrors §4.4.5's block-by-block combination (`hess_t1 = opg_pz - buf_Pzz +
-buf_diff_HV`, cc/cd/dc/dd), then closes with the Louis identity,
-`local_hess += w_n * (hess_t1 - g_bar * g_bar.t())` — no $/\hat P_n$ step, because
-$\omega_{ns}$ is already a normalized weight (§2.6), unlike the raw $P_{is}$ that §4.4.5's
-single-situation formula divides by. Setting $T_n \equiv 1$ collapses pass 2 to a single
+buf_diff_HV`, cc/cd/dc/dd), whose centered Identity A already carries the Louis identity's
+$-\bar g_n \bar g_n^\top$, and closes with `local_hess += w_n * hess_t1` — no $/\hat P_n$
+step, because $\omega_{ns}$ is already a normalized weight (§2.6), unlike the raw $P_{is}$
+that §4.4.5's single-situation formula divides by. Setting $T_n \equiv 1$ collapses pass 2 to a single
 situation per unit: `F_stash` (holding $\sqrt{\omega_{ns}}\,\mathrm{sum\_Pz}_{nts}$) and
 `G_stash` (holding $\sqrt{\omega_{ns}}\, g_{nts}$) remain different vectors, but with only
 one situation to loop over, F's per-situation *overwrite* and G's cross-situation
 *accumulate* produce the same result, and the two-pass structure reduces exactly to §4.4's
 single-situation accumulation.
 
-**The zero-likelihood guard.** Pass 1 skips a unit only when its log-sum-exp is
-non-finite, `!std::isfinite(lse)` — i.e. only when every draw gives that unit's choices
-zero simulated probability — in place of the former $\hat P_i^{\mathrm{sum}} \le 10^{-12}$
-threshold of §5.4, which could also discard a unit that was merely very poorly fit under
-the current parameter vector. See §5.4 and `NEWS.md`.
+**The non-finite-likelihood guard.** Pass 1 skips a unit only when its log-sum-exp is
+non-finite, `!std::isfinite(lse)`. Because every $\log P_{ntj}^s$ is formed in log space
+(§2.4), `lse` is finite whenever the unit's utilities are, however poorly the unit is fit;
+the guard fires only for utilities that overflow, where the unit's log-likelihood is
+undefined. It replaces the former $\hat P_i^{\mathrm{sum}} \le 10^{-12}$ threshold of
+§5.4, which could also discard a unit that was merely very poorly fit under the current
+parameter vector. See §5.4 and `NEWS.md`.
 
 *Code reference: `mxl_hessian_parallel()` in
 [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp).*
@@ -1008,22 +1034,26 @@ The implementation parallelizes over individuals using OpenMP:
    negated objective by $10^{10}$ and a zero gradient, allowing the optimizer's line
    search to backtrack; isolated non-finite gradient entries are zeroed. The Hessian
    contributes a likelihood unit — decision maker $n$ under `person_col`, choice situation
-   $i$ otherwise (§1.6, §4.5) — only when its log-sum-exp $\mathrm{lse}$ is finite, i.e.
-   only when at least one draw gives its observed choices nonzero simulated probability;
-   a unit whose every draw underflows to exactly zero is skipped. (Earlier releases skipped
-   a situation whenever $\widehat P_i^{\mathrm{sum}} = \sum_s P_{ij_i}^s \le 10^{-12}$,
-   which could also discard a situation that was merely very poorly fit rather than
-   genuinely zero-probability, biasing the reported Hessian and its standard errors; see
-   `NEWS.md`.) Relatedly, the posterior draw weights $\omega_{ns}$ (§2.6) that both the
-   score (§3.5) and the Hessian (§4.5) are built from are computed in log space via
-   log-sum-exp rather than as a ratio of raw probabilities, so they stay finite whenever at
-   least one draw gives the unit's choices positive probability, even when the product over
-   situations falls far below the smallest double; accuracy is then limited by the per-draw
-   probabilities $P_{nt}^s$, which are subnormal beyond a utility gap of about 708 — the
-   earlier raw-probability construction could return an identically zero gradient at a
-   genuinely poorly-fit point well short of that threshold, a false stationary point for the
-   optimizer. These are numerical failure guards, not changes to the mathematical criterion
-   in its regular finite region.
+   $i$ otherwise (§1.6, §4.5) — only when its log-sum-exp $\mathrm{lse}$ is finite. Since
+   every $\log P_{ntj}^s$ is the chosen utility minus a log-sum-exp (§2.4), $\lambda_{ns}$,
+   $\mathrm{lse}$ and the objective are finite whenever the utilities are, however poorly
+   the parameter vector fits the observed choices: the $10^{10}$ sentinel, the Hessian's
+   skip and the `NA` conditional tastes (§13) all fire only when the utilities themselves
+   overflow (for instance an exploding Cholesky diagonal during a line search), where the
+   log-likelihood is undefined. (Earlier releases skipped a situation whenever
+   $\widehat P_i^{\mathrm{sum}} = \sum_s P_{ij_i}^s \le 10^{-12}$, which could also discard
+   a situation that was merely very poorly fit rather than genuinely zero-probability,
+   biasing the reported Hessian and its standard errors; and until the log-space form of
+   §2.4, a single choice probability that underflowed to zero, at a utility gap beyond
+   about 745, made the whole objective the sentinel with a zero gradient, while subnormal
+   probabilities, at gaps beyond about 708, lost precision. See `NEWS.md`.) Relatedly, the
+   posterior draw weights $\omega_{ns}$ (§2.6) that both the score (§3.5) and the Hessian
+   (§4.5) are built from are computed in log space via log-sum-exp rather than as a ratio
+   of raw probabilities, so they stay finite and accurate even when the product over
+   situations falls far below the smallest double — the earlier raw-probability
+   construction could return an identically zero gradient at a genuinely poorly-fit point,
+   a false stationary point for the optimizer. These are numerical failure guards, not
+   changes to the mathematical criterion in its regular finite region.
 
 ### 5.5 Data Layout
 
@@ -1559,9 +1589,9 @@ $\bar\gamma_n = \Gamma_n\,\omega_n$ over the unit's $K_w \times S$ realized-devi
 $\Gamma_n$ (the same $\gamma_{ns}^{*}$ values already used to build $V_{ij}^s$, §1.1) and
 adds back the mean block, $\bar\beta_n = \mu^* + \bar\gamma_n$; the SD uses the analogous
 weighted second moment of $\Gamma_n$ around $\bar\gamma_n$. Both are matrix-vector products
-— no second pass is needed, since neither quantity is an outer product. Units whose every
-draw underflows to zero simulated probability (§4.5, §5.4) return `NA` and are dropped from
-the population summary.
+— no second pass is needed, since neither quantity is an outer product. Units whose
+log-likelihood is non-finite — possible only when their utilities overflow (§4.5, §5.4) —
+return `NA` and are dropped from the population summary.
 
 *Code reference: `mxl_conditional_tastes_parallel()` in
 [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp);

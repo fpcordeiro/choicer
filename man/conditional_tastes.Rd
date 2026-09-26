@@ -98,8 +98,11 @@ the conditional means stay close to the population mean (\code{revealed}
 small); fit with \code{person_col} to learn about tastes from repeated
 choices.
 
-Units whose choices have zero simulated probability at every draw get
-\code{NA} and are left out of the \code{population} summaries.
+Choice probabilities are handled in log space, so every unit has a
+finite conditional distribution however improbable its choices. Only a
+unit whose utilities overflow at the estimates (non-finite
+log-likelihood) gets \code{NA}, and it is left out of the
+\code{population} summaries.
 }
 \examples{
 \donttest{

@@ -583,8 +583,8 @@ run_mxlogit <- function(
   gen_scramble_cpp <- if (draws == "generate") (if (scramble == "permuted") 1L else 0L) else 1L
   gen_S_cpp        <- if (draws == "generate") S else 0L
 
-  # Build eval_f closure
-  eval_f <- function(theta) {
+  # Build eval_f closure (the kernel's overflow sentinel kept above the path)
+  eval_f <- .lift_sentinel(function(theta) {
     mxl_loglik_gradient_parallel(
       theta = theta,
       X = input_data$X,
@@ -604,7 +604,7 @@ run_mxlogit <- function(
       gen_S = gen_S_cpp,
       Ti = input_data$Ti
     )
-  }
+  })
 
   # Run optimizer
   elapsed <- system.time({
@@ -1224,6 +1224,33 @@ get_halton_normals <- function(S, N, K_w) {
   }
 
   return(eta_draws)
+}
+
+
+#' Keep the likelihood kernel's overflow sentinel above the optimizer's path
+#'
+#' `mxl_loglik_gradient_parallel()` returns `objective = 1e10` with a zero
+#' gradient where the utilities overflow, so that a line search backtracks.
+#' Its objective is otherwise finite however poor the fit, and unbounded, so
+#' after a start above 1e10 (a badly scaled warm start at population scale)
+#' the fixed sentinel would look like an improvement. Wraps `eval_f` to report
+#' the sentinel as ten times the largest objective seen so far, and never
+#' below 1e10; objectives are negated log-likelihoods, hence nonnegative.
+#'
+#' @param eval_f Function of theta returning `list(objective, gradient)`.
+#' @returns The wrapped function.
+#' @noRd
+.lift_sentinel <- function(eval_f) {
+  f_max <- 0
+  function(theta) {
+    res <- eval_f(theta)
+    if (identical(res$objective, 1e10)) {
+      res$objective <- max(1e10, min(10 * f_max, .Machine$double.xmax))
+    } else if (is.finite(res$objective)) {
+      f_max <<- max(f_max, res$objective)
+    }
+    res
+  }
 }
 
 
