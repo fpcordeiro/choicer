@@ -72,8 +72,8 @@
 ## Corrections
 
 The following were found while implementing the panel likelihood above and
-independently verified; they affected cross-sectional fits in released
-versions.
+the kernel work for population-scale data that followed, and independently
+verified; they affected cross-sectional fits in released versions.
 
 - `mxl_hessian_parallel()` silently dropped any choice situation whose
   simulated choice probability, summed over draws, was `<= 1e-12`, while the
@@ -82,8 +82,9 @@ versions.
   probability — could therefore be silently excluded from the analytical
   Hessian, which could then be substantially wrong, and so could the
   inverse-Hessian and sandwich standard errors built from it. Such situations
-  are now kept; only units whose simulated probability is exactly zero at
-  every draw, where the log-likelihood itself is undefined, are skipped.
+  are now kept; only units whose log-likelihood is not finite, which now
+  takes utilities that overflow (see the log-probability item below), are
+  skipped.
 - When a choice situation's simulated probability was subnormal (utility gaps
   of several hundred), the gradient came back identically zero alongside a
   finite objective value — a false stationary point that could stop the
@@ -91,9 +92,35 @@ versions.
   were non-finite. The posterior draw weights are now normalized in log space
   (matching the panel likelihood's `omega_ns = exp(lambda_ns - LSE_s
   lambda_n.)`), so these quantities are finite whenever the simulated
-  probability is positive; their accuracy is then limited only by that of
-  the per-draw probabilities, which degrades once those become subnormal
-  (utility gaps beyond roughly 708).
+  probability is positive (and, with the next item, accurate).
+- The mixed logit kernels took each choice situation's log probability as
+  `log(P)`. A choice probability that underflowed to zero, at a utility gap
+  beyond about 745, made its decision maker's log-likelihood `-Inf` and with
+  it the whole objective the optimizer's `1e10` sentinel with a zero
+  gradient; subnormal probabilities, at gaps beyond about 708, lost
+  precision. The chance of hitting this grows with the number of choice
+  situations: on a synthetic claims-style panel of 8.7 million stacked rows
+  with a single choice made against a covariate value of 2000, the fit
+  returned the sentinel at 342 of 540 evaluations and stopped where that
+  choice's probability underflows (a coefficient of -0.37, truth -0.5). The
+  log probability is now the chosen utility minus the log-sum-exp of the
+  choice set, as in the multinomial logit kernels, so the objective,
+  gradient, Hessian, scores and conditional tastes are exact whenever the
+  utilities are finite, however improbable the observed choices; the same
+  fit now converges (-0.48). The sentinel, the Hessian's skip of a unit and
+  `NA` conditional tastes now occur only when the utilities themselves
+  overflow (for instance an exploding Cholesky factor during a line search),
+  and because finite objectives are no longer bounded below the sentinel,
+  `run_mxlogit()` reports it as ten times the largest objective seen along
+  the optimizer's path. Fits away from such regions agree with earlier
+  versions to optimizer tolerance rather than bit for bit, since the
+  optimizer's path shifts slightly.
+- `mxl_hessian_parallel()` now centers the draw scores in the Louis
+  identity, `sum_s omega_s (g_s - g_bar)(g_s - g_bar)'` in place of
+  `sum_s omega_s g_s g_s' - g_bar g_bar'`. The two agree in exact arithmetic,
+  but the draw weights sum to one only to the precision of their log-scale
+  arguments, and the uncentered form multiplies that error by `|g|^2`: for a
+  choice far below its competitors, an entry of about 1 came out 0.15 off.
 - `run_mxlogit()`'s advanced workflow (`input_data` + `eta_draws`) recorded
   the `S` argument (default 100) instead of the number of draws in
   `eta_draws`, so post-hoc recomputation (`vcov(fit, type = )`, lazily

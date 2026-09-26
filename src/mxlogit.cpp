@@ -64,8 +64,11 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 //   s_u       = sum_s omega_us sum_t g_uts        score, where
 //   g_uts     = sum_a (1{a = j_t} - P_ts(a)) z_tsa,  z_tsa = dV_tsa / dtheta
 //
-// Draw weights stay in log space (lambda sums, max-shifted LSE), so products
-// of many choice probabilities never underflow.
+// Everything stays in log space: each log P_ts(j_t) is the chosen stabilized
+// utility minus the log-sum-exp denominator (never the log of a probability
+// that may have underflowed), and the draw weights come from a max-shifted
+// LSE of lambda, so neither one choice probability nor a product of many
+// underflows. lambda_us is finite whenever the utilities are.
 // ============================================================================
 
 // Unit offsets (CSR, half-open) from Ti; NULL gives the cross-section.
@@ -201,9 +204,12 @@ inline void mxl_unit_load(const MxlUnitData& ud, const int u,
 
 // Logit probabilities of situation t at draw s, into sc.P: inside utilities
 // base_util + WGamma(rows of t, s), with the outside option (V = 0) in slot 0
-// when present.
-inline void mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
-                                const int t, const int s) {
+// when present. Leaves the max-shifted utilities in sc.V and returns their
+// log-sum-exp, so that log P_ts(a) = sc.V(a) - log_denom: exact wherever the
+// utilities are finite, while P(a) itself turns subnormal beyond a utility
+// gap of about 708 and zero beyond about 745.
+inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
+                                  const int t, const int s) {
   const int first = ud.row_off[t], last = ud.row_off[t + 1] - 1;
   const int num_choices =
       ud.include_outside_option ? last - first + 2 : last - first + 1;
@@ -211,15 +217,17 @@ inline void mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
             sc.WGamma.col(s).subvec(first - sc.r0, last - sc.r0);
   sc.V.set_size(num_choices);
   fill_choice_utilities(sc.V, sc.util, num_choices, ud.include_outside_option);
-  stable_softmax(sc.V, sc.P);
+  return stable_softmax(sc.V, sc.P);
 }
 
-// Draw loop of the loaded unit: lambda_s = sum_t log P_ts(j_t), the same
-// log(P_choice) primitive as the cross-section, and, when `residuals`, the
-// UNWEIGHTED residuals DiffW (R x S): over the rows of situation t, column s
-// holds 1{r = j_t} - P_ts(r) for the inside alternatives (the outside option
-// carries no parameter, so its slot is dropped). Fills
-// omega_s = exp(lambda_s - lse) and returns lse = log sum_s exp(lambda_s).
+// Draw loop of the loaded unit: lambda_s = sum_t log P_ts(j_t), each term the
+// chosen shifted utility minus the log-sum-exp from mxl_situation_probs()
+// (the multinomial logit kernels' V_choice - log_denom), never the log of a
+// probability; and, when `residuals`, the UNWEIGHTED residuals DiffW (R x S):
+// over the rows of situation t, column s holds 1{r = j_t} - P_ts(r) for the
+// inside alternatives (the outside option carries no parameter, so its slot
+// is dropped). Fills omega_s = exp(lambda_s - lse) and returns
+// lse = log sum_s exp(lambda_s), which is finite whenever the utilities are.
 inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
                                 const bool residuals) {
   const int S = sc.Gamma.n_cols;
@@ -232,8 +240,8 @@ inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
     int chosen_alt = static_cast<int>(ud.choice_idx[t]); // validated serially
     if (!ud.include_outside_option) chosen_alt -= 1;      // slot in P
     for (int s = 0; s < S; ++s) {
-      mxl_situation_probs(ud, sc, t, s);
-      sc.lambda(s) += std::log(sc.P(chosen_alt));
+      const double log_denom = mxl_situation_probs(ud, sc, t, s);
+      sc.lambda(s) += sc.V(chosen_alt) - log_denom;
       if (residuals) {
         sc.DiffW.col(s).subvec(r, r + m - 1) = -sc.P.tail(m);
         if (chosen_alt >= o) sc.DiffW(r + chosen_alt - o, s) += 1.0;
@@ -472,7 +480,13 @@ Rcpp::List mxl_loglik_gradient_parallel(
 
   // Sanitize NaN/Inf so the optimizer's line-search can backtrack instead
   // of stalling at an undefined objective. The minimizer expects a finite
-  // reference value; a "very bad" sentinel lets it shrink the step.
+  // reference value; a "very bad" sentinel lets it shrink the step. Since
+  // every log probability is formed in log space, the objective is finite
+  // whenever the utilities are, however improbable the observed choices:
+  // the sentinel marks utilities that overflowed (e.g. an exploding
+  // Cholesky diagonal during a line search), not a poor fit. Finite
+  // objectives are then unbounded, so run_mxlogit() lifts the sentinel above
+  // every objective seen along the optimizer's path.
   double obj = -global_loglik;
   arma::vec grad = -global_grad;
   if (!std::isfinite(obj)) {
@@ -688,7 +702,7 @@ arma::mat mxl_hessian_parallel(
   // Per unit u (Louis 1982), with omega_s the posterior draw weights and
   // g_s = sum_t g_ts, H_s = sum_t H_ts the per-draw score and Hessian of
   // lambda_s = sum_t log P_ts(j_t):
-  //   H_u = sum_s omega_s (H_s + g_s g_s') - g_bar g_bar',  g_bar = sum_s omega_s g_s,
+  //   H_u = sum_s omega_s (H_s + (g_s - g_bar)(g_s - g_bar)'),  g_bar = sum_s omega_s g_s,
   //   H_ts = -sum_Pzz_ts + sum_Pz_ts sum_Pz_ts' + sum_diff_H_V_ts.
   // Pass 1 (the shared draw loop) yields omega; pass 2 accumulates the O3
   // buffers with omega_s where the cross-section used P_choice_s / P_i_hat.
@@ -735,7 +749,8 @@ arma::mat mxl_hessian_parallel(
     arma::vec buf_Pzz_dd(Jd > 0 ? Jd : 1);      // Identity C: Σ_ts ω_s sum_Pzz_dd_ts
     arma::mat buf_diff_HV_cc(Kc, Kc);           // Identity C: Σ_ts ω_s sum_diff_H_V_cc_ts
     // O3: Column stashes for BLAS-3 batching.
-    // G_stash(:,s) = sqrt(ω_s) * g_s, g_s = Σ_t g_ts → G Gᵀ = Σ_s ω_s g_s g_sᵀ (Identity A)
+    // G_stash(:,s) = sqrt(ω_s) * (g_s - g_bar), g_s = Σ_t g_ts
+    //   → G Gᵀ = Σ_s ω_s (g_s - g_bar)(g_s - g_bar)ᵀ              (Identity A)
     // F_stash(:,s) = sqrt(ω_s) * [sum_Pz_c; sum_Pz_d]_ts → F Fᵀ = Σ_s ω_s sum_Pz sum_PzT
     //                                                     for situation t (Identity B)
     // These are allocated once per thread at max size (n_params x Sdraw).
@@ -755,7 +770,10 @@ arma::mat mxl_hessian_parallel(
       // --- Pass 1: posterior draw weights omega_s of the unit's choices ---
       mxl_unit_load(ud, u, sc, true);
       const double lse = mxl_unit_simulate(ud, sc, false);
-      if (!std::isfinite(lse)) continue; // zero simulated likelihood: skip unit
+      // lse is finite whenever the utilities are (log-space probabilities),
+      // so this skips only a unit whose utilities overflowed, where its
+      // log-likelihood is undefined.
+      if (!std::isfinite(lse)) continue;
 
       // O3: Initialize per-unit block buffers.
       buf_Pzz_cc.zeros();
@@ -932,14 +950,15 @@ arma::mat mxl_hessian_parallel(
           //          column stashes G_stash/F_stash (Identities A + B). ===
           //
           // Instead of assembling H_ts (n_params x n_params) and accumulating
-          //   hess_term1 += omega_s * (g_s g_sT + sum_t H_ts),
+          //   hess_term1 += omega_s * ((g_s - g_bar)(g_s - g_bar)T + sum_t H_ts),
           // we split the linear-in-omega_s and the outer-product pieces:
           //
           //   Linear (Identity C): buf_Pzz_cc     += omega_s * sum_Pzz_cc
           //                        buf_diff_HV_cc += omega_s * sum_diff_H_V_cc
           //                        (and cd/dd variants)
-          //   Outer-product (Identity A): G_stash(:,s) += g_ts, scaled by
-          //     sqrt(omega_s) after the unit, so G GT = Σ_s omega_s g_s g_sT.
+          //   Outer-product (Identity A): G_stash(:,s) += g_ts, centered at
+          //     g_bar and scaled by sqrt(omega_s) after the unit, so that
+          //     G GT = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)T.
           //   Outer-product (Identity B): F_stash(:,s) = sqrt(omega_s) * [sum_Pz_c; sum_Pz_d]
           //     so that F FT = Σ_s omega_s sum_Pz sum_PzT after situation t.
 
@@ -977,14 +996,22 @@ arma::mat mxl_hessian_parallel(
         opg_pz += F_stash * F_stash.t();
       } // end situation loop
 
-      // Identity A: G Gᵀ = Σ_s omega_s g_s g_sᵀ.
+      // Identity A, centered: G Gᵀ = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)ᵀ.
+      // It equals Σ_s omega_s g_s g_sᵀ - g_bar g_barᵀ because the omega_s sum
+      // to one, but only to the absolute precision of lambda (about 1e-11 at
+      // lambda = -1e5), and the uncentered form multiplies that by g_s g_sᵀ:
+      // a unit whose scores are large next to their spread across draws (a
+      // choice far below its competitors) would carry an error of order
+      // |g|^2 ulp(lambda). Centering cancels the common part exactly.
+      G_stash.each_col() -= g_bar;
       G_stash.each_row() %= arma::sqrt(sc.omega).t();
       opg_pz += G_stash * G_stash.t();
 
       // === 6. O3: Per-unit finalization — assemble Hessian once from buffers ===
       // 6a. Assemble hess_term1 block-by-block.
       //     hess_term1 = (G Gᵀ + Σ_t F_t F_tᵀ) + (-buf_Pzz) + buf_diff_HV_cc (cc block only)
-      //     This is the batched equivalent of Σ_s omega_s (g_s g_sT + H_s).
+      //     This is the batched equivalent of Σ_s omega_s (H_s +
+      //     (g_s - g_bar)(g_s - g_bar)T), the unit's whole Hessian H_u.
       arma::mat hess_t1(n_params, n_params, arma::fill::zeros);
 
       // cc block: contributions from OPG, sum-Pz outer product, -Pzz, and H_V.
@@ -1005,9 +1032,10 @@ arma::mat mxl_hessian_parallel(
             - arma::diagmat(buf_Pzz_dd);
       }
 
-      // 6b. Louis identity: H_u = hess_term1 - g_bar g_barᵀ. The draw weights
-      //     are normalized, so there is no division by the simulated P_u.
-      local_hess += w_u * (hess_t1 - g_bar * g_bar.t());
+      // 6b. Louis identity: H_u = hess_term1, whose centered Identity A
+      //     already subtracts g_bar g_barᵀ. The draw weights are normalized,
+      //     so there is no division by the simulated P_u.
+      local_hess += w_u * hess_t1;
     } // end unit loop
 
 #ifdef _OPENMP
@@ -1300,7 +1328,8 @@ arma::mat mxl_scores_parallel(
 //   sd_u   = sqrt(sum_s omega_us (Gamma_us - Gamma_u omega_u)^2)   (elementwise)
 // Takes the inputs of mxl_scores_parallel and returns list(mean, sd), each
 // K_w x U (U = decision makers when Ti is supplied, choice situations
-// otherwise). Units whose choices have zero simulated probability get NA.
+// otherwise). A unit whose simulated log-likelihood is not finite, which
+// takes utilities that overflowed, gets NA.
 // [[Rcpp::export]]
 Rcpp::List mxl_conditional_tastes_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,

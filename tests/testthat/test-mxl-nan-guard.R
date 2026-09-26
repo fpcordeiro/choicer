@@ -59,3 +59,25 @@ test_that("mxl_loglik_gradient_parallel returns sentinel at pathological theta",
   expect_true(all(is.finite(result$gradient)))
   expect_length(result$gradient, n_params)
 })
+
+test_that("the overflow sentinel stays above every objective seen", {
+  # Finite objectives are unbounded (probabilities are handled in log space),
+  # so after a start above 1e10 the kernel's fixed sentinel must be lifted, or
+  # the line search would take an overflowing trial point for an improvement.
+  vals <- c(2e10, 1e10, 5, 1e10, 3e10, 1e10)
+  i <- 0L
+  f <- choicer:::.lift_sentinel(function(theta) {
+    i <<- i + 1L
+    list(objective = vals[i], gradient = 0)
+  })
+  got <- vapply(seq_along(vals), function(k) f(0)$objective, numeric(1))
+  expect_equal(got, c(2e10, 2e11, 5, 2e11, 3e10, 3e11))
+  # From a start below 1e10 the sentinel is unchanged.
+  i <- 0L
+  vals <- c(100, 1e10)
+  g <- choicer:::.lift_sentinel(function(theta) {
+    i <<- i + 1L
+    list(objective = vals[i], gradient = 0)
+  })
+  expect_equal(c(g(0)$objective, g(0)$objective), c(100, 1e10))
+})

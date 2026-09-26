@@ -253,13 +253,14 @@ test_that("Hessian keeps a unit whose simulated likelihood is below 1e-12", {
   }
 })
 
-test_that("subnormal probabilities give a finite gradient, scores and BHHH", {
+test_that("subnormal choice probabilities keep the objective and scores exact", {
   # P(chosen) is subnormal (positive, below .Machine$double.xmin) at every
-  # draw. The pre-panel kernel returned a zero gradient, infinite scores and
-  # a non-finite BHHH here. At a gap of -720 the subnormals keep about 35
-  # significant bits, enough to check the unit's score against the
-  # derivative; at -740 they keep about 6, so only finiteness and the exact
-  # score identities are checked.
+  # draw. The kernels form log P(chosen) as the chosen utility minus the
+  # log-sum-exp denominator, never as the log of the subnormal probability,
+  # so the objective and the unit's score stay exact even at a gap of -740,
+  # where P(chosen) itself keeps only about 6 significant bits. (Earlier
+  # kernels took log(P(chosen)) and lost that precision; before the panel
+  # work they also returned a zero gradient here.)
   skip_if_not_installed("numDeriv")
   for (gap in c(-720, -740)) {
     for (panel in c(FALSE, TRUE)) {
@@ -272,39 +273,109 @@ test_that("subnormal probabilities give a finite gradient, scores and BHHH", {
       res <- mxlp_call("gradient", fx)
       S_u <- mxlp_call("scores", fx)
       B <- mxlp_call("bhhh", fx)
-      expect_true(is.finite(res$objective) && all(is.finite(res$gradient)) &&
-                    any(res$gradient != 0),
-                  label = sprintf("[%s] finite, non-zero gradient", fx$name))
-      expect_true(all(is.finite(S_u)),
-                  label = sprintf("[%s] finite scores", fx$name))
-      expect_true(all(is.finite(B)),
-                  label = sprintf("[%s] finite BHHH", fx$name))
+      mxlp_expect_close(res$objective, -mxlp_oracle(fx$theta, fx)$loglik,
+                        1e-10, sprintf("[%s] objective vs oracle", fx$name))
+      expect_true(all(is.finite(S_u)) && all(is.finite(B)),
+                  label = sprintf("[%s] finite scores and BHHH", fx$name))
       w_u <- mxlp_unit_weights(fx)
       mxlp_expect_close(colSums(w_u * S_u), -res$gradient, 1e-10,
                         sprintf("[%s] sum_u w_u s_u vs -gradient", fx$name))
       mxlp_expect_close(B, crossprod(sqrt(w_u) * S_u), 1e-10,
                         sprintf("[%s] BHHH vs sum_u w_u s_u s_u'", fx$name))
-      if (gap == -720) {
-        g_oracle <- numDeriv::grad(mxlp_oracle_unit_loglik, fx$theta,
-                                   fx = fx, u = u)
-        mxlp_expect_close(S_u[u, ], g_oracle, 1e-6,
-                          sprintf("[%s] score row %d vs numDeriv(oracle l_u)",
-                                  fx$name, u))
-      }
+      g_oracle <- numDeriv::grad(mxlp_oracle_unit_loglik, fx$theta,
+                                 fx = fx, u = u)
+      mxlp_expect_close(S_u[u, ], g_oracle, 1e-6,
+                        sprintf("[%s] score row %d vs numDeriv(oracle l_u)",
+                                fx$name, u))
     }
   }
 })
 
-test_that("a unit with zero simulated probability is flagged and left out", {
-  # A gap of -1e5 makes P(chosen) exactly 0 at every draw. The objective
-  # returns the optimizer sentinel, the Hessian leaves the unit out, and the
-  # unit's conditional tastes are NA while every other unit's stay exact.
+test_that("a choice probability that underflows to zero keeps an exact log-likelihood", {
+  # Gaps of -1000 and -1e5 make P(chosen) exactly 0 in double precision at
+  # every draw. In log space the choice keeps a finite, exact log
+  # probability, so the unit's log-likelihood and its derivatives stay
+  # exact: no optimizer sentinel, the Hessian keeps the unit, and its
+  # conditional tastes are defined. With 10^7 choice situations some sit this
+  # far in the tail, and one such unit used to turn the whole objective into
+  # the sentinel. Checked for an inside choice with and without the outside
+  # option, and for the outside option chosen against inside alternatives
+  # far above it.
+  skip_if_not_installed("numDeriv")
+  cases <- expand.grid(layout = c("inside", "no_outside", "outside"),
+                       panel = c(FALSE, TRUE), stringsAsFactors = FALSE)
+  for (k in seq_len(nrow(cases))) {
+    G <- H <- list()
+    for (gap in c(-1000, -1e5)) {
+      fx <- mxlp_edge_fixture(gap, cases$panel[k], cases$layout[k])
+      p <- exp(mxlp_situation_logp(fx$theta, fx, fx$edge_situation))
+      expect_true(all(p == 0),
+                  label = sprintf("[%s] P(chosen) = 0 at every draw", fx$name))
+
+      orc <- mxlp_oracle(fx$theta, fx)
+      res <- mxlp_call("gradient", fx)
+      mxlp_expect_close(res$objective, -orc$loglik, 1e-10,
+                        sprintf("[%s] objective vs oracle", fx$name))
+      mxlp_expect_close(colSums(mxlp_unit_weights(fx) *
+                                  mxlp_call("scores", fx)),
+                        -res$gradient, 1e-10,
+                        sprintf("[%s] sum_u w_u s_u vs -gradient", fx$name))
+      ct <- mxlp_call("tastes", fx)
+      mxlp_expect_close(ct$mean, orc$mean, 1e-10,
+                        sprintf("[%s] conditional mean vs oracle", fx$name))
+      mxlp_expect_close(ct$sd, orc$sd, 1e-10,
+                        sprintf("[%s] conditional SD vs oracle", fx$name))
+      G[[length(G) + 1L]] <- res$gradient
+      H[[length(H) + 1L]] <- mxlp_call("hessian", fx)
+      if (gap == -1000) {
+        obj <- function(th) -mxlp_oracle(th, fx)$loglik
+        mxlp_expect_close(res$gradient, numDeriv::grad(obj, fx$theta),
+                          TOL_GRAD,
+                          sprintf("[%s] gradient vs numDeriv(oracle)", fx$name))
+        grad <- function(th) drop(mxlp_call("gradient", fx, theta = th)$gradient)
+        J <- numDeriv::jacobian(grad, fx$theta,
+                                method.args = list(d = 1e-3, r = 6))
+        mxlp_expect_close(H[[1L]], J, TOL_HESS,
+                          sprintf("[%s] Hessian vs numDeriv::jacobian(gradient)",
+                                  fx$name))
+      }
+    }
+    # Once P(chosen) is 0 at every draw, the gap enters the unit's
+    # log-likelihood only linearly, through beta_1 * x_1, so moving it from
+    # -1000 to -1e5 shifts the gradient only along beta_1, by
+    # w_u (1e5 - 1000) / beta_1, and leaves the Hessian unchanged. (At -1e5
+    # the objective is about 1e5, too large for finite differences at these
+    # tolerances. An uncentered Louis identity would miss the Hessian check by
+    # about 0.15: the draw weights sum to one only to ulp(lambda), about
+    # 1e-11, times g^2 = 4e10.)
+    w_u <- mxlp_unit_weights(fx)[fx$edge_unit]
+    shift <- replace(numeric(length(fx$theta)), 1L,
+                     w_u * (1e5 - 1000) / fx$theta[1L])
+    mxlp_expect_close(G[[2L]] - G[[1L]], shift, 1e-9,
+                      sprintf("[%s] gradient shift from gap -1000 to -1e5",
+                              fx$name))
+    mxlp_expect_close(H[[2L]], H[[1L]], 1e-4,
+                      sprintf("[%s] Hessian at gap -1e5 vs gap -1000",
+                              fx$name))
+  }
+})
+
+test_that("overflowing utilities trigger the sentinel, the Hessian skip and NA tastes", {
+  # With log-space probabilities a unit's log-likelihood is non-finite only
+  # when its utilities are. Here the chosen alternative's fixed utility
+  # overflows to -Inf (x = -1e308, beta_1 = 2), so every draw gives the
+  # unit's choices zero probability. The objective returns the optimizer
+  # sentinel, the Hessian leaves the unit out, and the unit's conditional
+  # tastes are NA while every other unit's stay exact.
   for (panel in c(FALSE, TRUE)) {
-    fx <- mxlp_edge_fixture(-1e5, panel)
+    fx <- mxlp_edge_fixture(-36, panel)
     u <- fx$edge_unit
-    p <- exp(mxlp_situation_logp(fx$theta, fx, fx$edge_situation))
-    expect_true(all(p == 0),
-                label = sprintf("[%s] P(chosen) = 0 at every draw", fx$name))
+    t <- fx$edge_situation
+    fx$theta[1L] <- 2
+    fx$X[sum(fx$M[seq_len(t - 1L)]) + fx$choice_idx[t], 1L] <- -1e308
+    expect_true(all(mxlp_situation_logp(fx$theta, fx, t) == -Inf),
+                label = sprintf("[%s] chosen utility is -Inf at every draw",
+                                fx$name))
 
     res <- mxlp_call("gradient", fx)
     expect_equal(res$objective, 1e10,
