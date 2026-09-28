@@ -155,9 +155,10 @@ verified; they affected cross-sectional fits in released versions.
   overflow (for instance an exploding Cholesky factor during a line search),
   and because finite objectives are no longer bounded below the sentinel,
   `run_mxlogit()` reports it as ten times the largest objective seen along
-  the optimizer's path. Fits away from such regions agree with earlier
-  versions to optimizer tolerance rather than bit for bit, since the
-  optimizer's path shifts slightly.
+  the optimizer's path. An explicit kernel overflow flag distinguishes the
+  sentinel from a valid objective equal to `1e10`. Fits away from such
+  regions agree with earlier versions to optimizer tolerance rather than
+  bit for bit, since the optimizer's path shifts slightly.
 - `mxl_hessian_parallel()` now centers the draw scores in the Louis
   identity, `sum_s omega_s (g_s - g_bar)(g_s - g_bar)'` in place of
   `sum_s omega_s g_s g_s' - g_bar g_bar'`. The two agree in exact arithmetic,

@@ -54,6 +54,7 @@ test_that("mxl_loglik_gradient_parallel returns sentinel at pathological theta",
   # Sentinel objective: must be finite (NOT NaN/Inf) and exactly 1e10.
   expect_true(is.finite(result$objective))
   expect_equal(result$objective, 1e10)
+  expect_true(result$overflow)
 
   # Gradient must be entirely finite.
   expect_true(all(is.finite(result$gradient)))
@@ -68,7 +69,7 @@ test_that("the overflow sentinel stays above every objective seen", {
   i <- 0L
   f <- choicer:::.lift_sentinel(function(theta) {
     i <<- i + 1L
-    list(objective = vals[i], gradient = 0)
+    list(objective = vals[i], gradient = 0, overflow = i %% 2L == 0L)
   })
   got <- vapply(seq_along(vals), function(k) f(0)$objective, numeric(1))
   expect_equal(got, c(2e10, 2e11, 5, 2e11, 3e10, 3e11))
@@ -77,7 +78,33 @@ test_that("the overflow sentinel stays above every objective seen", {
   vals <- c(100, 1e10)
   g <- choicer:::.lift_sentinel(function(theta) {
     i <<- i + 1L
-    list(objective = vals[i], gradient = 0)
+    list(objective = vals[i], gradient = 0, overflow = i == 2L)
   })
   expect_equal(c(g(0)$objective, g(0)$objective), c(100, 1e10))
+})
+
+test_that("a finite objective equal to the sentinel is preserved", {
+  kernel <- function(beta) {
+    mxl_loglik_gradient_parallel(
+      theta = c(beta, 0), X = matrix(c(-1, 0), 2L), W = matrix(0, 2L),
+      alt_idx = 1:2, choice_idx = 1L, M = 2L, weights = 1,
+      eta_draws = array(0, c(1L, 1L, 1L)), rc_dist = 0L,
+      rc_correlation = FALSE, rc_mean = FALSE, use_asc = FALSE,
+      include_outside_option = FALSE)
+  }
+  f <- choicer:::.lift_sentinel(kernel)
+  expect_equal(f(2e10)$objective, 2e10)
+  raw <- kernel(1e10)
+  expect_identical(raw$objective, 1e10)
+  expect_false(raw$overflow)
+  res <- f(1e10)
+  expect_identical(res$objective, raw$objective)
+  expect_identical(res$gradient, raw$gradient)
+  expect_equal(drop(res$gradient), c(1, 0))
+  expect_named(res, c("objective", "gradient"))
+  # A real overflow is still penalized above the largest valid objective.
+  expect_true(kernel(Inf)$overflow)
+  bad <- f(Inf)
+  expect_equal(bad$objective, 2e11)
+  expect_true(all(bad$gradient == 0))
 })

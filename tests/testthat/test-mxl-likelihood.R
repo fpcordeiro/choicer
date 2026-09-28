@@ -35,7 +35,8 @@ test_that("mxl_loglik_gradient_parallel returns correct structure", {
   )
 
   expect_type(result, "list")
-  expect_named(result, c("objective", "gradient"))
+  expect_named(result, c("objective", "gradient", "overflow"))
+  expect_false(result$overflow)
   expect_length(result$gradient, length(theta))
   expect_true(is.finite(result$objective))
   expect_true(all(is.finite(result$gradient)))
