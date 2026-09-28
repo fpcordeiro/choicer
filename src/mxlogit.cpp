@@ -258,13 +258,6 @@ inline int mxl_batch_count(const mxl_off R, const int S, const int n_mats,
   return (S + b - 1) / b;
 }
 
-// log(exp(a) + exp(b)), exact when one side is -Inf.
-inline double log_add_exp(const double a, const double b) {
-  if (a == -arma::datum::inf) return b;
-  if (b == -arma::datum::inf) return a;
-  return std::max(a, b) + std::log1p(std::exp(-std::fabs(a - b)));
-}
-
 // Everything the per-unit routines read, shared by all threads: the stacked
 // design and its layout, the parameters at theta, the draw source and the
 // model flags. Construct it once per kernel call, on the primary thread: it
@@ -546,12 +539,13 @@ inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
 //   BW(:, batch) = W_u' DiffW                       (unweighted, K_w x B)
 //   d_bar = sum_s omega_s DiffW(:, s): for a unit in one batch, from omega
 //     after the loop, exactly as without batches; across batches, by a
-//     streaming log-sum-exp: the batch's weights exp(lambda_s - ref) are
-//     relative to the running log-sum-exp `ref` of lambda over the batches
-//     so far, d_bar is rescaled by exp(ref_old - ref) as ref rises, and at
-//     the end by exp(ref - lse). Batching changes d_bar only by rounding.
-// Fills omega_s = exp(lambda_s - lse) and returns lse = log sum_s
-// exp(lambda_s), which is finite whenever the utilities are.
+//     streaming max shift: the batch's weights exp(lambda_s - ref) are
+//     relative to the largest lambda seen so far. d_bar is rescaled by
+//     exp(ref_old - ref) as ref rises, then divided by the same sum of
+//     shifted weights used to normalize omega. Keeping the shift separate
+//     from that sum avoids subtracting a rounded, large-magnitude lse.
+// Fills normalized posterior weights omega and returns lse = log sum_s
+// exp(lambda_s).
 inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
                                 const bool score) {
   const MxlLayout& lay = ud.lay;
@@ -561,7 +555,7 @@ inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
   const bool stream = score && sc.nb > 1;          // fold d_bar batch by batch
   sc.lambda.zeros(S);
   if (score) sc.BW.set_size(K_w, S);
-  double ref = -arma::datum::inf; // running log-sum-exp of lambda (stream)
+  double ref = -arma::datum::inf; // running maximum of lambda (stream)
   for (int k = 0; k < sc.nb; ++k) {
     // Batch k: draws [s0, s1), sizes differing by at most one.
     const int s0 = static_cast<int>(static_cast<long long>(k) * S / sc.nb);
@@ -592,9 +586,9 @@ inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
       BW_b = sc.W_u.t() * sc.DiffW;
     }
     if (!stream) continue;
-    // Fold the batch into d_bar, relative to the running log-sum-exp.
+    // Fold the batch into d_bar, relative to the running maximum.
     const double* lambda_b = sc.lambda.memptr() + s0;
-    const double ref_new = log_add_exp(ref, log_sum_exp_n(lambda_b, s1 - s0));
+    const double ref_new = std::max(ref, direct_max_n(lambda_b, s1 - s0));
     if (ref_new == -arma::datum::inf) {  // no draw with positive weight yet
       sc.d_bar.zeros(sc.R);
     } else {
@@ -610,14 +604,17 @@ inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
     ref = ref_new;
   }
   const double lse = log_sum_exp_n(sc.lambda.memptr(), S); // = logSumExp()
-  sc.omega = arma::exp(sc.lambda - lse);
+  const double lambda_max = direct_max_n(sc.lambda.memptr(), S);
+  sc.omega = arma::exp(sc.lambda - lambda_max);
+  const double weight_sum = arma::accu(sc.omega);
+  sc.omega /= weight_sum;
   if (score) {
     if (!stream) {                       // one batch: the draw weights directly
       sc.d_bar = sc.DiffW * sc.omega;    // R x 1, one dgemv
     } else if (!std::isfinite(lse)) {    // no score, as omega has none
       sc.d_bar.fill(arma::datum::nan);
-    } else if (ref != lse) {             // re-reference: a factor within
-      sc.d_bar *= std::exp(ref - lse);   // rounding of one
+    } else {                            // ref is now the global lambda_max
+      sc.d_bar /= weight_sum;
     }
   }
   return lse;
@@ -1045,7 +1042,7 @@ arma::mat mxl_hessian_parallel(
     arma::mat G_stash(n_params, Sdraw);
     arma::mat F_stash(n_params, Sdraw);
     arma::mat opg_pz(n_params, n_params); // G Gᵀ + Σ_t F_t F_tᵀ
-    arma::vec g_bar(n_params);            // Σ_s ω_s g_s: the unit's score
+    arma::vec g_bar(n_params);            // reference score, then mean deviation
     // Per-unit assembly buffers, reused so that no unit or situation
     // allocates: the products F Fᵀ and G Gᵀ, and sqrt(ω). The unit's
     // Hessian is then assembled in place in opg_pz.
@@ -1076,7 +1073,6 @@ arma::mat mxl_hessian_parallel(
       }
       G_stash.zeros();
       opg_pz.zeros();
-      g_bar.zeros();
 
       // --- Pass 2: situations t (outer) x draws s (inner). A unit in one
       // draw batch reuses pass 1's WGamma; for a longer one each situation's
@@ -1280,12 +1276,6 @@ arma::mat mxl_hessian_parallel(
           if (Jd > 0) {
             F_stash.col(s).tail(Jd) = sqrt_ws * sum_Pz_d;
           }
-
-          // Accumulate the unit score g_bar = Σ_s omega_s g_s.
-          g_bar.head(Kc) += omega_s * g_c;
-          if (Jd > 0) {
-            g_bar.tail(Jd) += omega_s * g_d;
-          }
         } // end S loop
 
         // Identity B for situation t (one BLAS-3 product per situation: the
@@ -1295,12 +1285,12 @@ arma::mat mxl_hessian_parallel(
       } // end situation loop
 
       // Identity A, centered: G Gᵀ = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)ᵀ.
-      // It equals Σ_s omega_s g_s g_sᵀ - g_bar g_barᵀ because the omega_s sum
-      // to one, but only to the absolute precision of lambda (about 1e-11 at
-      // lambda = -1e5), and the uncentered form multiplies that by g_s g_sᵀ:
-      // a unit whose scores are large next to their spread across draws (a
-      // choice far below its competitors) would carry an error of order
-      // |g|^2 ulp(lambda). Centering cancels the common part exactly.
+      // Remove the highest-weight draw's score before computing the mean,
+      // so neither a large common score nor a zero-weight outlier can
+      // amplify rounding in the centered covariance.
+      g_bar = G_stash.col(sc.omega.index_max());
+      G_stash.each_col() -= g_bar;
+      g_bar = G_stash * sc.omega;
       G_stash.each_col() -= g_bar;
       for (int s = 0; s < Sdraw; ++s) sqrt_omega[s] = std::sqrt(sc.omega[s]);
       G_stash.each_row() %= sqrt_omega;

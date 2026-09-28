@@ -525,10 +525,13 @@ by at most one draw) only when
 $R_n S > 2^{18}$, i.e. for a long panel, a choice set of hundreds of alternatives or a very
 large $S$, and a thread's memory then grows with $R_n$ rather than $R_n S$. Each batch is
 folded in before the next one overwrites it. $\bar d_n$ accumulates by a streaming
-log-sum-exp: the batch's weights $e^{\lambda_{ns} - r}$ are taken relative to the running
-log-sum-exp $r$ of the draws seen so far, the running sum is rescaled by
-$e^{r_\text{old} - r}$ whenever $r$ rises, and by $e^{r - \mathrm{LSE}_s \lambda_{ns}}$ at
-the end. Batching changes $\bar d_n$ only by rounding (about one rounding per batch), and a
+max shift: the batch's weights $e^{\lambda_{ns} - r}$ are taken relative to the largest
+$\lambda_{ns}$ seen so far. The running sum is rescaled by
+$e^{r_\text{old} - r}$ whenever $r$ rises, then divided by
+$\sum_s e^{\lambda_{ns} - r}$ at the end, the same denominator used to normalize
+$\omega_n$. Keeping the maximum separate from this denominator avoids losing
+normalization accuracy through subtraction of a large-magnitude log-sum-exp.
+Batching changes $\bar d_n$ only by rounding (about one rounding per batch), and a
 unit in one batch computes exactly the unbatched values. The $L$ block cannot collapse
 through $\bar d_n$ alone: its per-draw derivative couples the residuals with that draw's
 $\eta_{ns}$ (§3.4.3), so the draw sum has to happen
@@ -761,10 +764,10 @@ $$
 identity requires only $\omega_{is} \geq 0$, which holds because $P_{is}$ is a softmax
 probability (guaranteed by `stable_softmax`). It folds the OPG term and the final
 $- g_i g_i^\top$ of the Hessian (§4.4.5) into one product, and the centered form is
-also the numerically stable one: the weights sum to one only to the absolute precision of
-their log-scale arguments, and the uncentered difference multiplies that error by
-$g_{is} g_{is}^\top$, which is large when the chosen alternative sits far below its
-competitors.
+also the numerically stable one. The implementation normalizes max-shifted exponentials
+directly, then subtracts the highest-weight draw's score before computing the weighted mean
+of the deviations. This prevents a large common score from amplifying rounding in
+the weights into spurious covariance.
 
 **Identity B (sum-Pz outer-product batching).** Define the $n_\text{params} \times S$
 matrix $F$ with columns
@@ -928,8 +931,6 @@ therefore runs two passes per unit, sharing the same draw loop that computes $\o
     situation's $S$-loop — situations' outer products are added, never combined before
     squaring: $\sum_t F_t F_t^\top = \sum_t \sum_s \omega_{ns}\,\mathrm{sum\_Pz}_{nts}\,
     \mathrm{sum\_Pz}_{nts}^\top$.
-  - $\bar g_n$ (`g_bar`) accumulates $\omega_{ns}\, g_{nts}$ over every $(t,s)$ pair, the
-    same double sum as §3.5's $\bar g_n = \sum_s \omega_{ns} g_{ns}$.
   - **Identity A** (`G_stash`, the score outer product): column $s$ instead *accumulates*
     $g_{nts}$ across every situation in the unit, and only after the situation loop ends is
     it centered at $\bar g_n$, scaled by $\sqrt{\omega_{ns}}$ and squared once:
@@ -938,10 +939,11 @@ therefore runs two passes per unit, sharing the same draw loop that computes $\o
     opposite order from Identity B, because it is the person's total score that enters the
     outer product, not each situation's on its own. Since the $\omega_{ns}$ sum to one,
     this is the Louis identity's $\sum_s \omega_{ns} g_{ns} g_{ns}^\top - \bar g_n \bar
-    g_n^\top$, computed without its cancellation: the weights sum to one only to the
-    absolute precision of $\lambda_{ns}$ (about $10^{-11}$ at $\lambda_{ns} = -10^5$), and
-    the uncentered form multiplies that error by $g_{ns} g_{ns}^\top$, large for a choice
-    far below its competitors.
+    g_n^\top$, computed without its cancellation. In code, `g_bar` first holds a
+    highest-weight draw's score, which is subtracted from every column; it then holds
+    the weighted mean of those deviations, subtracted in turn. This is equivalent
+    to centering at $\bar g_n$ while avoiding amplification of weight-rounding error
+    by a large common score.
 
 Final assembly mirrors §4.4.5's block-by-block combination (`hess_t1 = opg_pz - buf_Pzz +
 buf_diff_HV`, cc/cd/dc/dd), whose centered Identity A already carries the Louis identity's
