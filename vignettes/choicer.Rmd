@@ -230,7 +230,7 @@ discipline the corresponding parameters.
 |---|---|---|
 | **Multinomial logit** | Included covariates and observed heterogeneity across choice situations. | The maintained utility index and the absence of unobserved closeness among alternatives. Individual-level diversion is proportional to fitted choice probabilities. |
 | **Nested logit** | Shared unobservables within pre-specified nests, summarized by one dissimilarity parameter per nest. | The nesting tree and the random-utility interpretation of the estimated dissimilarity parameters. Correlation exists only where the tree permits it. |
-| **Mixed logit** | A mixing distribution $f(\beta)$ for tastes, possibly with correlated random coefficients. | The distributional family, its tails, simulation accuracy, and the variation that identifies heterogeneity. choicer's `run_mxlogit()` is cross-sectional and does not exploit persistence across repeated choices; use HMNL when one taste draw should persist within person. |
+| **Mixed logit** | A mixing distribution $f(\beta)$ for tastes, possibly with correlated random coefficients; with `person_col`, one taste draw persists across a decision maker's repeated choices (Revelt and Train 1998). | The distributional family, its tails, simulation accuracy, and the variation that identifies heterogeneity. With `person_col`: that tastes stay constant across a decision maker's situations. Without `person_col`, `run_mxlogit()` integrates each choice situation separately and does not exploit persistence across repeated choices; use HMNL for partially-pooled alternative effects and posterior rather than asymptotic uncertainty. |
 | **Multinomial probit** | A covariance matrix for utility-difference shocks. | Scale normalization, a rapidly growing covariance parameterization, and MCMC diagnostics. Alternative-varying covariates and defensible exclusions across utility equations help separate systematic utility from covariance (Keane 1992). choicer does not yet provide MNP prediction or a rule for transporting covariance to counterfactual choice sets. |
 | **Hierarchical MNL** | Persistent taste heterogeneity $\beta_i \sim N(b, W)$ plus partially-pooled alternative effects $\delta_j = z_j'\theta + \xi_j$, with iid EV1 choice shocks. | The priors, MCMC convergence, and—for entry counterfactuals—the exchangeability of entrant residual quality with incumbents. Repeated choices plus useful within-person variation are what discipline the taste distribution. |
 | **Hierarchical MNP** | The same panel tastes and alternative hierarchy, with iid normal utility-level shocks and a stochastic outside option. | Per-draw scale normalization, normal-only random coefficients, and the iid shock restriction. Unlike `run_mnprobit()`, HMNP does not estimate an unrestricted utility-difference covariance; expected-maximum welfare is not implemented. |
@@ -336,6 +336,10 @@ probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
 
 Petrin, A. and Train, K. (2010). A control function approach to endogeneity
 in consumer choice models. *Journal of Marketing Research*, 47(1), 3-13.
+
+Revelt, D. and Train, K. (1998). Mixed logit with repeated choices:
+households' choices of appliance efficiency level. *Review of Economics and
+Statistics*, 80(4), 647-657.
 
 Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.).
 Cambridge University Press.

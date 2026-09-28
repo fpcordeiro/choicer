@@ -1,3 +1,107 @@
+# choicer (development version)
+
+## Mixed logit — panel likelihood (`person_col`) and conditional tastes
+
+- `run_mxlogit()` / `prepare_mxl_data()` gain `person_col`: the frequentist
+  panel mixed logit of Revelt and Train (1998). When supplied, all choice
+  situations of a decision maker share one draw of the random coefficients,
+  and the likelihood integrates the *joint* probability of that person's
+  choices over the taste distribution, instead of integrating every choice
+  situation separately as before. `id_col` must still identify choice
+  situations uniquely across the whole data set (ids do not restart within
+  person). `NULL` (the default) keeps every choice situation its own decision
+  maker, reproducing the existing cross-sectional likelihood.
+  - `simulate_mxl_data()` gains `T` (choice situations per decision maker;
+    default `1`, a cross-section) and records the realized random coefficients
+    in `true_params$gamma_i` (`K_w x N`), the realized tastes that
+    `conditional_tastes()`'s conditional means can be compared with (they
+    track them with shrinkage). `T = 1` reproduces earlier versions' data
+    exactly.
+  - New exported generic `conditional_tastes()` (class `choicer_tastes`,
+    method for `choicer_mxl`): the mean and SD of a decision maker's random
+    coefficients conditional on the choices they made (Revelt and Train 2000;
+    Train 2009, ch. 11) — the frequentist analogue of the hierarchical Bayes
+    `beta_i` summaries of `run_hmnlogit()`. Its `print()` reports, per
+    coefficient, the share of population taste variance revealed by choices
+    and the residual share (law of total variance), which should sum to
+    about one — a numerical check on convergence and the draw count `S`, not
+    a specification test (both identities are first-order conditions of the
+    likelihood, so they hold at a converged fit whatever the true taste
+    distribution).
+  - Inference: with `person_col`, scores are per decision maker, so
+    `se_method = "sandwich"` / `vcov(type = "robust")` is already robust to
+    within-person dependence; `cluster_col` / `cluster` labels must then nest
+    decision makers (be constant within each). Weights become decision-maker
+    weights, constant within person (the objective is `sum_n w_n log L_n`).
+    WESML (choice-based) weighting is not supported with `person_col`: a
+    choice-based weight varies with the alternative a person chose, which can
+    differ across their situations.
+  - Fitted-object fields: a panel fit gains `n_persons` (the number of
+    decision makers; printed as "Respondents"), `data$Ti` (choice situations
+    per decision maker, in prepared order), and `data$person_ids`. `nobs()`
+    is unchanged — it still counts choice situations, as for HMNL.
+  - New recovery script `inst/simulations/mxl_panel_simulation.R`, in the
+    style of `mxl_simulation.R`: simulates a panel, fits it with
+    `person_col`, reports `recovery_table()` and `conditional_tastes()`, and
+    contrasts standard errors against a cluster-robust cross-sectional fit of
+    the same data.
+  - Apart from the corrections below, default (cross-sectional) behavior is
+    unchanged up to floating-point reassociation (<= 1e-10 relative in the
+    estimation kernels, measured on the reference battery of test
+    configurations); prediction kernels are bit-identical.
+  - New input guards: a non-`NULL` empty `Ti` is an error, and a
+    primary-thread memory check now stops (instead of risking a crash) when a
+    single decision maker would need more than 2 GiB of per-thread scratch —
+    a signal that `person_col` identifies markets or some other
+    high-cardinality grouping rather than decision makers.
+  - Alignment guards for panel fits, whose prepared situations are ordered by
+    decision maker rather than by id: a positional `weights` vector and an
+    unnamed post-hoc `cluster` vector are rejected (with a pointer to
+    `weights_col` / id-named labels) whenever that order differs from id
+    order, and `predict()` / `logsum()` / `consumer_surplus()` note when
+    `newdata` lacks the person column (rows are then ordered by id rather than
+    in the in-sample, decision-maker-first order).
+  - `conditional_tastes()` on other fits errors informatively, pointing
+    hierarchical Bayes users to their `beta_i` summaries.
+  - Supersedes the v0.2.0 "Scope note (MXL)" below: clustering a
+    cross-sectional fit still only repairs the inference, not the efficiency
+    lost by ignoring within-person correlation, but the likelihood itself is
+    now a choice: pass `person_col` to use the within-person variation the
+    panel provides.
+
+## Corrections
+
+The following were found while implementing the panel likelihood above and
+independently verified; they affected cross-sectional fits in released
+versions.
+
+- `mxl_hessian_parallel()` silently dropped any choice situation whose
+  simulated choice probability, summed over draws, was `<= 1e-12`, while the
+  objective and gradient kept it. A situation that was merely very poorly fit
+  by the current parameter vector — not one with genuinely zero simulated
+  probability — could therefore be silently excluded from the analytical
+  Hessian, which could then be substantially wrong, and so could the
+  inverse-Hessian and sandwich standard errors built from it. Such situations
+  are now kept; only units whose simulated probability is exactly zero at
+  every draw, where the log-likelihood itself is undefined, are skipped.
+- When a choice situation's simulated probability was subnormal (utility gaps
+  of several hundred), the gradient came back identically zero alongside a
+  finite objective value — a false stationary point that could stop the
+  optimizer early — and the score-based variances (BHHH, robust, cluster)
+  were non-finite. The posterior draw weights are now normalized in log space
+  (matching the panel likelihood's `omega_ns = exp(lambda_ns - LSE_s
+  lambda_n.)`), so these quantities are finite whenever the simulated
+  probability is positive; their accuracy is then limited only by that of
+  the per-draw probabilities, which degrades once those become subnormal
+  (utility gaps beyond roughly 708).
+- `run_mxlogit()`'s advanced workflow (`input_data` + `eta_draws`) recorded
+  the `S` argument (default 100) instead of the number of draws in
+  `eta_draws`, so post-hoc recomputation (`vcov(fit, type = )`, lazily
+  computed standard errors, prediction) could regenerate a different draw
+  set from the one used in estimation. `draws_info$S` now records
+  `dim(eta_draws)[2]`. Post-hoc methods reproduce the estimation draws only
+  when `eta_draws` was built with `get_halton_normals(S, U, K_w)`.
+
 # choicer 0.2.1
 
 Patch release addressing a compilation warning reported by CRAN's GCC check

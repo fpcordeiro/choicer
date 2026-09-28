@@ -111,8 +111,9 @@
 #'   the data stored at fit time is used (requires \code{keep_data = TRUE}).
 #' @param ... Additional arguments passed to methods.
 #' @returns Numeric vector with one logsum per choice situation. With a
-#'   data.frame \code{newdata}, choice situations are ordered by id (as in
-#'   \code{predict()}).
+#'   data.frame \code{newdata}, choice situations are ordered by id (by
+#'   decision maker first for a panel mixed logit whose \code{person_col} is
+#'   present in \code{newdata}), as in \code{predict()}.
 #' @seealso \code{\link{consumer_surplus}}
 #' @examples
 #' \donttest{
@@ -405,7 +406,8 @@ logsum.choicer_nl <- function(object, newdata = NULL, ...) {
 #'   apply).
 #' @param ... Additional arguments passed to methods.
 #' @returns A \code{choicer_cs} object: a list with \code{cs} (per-choice-
-#'   situation surplus, length N), \code{mean_cs} (weighted mean),
+#'   situation surplus, length N, ordered as in \code{\link{logsum}}),
+#'   \code{mean_cs} (weighted mean),
 #'   \code{se_mean_cs} (delta-method SE; NA for MXL/NL or when the
 #'   variance-covariance matrix is unavailable), \code{ci} (confidence
 #'   interval for the mean), \code{price_var}, \code{level}, and \code{n}.

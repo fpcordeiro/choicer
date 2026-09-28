@@ -210,7 +210,6 @@ rhat <- function(draws, rank = FALSE) {
            m[(nrow(m) - half + 1L):nrow(m), , drop = FALSE])
     }), recursive = FALSE)
 
-    m_chains <- length(splits)
     chain_means <- vapply(splits, colMeans, numeric(ncol(draws[[1L]])))
     chain_vars <- vapply(splits, function(m) apply(m, 2L, stats::var),
                          numeric(ncol(draws[[1L]])))

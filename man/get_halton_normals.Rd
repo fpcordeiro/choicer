@@ -7,9 +7,10 @@
 get_halton_normals(S, N, K_w)
 }
 \arguments{
-\item{S}{Number of draws for each choice situation}
+\item{S}{Number of draws per draw unit}
 
-\item{N}{number of choice situations}
+\item{N}{number of draw units: choice situations, or decision makers for a
+panel fit (\code{person_col} in \code{\link{run_mxlogit}})}
 
 \item{K_w}{dimension of random coefficients (number of columns in W matrix)}
 }

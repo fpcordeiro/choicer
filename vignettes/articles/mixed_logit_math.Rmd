@@ -25,6 +25,7 @@ This document provides a detailed mathematical description of the mixed logit (r
 10. [Willingness to Pay](#10-willingness-to-pay)
 11. [Consumer Surplus and the Simulated Logsum](#11-consumer-surplus-and-the-simulated-logsum)
 12. [Goodness of Fit](#12-goodness-of-fit)
+13. [Conditional (Individual-Level) Tastes](#13-conditional-individual-level-tastes)
 
 ---
 
@@ -32,7 +33,7 @@ This document provides a detailed mathematical description of the mixed logit (r
 
 | Symbol | Description |
 |--------|-------------|
-| $i = 1, \ldots, N$ | Index for individuals (choice situations) |
+| $i = 1, \ldots, N$ | Index for choice situations |
 | $j = 1, \ldots, J_i$ | Index for alternatives available to individual $i$ |
 | $s = 1, \ldots, S$ | Index for simulation draws |
 | $j_i$ | The alternative chosen by individual $i$ |
@@ -46,6 +47,15 @@ This document provides a detailed mathematical description of the mixed logit (r
 | $\delta_j$ | Alternative-specific constant (ASC) for alternative $j$ |
 | $\eta_i^s$ | Standard-normal integration draw for choice situation $i$ and draw $s$ ($K_w \times 1$) |
 | $\gamma_i^s = L\eta_i^s$ | Latent Gaussian random-coefficient deviation |
+| $n = 1, \ldots, U$ | Index for decision makers (respondents) when `person_col` groups situations into a panel; $U$ is the number of decision makers |
+| $t = 1, \ldots, T_n$ | Index for the choice situations belonging to decision maker $n$; $T_n$ is their count |
+| $\omega_{ns}$ | Posterior weight of draw $s$ given decision maker $n$'s observed choices ($\S$2.6) |
+
+Sections 2–12 are written per choice situation $i$, the default likelihood unit. §1.6
+introduces the decision maker $n$ as an optional coarser unit; §2.6, §3.5 and §4.5 give
+the corresponding panel likelihood, score and Hessian. Without `person_col`, $U = N$ and
+$T_n \equiv 1$ for every $n$, so $i$ and $(n, t{=}1)$ index the same choice situation and
+every panel formula collapses to its §2–4 counterpart.
 
 ---
 
@@ -185,15 +195,39 @@ where $J$ is the diagonal Jacobian of the natural-from-scaled map: entries are $
 
 **Alternative scale denominators.** The `scale_vars` option also accepts `"mad"` (`stats::mad`, equal to $1.4826 \times \text{median}|X_{\cdot k} - \text{median}(X_{\cdot k})|$) and `"iqr"` (`stats::IQR(x) / 1.349`); both are SD-equivalent under normality and yield the same Jacobian construction as `"sd"` — only the per-column denominator $s_k^X$ (or $s_k^W$) differs. The robust denominators are preferable when heavy-tailed columns cause the sample SD to be dominated by outliers.
 
-### 1.6 Sampling Unit and Cross-Sectional Mixing
+### 1.6 Likelihood Unit: Cross-Section or Panel
 
-In this implementation $i$ indexes a **choice situation**, and the likelihood integrates
-a separate coefficient distribution for each situation. Reusing a person identifier as
-though several tasks formed a panel does not create a shared latent coefficient across
-those tasks. Consequently `run_mxlogit()` is a cross-sectional mixed-logit likelihood;
-cluster-robust standard errors can allow score dependence across repeated tasks but cannot
-turn that likelihood into a panel random-coefficients model. The package's panel
-random-coefficients path is `run_hmnlogit()`.
+By default $i$ indexes a **choice situation**, and the likelihood integrates a separate
+coefficient distribution for each situation — the right model when tastes are redrawn
+every situation, or each decision maker is observed once. Passing `person_col` to
+`run_mxlogit()` / `prepare_mxl_data()` switches the **likelihood unit** from the choice
+situation to the **decision maker** $n$ (Revelt and Train 1998): the $T_n$ choice
+situations belonging to $n$ then share one taste draw $\beta_n \sim f(\beta \mid \theta)$,
+and the likelihood integrates their *joint* probability,
+$$
+L_n(\theta) = \int \prod_{t=1}^{T_n} P_{nt}(j_{nt} \mid \beta)\, f(\beta \mid \theta)\, d\beta,
+$$
+in place of the per-situation $L_i(\theta) = \int P_{ij_i}(\beta)\, f(\beta \mid
+\theta)\, d\beta$ used elsewhere in this document (§2.2–2.3). `id_col` must still
+identify choice situations uniquely across the data set — situation ids do not restart
+within person. `person_col = NULL` (the default) makes every situation its own decision
+maker, $T_n \equiv 1$, and recovers the cross-sectional likelihood exactly, so every
+formula in §2–§9 written per situation $i$ applies unchanged, read with
+$i \equiv (n, t{=}1)$.
+
+On panel data, imposing $T_n \equiv 1$ on genuinely repeated tasks (i.e., fitting
+cross-sectionally) maximizes a **composite (pseudo-) likelihood**: each situation's
+marginal probability is still correctly specified under $f(\beta \mid \theta)$, so the
+estimator stays consistent for $\theta$, provided the per-situation marginals identify
+$\theta$, but it is statistically inefficient — it never uses the fact that the same
+$\beta_n$ generated a person's repeated choices, which is exactly the variation that
+identifies $\Sigma$ most sharply (the marginals identify it too, but only through the
+shape of the mixture). Cluster-robust standard errors (`cluster_col=`, or `vcov(fit, type
+= "cluster")`; §9.5) repair the *inference* for the resulting score dependence but leave
+the likelihood unchanged; §2.6, §3.5 and §4.5 give
+the panel likelihood, score and Hessian that use the repetition directly. `run_hmnlogit()`
+is the Bayesian counterpart of the panel likelihood, adding partially-pooled alternative
+effects and posterior rather than asymptotic inference.
 
 ---
 
@@ -243,7 +277,15 @@ To avoid numerical overflow/underflow, the implementation uses:
    \text{logSumExp}(a, b) = \max(a,b) + \log\left(\exp(a - \max(a,b)) + \exp(b - \max(a,b))\right)
    $$
 
-   Applied iteratively across draws $s$.
+   Applied iteratively across draws $s$. With `person_col` (§2.6), each draw's
+   log-probability is first *summed across a decision maker's situations*,
+   $\lambda_{ns} = \sum_{t=1}^{T_n} \log P_{ntj_{nt}}^s$, and only then does log-sum-exp run
+   over draws $s$ to obtain $\ell_n(\theta) = \mathrm{LSE}_s(\lambda_{n\cdot}) - \log S$.
+   Products of many situation probabilities are therefore never formed outside log space:
+   $\lambda_{ns}$ and $\ell_n(\theta)$ stay finite whenever at least one draw gives the
+   unit's choices positive probability, even when the product over situations falls far
+   below the smallest double; accuracy is then limited by the per-draw probabilities
+   $P_{nt}^s$, which become subnormal beyond a utility gap of about 708.
 
 ### 2.5 Statistical Properties of the Finite-Draw Criterion
 
@@ -268,6 +310,40 @@ and, for generated scrambled draws, the seed as part of the numerical specificat
 increase $S$ until estimates, the Cholesky block, the objective, and standard errors
 stabilize. `mc_asymptotics()` supplies Monte Carlo diagnostics rather than a proof that a
 particular finite-$S$ fit satisfies exact-ML asymptotics.
+
+### 2.6 Panel Likelihood
+
+With `person_col`, §1.6 replaces the per-situation likelihood by the per-decision-maker
+one. Writing $\lambda_{ns} = \sum_{t=1}^{T_n} \log P_{nt j_{nt}}^s$ for the log-probability
+of decision maker $n$'s choices at draw $s$ — a sum, over the situations sharing that draw,
+of the situation-level log-probabilities of §2.1 — the simulated log-likelihood is
+
+$$
+\ell_n(\theta) = \log\left(\frac1S\sum_{s=1}^S \exp(\lambda_{ns})\right),
+\qquad
+\ell(\theta) = \sum_{n=1}^U w_n\, \ell_n(\theta),
+$$
+
+with $w_n$ a decision-maker weight, constant across $n$'s situations — a requirement of
+this panel objective, not of §9.1–§9.2's WESML weights, which vary with the alternative a
+person chose and can therefore differ across their situations; WESML is accordingly not
+supported with `person_col`. Define the
+**posterior draw weight**
+
+$$
+\omega_{ns} = \frac{\exp(\lambda_{ns})}{\sum_{s'=1}^S \exp(\lambda_{ns'})}
+            = \exp\bigl(\lambda_{ns} - \mathrm{LSE}_s(\lambda_{n\cdot})\bigr),
+\qquad \sum_{s=1}^S \omega_{ns} = 1,
+$$
+
+the simulated posterior probability that draw $s$ is decision maker $n$'s taste, given the
+choices they made — computed via the max-shifted log-sum-exp of §2.4, so it never forms
+the product of many situation probabilities outside log space. §3.5 and §4.5 write the
+panel score and Hessian in terms of $\omega_{ns}$. Setting $T_n \equiv 1$ collapses
+$\lambda_{ns}$ to $\log P_{ij_i}^s$ and $\omega_{ns}$ to $P_{ij_i}^s / \sum_{s'}
+P_{ij_i}^{s'}$, the per-draw share already implicit in §2.3's
+$\bar P_{ij_i} = \frac1S\sum_s P_{ij_i}^s$, so the panel and cross-sectional log-likelihoods
+agree termwise.
 
 ---
 
@@ -405,6 +481,48 @@ $$
 where $\delta_1 = 0$ (normalized) if no outside option, or all $\delta_j$ for $j \geq 1$ are free if outside option is included. The sum over alternatives is a simple scatter (one non-zero contribution per alternative), implemented as a loop.
 
 *Code reference: [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
+
+### 3.5 Panel Score and Posterior Draw Weights
+
+With `person_col`, the per-draw score of §3.2 is first summed across a decision maker's
+situations, $g_{ns} = \sum_{t=1}^{T_n} g_{nts}$ (each $g_{nts}$ the situation-level score of
+§3.2–§3.4), and then averaged over draws with the posterior weight of §2.6 in place of the
+per-draw probability share of §3.3:
+
+$$
+\nabla_\theta \ell_n = \sum_{s=1}^S \omega_{ns}\, g_{ns},
+\qquad
+\nabla_\theta \ell = \sum_{n=1}^U w_n \nabla_\theta \ell_n.
+$$
+
+This is §3.3's $\sum_s P_{ij_i}^s g_i^s / \sum_s P_{ij_i}^s$ with $P_{ij_i}^s / \sum_{s'}
+P_{ij_i}^{s'}$ replaced by $\omega_{ns}$ and $g_i^s$ replaced by the situation-summed
+$g_{ns}$; $T_n \equiv 1$ recovers §3.3 termwise. The block decomposition of §3.4 (the
+$\beta$/$\mu$/$L$ BLAS collapse via $\tilde w^s$, and the $\delta$ scatter) is unchanged
+*within* a situation.
+
+**Implementation.** The double sum over situations and draws needs no explicit loop over
+$t$: `mxl_unit_simulate()` already stacks the logit residual $d_{nt}^s$ of every row of
+every situation belonging to unit $n$ into one $R_n \times S$ matrix `DiffW` ($R_n$ =
+stacked alternative rows across all of $n$'s $T_n$ situations), because $\omega_{ns}$ is a
+single per-draw weight shared by every situation in the unit. `mxl_unit_score()` then forms
+$\bar d_n = \texttt{DiffW}\,\omega_n$ (one `dgemv` over the whole stacked unit) and builds
+the $\beta$, $\mu$ and $\delta$ blocks directly from $\bar d_n$, exactly as §3.2's
+vectorized table builds them from $\mathbf d_i^s$ — the situation sum is absorbed into the
+row-stacking, and the draw sum into the matrix-vector product, in a single pass. The $L$
+block cannot collapse through $\bar d_n$ alone: its per-draw derivative couples the
+residuals with that draw's $\eta_{ns}$ (§3.4.3), so the draw sum has to happen *after* that
+coupling. `mxl_unit_score()` instead forms
+$A = \bigl((W_n' \,\texttt{DiffW} \odot D\gamma_1)\,\mathrm{diag}(\omega_n)\bigr)\,\eta_n'$
+($K_w \times K_w$; a situation-stacked `dgemm` for the inner product, then a draw-block
+`dgemm` against $\eta_n'$), and reads $\ell_{pq}$'s score off
+$\partial L_{pq}/\partial \ell_{pq} \cdot A(p, q)$. (The Hessian, §4.5, needs an explicit
+per-situation loop because its outer-product terms cannot be pre-summed across situations
+before being squared.)
+
+*Code reference: `mxl_unit_simulate()`, `mxl_unit_score()` in
+[src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp), shared
+by `mxl_loglik_gradient_parallel`, `mxl_bhhh_parallel` and `mxl_scores_parallel`.*
 
 ---
 
@@ -639,11 +757,14 @@ $$
 $$
 
 because $[G \mid F]^\top = [G^\top;\; F^\top]$ and the block multiply sums over $2S$
-columns with no $G$-$F$ cross term. This is the form implemented in `mxl_hessian_parallel`:
-`G_stash` and `F_stash` are filled column-by-column during the $S$-loop, and after the
-loop `GF = join_rows(G_stash, F_stash); opg_pz = GF * GF.t()` delivers
+columns with no $G$-$F$ cross term. This is the form implemented in `mxl_hessian_parallel`: `G_stash` and `F_stash` are filled
+column-by-column during the $S$-loop, and `opg_pz` accumulates $F F^\top$ and $G G^\top$ as
+two separate rank-$S$ BLAS level-3 updates rather than one `join_rows` product (§4.5
+explains why: with `person_col`, $F$ is squared and added once per situation while $G$
+accumulates across situations and is squared once per unit; the two coincide here because
+§4.4 is the single-situation, $T_n \equiv 1$ case). The result is
 $\sum_s P_{is}(g_{is} g_{is}^\top + \mathrm{sum\_Pz}_{is}\,\mathrm{sum\_Pz}_{is}^\top)$
-in a single cache-friendly level-3 kernel.
+in cache-friendly level-3 kernels.
 
 **Floating-point precision.** Changing the summation order (per-draw increments vs. one
 level-3 multiply) is a reassociation of additions that is exact in real arithmetic. In
@@ -704,13 +825,14 @@ $$
 $$
 
 The cd block is rectangular ($K_c \times J_d$) and not symmetric, so both the cd and dc
-sub-matrices are written explicitly into `hess_t1`. The remaining finalization steps are
-unchanged from the original code:
+sub-matrices are written explicitly into `hess_t1`. Finalization uses the normalized draw
+weight $\omega_{is} \equiv P_{is}/\hat P_i$ in place of a separate division by $\hat P_i$,
+matching §4.5's Louis-identity assembly:
 
 $$
-g_i = \frac{\mathrm{grad\_numerator}_i}{\hat{P}_i},
+g_i = \sum_{s=1}^S \omega_{is}\, g_i^s,
 \qquad
-H_i = \frac{\mathrm{hess\_t1}}{\hat{P}_i} - g_i g_i^\top,
+H_i = \mathrm{hess\_t1} - g_i g_i^\top,
 \qquad
 \mathrm{local\_hess} \mathrel{+}= w_i H_i.
 $$
@@ -724,6 +846,80 @@ strategy — accumulating only the upper triangle in the cc buffers and mirrorin
 before the OpenMP critical merge — would halve the work for those buffers. It was deferred
 because the asymmetric cd block requires explicit transposition regardless, and the
 full-matrix path is simpler to audit.
+
+### 4.5 Panel Hessian: the Louis (1982) Identity and Its Two-Pass Assembly
+
+With `person_col`, §4.1's per-situation Hessian generalizes to decision maker $n$ by the
+Louis (1982) missing-information identity, treating the draw $s$ as missing data and $n$'s
+choices as the observed data:
+
+$$
+H_n = \nabla^2_\theta \ell_n =
+  \sum_{s=1}^S \omega_{ns}\bigl(H_{ns} + g_{ns} g_{ns}^\top\bigr) - \bar g_n \bar g_n^\top,
+\qquad
+\bar g_n = \sum_{s=1}^S \omega_{ns}\, g_{ns},
+\qquad
+\nabla^2_\theta \ell = \sum_{n=1}^U w_n H_n,
+$$
+
+with $g_{ns} = \sum_t g_{nts}$ as in §3.5 and $H_{ns} = \sum_t H_{nts}$ the situation-summed
+per-draw Hessian of §4.2. Because $\omega_{ns}$ is already normalized ($\sum_s \omega_{ns} =
+1$, §2.6), this *is* $H_n$ directly, with no separate division step — the same normalized
+form as §4.4.5's $\omega_{is} \equiv P_{is}/\hat P_i$ (defined there). Setting $T_n \equiv
+1$ makes §4.4.5's formula the special case of the one above, term by term.
+
+**Two passes per decision maker.** Unlike the score (§3.5), the Hessian cannot be read off
+the situation-stacked residual matrix alone: its outer-product terms must be squared
+*within* a situation before being summed across situations, since summing residuals across
+situations first and squaring once would cross-multiply different situations'
+$\mathrm{sum\_Pz}$ vectors — an identity the algebra does not license. `mxl_hessian_parallel`
+therefore runs two passes per unit, sharing the same draw loop that computes $\omega_{ns}$
+(§2.6):
+
+- **Pass 1** is `mxl_unit_simulate()` without residuals: it yields $\lambda_{ns}$ (the
+  per-draw log-likelihoods of the unit's choices), their log-sum-exp over draws, and
+  $\omega_{ns}$ — exactly as in §3.5.
+- **Pass 2** loops situations $t$ outer, draws $s$ inner, repeating §4.4's per-alternative
+  block accumulation with $\omega_{ns}$ everywhere §4.4 used $P_{is}$:
+  - **Identity C** (linear pieces): `buf_Pzz_cc/cd/dd` and `buf_diff_HV_cc` accumulate
+    $\omega_{ns}\,\mathrm{sum\_Pzz}_{nts}$ and $\omega_{ns}\,\mathrm{sum\_diff\_HV}_{nts}$ at
+    *every* $(t,s)$ pair in the unit — linear accumulation does not care whether it is
+    summed within or across situations.
+  - **Identity B** (`F_stash`, the $\mathrm{sum\_Pz}\,\mathrm{sum\_Pz}^\top$ term): column
+    $s$ is *overwritten* each situation with $\sqrt{\omega_{ns}}\,\mathrm{sum\_Pz}_{nts}$,
+    and `opg_pz += F_stash * F_stash.t()` runs once *per situation*, immediately after that
+    situation's $S$-loop — situations' outer products are added, never combined before
+    squaring: $\sum_t F_t F_t^\top = \sum_t \sum_s \omega_{ns}\,\mathrm{sum\_Pz}_{nts}\,
+    \mathrm{sum\_Pz}_{nts}^\top$.
+  - **Identity A** (`G_stash`, the score outer product): column $s$ instead *accumulates*
+    $g_{nts}$ across every situation in the unit, and only after the situation loop ends is
+    it scaled by $\sqrt{\omega_{ns}}$ and squared once: $G G^\top = \sum_s
+    \omega_{ns}\bigl(\sum_t g_{nts}\bigr)\bigl(\sum_t g_{nts}\bigr)^\top = \sum_s
+    \omega_{ns}\, g_{ns} g_{ns}^\top$ — the situation sum must happen *before* squaring
+    here, the opposite order from Identity B, because it is the person's total score that
+    enters the outer product, not each situation's on its own.
+  - $\bar g_n$ (`g_bar`) accumulates $\omega_{ns}\, g_{nts}$ over every $(t,s)$ pair, the
+    same double sum as §3.5's $\bar g_n = \sum_s \omega_{ns} g_{ns}$.
+
+Final assembly mirrors §4.4.5's block-by-block combination (`hess_t1 = opg_pz - buf_Pzz +
+buf_diff_HV`, cc/cd/dc/dd), then closes with the Louis identity,
+`local_hess += w_n * (hess_t1 - g_bar * g_bar.t())` — no $/\hat P_n$ step, because
+$\omega_{ns}$ is already a normalized weight (§2.6), unlike the raw $P_{is}$ that §4.4.5's
+single-situation formula divides by. Setting $T_n \equiv 1$ collapses pass 2 to a single
+situation per unit: `F_stash` (holding $\sqrt{\omega_{ns}}\,\mathrm{sum\_Pz}_{nts}$) and
+`G_stash` (holding $\sqrt{\omega_{ns}}\, g_{nts}$) remain different vectors, but with only
+one situation to loop over, F's per-situation *overwrite* and G's cross-situation
+*accumulate* produce the same result, and the two-pass structure reduces exactly to §4.4's
+single-situation accumulation.
+
+**The zero-likelihood guard.** Pass 1 skips a unit only when its log-sum-exp is
+non-finite, `!std::isfinite(lse)` — i.e. only when every draw gives that unit's choices
+zero simulated probability — in place of the former $\hat P_i^{\mathrm{sum}} \le 10^{-12}$
+threshold of §5.4, which could also discard a unit that was merely very poorly fit under
+the current parameter vector. See §5.4 and `NEWS.md`.
+
+*Code reference: `mxl_hessian_parallel()` in
+[src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp).*
 
 ---
 
@@ -782,13 +978,15 @@ The implementation parallelizes over individuals using OpenMP:
 
 3. **Gradient vectorization**: The per-draw gradient is computed without a per-alternative loop. After forming $\mathbf{d}_i^s = \mathbf{e}_{j_i} - P_i^s$, the $\beta$ and $\mu$/$L$ blocks are evaluated with two BLAS dgemv calls ($X_i^T \mathbf{d}_i^s$ and $W_i^T \mathbf{d}_i^s$). The delta block uses an irregular scatter and remains a loop.
 
-4. **Exact draw layout and source**: In both modes, situation $i$ receives the contiguous
-   global indices $n=(i-1)S+s$ for $s=1,\ldots,S$; dimension $k$ uses the $k$th prime
-   base and the resulting uniform is mapped through the standard-normal inverse CDF. In
-   `draws = "store"`, `randtoolbox::halton(n = N*S, dim = K_w, normal = TRUE)` is
-   materialized as a $K_w\times S\times N$ cube during estimation. The fitted object
-   retains only `draws_info` metadata and post-estimation regenerates the cube; it does
-   not retain the cube itself. This mode is deterministic and has no seed or scramble.
+4. **Exact draw layout and source**: In both modes, likelihood unit $u$ (§1.6: a decision
+   maker under `person_col`, a choice situation otherwise) receives the contiguous global
+   indices $g=(u-1)S+s$ for $s=1,\ldots,S$; dimension $k$ uses the $k$th prime base and the
+   resulting uniform is mapped through the standard-normal inverse CDF. In `draws =
+   "store"`, `randtoolbox::halton(n = U*S, dim = K_w, normal = TRUE)` is materialized as a
+   $K_w\times S\times U$ cube during estimation, one $K_w \times S$ block per unit ($U$
+   decision makers under `person_col`, or $N$ choice situations otherwise). The fitted
+   object retains only `draws_info` metadata and post-estimation regenerates the cube; it
+   does not retain the cube itself. This mode is deterministic and has no seed or scramble.
    In `draws = "generate"`, `HaltonGen` computes the radical inverse on demand.
    `scramble = "none"` uses identity permutations and is tested against the
    `randtoolbox` sequence. `scramble = "permuted"` (the default) constructs one
@@ -809,9 +1007,23 @@ The implementation parallelizes over individuals using OpenMP:
 5. **Finite-value guards**: The likelihood/gradient kernel replaces a non-finite global
    negated objective by $10^{10}$ and a zero gradient, allowing the optimizer's line
    search to backtrack; isolated non-finite gradient entries are zeroed. The Hessian
-   contributes situation $i$ only when
-   $\widehat P_i^{\mathrm{sum}}=\sum_sP_{ij_i}^s>10^{-12}$. These are numerical failure
-   guards, not changes to the mathematical criterion in its regular finite region.
+   contributes a likelihood unit — decision maker $n$ under `person_col`, choice situation
+   $i$ otherwise (§1.6, §4.5) — only when its log-sum-exp $\mathrm{lse}$ is finite, i.e.
+   only when at least one draw gives its observed choices nonzero simulated probability;
+   a unit whose every draw underflows to exactly zero is skipped. (Earlier releases skipped
+   a situation whenever $\widehat P_i^{\mathrm{sum}} = \sum_s P_{ij_i}^s \le 10^{-12}$,
+   which could also discard a situation that was merely very poorly fit rather than
+   genuinely zero-probability, biasing the reported Hessian and its standard errors; see
+   `NEWS.md`.) Relatedly, the posterior draw weights $\omega_{ns}$ (§2.6) that both the
+   score (§3.5) and the Hessian (§4.5) are built from are computed in log space via
+   log-sum-exp rather than as a ratio of raw probabilities, so they stay finite whenever at
+   least one draw gives the unit's choices positive probability, even when the product over
+   situations falls far below the smallest double; accuracy is then limited by the per-draw
+   probabilities $P_{nt}^s$, which are subnormal beyond a utility gap of about 708 — the
+   earlier raw-probability construction could return an identically zero gradient at a
+   genuinely poorly-fit point well short of that threshold, a false stationary point for the
+   optimizer. These are numerical failure guards, not changes to the mathematical criterion
+   in its regular finite region.
 
 ### 5.5 Data Layout
 
@@ -822,8 +1034,9 @@ The implementation parallelizes over individuals using OpenMP:
 - `choice_idx` is a 1-based local row position within each situation block, or 0 for an
   implicit outside choice. `alt_idx` is instead the global alternative ID used to gather
   ASCs and alternative-level $W$ rows.
-- Stored draws have dimensions $K_w\times S\times N$. Generate-mode kernels receive an
-  empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
+- Stored draws have dimensions $K_w\times S\times U$, one block per likelihood unit ($U$
+  decision makers under `person_col`, choice situations otherwise). Generate-mode kernels
+  receive an empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
 
 ---
 
@@ -1148,8 +1361,18 @@ B_{\mathrm{cluster}}=\sum_g
 \left(\sum_{i:g(i)=g}w_is_i\right)^T,
 $$
 
-with no finite-cluster correction. Clustering changes inference, not the cross-sectional
-likelihood described in §1.6. The variable-scaling back-transform
+with no finite-cluster correction. Clustering changes inference, not the estimand of
+whichever likelihood was fit (§1.6): cross-sectional by default, or the panel likelihood
+of §2.6 under `person_col`, where cluster labels must nest decision makers. It is only
+§9.1–§9.2's WESML weighting that is defined solely for the cross-sectional likelihood:
+$w_i$ is a weight that varies with the alternative chosen in situation $i$, whereas the
+panel objective of §2.6 requires one weight $w_n$ per decision maker, constant across
+their situations, so a choice-based weight cannot enter it — `run_mxlogit(..., person_col
+= )` therefore rejects choice-based-sampling provenance. The sandwich variance of §9.3 and
+its cluster-robust extension here in §9.5 carry no such restriction: both are built from
+whichever likelihood unit's score was actually fit (a decision maker under `person_col`, a
+choice situation otherwise), so they apply to panel fits too, with cluster labels then
+nesting decision makers exactly as above. The variable-scaling back-transform
 ($\S$1.5) and the Cholesky-to-$\Sigma$ delta method ($\S$5.2) apply on top, exactly as
 for any stored `vcov`. User-facing entry points: `wesml_weights()` and
 `sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
@@ -1284,9 +1507,74 @@ The measures are model-agnostic and identical to §10 of the MNL document, compu
 
 ---
 
+## 13. Conditional (Individual-Level) Tastes
+
+`conditional_tastes()` recovers, for each likelihood unit, the mean and standard deviation
+of the random coefficients *conditional on the choices observed* — the same posterior draw
+weights $\omega_{ns}$ that build the panel score and Hessian (§2.6, §3.5, §4.5), now applied
+to the realized taste draws themselves rather than to the score:
+
+$$
+E[\beta_n \mid y_n, x_n; \hat\theta] \approx \sum_{s=1}^S \omega_{ns}\, \beta_{ns},
+\qquad
+\mathrm{SD}(\beta_n \mid y_n, x_n; \hat\theta) \approx
+  \sqrt{\sum_{s=1}^S \omega_{ns}\,(\beta_{ns} - \bar\beta_n)^2},
+$$
+
+with $\beta_{ns} = \mu^*_\cdot + \gamma_{ns}^{*}$ the taste at draw $s$ on the scale it
+enters utility (§1.1–1.3), $\bar\beta_n$ the conditional mean above, and $y_n$ the sequence
+of choices observed across $n$'s $T_n$ situations (Revelt and Train 2000; Train 2009,
+ch. 11). $T_n \equiv 1$ defines the same object for the default cross-sectional fit, one
+choice situation at a time; a single choice reveals comparatively little, so its conditional
+mean sits closer to the population mean than a panel decision maker's typically does.
+
+**Not $\beta_n$ itself.** $E[\beta_n \mid y_n, x_n; \hat\theta]$ is the average taste among
+decision makers who would make $n$'s choices, not $n$'s own realized $\beta_n$ — it shrinks
+toward the population mean, more so the fewer situations $n$ contributes. Consequently the
+*variance across* decision makers of the conditional means understates $\Sigma$: by the law
+of total variance,
+$$
+\mathrm{Var}(\beta) = \underbrace{\mathrm{Var}_n\bigl(E[\beta_n \mid y_n]\bigr)}_{\texttt{revealed}}
+  \;+\; \underbrace{E_n\bigl[\mathrm{Var}(\beta_n \mid y_n)\bigr]}_{\texttt{residual}},
+$$
+so the `revealed` share ($w_n$-weighted variance of the conditional means) and the
+`residual` share ($w_n$-weighted average of the conditional variances) should sum to about
+one. These are numerical checks, not specification tests: for normal random coefficients
+with free means, both this identity and $\texttt{mean\_cond} \approx \texttt{model\_mean}$
+are the likelihood's first-order conditions for $\mu$ and $\Sigma$ — the population mean
+and variance are exactly the $\omega$-weighted mean and variance the estimating equations
+set to zero at $\hat\theta$ — so they hold at a converged maximum whatever the true taste
+distribution. A departure points to too few draws $S$ or an unconverged $\hat\theta$; when
+a coefficient's mean is fixed at zero (`rc_mean = FALSE` and no fixed coefficient on the
+same variable), a `mean_cond` far from zero can also flag that restriction. For log-normal
+coefficients the variance identity holds on the underlying normal scale $\gamma$, not the
+utility scale $\beta$ reported here, so expect departures of a few percent in either
+direction at moderate $S$. `print.choicer_tastes()` reports these alongside
+`model_mean`/`model_sd` (the moments of $f(\beta \mid \hat\theta)$ itself, §1.2–1.3) and
+`mean_cond`/`sd_cond` (the weighted mean and SD of the conditional means across units).
+
+**Implementation.** `mxl_conditional_tastes_parallel()` reuses `mxl_unit_load()` and
+`mxl_unit_simulate()` (§3.5) to obtain $\omega_{ns}$ per unit, then forms
+$\bar\gamma_n = \Gamma_n\,\omega_n$ over the unit's $K_w \times S$ realized-deviation block
+$\Gamma_n$ (the same $\gamma_{ns}^{*}$ values already used to build $V_{ij}^s$, §1.1) and
+adds back the mean block, $\bar\beta_n = \mu^* + \bar\gamma_n$; the SD uses the analogous
+weighted second moment of $\Gamma_n$ around $\bar\gamma_n$. Both are matrix-vector products
+— no second pass is needed, since neither quantity is an outer product. Units whose every
+draw underflows to zero simulated probability (§4.5, §5.4) return `NA` and are dropped from
+the population summary.
+
+*Code reference: `mxl_conditional_tastes_parallel()` in
+[src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp);
+[R/conditional_tastes.R](https://github.com/fpcordeiro/choicer/blob/main/R/conditional_tastes.R).*
+
+---
+
 ## References
 
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation*. Cambridge University Press.
+- Revelt, D., & Train, K. (1998). Mixed logit with repeated choices: households' choices of appliance efficiency level. *Review of Economics and Statistics*, 80(4), 647-657.
+- Revelt, D., & Train, K. (2000). Customer-specific taste parameters and mixed logit: households' choice of electricity supplier. Working Paper E00-274, Department of Economics, University of California, Berkeley.
+- Louis, T. A. (1982). Finding the observed information matrix when using the EM algorithm. *Journal of the Royal Statistical Society: Series B*, 44(2), 226-233.
 - Train, K., & Weeks, M. (2005). Discrete choice models in preference space and willingness-to-pay space. In R. Scarpa & A. Alberini (Eds.), *Applications of Simulation Methods in Environmental and Resource Economics* (pp. 1-16). Springer.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.

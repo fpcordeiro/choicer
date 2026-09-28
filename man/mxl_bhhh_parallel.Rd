@@ -20,7 +20,8 @@ mxl_bhhh_parallel(
   include_outside_option = FALSE,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L
+  gen_S = 0L,
+  Ti = NULL
 )
 }
 \arguments{
@@ -36,9 +37,12 @@ mxl_bhhh_parallel(
 
 \item{M}{N x 1 vector with number of alternatives for each individual}
 
-\item{weights}{N x 1 vector with weights for each observation}
+\item{weights}{N x 1 vector with weights for each observation; when Ti is
+supplied they must be constant within each decision maker}
 
-\item{eta_draws}{Array with choice situation draws; K_w x S x N}
+\item{eta_draws}{Array of standard-normal draws, K_w x S x U, where U is the
+number of decision makers when Ti is supplied and the number of choice
+situations otherwise}
 
 \item{rc_dist}{K_w x 1 integer vector indicating distribution of random coefficients: 0 = normal, 1 = log-normal}
 
@@ -58,6 +62,11 @@ on the fly from this seed.}
 identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
+
+\item{Ti}{Optional integer vector with the number of choice situations of
+each decision maker (panel likelihood); situations must be sorted by
+decision maker. NULL (default): every choice situation is its own unit
+(cross-sectional likelihood).}
 }
 \value{
 n_params x n_params PSD matrix representing the observed information
@@ -68,7 +77,9 @@ be inverted directly to obtain vcov).
 \description{
 Computes the BHHH approximation to the observed information matrix for the
 Mixed Logit model: \eqn{H_{BHHH} = \sum_i w_i \cdot s_i s_i^\top}, where
-\eqn{s_i} is the per-individual score (gradient of \eqn{\log \bar{P}_i}).
+\eqn{s_i} is the score of likelihood unit i (gradient of its simulated
+log-likelihood \eqn{\log \bar{P}_i}; a decision maker when Ti is supplied,
+a choice situation otherwise).
 This outer product of gradients (OPG) estimator provides an alternative to
 the analytical Hessian for standard error computation that scales to large
 problems where the analytical Hessian is infeasible (e.g., many alternatives

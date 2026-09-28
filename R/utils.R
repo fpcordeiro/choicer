@@ -233,3 +233,63 @@ label_matrix <- function(mat, alt_mapping) {
   cmap <- dt[, get(col)[1L], by = id_col]
   cmap[["V1"]][match(ids, cmap[[id_col]])]
 }
+
+#' Whether prepared choice situations are in ascending-id order
+#'
+#' The cross-sectional prepared order is ascending id; a panel mixed logit
+#' orders situations by decision maker first. Positional (unnamed)
+#' per-situation inputs are unambiguous only when the two coincide. Radix
+#' ordering matches data.table's C-locale sort.
+#'
+#' @param ids Choice-situation ids in prepared order.
+#' @returns `TRUE` if `ids` is in ascending order.
+#' @noRd
+.ids_sorted <- function(ids) {
+  identical(order(ids, method = "radix"), seq_along(ids))
+}
+
+#' First choice situation of each likelihood unit
+#'
+#' Likelihood units are decision makers in a panel mixed logit (`d$Ti`
+#' non-NULL, situations sorted by decision maker) and choice situations
+#' otherwise, so MNL, NL and cross-sectional MXL data get `seq_along(d$M)`.
+#'
+#' @param d Prepared or stored data: a list with `M` and, for a panel fit, `Ti`.
+#' @returns Integer index of each unit's first choice situation.
+#' @noRd
+.unit_first <- function(d) {
+  Ti <- d[["Ti"]]
+  if (is.null(Ti)) return(seq_along(d[["M"]]))
+  cumsum(c(1L, Ti[-length(Ti)]))
+}
+
+#' Collapse a per-situation vector to one value per likelihood unit
+#'
+#' The identity in the cross-section (`d$Ti` NULL). In a panel mixed logit,
+#' errors unless `x` is constant within each decision maker (weights and
+#' cluster labels are decision-maker attributes there) and returns each
+#' unit's value. NA-safe; works for numeric, character and factor vectors.
+#'
+#' @param x Vector with one entry per choice situation (prepared order), or
+#'   NULL.
+#' @param d Prepared or stored data: a list with `M` and, for a panel fit, `Ti`.
+#' @param what Label of `x` for the error messages.
+#' @returns `x` (cross-section or NULL `x`), else `x[.unit_first(d)]`.
+#' @noRd
+.to_units <- function(x, d, what) {
+  Ti <- d[["Ti"]]
+  if (is.null(x) || is.null(Ti)) return(x)
+  if (length(x) != sum(Ti)) {
+    stop(what, ": got ", length(x), " values for ", sum(Ti),
+         " choice situations.", call. = FALSE)
+  }
+  first <- .unit_first(d)
+  code <- match(x, unique(x))  # integer labels; match() pairs NA with NA
+  if (any(code != rep(code[first], Ti))) {
+    stop(what, " must be constant within each decision maker: with ",
+         "`person_col` the likelihood has one term per decision maker, so ",
+         "weights are decision-maker weights and clusters must nest ",
+         "decision makers.", call. = FALSE)
+  }
+  x[first]
+}

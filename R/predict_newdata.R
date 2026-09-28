@@ -61,8 +61,9 @@
 #'   in order of first appearance of each id in `newdata`. Defaults to 1.
 #' @returns List with `X`, `W` (NULL unless MXL), `alt_idx` (1-based integer),
 #'   `M` (alternatives per id), `N`, and `weights` (length `N`). Rows are
-#'   ordered by id, then by fit-time alternative code; `weights` are realigned
-#'   to that order.
+#'   ordered by id, then by fit-time alternative code (for a panel fit whose
+#'   `person_col` is present in `newdata`, by decision maker first, as in the
+#'   prepared estimation data); `weights` are realigned to that order.
 #' @noRd
 prepare_newdata <- function(object, newdata, weights = NULL) {
   spec <- object$data_spec
@@ -81,7 +82,18 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
 
   dt <- data.table::as.data.table(newdata)
 
-  needed <- unique(c(id_col, alt_col, x_cols, w_cols))
+  # A panel fit orders its situations by decision maker, then id. Keep that
+  # order when newdata carries the person column, so a round trip on the
+  # estimation data reproduces the in-sample row order.
+  person_col <- spec$person_col
+  if (!is.null(person_col) && !person_col %in% names(dt)) {
+    message("`newdata` has no '", person_col, "' column: rows are ordered by ",
+            "id, not by decision maker first as in the fitted data. Include '",
+            person_col, "' to reproduce the in-sample order.")
+    person_col <- NULL
+  }
+
+  needed <- unique(c(id_col, alt_col, x_cols, w_cols, person_col))
   missing_cols <- setdiff(needed, names(dt))
   if (length(missing_cols) > 0) {
     stop("Missing columns in newdata: ",
@@ -144,11 +156,21 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
     stop("newdata contains duplicated (", id_col, ", ", alt_col, ") pairs.")
   }
 
+  # Each id must belong to one decision maker; otherwise the person sort
+  # would split an id's rows and misalign the per-id counts M below.
+  if (!is.null(person_col) &&
+      any(dt[, data.table::uniqueN(get(person_col)), by = id_col][["V1"]] != 1L)) {
+    stop("newdata: each '", id_col, "' must belong to exactly one '",
+         person_col, "' (ids identify choice situations uniquely, as at fit ",
+         "time).")
+  }
+
   # Order rows: ascending id, ascending alternative code within id
-  # (same convention as the prepare_*_data() functions). Per-id weights are
-  # supplied in order of first appearance, so realign them to the sorted ids.
+  # (same convention as the prepare_*_data() functions), by decision maker
+  # first for a panel fit. Per-id weights are supplied in order of first
+  # appearance, so realign them to the sorted ids.
   ids_appearance <- unique(dt[[id_col]])
-  data.table::setorderv(dt, c(id_col, alt_int_col))
+  data.table::setorderv(dt, c(person_col, id_col, alt_int_col))
   ids_sorted <- unique(dt[[id_col]])
 
   X <- .newdata_matrix(dt, x_cols)

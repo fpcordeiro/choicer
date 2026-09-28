@@ -16,11 +16,13 @@ simulate_mxl_data(
   price_cols = NULL,
   seed = 123,
   outside_option = TRUE,
-  vary_choice_set = TRUE
+  vary_choice_set = TRUE,
+  T = 1L
 )
 }
 \arguments{
-\item{N}{Number of choice situations.}
+\item{N}{Number of decision makers; equals the number of choice situations
+when \code{T = 1}.}
 
 \item{J}{Number of inside alternatives.}
 
@@ -49,11 +51,23 @@ the off-diagonal entries of \code{Sigma}.}
 
 \item{vary_choice_set}{Logical; if \code{TRUE} (default) choice set size is
 sampled uniformly from \code{2:J}.}
+
+\item{T}{Number of choice situations per decision maker (a single integer
+\verb{>= 1}; default \code{1}, a cross-section). Situation ids \verb{1..N*T} stay
+globally unique, so \code{id_col = "id"} works with or without
+\code{person_col = "pid"}; with \code{T > 1} the data gain a leading \code{pid} column
+identifying decision makers. Choice sets, covariates and shocks are drawn
+per situation. For a given seed, \code{T = 1} reproduces the data of earlier
+versions exactly.}
 }
 \value{
 A \code{choicer_sim} object. \code{true_params} includes \code{beta}, \code{delta},
 \code{Sigma}, \code{L_params} (packed Cholesky parameters), \code{mu}, \code{rc_dist},
-\code{rc_correlation}.
+\code{rc_correlation}, and \code{gamma_i}: the \verb{K_w x N} matrix of realized random
+coefficients (rows are the \verb{w*} columns, columns the decision makers), on
+the scale they enter utility: the realized tastes, which the conditional
+means from \code{\link[=conditional_tastes]{conditional_tastes()}} can be compared with (they track them
+with shrinkage). \code{settings} records \code{T}.
 }
 \description{
 Generates synthetic choice data with random coefficients drawn from a
@@ -61,7 +75,9 @@ multivariate normal (optionally log-normal per dimension) and an additional
 mean shifter \code{mu}. Random coefficients are parameterized via the lower
 Cholesky factor of \code{Sigma}. Covariates are Uniform(-1, 1) by default;
 columns named in \code{price_cols} are drawn as \code{-Uniform(0.1, 3)} to mimic
-strictly-negative price variables.
+strictly-negative price variables. With \code{T > 1} the data are a panel:
+each of the \code{N} decision makers draws one taste vector and keeps it in all
+of their \code{T} choice situations (the model of \code{run_mxlogit(person_col = )}).
 }
 \details{
 Random coefficients are constructed to match the estimator's
@@ -78,5 +94,8 @@ like-for-like.
 \donttest{
 sim <- simulate_mxl_data(N = 1000, J = 4, seed = 123)
 print(sim)
+# panel: 200 decision makers x 5 choice situations
+panel <- simulate_mxl_data(N = 200, T = 5, J = 4, seed = 123)
+head(panel$data)
 }
 }

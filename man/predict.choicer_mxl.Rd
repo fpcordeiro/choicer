@@ -50,7 +50,11 @@ For "probabilities": a list with \code{choice_prob} and \code{utility}
 vectors averaged across simulation draws. For "shares": a named numeric
 vector of simulated market shares per alternative. With a data.frame
 \code{newdata}, rows are ordered by id, then by fit-time alternative code
-(\code{alt_int} in \code{object$alt_mapping}).
+(\code{alt_int} in \code{object$alt_mapping}); for a panel fit whose \code{person_col}
+is present in \code{newdata}, by decision maker first, which reproduces the
+in-sample row order. Predictions are unconditional: each choice
+situation integrates over the population taste distribution (see
+\code{\link[=conditional_tastes]{conditional_tastes()}} for tastes conditional on observed choices).
 }
 \description{
 Computes simulated choice probabilities or aggregate market shares using

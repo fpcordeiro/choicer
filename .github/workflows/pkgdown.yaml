@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "${RUNNER_TEMP}/choicer-internal-markdown"
-          for file in AGENTS.md CLAUDE.md ARCHITECTURE.md; do
+          for file in AGENTS.md ARCHITECTURE.md; do
             if [[ -f "${file}" ]]; then
               mv "${file}" "${RUNNER_TEMP}/choicer-internal-markdown/"
             fi

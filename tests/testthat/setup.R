@@ -59,7 +59,6 @@ create_small_mnl_data <- function(seed = 12345) {
   )
   dt[, choice := 0L]
   dt[, choice := {
-    probs <- rep(1/J, J)
     sample(c(1L, rep(0L, J - 1)))
   }, by = id]
   dt[]

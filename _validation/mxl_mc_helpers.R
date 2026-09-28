@@ -141,7 +141,6 @@ scenario_spec <- function(id, quick = FALSE) {
   mk_sim_fun <- function(N, Sigma, mu = NULL, rc_dist, price_cols = NULL) {
     force(N); force(Sigma); force(mu); force(rc_dist); force(price_cols)
     function(seed) {
-      K_w <- ncol(Sigma)
       simulate_mxl_data(
         N = N, J = J,
         beta = beta_true,
@@ -655,7 +654,6 @@ augment_replication <- function(fit, sim) {
   raw <- recovery_table(fit, sim)
   raw[, scale := "raw"]
   if (!is.null(fit$bhhh_se)) {
-    pm <- fit$param_map
     raw[, se_bhhh := NA_real_]
     # For each row, pull the bhhh se by parameter name
     se_by_name <- fit$bhhh_se

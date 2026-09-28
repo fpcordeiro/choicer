@@ -136,7 +136,6 @@ cat("----------------------------------------------------------------------\n")
     paste0("w", seq_len(K_w)),
     rc_correlation = FALSE
   )
-  L_size <- K_w
   n_asc  <- J - 1L
   theta  <- c(runif(K_x, -0.3, 0.3), log(runif(K_w, 0.3, 0.8)),
               runif(n_asc, -0.2, 0.2))
