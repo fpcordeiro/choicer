@@ -524,6 +524,108 @@ test_that("a choice probability that underflows to zero keeps an exact log-likel
   }
 })
 
+test_that("extreme finite log-likelihoods retain normalized posterior moments", {
+  # One person, two binary tasks. Task 1 chooses an extremely unlikely
+  # alternative; task 2 retains ordinary curvature. Analytical binary-logit
+  # derivatives avoid finite differences of an objective of order 1e9.
+  fx <- list(
+    theta = c(1, log(0.3)), X = matrix(c(-1000, 0, 0.1, 0), 4L),
+    W = matrix(c(0.2, -0.2, 0.3, -0.3), 4L), alt_idx = rep(1:2, 2L),
+    choice_idx = c(1L, 2L), M = c(2L, 2L), Ti = 2L, weights = c(1, 1),
+    K_w = 1L, S = 20L, eta = get_halton_normals(20L, 1L, 1L),
+    rc_dist = 0L, rc_correlation = FALSE, rc_mean = FALSE, use_asc = FALSE,
+    include_outside_option = FALSE)
+  z <- 0.3 * drop(fx$eta)
+  v2 <- (0.1 + 0.3 * z) - (-0.3 * z)
+  p2 <- plogis(v2)
+  for (gap in c(1000, 1e8, 1e9)) {
+    fx$X[1L, 1L] <- -gap
+    v1 <- (-gap + 0.2 * z) - (-0.2 * z)
+    # At these gaps P_1 is zero to machine precision, log(P_1) = v1.
+    logp2 <- -pmax(v2, 0) - log1p(exp(-abs(v2)))
+    lambda <- v1 + logp2
+    w <- exp(lambda - max(lambda))
+    omega <- w / sum(w)
+    G <- rbind(-gap - 0.1 * p2, 0.4 * z - 0.6 * z * p2)
+    score <- drop(G %*% omega)
+    # Covariance is translation invariant: remove the common score first.
+    D <- G - G[, 1L]
+    D <- D - drop(D %*% omega)
+    H <- matrix(0, 2L, 2L)
+    for (s in seq_len(fx$S)) {
+      q <- c(0.1, 0.6 * z[s])
+      H_s <- -p2[s] * (1 - p2[s]) * tcrossprod(q)
+      H_s[2L, 2L] <- H_s[2L, 2L] + G[2L, s]
+      H <- H - omega[s] * (H_s + tcrossprod(D[, s]))
+    }
+    mean_z <- sum(omega * z)
+    sd_z <- sqrt(sum(omega * (z - mean_z)^2))
+    for (gen in c(FALSE, TRUE)) {
+      for (b in c(1L, 7L, fx$S)) {
+        label <- sprintf("gap %g, generate %s, batch %d", gap, gen, b)
+        res <- mxlp_call("gradient", fx, generate = gen, draw_batch = b)
+        expect_false(res$overflow)
+        mxlp_expect_close(res$gradient, -score, 1e-8, label)
+        mxlp_expect_close(mxlp_call("scores", fx, generate = gen, draw_batch = b),
+                          score, 1e-8, label)
+        mxlp_expect_close(mxlp_call("hessian", fx, generate = gen, draw_batch = b),
+                          H, 1e-8, label)
+        mxlp_expect_close(mxlp_call("bhhh", fx, generate = gen, draw_batch = b),
+                          tcrossprod(score), 1e-8, label)
+        ct <- mxlp_call("tastes", fx, generate = gen, draw_batch = b)
+        mxlp_expect_close(ct$mean, mean_z, 1e-8, label)
+        mxlp_expect_close(ct$sd, sd_z, 1e-8, label)
+      }
+    }
+  }
+  # With W = 0 the draws are irrelevant to the likelihood. This checks the
+  # weight sum directly through the score, including the streaming path,
+  # and ensures centering does not create curvature from identical scores.
+  fx$W[,] <- 0
+  fx$eta[] <- 1
+  for (gap in c(1e9, 1e16)) {
+    fx$X[1L, 1L] <- -gap
+    score <- c(-gap - 0.1 * plogis(0.1), 0)
+    H <- diag(c(0.01 * plogis(0.1) * plogis(-0.1), 0))
+    for (b in c(1L, 7L, fx$S)) {
+      res <- mxlp_call("gradient", fx, draw_batch = b)
+      mxlp_expect_close(res$gradient, -score, 1e-14, "draw-independent score")
+      mxlp_expect_close(mxlp_call("hessian", fx, draw_batch = b),
+                        H, 1e-14, "draw-independent Hessian")
+      ct <- mxlp_call("tastes", fx, draw_batch = b)
+      mxlp_expect_close(ct$mean, 0.3, 1e-14, "identical tastes")
+      mxlp_expect_close(ct$sd, 0, 1e-14, "zero taste variance")
+    }
+  }
+})
+
+test_that("a zero-weight outlier does not determine Hessian centering", {
+  skip_if_not_installed("numDeriv")
+  # The first log-normal draw has a huge finite score but zero posterior
+  # weight. Using it as a centering reference erases variation among the
+  # other draws; permuting the same draws must leave curvature unchanged.
+  eta <- c(1, 0, 0.02, -0.02)
+  args <- list(
+    theta = c(0.1, log(50)), X = matrix(c(1, 0), 2L),
+    W = matrix(c(-1, 0), 2L), alt_idx = 1:2, choice_idx = 1L, M = 2L,
+    weights = 1, eta_draws = array(eta, c(1L, 4L, 1L)), rc_dist = 1L,
+    rc_correlation = FALSE, rc_mean = FALSE, use_asc = FALSE,
+    include_outside_option = FALSE)
+  grad <- function(theta) {
+    args$theta <- theta
+    drop(do.call(mxl_loglik_gradient_parallel, args)$gradient)
+  }
+  expected <- numDeriv::jacobian(grad, args$theta)
+  for (order in list(1:4, c(2L, 3L, 4L, 1L))) {
+    args$eta_draws[] <- eta[order]
+    for (b in c(1L, 4L)) {
+      args$draw_batch <- b
+      mxlp_expect_close(do.call(mxl_hessian_parallel, args), expected, 1e-6,
+                        "Hessian independent of the zero-weight draw's position")
+    }
+  }
+})
+
 test_that("overflowing utilities trigger the sentinel, the Hessian skip and NA tastes", {
   # With log-space probabilities a unit's log-likelihood is non-finite only
   # when its utilities are. Here the chosen alternative's fixed utility

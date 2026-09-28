@@ -162,9 +162,15 @@ verified; they affected cross-sectional fits in released versions.
 - `mxl_hessian_parallel()` now centers the draw scores in the Louis
   identity, `sum_s omega_s (g_s - g_bar)(g_s - g_bar)'` in place of
   `sum_s omega_s g_s g_s' - g_bar g_bar'`. The two agree in exact arithmetic,
-  but the draw weights sum to one only to the precision of their log-scale
-  arguments, and the uncentered form multiplies that error by `|g|^2`: for a
-  choice far below its competitors, an entry of about 1 came out 0.15 off.
+  but the former draw weights summed to one only to the precision of their
+  log-scale arguments, and the uncentered form multiplied that error by
+  `|g|^2`: for a choice far below its competitors, an entry of about 1 came
+  out 0.15 off.
+  Posterior weights now divide max-shifted exponentials by their sum,
+  including in the batched score, and Hessian centering first removes a
+  highest-weight draw's score. This also prevents spurious curvature when a
+  finite utility gap is so large that subtracting the log-sum-exp loses
+  normalization accuracy.
 - `run_mxlogit()`'s advanced workflow (`input_data` + `eta_draws`) recorded
   the `S` argument (default 100) instead of the number of draws in
   `eta_draws`, so post-hoc recomputation (`vcov(fit, type = )`, lazily
