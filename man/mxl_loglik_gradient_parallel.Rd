@@ -74,7 +74,9 @@ draws in batches sized to a per-thread memory budget, a positive value
 caps the number of draws per batch (for tests).}
 }
 \value{
-List with loglikelihood and gradient evaluated at input arguments
+List with the negated log-likelihood (\code{objective}), its
+\code{gradient}, and an \code{overflow} flag indicating that a
+non-finite objective was replaced by the finite optimizer sentinel.
 }
 \description{
 Computes the log-likelihood and its gradient for the Mixed Logit model using

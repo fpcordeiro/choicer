@@ -700,7 +700,9 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' @param draw_batch Integer; \code{0} (default) forms each decision maker's
 #'   draws in batches sized to a per-thread memory budget, a positive value
 #'   caps the number of draws per batch (for tests).
-#' @returns List with loglikelihood and gradient evaluated at input arguments
+#' @returns List with the negated log-likelihood (\code{objective}), its
+#'   \code{gradient}, and an \code{overflow} flag indicating that a
+#'   non-finite objective was replaced by the finite optimizer sentinel.
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 #'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
