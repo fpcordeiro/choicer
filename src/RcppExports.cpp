@@ -63,6 +63,47 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// halton_fill_block
+arma::mat halton_fill_block(double n0, int S, int K_w, double seed, int scramble);
+RcppExport SEXP _choicer_halton_fill_block(SEXP n0SEXP, SEXP SSEXP, SEXP K_wSEXP, SEXP seedSEXP, SEXP scrambleSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< double >::type n0(n0SEXP);
+    Rcpp::traits::input_parameter< int >::type S(SSEXP);
+    Rcpp::traits::input_parameter< int >::type K_w(K_wSEXP);
+    Rcpp::traits::input_parameter< double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< int >::type scramble(scrambleSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_fill_block(n0, S, K_w, seed, scramble));
+    return rcpp_result_gen;
+END_RCPP
+}
+// halton_reference_block
+arma::mat halton_reference_block(double n0, int S, int K_w, double seed, int scramble);
+RcppExport SEXP _choicer_halton_reference_block(SEXP n0SEXP, SEXP SSEXP, SEXP K_wSEXP, SEXP seedSEXP, SEXP scrambleSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< double >::type n0(n0SEXP);
+    Rcpp::traits::input_parameter< int >::type S(SSEXP);
+    Rcpp::traits::input_parameter< int >::type K_w(K_wSEXP);
+    Rcpp::traits::input_parameter< double >::type seed(seedSEXP);
+    Rcpp::traits::input_parameter< int >::type scramble(scrambleSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_reference_block(n0, S, K_w, seed, scramble));
+    return rcpp_result_gen;
+END_RCPP
+}
+// halton_table_layout
+Rcpp::List halton_table_layout(int K_w);
+RcppExport SEXP _choicer_halton_table_layout(SEXP K_wSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< int >::type K_w(K_wSEXP);
+    rcpp_result_gen = Rcpp::wrap(halton_table_layout(K_w));
+    return rcpp_result_gen;
+END_RCPP
+}
 // hb_test_chol
 Rcpp::List hb_test_chol(const arma::mat& A);
 RcppExport SEXP _choicer_hb_test_chol(SEXP ASEXP) {
@@ -1019,6 +1060,9 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_halton_inv_normal_cdf", (DL_FUNC) &_choicer_halton_inv_normal_cdf, 1},
     {"_choicer_halton_generate_uniform", (DL_FUNC) &_choicer_halton_generate_uniform, 4},
     {"_choicer_halton_generate_normal", (DL_FUNC) &_choicer_halton_generate_normal, 5},
+    {"_choicer_halton_fill_block", (DL_FUNC) &_choicer_halton_fill_block, 5},
+    {"_choicer_halton_reference_block", (DL_FUNC) &_choicer_halton_reference_block, 5},
+    {"_choicer_halton_table_layout", (DL_FUNC) &_choicer_halton_table_layout, 1},
     {"_choicer_hb_test_chol", (DL_FUNC) &_choicer_hb_test_chol, 1},
     {"_choicer_hb_test_trisolve", (DL_FUNC) &_choicer_hb_test_trisolve, 3},
     {"_choicer_hb_test_spd_solve", (DL_FUNC) &_choicer_hb_test_spd_solve, 2},
