@@ -29,7 +29,7 @@ library(choicer)
 # and the shocks are redrawn in every situation, so a person's choices are
 # dependent only through their tastes - the dependence the panel likelihood
 # models and a cross-section ignores.
-sim <- simulate_mxl_data(N = 2000, T = 10, J = 5, seed = 123)
+sim <- simulate_mxl_data(N = 5000, T = 10, J = 10, seed = 123)
 print(sim)
 
 # 2) Panel fit ================================================================
@@ -63,6 +63,8 @@ fit <- run_mxlogit(
   rc_correlation         = TRUE,
   person_col             = "pid",
   S                      = S,
+  se_method              = "bhhh",
+  control                = list(print_level = 1L),
   draws                  = "generate",
   seed                   = 2026L
 )
