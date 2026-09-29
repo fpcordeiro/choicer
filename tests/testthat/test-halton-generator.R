@@ -7,12 +7,15 @@
 #   choicer:::halton_inv_normal_cdf(p)
 #   choicer:::halton_generate_uniform(n, dim, seed, scramble)
 #   choicer:::halton_generate_normal(S, N, K_w, seed, scramble)
+#   choicer:::halton_fill_block(n0, S, K_w, seed, scramble)
+#   choicer:::halton_reference_block(n0, S, K_w, seed, scramble)
 #
 # These wrappers are @noRd (internal); they live in the package namespace
 # and are accessible via ::: in testthat / devtools::test.
 #
 # Do NOT add hash/bit-equality assertions on randomized draws across
-# platforms.  Estimation-level tests are Phase B.
+# platforms.  Estimation-level tests are Phase B.  (Section 6 compares two
+# code paths of one build bit for bit, not draws across platforms.)
 
 # ---------------------------------------------------------------------------
 # 1. radical_inverse: known values
@@ -261,4 +264,93 @@ test_that("the full 128-prime Halton table is addressable", {
     gen_seed = 0L, gen_scramble = 0L, gen_S = 1L
   )
   expect_equal(as.numeric(shares), c(0.5, 0.5), tolerance = 1e-15)
+})
+
+# ---------------------------------------------------------------------------
+# 6. Block generator: HaltonGen::fill_block() against the per-index loop
+# ---------------------------------------------------------------------------
+
+test_that("fill_block reproduces the per-index draws bit for bit", {
+  # fill_block() forms a block's uniforms first -- digits by division by a
+  # compile-time constant for bases up to 31, base 2 by an exact integer
+  # odometer while the block's last index is below 2^53 -- and then applies
+  # inv_normal_cdf. Generate-mode draws, hence fits, must not change, so the
+  # block must equal inv_normal_cdf(scrambled_halton_uniform(n, k)) exactly.
+  # The starts put blocks just below, at and across 2^53 (the odometer's
+  # limit), across 2^32 and 2^52 (where the odometer grows a top digit, at
+  # 2^52 its last), and up to 64 binary digits; K_w = 12 and 20 reach bases
+  # 37 and 71, past the compile-time bases. 32-bit x87 builds keep doubles in
+  # 80-bit registers, where the two code paths may round differently.
+  skip_if(R.version$arch %in% c("i386", "i686"), "x87 excess precision")
+  starts <- function(S) {
+    c(1, 1e4, 2.5e8, 2^32 - S %/% 2, 1e10, 2^52 - S %/% 2, 2^53 - S,
+      2^53 - S + 1, 2^53 - S %/% 2, 1e18, 2^64 - 2048)
+  }
+  differs <- function(n0, S, K_w, scramble, seed = 2718) {
+    blk <- choicer:::halton_fill_block(n0, S, K_w, seed, scramble)
+    ref <- choicer:::halton_reference_block(n0, S, K_w, seed, scramble)
+    if (identical(blk, ref, num.eq = FALSE)) character(0) else
+      sprintf("n0 = %.17g, S = %d, K_w = %d, scramble = %d", n0, S, K_w,
+              scramble)
+  }
+  for (S in c(1L, 2L, 7L, 100L, 1000L)) {
+    bad <- character(0)
+    for (K_w in c(1L, 3L, 12L, 20L)) {
+      for (scramble in 0:1) {
+        for (n0 in starts(S)) bad <- c(bad, differs(n0, S, K_w, scramble))
+      }
+    }
+    expect_identical(bad, character(0), label = sprintf("blocks at S = %d", S))
+  }
+
+  # The whole primes table (bases up to 719; near 2^64 every base reaches its
+  # top digit), and a block that ends at the last index, 2^64 - 1.
+  bad <- character(0)
+  for (scramble in 0:1) {
+    for (n0 in c(1, 2^53 - 7, 1e18, 2^64 - 2048)) {
+      bad <- c(bad, differs(n0, 7L, 128L, scramble))
+    }
+    bad <- c(bad, differs(2^64 - 2048, 2048L, 3L, scramble))
+  }
+  expect_identical(bad, character(0), label = "K_w = 128 and the last index")
+})
+
+test_that("the permutation table keeps every digit position of a 64-bit index", {
+  # Both sides of the block test read the same table, so its extent is checked
+  # here: dimension k keeps one permutation per base-b digit of 2^64 - 1, the
+  # largest index. That count is 64 in base 2 and ceiling(64 / log2(b)) for
+  # an odd prime b, where 64 / log2(b) is never an integer (the margin below
+  # keeps the floating-point ceiling unambiguous).
+  primes <- function(n) {
+    p <- integer(0); k <- 2L
+    while (length(p) < n) {
+      if (all(k %% p[p * p <= k] != 0L)) p <- c(p, k)
+      k <- k + 1L
+    }
+    p
+  }
+  b <- primes(128L)
+  ratio <- 64 / log2(b[-1L])
+  expect_true(all(abs(ratio - round(ratio)) > 1e-6))
+  digits <- c(64, ceiling(ratio))
+  lay <- choicer:::halton_table_layout(128L)
+  expect_identical(lay$digits, as.integer(digits))
+  expect_identical(lay$offsets, cumsum(c(0, utils::head(digits * b, -1L))))
+  expect_identical(lay$size, sum(digits * b))
+})
+
+test_that("the block exports reject invalid blocks", {
+  msg <- "n0 must be an integer in \\[1, 2\\^64\\)"
+  expect_error(choicer:::halton_fill_block(0, 1L, 1L, 0, 0L), msg)
+  expect_error(choicer:::halton_fill_block(1.5, 1L, 1L, 0, 0L), msg)
+  expect_error(choicer:::halton_fill_block(NaN, 1L, 1L, 0, 0L), msg)
+  expect_error(choicer:::halton_fill_block(2^64, 1L, 1L, 0, 0L), msg)
+  expect_error(choicer:::halton_reference_block(2^64 - 2048, 2049L, 1L, 0, 0L),
+               "passes 2\\^64 - 1")
+  expect_error(choicer:::halton_fill_block(1, 0L, 1L, 0, 0L),
+               "S must be positive")
+  expect_error(choicer:::halton_reference_block(1, 1L, 129L, 0, 0L),
+               "between 1 and 128")
+  expect_error(choicer:::halton_fill_block(1, 1L, 1L, -1, 1L),
+               "seed must be an integer in \\[0, 2\\^64\\)")
 })

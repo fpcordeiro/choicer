@@ -106,6 +106,25 @@
   under 0.2 GB and an evaluation ran 19% faster at `S = 25` (7-9% at
   `S = 100`); fits at `S = 50` on 10^7 rows took 9% less time per
   evaluation. The kernels' offsets into the stacked design are now 64-bit.
+- Generate-mode draws (`draws = "generate"`) are now formed in two passes
+  over each block: all the Halton uniforms first, then the inverse normal
+  CDF. The first (base-2) dimension is stepped by an exact integer odometer,
+  and the digits of the next ten (bases 3 to 31) are taken by division by a
+  compile-time constant. The draws are bit-identical to before on 64-bit
+  platforms, so this change by itself alters no estimate, standard error,
+  prediction or other post-estimation quantity; it lowers the cost of
+  regenerating the draws at each likelihood evaluation. With three random
+  coefficients and `S = 100`, gradient evaluations ran 32-36% faster on a
+  synthetic four-alternative cross-section (10^6 rows at 1 and 11 threads,
+  10^7 rows at 11), where regenerating the draws had taken about half the
+  time; 10-14% faster on a school-census-like design (thousands of schools,
+  10-100 per choice set); and showed no measurable change (under 3%, within
+  run-to-run noise) on claims-like panels with 20-200 hospitals per choice
+  set, whose cost lies elsewhere. On the four-alternative data a
+  generate-mode evaluation now takes about 1.35 times as long as a
+  store-mode one, down from about 2 times. The generator's
+  digit-permutation tables are also smaller: 1.3 MB instead of 11 MB at the
+  128-dimension maximum.
 - Together these kernel changes alter results only by floating-point
   rounding: at most 3.4e-15 relative on our reference battery of kernel
   configurations, and within the 1e-10 our tests allow for decision makers

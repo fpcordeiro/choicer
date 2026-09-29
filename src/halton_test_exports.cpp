@@ -93,3 +93,102 @@ arma::mat halton_generate_normal(int S, int N, int K_w, double seed, int scrambl
     }
     return out;
 }
+
+// Validate the arguments of the block exports below and return the block's
+// first index. n0 and seed are integer-valued doubles: every such double below
+// 2^64 converts to uint64_t exactly, including starts past 2^53.
+static uint64_t halton_block_start(double n0, int S, int K_w, double seed) {
+    const double two64 = 18446744073709551616.0;  // 2^64, exact
+    if (K_w < 1 || K_w > HALTON_N_PRIMES) {
+        Rcpp::stop("K_w must be between 1 and %d.", HALTON_N_PRIMES);
+    }
+    if (S < 1) Rcpp::stop("S must be positive.");
+    if (!(seed >= 0.0 && seed < two64 && seed == std::floor(seed))) {
+        Rcpp::stop("seed must be an integer in [0, 2^64).");
+    }
+    if (!(n0 >= 1.0 && n0 < two64 && n0 == std::floor(n0))) {
+        Rcpp::stop("n0 must be an integer in [1, 2^64).");
+    }
+    const uint64_t start = static_cast<uint64_t>(n0);
+    if (static_cast<uint64_t>(S) - 1 >
+        std::numeric_limits<uint64_t>::max() - start) {
+        Rcpp::stop("The block n0, ..., n0 + S - 1 passes 2^64 - 1.");
+    }
+    return start;
+}
+
+//' Block of normal draws from HaltonGen::fill_block for testing halton.h
+//'
+//' @param n0 First global Halton index of the block: an integer-valued double
+//'   in [1, 2^64), so blocks past 2^53 are addressable.
+//' @param S Number of draws (columns).
+//' @param K_w Number of random-coefficient dimensions (rows).
+//' @param seed Master seed for position-wise digit permutations: an
+//'   integer-valued double in [0, 2^64).
+//' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
+//' @return K_w x S arma::mat; column s holds the draw of index n0 + s.
+//' @noRd
+// [[Rcpp::export]]
+arma::mat halton_fill_block(double n0, int S, int K_w, double seed, int scramble) {
+    const uint64_t start = halton_block_start(n0, S, K_w, seed);
+    HaltonGen gen(static_cast<uint64_t>(seed), S, K_w, scramble);
+    arma::mat out(K_w, S);
+    gen.fill_block(out.memptr(), start);
+    return out;
+}
+
+//' Per-index reference for halton_fill_block
+//'
+//' The per-index computation that HaltonGen::fill_eta_i ran before the block
+//' generator: `out(k, s) = inv_normal_cdf(scrambled_halton_uniform(n0 + s, k))`,
+//' draw by draw, with the indices formed in uint64_t.
+//'
+//' @param n0 First global Halton index of the block, as for halton_fill_block.
+//' @param S Number of draws (columns).
+//' @param K_w Number of random-coefficient dimensions (rows).
+//' @param seed Master seed for position-wise digit permutations, as for
+//'   halton_fill_block.
+//' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
+//' @return K_w x S arma::mat of standard-normal draws, laid out as in
+//'   halton_fill_block.
+//' @noRd
+// [[Rcpp::export]]
+arma::mat halton_reference_block(double n0, int S, int K_w, double seed, int scramble) {
+    const uint64_t start = halton_block_start(n0, S, K_w, seed);
+    HaltonGen gen(static_cast<uint64_t>(seed), S, K_w, scramble);
+    arma::mat out(K_w, S);
+    for (int s = 0; s < S; ++s) {
+        const uint64_t n = start + static_cast<uint64_t>(s);
+        for (int k = 0; k < K_w; ++k) {
+            out(k, s) = inv_normal_cdf(gen.scrambled_halton_uniform(n, k));
+        }
+    }
+    return out;
+}
+
+//' Layout of HaltonGen's digit-permutation table for testing halton.h
+//'
+//' The table keeps, per dimension k with base b, the digit positions a 64-bit
+//' index can have; the block tests read it on both sides, so its extent is
+//' checked here against the base-b digit count of 2^64 - 1.
+//'
+//' @param K_w Number of random-coefficient dimensions.
+//' @return List with `digits` (positions kept per dimension), `offsets`
+//'   (start of each dimension's permutations) and `size` (entries in all).
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List halton_table_layout(int K_w) {
+    if (K_w < 1 || K_w > HALTON_N_PRIMES) {
+        Rcpp::stop("K_w must be between 1 and %d.", HALTON_N_PRIMES);
+    }
+    HaltonGen gen(0, 1, K_w, 0);
+    Rcpp::IntegerVector digits(K_w);
+    Rcpp::NumericVector offsets(K_w);
+    for (int k = 0; k < K_w; ++k) {
+        digits[k] = halton_index_digits(HALTON_PRIMES[k]);
+        offsets[k] = static_cast<double>(gen.perm_off[k]);
+    }
+    return Rcpp::List::create(
+        Rcpp::Named("digits") = digits, Rcpp::Named("offsets") = offsets,
+        Rcpp::Named("size") = static_cast<double>(gen.perm.size()));
+}

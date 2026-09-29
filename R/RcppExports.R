@@ -56,6 +56,54 @@ halton_generate_normal <- function(S, N, K_w, seed, scramble) {
     .Call(`_choicer_halton_generate_normal`, S, N, K_w, seed, scramble)
 }
 
+#' Block of normal draws from HaltonGen::fill_block for testing halton.h
+#'
+#' @param n0 First global Halton index of the block: an integer-valued double
+#'   in [1, 2^64), so blocks past 2^53 are addressable.
+#' @param S Number of draws (columns).
+#' @param K_w Number of random-coefficient dimensions (rows).
+#' @param seed Master seed for position-wise digit permutations: an
+#'   integer-valued double in [0, 2^64).
+#' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
+#' @return K_w x S arma::mat; column s holds the draw of index n0 + s.
+#' @noRd
+halton_fill_block <- function(n0, S, K_w, seed, scramble) {
+    .Call(`_choicer_halton_fill_block`, n0, S, K_w, seed, scramble)
+}
+
+#' Per-index reference for halton_fill_block
+#'
+#' The per-index computation that HaltonGen::fill_eta_i ran before the block
+#' generator: `out(k, s) = inv_normal_cdf(scrambled_halton_uniform(n0 + s, k))`,
+#' draw by draw, with the indices formed in uint64_t.
+#'
+#' @param n0 First global Halton index of the block, as for halton_fill_block.
+#' @param S Number of draws (columns).
+#' @param K_w Number of random-coefficient dimensions (rows).
+#' @param seed Master seed for position-wise digit permutations, as for
+#'   halton_fill_block.
+#' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
+#' @return K_w x S arma::mat of standard-normal draws, laid out as in
+#'   halton_fill_block.
+#' @noRd
+halton_reference_block <- function(n0, S, K_w, seed, scramble) {
+    .Call(`_choicer_halton_reference_block`, n0, S, K_w, seed, scramble)
+}
+
+#' Layout of HaltonGen's digit-permutation table for testing halton.h
+#'
+#' The table keeps, per dimension k with base b, the digit positions a 64-bit
+#' index can have; the block tests read it on both sides, so its extent is
+#' checked here against the base-b digit count of 2^64 - 1.
+#'
+#' @param K_w Number of random-coefficient dimensions.
+#' @return List with `digits` (positions kept per dimension), `offsets`
+#'   (start of each dimension's permutations) and `size` (entries in all).
+#' @noRd
+halton_table_layout <- function(K_w) {
+    .Call(`_choicer_halton_table_layout`, K_w)
+}
+
 #' Hand-rolled lower Cholesky for testing hb_internal.h
 #'
 #' @param A Symmetric matrix.

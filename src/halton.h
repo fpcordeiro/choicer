@@ -13,9 +13,10 @@
 //   - Include order: this header must be included from a .cpp translation unit that
 //     has already included choicer.h (which brings in RcppArmadillo.h), so arma::
 //     types are available here even though halton.h does not include them directly.
-//   - Thread safety: HaltonGen is const after construction; fill_eta_i() takes a
-//     mutable eta_i buffer owned by the calling thread. Multiple threads may call
-//     fill_eta_i() simultaneously on the same const HaltonGen without data races.
+//   - Thread safety: HaltonGen is const after construction; fill_block() and
+//     fill_eta_i() write only a buffer owned by the calling thread and keep their
+//     working state on the stack. Multiple threads may call them simultaneously on
+//     the same const HaltonGen without data races.
 //   - Bitwise reproducibility: n = (i-1)*S + s + 1 is a deterministic function of
 //     (i, s, S) and the permutation table is a deterministic function of the seed,
 //     so results are identical regardless of OpenMP thread count or schedule.
@@ -25,6 +26,7 @@
 
 #include <cstdint>
 #include <cmath>
+#include <limits>
 #include <vector>
 #include "rng.h"   // for splitmix64_next(uint64_t&) and mix_seed(uint64_t, uint64_t)
 
@@ -168,27 +170,85 @@ inline double inv_normal_cdf(double p) {
 // (dimension k, digit position d), shared across all sequence indices.
 //
 // This is NOT Owen's nested-uniform scramble: Owen's permutation at position d
-// depends on the preceding d-digit prefix, whereas perm[k][d] does not. Also,
-// scrambled_halton_uniform() stops when n == 0, so implicit trailing zero
-// digits are left unchanged instead of being permuted. Consequently this
-// construction must not be advertised with standard RQMC marginal-uniformity,
-// unbiasedness, variance-rate, or replicate-error guarantees. The public R
-// value "owen" is retained only as a deprecated compatibility alias for mode 1.
+// depends on the preceding d-digit prefix, whereas the permutation of
+// (k, d) does not. Also, scrambled_halton_uniform() stops when n == 0, so
+// implicit trailing zero digits are left unchanged instead of being permuted.
+// Consequently this construction must not be advertised with standard RQMC
+// marginal-uniformity, unbiasedness, variance-rate, or replicate-error
+// guarantees. The public R value "owen" is retained only as a deprecated
+// compatibility alias for mode 1.
 //
-// HALTON_MAX_DIGITS = 64 is a conservative upper bound on the number of base-b
-// digits needed for any practical sequence index (covers indices up to b^64).
+// HALTON_MAX_DIGITS = 64 is the number of base-2 digits of a uint64_t index,
+// hence an upper bound on the digits of any index in any base; the stride of
+// the place-value table. The permutation table keeps, per base b, only the
+// positions an index can reach: halton_index_digits(b).
 // ============================================================================
 
 static const int HALTON_MAX_DIGITS = 64;
+
+// Largest index of a block whose base-2 uniforms come from the integer
+// odometer (HaltonGen::uniforms_odometer2): 2^53 - 1, so that an index has at
+// most 53 binary digits.
+static const uint64_t HALTON_ODOMETER_MAX = (static_cast<uint64_t>(1) << 53) - 1;
+
+// Number of base-b digits of the largest index, 2^64 - 1: the digit positions
+// any uint64_t index can have (64 in base 2, 41 in base 3, 7 in base 719).
+inline int halton_index_digits(uint32_t b) {
+    int digits = 0;
+    for (uint64_t m = std::numeric_limits<uint64_t>::max(); m > 0; m /= b) ++digits;
+    return digits;
+}
+
+// ============================================================================
+// Block generation: fill_block() and why its draws are bit-identical to the
+// per-index loop
+//
+//   for s = 0..S-1, k = 0..K_w-1:
+//     e[s * K_w + k] = inv_normal_cdf(scrambled_halton_uniform(n0 + s, k))
+//
+// that fill_eta_i() ran before (tests: halton_fill_block() against
+// halton_reference_block()).
+//   1. Two passes. Pass 1 writes every uniform of the block, dimension by
+//      dimension; pass 2 maps each through inv_normal_cdf(). Each value goes
+//      through the same operations as in the per-index loop; only the order in
+//      which different values are computed changes, and no value depends on
+//      another.
+//   2. Digits. uniforms_from_digits<B>() takes digit d as n - (n / b) * b with
+//      the base a compile-time constant for b <= 31: exact integer arithmetic,
+//      so the digits are those of n % b.
+//   3. Terms and order. Each permuted digit is the same table entry, and the
+//      place value place[k * HALTON_MAX_DIGITS + d] is the f of
+//      scrambled_halton_uniform() after d divisions, computed by the same
+//      divisions. The terms are added from digit 0 upward in the same
+//      expression form, u += (double)digit * f, so a compiler that contracts it
+//      into a fused multiply-add does so in both. This assumes doubles are
+//      evaluated in double precision (FLT_EVAL_METHOD == 0, true on every
+//      platform R supports but 32-bit x87 builds, where f may be held in an
+//      80-bit register while place[d] is rounded).
+//   4. Base 2 by an integer odometer (uniforms_odometer2(), blocks whose last
+//      index is below 2^53). A base-2 term is 0 or 2^-(d+1). An index below
+//      2^53 has at most 53 binary digits, so every partial sum of the
+//      floating-point loop is exact, and its result is U 2^-63 with the
+//      integer U = sum_d P_d(digit_d) 2^(62-d). U is a multiple of 2^10 below
+//      2^63, so it has at most 53 significant bits and converts to double
+//      exactly, and scaling by 2^-63 is exact. The odometer maintains U from
+//      one index to the next: see uniforms_odometer2(). Blocks that reach 2^53
+//      use the digit loop.
+// ============================================================================
 
 struct HaltonGen {
     int S;
     int K_w;
     int scramble_mode;  // 0 = identity; 1 = position-wise digit permutation
 
-    // perm[k][d][j]: permuted digit j at digit-position d for dimension k
-    // perm[k][d] is a std::vector<uint32_t> of size HALTON_PRIMES[k]
-    std::vector<std::vector<std::vector<uint32_t>>> perm;
+    // Digit permutations, flat: at digit position d of dimension k (base
+    // b = HALTON_PRIMES[k]), digit j becomes perm[perm_off[k] + d * b + j],
+    // for d < halton_index_digits(b). At K_w = 128 this is 1.3 MB.
+    std::vector<uint32_t> perm;
+    std::vector<size_t> perm_off;
+    // Place values: place[k * HALTON_MAX_DIGITS + d] = b^-(d+1), each the f
+    // of scrambled_halton_uniform() after d divisions.
+    std::vector<double> place;
 
     // Default constructor: placeholder (non-functional); used by two-step init:
     //   HaltonGen gen;
@@ -202,30 +262,46 @@ struct HaltonGen {
     //   scramble_mode_— 0 = identity, 1 = position-wise digit permutation
     HaltonGen(uint64_t seed, int S_, int K_w_, int scramble_mode_)
         : S(S_), K_w(K_w_), scramble_mode(scramble_mode_),
-          perm(K_w_)
+          perm_off(K_w_), place(static_cast<size_t>(K_w_) * HALTON_MAX_DIGITS)
     {
+        size_t n_perm = 0;
         for (int k = 0; k < K_w_; ++k) {
-            uint32_t b = HALTON_PRIMES[k];
-            perm[k].resize(HALTON_MAX_DIGITS, std::vector<uint32_t>(b));
-            for (int d = 0; d < HALTON_MAX_DIGITS; ++d) {
+            perm_off[k] = n_perm;
+            n_perm += static_cast<size_t>(halton_index_digits(HALTON_PRIMES[k])) *
+                      HALTON_PRIMES[k];
+        }
+        perm.resize(n_perm);
+        for (int k = 0; k < K_w_; ++k) {
+            const uint32_t b = HALTON_PRIMES[k];
+            const int n_digits = halton_index_digits(b);
+            for (int d = 0; d < n_digits; ++d) {
+                uint32_t* p = &perm[perm_off[k] + static_cast<size_t>(d) * b];
                 // Initialize to identity
-                for (uint32_t j = 0; j < b; ++j) perm[k][d][j] = j;
+                for (uint32_t j = 0; j < b; ++j) p[j] = j;
                 if (scramble_mode_ == 1) {
                     // Fisher-Yates shuffle with a splitmix64 stream derived
                     // from the triple (seed, k, d) via two mix_seed folds.
                     // mix_seed() and splitmix64_next() are from rng.h.
                     // splitmix64_next takes uint64_t& (modifies in place).
+                    // Each position has its own stream, so the positions no
+                    // index reaches can be left out without changing the
+                    // others.
                     uint64_t local_seed = mix_seed(
                         mix_seed(seed, static_cast<uint64_t>(k)),
                         static_cast<uint64_t>(d));
                     for (uint32_t j = b - 1; j > 0; --j) {
                         uint64_t rv = splitmix64_next(local_seed);
                         uint32_t swap_idx = static_cast<uint32_t>(rv % (j + 1));
-                        uint32_t tmp = perm[k][d][j];
-                        perm[k][d][j] = perm[k][d][swap_idx];
-                        perm[k][d][swap_idx] = tmp;
+                        uint32_t tmp = p[j];
+                        p[j] = p[swap_idx];
+                        p[swap_idx] = tmp;
                     }
                 }
+            }
+            double f = 1.0 / static_cast<double>(b);
+            for (int d = 0; d < HALTON_MAX_DIGITS; ++d) {
+                place[static_cast<size_t>(k) * HALTON_MAX_DIGITS + d] = f;
+                f /= static_cast<double>(b);
             }
         }
     }
@@ -233,20 +309,54 @@ struct HaltonGen {
     // Compute one digit-permuted Halton draw in [0, 1) for dimension k, index n.
     // Only the explicit base-b digits of n are processed; trailing zeros are not.
     // In identity mode (scramble_mode = 0), reduces to radical_inverse(n, HALTON_PRIMES[k]).
+    // The per-index reference for fill_block().
     inline double scrambled_halton_uniform(uint64_t n, int k) const {
         uint32_t b = HALTON_PRIMES[k];
+        const uint32_t* P = perm.data() + perm_off[k];
         double result = 0.0;
         double f = 1.0 / static_cast<double>(b);
         int d = 0;
         while (n > 0) {
             uint32_t digit = static_cast<uint32_t>(n % b);
-            uint32_t sd = perm[k][d][digit];  // identity permutation when scramble_mode=0
+            uint32_t sd = P[static_cast<size_t>(d) * b + digit];  // identity when scramble_mode=0
             result += static_cast<double>(sd) * f;
             n /= b;
             f /= static_cast<double>(b);
             ++d;
         }
         return result;
+    }
+
+    // Fill e[s * K_w + k] (column-major K_w x S) with the standard-normal draws
+    // of indices n0, ..., n0 + S - 1: all uniforms first, then the inverse
+    // normal CDF (see the proof above). e must hold K_w * S doubles, and the
+    // last index n0 + S - 1 must not pass 2^64 - 1.
+    void fill_block(double* e, const uint64_t n0) const {
+        if (S <= 0 || K_w <= 0) return;
+        const uint64_t span = static_cast<uint64_t>(S) - 1;  // last index n0 + span
+        const bool odometer = n0 <= HALTON_ODOMETER_MAX &&
+                              span <= HALTON_ODOMETER_MAX - n0;
+        for (int k = 0; k < K_w; ++k) {
+            switch (HALTON_PRIMES[k]) {
+            case 2:
+                if (odometer) uniforms_odometer2(e, k, n0);
+                else uniforms_from_digits<2>(e, k, n0);
+                break;
+            case 3:  uniforms_from_digits<3>(e, k, n0);  break;
+            case 5:  uniforms_from_digits<5>(e, k, n0);  break;
+            case 7:  uniforms_from_digits<7>(e, k, n0);  break;
+            case 11: uniforms_from_digits<11>(e, k, n0); break;
+            case 13: uniforms_from_digits<13>(e, k, n0); break;
+            case 17: uniforms_from_digits<17>(e, k, n0); break;
+            case 19: uniforms_from_digits<19>(e, k, n0); break;
+            case 23: uniforms_from_digits<23>(e, k, n0); break;
+            case 29: uniforms_from_digits<29>(e, k, n0); break;
+            case 31: uniforms_from_digits<31>(e, k, n0); break;
+            default: uniforms_from_digits<0>(e, k, n0);
+            }
+        }
+        const size_t n_eta = static_cast<size_t>(K_w) * static_cast<size_t>(S);
+        for (size_t j = 0; j < n_eta; ++j) e[j] = inv_normal_cdf(e[j]);
     }
 
     // Fill eta_i: write K_w × S standard-normal draws into eta_i for individual i (1-based).
@@ -257,17 +367,76 @@ struct HaltonGen {
     // eta_i is resized to K_w × S on entry; the caller owns this buffer (thread-private).
     void fill_eta_i(arma::mat& eta_i, int i) const {
         eta_i.set_size(K_w, S);
+        fill_block(eta_i.memptr(),
+                   static_cast<uint64_t>(i - 1) * static_cast<uint64_t>(S) + 1ULL);
+    }
+
+private:
+    // Pass-1 helpers of fill_block(), which establishes their preconditions.
+
+    // Uniforms of dimension k for indices n0, ..., n0 + S - 1, written to
+    // e[s * K_w + k], each from its own digits as in scrambled_halton_uniform().
+    // B > 0 fixes the base at compile time, so the digit division is by a
+    // constant; B = 0 reads it from the table.
+    template <uint32_t B>
+    void uniforms_from_digits(double* e, const int k, const uint64_t n0) const {
+        const uint32_t b = B ? B : HALTON_PRIMES[k];
+        const uint32_t* P = perm.data() + perm_off[k];
+        const double* F = place.data() + static_cast<size_t>(k) * HALTON_MAX_DIGITS;
         for (int s = 0; s < S; ++s) {
-            const uint64_t n = static_cast<uint64_t>(i - 1) *
-                               static_cast<uint64_t>(S) +
-                               static_cast<uint64_t>(s) + 1ULL;
-            for (int k = 0; k < K_w; ++k) {
-                double u = scrambled_halton_uniform(n, k);
-                eta_i(k, s) = inv_normal_cdf(u);
+            uint64_t n = n0 + static_cast<uint64_t>(s);
+            double u = 0.0;
+            int d = 0;
+            while (n > 0) {
+                const uint64_t q = n / b;
+                const uint32_t digit = static_cast<uint32_t>(n - q * b);
+                u += static_cast<double>(P[static_cast<size_t>(d) * b + digit]) * F[d];
+                n = q;
+                ++d;
             }
+            e[static_cast<size_t>(s) * K_w + k] = u;
         }
     }
 
+    // Uniforms of base-2 dimension k for indices n0, ..., n0 + S - 1 by an
+    // exact integer odometer; requires n0 + S - 1 <= HALTON_ODOMETER_MAX.
+    // U = sum_d P_d(digit_d) 2^(62-d) over the explicit binary digits of the
+    // current index, and u = U 2^-63 (see the proof above). The next index is
+    // n + 1: its explicit 1-digits from the bottom turn into explicit 0-digits,
+    // which are still permuted (P_d(0), not dropped), and the first 0-digit
+    // becomes 1, or, past the top digit, a new top digit 1 appears. U changes
+    // by the permuted values of the changed digits only.
+    void uniforms_odometer2(double* e, const int k, const uint64_t n0) const {
+        const uint32_t* P = perm.data() + perm_off[k];  // P[2 * d + digit]
+        const double scale = 1.0 / 9223372036854775808.0;  // 2^-63, exact
+        uint32_t digit[HALTON_MAX_DIGITS];
+        int n_digits = 0;  // explicit digits of the current index
+        uint64_t U = 0;
+        for (uint64_t m = n0; m > 0; m >>= 1, ++n_digits) {
+            digit[n_digits] = static_cast<uint32_t>(m & 1u);
+            U += static_cast<uint64_t>(P[2 * n_digits + digit[n_digits]])
+                 << (62 - n_digits);
+        }
+        e[k] = static_cast<double>(U) * scale;
+        for (int s = 1; s < S; ++s) {
+            int d = 0;
+            while (d < n_digits && digit[d] == 1u) {  // 1 -> explicit 0, carry
+                U = U - (static_cast<uint64_t>(P[2 * d + 1]) << (62 - d)) +
+                    (static_cast<uint64_t>(P[2 * d]) << (62 - d));
+                digit[d] = 0u;
+                ++d;
+            }
+            if (d == n_digits) {  // new top digit 1
+                ++n_digits;
+                U += static_cast<uint64_t>(P[2 * d + 1]) << (62 - d);
+            } else {              // explicit 0 -> 1
+                U = U - (static_cast<uint64_t>(P[2 * d]) << (62 - d)) +
+                    (static_cast<uint64_t>(P[2 * d + 1]) << (62 - d));
+            }
+            digit[d] = 1u;
+            e[static_cast<size_t>(s) * K_w + k] = static_cast<double>(U) * scale;
+        }
+    }
 };
 
 #endif // CHOICER_HALTON_HPP
