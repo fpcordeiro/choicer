@@ -152,6 +152,18 @@
   the kernels can address with their 32-bit indices.
   `draws = "generate"` has neither limit. choicer now requires randtoolbox
   1.31.0 or later, the release that added `halton(start = )`.
+- `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()` (and so
+  `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()`) copy only the
+  columns the model uses from a data.frame, tibble or data.table, where they
+  copied the whole data set; they scan those columns for missing values one
+  at a time instead of through a rows-by-columns `is.na()` matrix, and check
+  that the covariates are numeric without copying them. `prepare_nl_data()`
+  no longer makes a second full copy to read the alternative-to-nest map. On
+  a synthetic claims-style panel of 8.7 million rows, peak heap use fell from
+  5.7 to 4.3 times the size of the input for `prepare_nl_data()` and from
+  4.5 to 4.0 times for `prepare_mxl_data()`; the saving grows with the
+  number of columns the model does not use. The prepared objects are
+  unchanged on our reference battery and on every call the test suite makes.
 
 ## Corrections
 

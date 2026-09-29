@@ -918,7 +918,6 @@ prepare_mxl_data <- function(
          "cross-sectional likelihood with the WESML weights instead, clustering ",
          "on the decision maker via `cluster_col`.", call. = FALSE)
   }
-  dt <- data.table::as.data.table(data)[]
 
   # Check if all relevant variables are available
   needed <- c(id_col, alt_col, choice_col, covariate_cols, random_var_cols)
@@ -928,19 +927,14 @@ prepare_mxl_data <- function(
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
   if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
   if (!is.null(person_col)) needed <- c(needed, person_col)
+  # A private copy of the needed columns only; `data` itself is never modified
+  dt <- .copy_cols(data, needed)
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
 
-  # Drop non-relevant variables
-  vars_to_drop <- setdiff(names(dt), needed)
-  if (length(vars_to_drop) > 0) {
-    dt[, (vars_to_drop) := NULL]
-  }
-
   ## Drop ids with missing observations ----------------------------------------
-  dt[, HAS_NA := rowSums(is.na(.SD)) > 0]
-  ids_to_drop <- dt[HAS_NA==TRUE, get(id_col)] |> unique()
+  ids_to_drop <- unique(dt[[id_col]][.rows_with_na(dt)])
   if (length(ids_to_drop) > 0) {
     dt <- dt[!(get(id_col) %in% ids_to_drop)]
     warning("Removed ", length(ids_to_drop),
@@ -949,14 +943,15 @@ prepare_mxl_data <- function(
   if (nrow(dt) == 0) {
     stop("All choice situations removed due to missing values.")
   }
-  dt[, HAS_NA := NULL]
 
   ## Sanity checks ---------------------------------------------------------
 
-  ## covariates must be numeric
-  if (!all(vapply(dt[, ..covariate_cols], is.numeric, logical(1L))))
+  ## covariates must be numeric (read in place: dt[, ..cols] would copy them)
+  if (!all(vapply(match(covariate_cols, names(dt)),
+                  function(j) is.numeric(.subset2(dt, j)), NA)))
     stop("All covariates must be numeric.")
-  if (!all(vapply(dt[, ..random_var_cols], is.numeric, logical(1L))))
+  if (!all(vapply(match(random_var_cols, names(dt)),
+                  function(j) is.numeric(.subset2(dt, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## choice column must be 0 or 1
