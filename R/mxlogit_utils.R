@@ -203,7 +203,14 @@
 #' @param draws Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
 #'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube, one
 #'   block per likelihood unit (\code{U} decision makers with \code{person_col}, choice
-#'   situations otherwise; existing behavior, exact reproducibility). \code{"generate"}
+#'   situations otherwise; existing behavior, exact reproducibility). It supports at
+#'   most \eqn{2^{31} - 1} points (\eqn{S \times U}) and \eqn{2^{32} - 1} values
+#'   (\eqn{K_w \times S \times U}); \code{predict()}, \code{elasticities()},
+#'   \code{diversion_ratios()}, \code{blp()}, \code{logsum()},
+#'   \code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
+#'   statistics) regenerate one block per choice situation, so for them the
+#'   number of choice situations replaces \eqn{U} (see
+#'   \code{\link{get_halton_normals}}). \code{"generate"}
 #'   computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 #'   cube; recommended for memory-constrained or large-N settings. With
 #'   \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
@@ -1187,6 +1194,17 @@ prepare_mxl_data <- function(
 #'
 #' Create halton normal draws in appropriate format for mixed logit estimation
 #'
+#' Draw unit \eqn{i} receives the \eqn{S} consecutive points
+#' \eqn{(i - 1)S + 1, \ldots, iS} of the \eqn{K_w}-dimensional Halton sequence
+#' of \code{randtoolbox::halton()}, mapped to standard normals. The cube is
+#' filled a block of units at a time, so it never holds a second copy of the
+#' sequence. Store mode supports at most \eqn{2^{31} - 1} points
+#' (\eqn{S \times N}), the largest starting index \code{halton(start = )}
+#' accepts, and \eqn{2^{32} - 1} values (\eqn{K_w \times S \times N}), the
+#' most the kernels address with their 32-bit indices;
+#' \code{draws = "generate"} in \code{\link{run_mxlogit}} has neither limit and
+#' never materializes the cube.
+#'
 #' @param S Number of draws per draw unit
 #' @param N number of draw units: choice situations, or decision makers for a
 #'   panel fit (\code{person_col} in \code{\link{run_mxlogit}})
@@ -1198,32 +1216,59 @@ prepare_mxl_data <- function(
 #' @importFrom randtoolbox halton
 #' @export
 get_halton_normals <- function(S, N, K_w) {
-  # Generate all needed Halton draws at once
-  # We need S * N draws for each of K_w dimensions
-  total_draws <- S * N
-
-  # Generate Halton sequence
-  # randtoolbox::halton returns a matrix of size total_draws x K_w
-  # (but drops to vector when K_w = 1, so ensure matrix)
-  halton_seq <- randtoolbox::halton(n = total_draws, dim = K_w, normal = TRUE)
-  if (!is.matrix(halton_seq)) halton_seq <- matrix(halton_seq, ncol = 1)
-
-  # Initialize the eta_draws array
-  eta_draws <- array(0, dim = c(K_w, S, N))
-  
-  # Fill the array
-  # The original code used: start_index = (i - 1) * S + 1 for each individual
-  # This corresponds to taking chunks of S rows from the halton sequence
-  for (i in 1:N) {
-     start_row <- (i - 1) * S + 1
-     end_row   <- i * S
-     
-     # halton_seq[start:end, ] is S x K_x
-     # we want K_x x S for eta_draws[, , i]
-     eta_draws[, , i] <- t(halton_seq[start_row:end_row, , drop=FALSE])
+  bad <- function(x) {
+    !is.numeric(x) || length(x) != 1L || !is.finite(x) || x < 1 || x != round(x)
   }
+  if (bad(S)) stop("`S` must be a single positive whole number.")
+  if (bad(N)) stop("`N` must be a single positive whole number.")
+  if (bad(K_w)) stop("`K_w` must be a single positive whole number.")
+  n_points <- as.numeric(S) * N
+  if (n_points > .Machine$integer.max) {
+    stop("A store-mode draw cube needs S * N = ",
+         format(n_points, big.mark = ",", scientific = FALSE),
+         " points of the Halton sequence, more than 2^31 - 1, the largest ",
+         "starting index randtoolbox::halton(start = ) accepts. Refit with ",
+         "run_mxlogit(draws = \"generate\").")
+  }
+  # The kernels address the cube with Armadillo's 32-bit indices (choicer
+  # does not define ARMA_64BIT_WORD); a larger cube would be misread.
+  if (n_points * K_w > 2^32 - 1) {
+    stop("A store-mode draw cube needs K_w * S * N = ",
+         format(n_points * K_w, big.mark = ",", scientific = FALSE),
+         " values, more than 2^32 - 1, the most the kernels can address. ",
+         "Refit with run_mxlogit(draws = \"generate\").")
+  }
+  .halton_cube(S, N, K_w)
+}
 
-  return(eta_draws)
+#' Fill the store-mode Halton cube a block of draw units at a time
+#'
+#' Unit i's draws are points (i - 1) * S + 1, ..., i * S of the sequence.
+#' `randtoolbox::halton(start = )` (randtoolbox >= 1.31.0) reproduces any slice
+#' of the full sequence bit for bit, so the blocks give exactly the draws of a
+#' single call over all S * N points. They avoid that call's copies of the
+#' whole sequence and its 32-bit offsets into the output, which overflow past
+#' 2^31 - 1 values.
+#'
+#' @param S,N,K_w As in [get_halton_normals()], already validated.
+#' @param block Target number of values generated per `halton()` call; a
+#'   block holds at least one unit.
+#' @returns K_w x S x N array.
+#' @noRd
+.halton_cube <- function(S, N, K_w, block = 2^22) {
+  eta <- array(0, dim = c(K_w, S, N))
+  units_per_block <- max(1, floor(block / (as.numeric(S) * K_w)))
+  i0 <- 1
+  while (i0 <= N) {
+    i1 <- min(N, i0 + units_per_block - 1)
+    # (S * (i1 - i0 + 1)) x K_w, or a vector when K_w = 1; its transpose is
+    # eta[, , i0:i1] in memory order either way.
+    h <- randtoolbox::halton(n = S * (i1 - i0 + 1), dim = K_w, normal = TRUE,
+                             start = (i0 - 1) * S + 1)
+    eta[, , i0:i1] <- t(h)
+    i0 <- i1 + 1
+  }
+  eta
 }
 
 

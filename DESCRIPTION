@@ -27,7 +27,7 @@ Imports:
     data.table,
     graphics,
     nloptr,
-    randtoolbox,
+    randtoolbox (>= 1.31.0),
     Rcpp,
     stats,
     utils

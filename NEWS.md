@@ -131,6 +131,28 @@
   split into draw batches. The numerical changes of substance are the
   corrections below.
 
+## Data preparation at population scale
+
+- `get_halton_normals()` builds the draw cube of `draws = "store"`, at fit
+  time and again for post-estimation. It now fills the cube a block of units
+  at a time; before, it generated the whole Halton sequence in one call and
+  copied it into the cube unit by unit in an R loop. The draws are
+  bit-identical wherever the old code was well defined. For 2 million draw
+  units at `S = 100` with three random coefficients (a 4.8 GB cube),
+  building the cube took 21 s instead of 27 s, peak memory fell from 3.0 to
+  1.4 times the size of the cube (the rest is R's garbage-collection slack),
+  and 1.3 thousand allocations replaced 8 million. The single call also
+  computed positions in its output with 32-bit integers, which overflow past
+  2^31 - 1 values (a 17 GB cube); each block now stays far below that. The
+  function now checks that `S`, `N` and `K_w` are positive whole numbers,
+  and stops before allocating a cube that store mode cannot handle: more
+  than 2^31 - 1 points (`S * N`), the largest starting index
+  `randtoolbox::halton()` accepts, where the old code failed with an
+  unrelated error; or more than 2^32 - 1 values (`K_w * S * N`), the most
+  the kernels can address with their 32-bit indices.
+  `draws = "generate"` has neither limit. choicer now requires randtoolbox
+  1.31.0 or later, the release that added `halton(start = )`.
+
 ## Corrections
 
 The following were found while implementing the panel likelihood above and

@@ -20,6 +20,18 @@ K_w x S x N array with halton standard normal draws
 \description{
 Create halton normal draws in appropriate format for mixed logit estimation
 }
+\details{
+Draw unit \eqn{i} receives the \eqn{S} consecutive points
+\eqn{(i - 1)S + 1, \ldots, iS} of the \eqn{K_w}-dimensional Halton sequence
+of \code{randtoolbox::halton()}, mapped to standard normals. The cube is
+filled a block of units at a time, so it never holds a second copy of the
+sequence. Store mode supports at most \eqn{2^{31} - 1} points
+(\eqn{S \times N}), the largest starting index \code{halton(start = )}
+accepts, and \eqn{2^{32} - 1} values (\eqn{K_w \times S \times N}), the
+most the kernels address with their 32-bit indices;
+\code{draws = "generate"} in \code{\link{run_mxlogit}} has neither limit and
+never materializes the cube.
+}
 \examples{
 draws <- get_halton_normals(S = 50, N = 10, K_w = 2)
 dim(draws)  # 2 x 50 x 10

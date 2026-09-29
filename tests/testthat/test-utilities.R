@@ -127,6 +127,37 @@ test_that("get_halton_normals is deterministic", {
   expect_equal(eta1, eta2)
 })
 
+test_that("get_halton_normals gives unit i the points (i - 1) S + 1, ..., i S", {
+  # Reference: one halton() call over the whole sequence, cut into consecutive
+  # blocks of S points, one per unit.
+  full_cube <- function(S, N, K_w) {
+    h <- matrix(randtoolbox::halton(S * N, K_w, normal = TRUE), ncol = K_w)
+    array(t(h), dim = c(K_w, S, N))
+  }
+  for (p in list(c(1, 1, 1), c(7, 5, 1), c(50, 9, 2), c(3, 11, 5), c(1, 4, 3))) {
+    S <- p[1]; N <- p[2]; K_w <- p[3]
+    ref <- full_cube(S, N, K_w)
+    expect_identical(get_halton_normals(S, N, K_w), ref)
+    # Blocks of 1, 2, 3, N - 1, N and N + 1 units, including a partial last block.
+    for (units in unique(pmax(1, c(1, 2, 3, N - 1, N, N + 1)))) {
+      expect_identical(.halton_cube(S, N, K_w, block = units * S * K_w), ref)
+    }
+  }
+})
+
+test_that("get_halton_normals validates sizes and the sequence index limit", {
+  expect_error(get_halton_normals(0, 10, 2), "`S` must be a single positive whole number")
+  expect_error(get_halton_normals(10, 2.5, 2), "`N` must be a single positive whole number")
+  expect_error(get_halton_normals(10, 10, NA), "`K_w` must be a single positive whole number")
+  expect_error(get_halton_normals(c(10, 20), 10, 2), "`S` must be")
+  # None of these allocates: the guards run first.
+  expect_error(get_halton_normals(100, 3e7, 1), "more than 2\\^31 - 1")
+  expect_error(get_halton_normals(2, 2^30, 1), "more than 2\\^31 - 1")       # S * N = 2^31
+  expect_error(get_halton_normals(50000L, 50000L, 1L), "more than 2\\^31 - 1") # no integer NA
+  expect_error(get_halton_normals(100, 1.5e7, 3), "more than 2\\^32 - 1")    # K_w * S * N
+  expect_error(get_halton_normals(2^16, 2^14, 4), "more than 2\\^32 - 1")    # exactly 2^32
+})
+
 # --- check_collinearity / remove_nullspace_cols tests ---
 
 test_that("check_collinearity returns list with correct elements", {
