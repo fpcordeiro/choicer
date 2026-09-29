@@ -173,7 +173,14 @@ each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.}
 \item{draws}{Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
 \code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube, one
 block per likelihood unit (\code{U} decision makers with \code{person_col}, choice
-situations otherwise; existing behavior, exact reproducibility). \code{"generate"}
+situations otherwise; existing behavior, exact reproducibility). It supports at
+most \eqn{2^{31} - 1} points (\eqn{S \times U}) and \eqn{2^{32} - 1} values
+(\eqn{K_w \times S \times U}); \code{predict()}, \code{elasticities()},
+\code{diversion_ratios()}, \code{blp()}, \code{logsum()},
+\code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
+statistics) regenerate one block per choice situation, so for them the
+number of choice situations replaces \eqn{U} (see
+\code{\link{get_halton_normals}}). \code{"generate"}
 computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 cube; recommended for memory-constrained or large-N settings. With
 \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
