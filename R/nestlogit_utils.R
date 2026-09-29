@@ -419,7 +419,9 @@ prepare_nl_data <- function(
     weights_col = NULL,
     cluster_col = NULL
 ) {
-  dt <- data.table::as.data.table(data)[]
+  # Only the two columns of the alternative-to-nest map; prepare_mnl_data()
+  # below copies the columns it needs itself.
+  dt <- .copy_cols(data, c(alt_col, nest_col))
 
   # Validate nest_col exists
   if (!nest_col %in% names(dt)) {
@@ -428,6 +430,7 @@ prepare_nl_data <- function(
 
   # Extract unique alt -> nest mapping
   nest_map <- unique(dt[, c(alt_col, nest_col), with = FALSE])
+  rm(dt)
 
   # Validate: each alternative belongs to exactly one nest
   if (anyDuplicated(nest_map[[alt_col]])) {

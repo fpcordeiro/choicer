@@ -370,3 +370,56 @@ test_that("check_collinearity handles single column", {
   expect_equal(ncol(result$mat), 1)
   expect_equal(length(result$dropped), 0)
 })
+
+# --- the preps copy only the columns they use ---
+
+prep_all <- function(d) {
+  list(mnl = prepare_mnl_data(d, "id", "alt", "choice", c("x1", "x2")),
+       mxl = prepare_mxl_data(d, "id", "alt", "choice", "x1", "x2"),
+       nl = prepare_nl_data(d, "id", "alt", "choice", c("x1", "x2"), "nest"))
+}
+
+test_that("preparing data leaves the caller's data unchanged", {
+  df <- as.data.frame(create_small_nl_data())
+  set.seed(1)
+  df <- df[sample(nrow(df)), ]         # shuffled, so the preps reorder rows
+  dt <- data.table::as.data.table(df)
+  data.table::setkeyv(dt, "x1")        # a key the preps do not sort by
+  data.table::setindexv(dt, "alt")
+  df0 <- data.table::copy(df)
+  dt0 <- data.table::copy(dt)
+  prep_all(df)
+  prep_all(dt)
+  expect_identical(df, df0)
+  expect_identical(dt, dt0)            # values, row order, key and index
+})
+
+test_that("columns a model does not use do not affect its preparation", {
+  df <- as.data.frame(create_small_nl_data())
+  extra <- df
+  extra$note <- c(NA, "a")                      # NAs in an unused column
+  extra$lst <- as.list(seq_len(nrow(extra)))    # a list column
+  extra$x_unused <- NA_real_
+  expect_silent(p_extra <- prep_all(extra))
+  expect_identical(p_extra, prep_all(df))
+  # Inputs outside the direct route keep the full-copy route.
+  expect_identical(prep_all(as.list(df)), prep_all(df))
+  with_matrix <- df
+  with_matrix$m <- matrix(1, nrow(df), 2)
+  expect_identical(prep_all(with_matrix), prep_all(df))
+})
+
+test_that("a missing value in a used column drops its whole choice situation", {
+  df <- as.data.frame(create_small_nl_data())
+  df$x2[df$id == 3][2] <- NA
+  df$x1[df$id == 7][1] <- NA
+  expect_warning(p <- prepare_mxl_data(df, "id", "alt", "choice", "x1", "x2"),
+                 "Removed 2 choice situations containing missing values")
+  expect_false(any(p$situation_ids %in% c(3, 7)))
+  expect_equal(p$N, 28)
+  # x2 is not used here, so situation 3 stays.
+  expect_warning(q <- prepare_mnl_data(df, "id", "alt", "choice", "x1"),
+                 "Removed 1 choice situations containing missing values")
+  expect_false(7 %in% q$situation_ids)
+  expect_true(3 %in% q$situation_ids)
+})

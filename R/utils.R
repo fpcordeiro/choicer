@@ -234,6 +234,63 @@ label_matrix <- function(mat, alt_mapping) {
   cmap[["V1"]][match(ids, cmap[[id_col]])]
 }
 
+#' Copy the named columns of the user's data into a new data.table
+#'
+#' Deep-copies only the columns of `data` named in `cols`, in input order, so
+#' the preparation that follows (`:=`, `setorderv()` by reference) never
+#' touches the caller's data and never copies columns it does not use.
+#' `data.table::as.data.table()` of a list returns a deep copy (documented in
+#' ?as.data.table; checked in the 1.10.4-3 and 1.18.6.1 sources).
+#'
+#' Other inputs keep the preps' previous route, a full `as.data.table()` copy
+#' with the unused columns dropped, because `as.data.table()` itself changes
+#' them: it splits matrix and data-frame columns into renamed columns that
+#' `cols` may refer to, converts POSIXlt columns, and (data.table >= 1.17.0)
+#' passes data frame subclasses such as plm's pdata.frame through their own
+#' `as.data.frame()` method; with duplicated names its `:=` removes only the
+#' first match. The direct route is therefore limited to data.frame,
+#' data.table and tibble inputs with unique names, no matrix or data-frame
+#' columns and atomic `cols`. Missing columns are left for the caller to
+#' report.
+#'
+#' @param data User data.
+#' @param cols Names of the columns to copy; duplicates allowed.
+#' @returns A data.table.
+#' @noRd
+.copy_cols <- function(data, cols) {
+  nm <- names(data)
+  keep <- which(nm %in% cols)
+  direct <- (identical(class(data), "data.frame") ||
+               data.table::is.data.table(data) || inherits(data, "tbl_df")) &&
+    !anyDuplicated(nm) &&
+    all(vapply(unclass(data), function(v) is.null(dim(v)), logical(1L))) &&
+    all(vapply(keep, function(j) is.atomic(.subset2(data, j)), logical(1L)))
+  if (direct) return(data.table::as.data.table(.subset(data, keep)))
+  dt <- data.table::as.data.table(data)[]
+  vars_to_drop <- setdiff(names(dt), cols)
+  if (length(vars_to_drop) > 0) {
+    dt[, (vars_to_drop) := NULL]
+  }
+  dt
+}
+
+#' Rows with a missing value in any column
+#'
+#' Column-by-column `rowSums(is.na(dt)) > 0`, without its rows-by-columns
+#' logical matrix; columns without missing values cost one pass of anyNA().
+#'
+#' @param dt A data.table.
+#' @returns Logical vector with one element per row.
+#' @noRd
+.rows_with_na <- function(dt) {
+  has_na <- logical(nrow(dt))
+  for (j in seq_along(dt)) {
+    col <- .subset2(dt, j)
+    if (anyNA(col)) has_na <- has_na | is.na(col)
+  }
+  has_na
+}
+
 #' Whether prepared choice situations are in ascending-id order
 #'
 #' The cross-sectional prepared order is ascending id; a panel mixed logit
