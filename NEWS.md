@@ -176,6 +176,22 @@
   The functions now stop with an error when `X` or `W` would hold more than
   2^32 - 1 values (for instance 10^9 rows and 5 covariates), the most the
   estimation kernels can address with their 32-bit indices.
+- The collinearity check that drops dependent covariates (the columns
+  `qr(X, tol = 1e-7)` moves past its rank) now factors a design of a
+  million or more values by row chunks and applies `qr()`'s own rank rule
+  to the resulting factor, which has the same cross-products. It drops the
+  same columns on our reference battery, on every call the test suite makes
+  and on a sweep of near-collinear designs; the two can disagree only on a
+  column whose dependence lies within rounding of the tolerance, where
+  `qr()`'s own answer already changes with the order of the rows. The check
+  no longer makes `qr()`'s copies of the design (about three times its
+  size), nor stops at its limit of 2^31 - 1 values, which ended the
+  preparation of any larger design (for instance 2.2 * 10^8 rows and 10
+  covariates) with "too large a matrix for LINPACK". Designs up to the
+  kernels' 2^32 - 1 values can now be prepared. `prepare_mnp_data()`,
+  `prepare_hmnl_data()` and `prepare_hmnp_data()`, for which `qr()`'s limit
+  was the only stop, now also stop with an error before building an `X` of
+  more than 2^32 - 1 values.
 
 ## Corrections
 

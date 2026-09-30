@@ -394,6 +394,9 @@ prepare_mnp_data <- function(
   p <- J - 1L
 
   ## Build objects -------------------------------------------------------------
+  .check_design_size(N * p,
+                     c(covariate_cols, if (use_asc) paste0("ASC_", seq_len(p))),
+                     "The design matrix X")
   ## Differenced design matrix: row (i, j) is X_ij - X_i,base
   diff_dt <- dt[, lapply(.SD, function(v) v[-1L] - v[1L]),
                 by = id_col, .SDcols = covariate_cols]
