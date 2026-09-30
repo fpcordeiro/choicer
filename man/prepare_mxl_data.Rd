@@ -68,8 +68,8 @@ chosen alternative, not by decision maker.}
 \value{
 A \code{choicer_data_mxl} object (list) containing:
 \itemize{
-\item \code{X}: Fixed-coefficient design matrix (sum(M) x K_x).
-\item \code{W}: Random-coefficient design matrix (sum(M) x K_w).
+\item \code{X}: Fixed-coefficient design matrix (sum(M) x K_x, double).
+\item \code{W}: Random-coefficient design matrix (sum(M) x K_w, double).
 \item \code{alt_idx}: Integer vector of alternative indices.
 \item \code{choice_idx}: Integer vector of chosen alternative indices.
 \item \code{M}: Integer vector with number of alternatives per choice situation.

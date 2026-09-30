@@ -48,7 +48,7 @@ maker contributes several choice situations). Must be constant within each
 \value{
 A list containing:
 \itemize{
-\item \code{X}: Design matrix (sum(M) x K).
+\item \code{X}: Design matrix (sum(M) x K, double).
 \item \code{alt_idx}: Integer vector of alternative indices.
 \item \code{choice_idx}: Integer vector of chosen alternative indices.
 \item \code{M}: Integer vector with number of alternatives per choice situation.

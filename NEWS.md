@@ -162,8 +162,20 @@
   a synthetic claims-style panel of 8.7 million rows, peak heap use fell from
   5.7 to 4.3 times the size of the input for `prepare_nl_data()` and from
   4.5 to 4.0 times for `prepare_mxl_data()`; the saving grows with the
-  number of columns the model does not use. The prepared objects are
-  unchanged on our reference battery and on every call the test suite makes.
+  number of columns the model does not use. Apart from the storage change
+  below, the prepared objects are unchanged on our reference battery and on
+  every call the test suite makes.
+- The same three functions now copy only the index columns (ids,
+  alternatives, choices, and any weight, cluster or decision-maker column)
+  into their working table, and gather the design matrices `X` and `W` in
+  C++ straight from the caller's covariate columns once the rows are
+  filtered and sorted. `X` and `W` are now always double precision: a
+  design matrix whose columns were all integer used to be an integer
+  matrix, which the estimation kernels converted to double on every call.
+  Estimates, standard errors and predictions are unchanged, bit for bit.
+  The functions now stop with an error when `X` or `W` would hold more than
+  2^32 - 1 values (for instance 10^9 rows and 5 covariates), the most the
+  estimation kernels can address with their 32-bit indices.
 
 ## Corrections
 

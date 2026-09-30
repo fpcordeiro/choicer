@@ -423,3 +423,92 @@ test_that("a missing value in a used column drops its whole choice situation", {
   expect_false(7 %in% q$situation_ids)
   expect_true(3 %in% q$situation_ids)
 })
+
+test_that("design matrices are double, with the covariate names as column names", {
+  df <- as.data.frame(create_small_nl_data())
+  df$k1 <- rep_len(0:3, nrow(df))      # integer covariates
+  df$k2 <- rep_len(c(1L, 0L, 0L), nrow(df))
+  num <- function(cols) {
+    matrix(as.numeric(unlist(df[cols])), ncol = length(cols),
+           dimnames = list(NULL, cols))
+  }
+  p <- prepare_mxl_data(df, "id", "alt", "choice", c("k1", "k2"), c("k1", "x1"))
+  expect_identical(p$X, num(c("k1", "k2")))
+  expect_identical(p$W, num(c("k1", "x1")))
+  expect_identical(prepare_mnl_data(df, "id", "alt", "choice", c("x1", "k2"))$X,
+                   num(c("x1", "k2")))
+  expect_identical(prepare_nl_data(df, "id", "alt", "choice", "k1", "nest")$X,
+                   num("k1"))
+  # A named covariate vector leaves no names on the column names, and a
+  # repeated covariate gives a repeated column, as as.matrix() did.
+  expect_identical(prepare_mnl_data(df, "id", "alt", "choice", c(a = "x1", b = "k2"))$X,
+                   num(c("x1", "k2")))
+  expect_identical(prepare_mxl_data(df, "id", "alt", "choice", "x1", c(w = "k1"))$W,
+                   num("k1"))
+  expect_identical(.gather_matrix(df, c("x1", "x1"), seq_len(nrow(df)), "X"),
+                   num(c("x1", "x1")))
+  cc <- character(0)
+  expect_identical(.gather_matrix(df, cc, seq_len(nrow(df)), "X"),
+                   as.matrix(data.table::as.data.table(df)[, ..cc]))
+})
+
+test_that("prep_gather_design gathers rows exactly and checks its inputs", {
+  cols <- list(c(1.5, NA, 3.25, -1), c(4L, NA, 6L, 7L))
+  expect_identical(prep_gather_design(cols, c(4L, 1L, 2L)),
+                   matrix(c(-1, 1.5, NA, 7, 4, NA), 3, 2))
+  expect_identical(prep_gather_design(cols, integer(0)), matrix(numeric(0), 0, 2))
+  expect_error(prep_gather_design(cols, c(1L, 5L)), "out of range")
+  expect_error(prep_gather_design(cols, c(0L, 1L)), "out of range")
+  expect_error(prep_gather_design(cols, c(NA_integer_, 1L)), "out of range")
+  expect_error(prep_gather_design(list(letters[1:4]), 1L), "neither integer nor double")
+})
+
+test_that("design matrices past 2^32 - 1 values are refused before they are built", {
+  expect_error(.check_design_size(2^31, c("a", "b"), "The design matrix X"),
+               "X would have 2,147,483,648 rows and 2 columns.*more than 2\\^32 - 1")
+  expect_silent(.check_design_size(2^31 - 1, c("a", "b"), "The design matrix X"))
+  # Wired into .gather_matrix() ahead of any allocation (seq_len() is compact).
+  df <- as.data.frame(create_small_nl_data())
+  expect_error(.gather_matrix(df, c("x1", "x2", "id"), seq_len(.Machine$integer.max), "X"),
+               "more than 2\\^32 - 1")
+})
+
+test_that("gathered design rows follow the prepared order through filters and sorts", {
+  set.seed(3)
+  df <- as.data.frame(create_small_nl_data())
+  df$k <- rep_len(0:4, nrow(df))                   # an integer covariate
+  df$person <- (df$id - 1L) %/% 3L + 1L            # three situations per decision maker
+  outside <- df[!duplicated(df$id), ]
+  outside$alt <- 0L
+  outside$choice <- 0L
+  full <- rbind(df, outside)                       # physical outside-option rows
+  full$x2[full$id == 5 & full$alt == 2] <- NA      # drops situation 5
+  full <- full[sample(nrow(full)), ]               # shuffled
+  inside <- full[full$alt != 0 & full$id != 5, ]
+  expected <- function(cols, ...) {
+    m <- as.matrix(inside[order(...), cols, drop = FALSE])
+    storage.mode(m) <- "double"
+    dimnames(m) <- list(NULL, cols)
+    m
+  }
+  expect_warning(
+    p <- prepare_mnl_data(full, "id", "alt", "choice", c("x1", "k", "x2"),
+                          outside_opt_label = 0L, include_outside_option = TRUE),
+    "Removed 1 choice situations")
+  expect_identical(p$X, expected(c("x1", "k", "x2"), inside$id, inside$alt))
+  expect_warning(
+    q <- prepare_mxl_data(full[full$alt != 0, ], "id", "alt", "choice",
+                          c("x1", "k"), "x2", person_col = "person"),
+    "Removed 1 choice situations")
+  expect_identical(q$X, expected(c("x1", "k"), inside$person, inside$id, inside$alt))
+  expect_identical(q$W, expected("x2", inside$person, inside$id, inside$alt))
+})
+
+test_that("a repeated covariate stops MNL and NL preparation, as before", {
+  df <- as.data.frame(create_small_nl_data())
+  expect_error(prepare_mnl_data(df, "id", "alt", "choice", c("x1", "x1")),
+               "names a column more than once: x1")
+  expect_error(prepare_nl_data(df, "id", "alt", "choice", c("x1", "x1"), "nest"),
+               "names a column more than once: x1")
+})
+
