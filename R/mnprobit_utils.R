@@ -318,23 +318,18 @@ prepare_mnp_data <- function(
     use_asc = TRUE
 ) {
   ## Preliminary housekeeping --------------------------------------------------
-  dt <- data.table::as.data.table(data)[]
-
   # Check if all relevant variables are available
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
+  # A private copy of the needed columns only; `data` itself is never modified
+  dt <- .copy_cols(data, needed)
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
 
-  # Drop non-relevant variables
-  vars_to_drop <- setdiff(names(dt), needed)
-  if (length(vars_to_drop) > 0) {
-    dt[, (vars_to_drop) := NULL]
-  }
-
   ## Drop ids with missing observations ----------------------------------------
-  dt[, HAS_NA := rowSums(is.na(.SD)) > 0]
-  ids_to_drop <- dt[HAS_NA == TRUE, get(id_col)] |> unique()
+  has_na <- .rows_with_na(dt)
+  ids_to_drop <- unique(dt[has_na, get(id_col)])
+  rm(has_na)
   if (length(ids_to_drop) > 0) {
     dt <- dt[!(get(id_col) %in% ids_to_drop)]
     warning("Removed ", length(ids_to_drop),
@@ -343,12 +338,12 @@ prepare_mnp_data <- function(
   if (nrow(dt) == 0) {
     stop("All choice situations removed due to missing values.")
   }
-  dt[, HAS_NA := NULL]
 
   ## Sanity checks -------------------------------------------------------------
 
-  ## Covariates must be numeric
-  if (!all(vapply(dt[, ..covariate_cols], is.numeric, logical(1L))))
+  ## Covariates must be numeric (read in place: dt[, ..cols] would copy them)
+  if (!all(vapply(match(covariate_cols, names(dt)),
+                  function(j) is.numeric(.subset2(dt, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## choice column must be 0/1 and exactly one '1' per choice situation

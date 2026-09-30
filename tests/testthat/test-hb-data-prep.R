@@ -338,3 +338,61 @@ test_that("prepare_hmnl_data round-trips simulate_hmnl_data output", {
   n_outside <- sim$data[, .(chosen = sum(choice)), by = task][chosen == 0L, .N]
   expect_equal(sum(d$choice_pos == 0L), n_outside)
 })
+
+# --- the prep copies only the columns it uses ---
+
+hb_prep <- function(data, fun = prepare_hmnl_data, ...) {
+  fun(data, "task", "alt", "choice", c("x1", "x2"), person_col = "pid",
+      alt_covariate_cols = "qual", outside_opt_label = "out", ...)
+}
+
+test_that("the HB preps leave the caller's data unchanged", {
+  dt <- make_hb_panel_data()           # stored in reverse, so the prep sorts
+  data.table::setkeyv(dt, "x2")        # a key the prep does not sort by
+  data.table::setindexv(dt, "alt")
+  df <- as.data.frame(dt)
+  dt0 <- data.table::copy(dt)
+  df0 <- data.table::copy(df)
+  hb_prep(dt)
+  hb_prep(df, prepare_hmnp_data)
+  expect_identical(dt, dt0)            # values, row order, key and index
+  expect_identical(df, df0)
+})
+
+test_that("columns the HB preps do not use do not affect them", {
+  df <- as.data.frame(make_hb_panel_data())
+  extra <- df
+  extra$note <- c(NA, "a")                     # NAs in an unused column
+  extra$lst <- as.list(seq_len(nrow(extra)))   # a list column
+  extra$x_unused <- NA_real_
+  expect_silent(p <- hb_prep(extra))
+  expect_identical(p, hb_prep(df))
+})
+
+test_that("a non-finite covariate value drops its whole task", {
+  dt <- make_hb_panel_data()
+  dt[, cfres := x1 / 10]
+  bad <- data.table::copy(dt)
+  bad[task == 3 & alt == "b", x1 := Inf]       # structural covariate
+  bad[task == 5 & alt == "a", qual := -Inf]    # alternative-level covariate
+  bad[task == 1 & alt == "c", cfres := Inf]    # control-function residual
+  bad[task == 2 & alt == "out", x2 := Inf]     # outside row, removed before
+  expect_warning(
+    d <- hb_prep(bad, cf_residual_col = "cfres"),
+    "Removed 3 choice situations containing non-finite covariate values"
+  )
+  expect_equal(d$n_tasks, 2L)
+  expect_identical(d, hb_prep(dt[!task %in% c(1, 3, 5)],
+                              cf_residual_col = "cfres"))
+})
+
+test_that("rows with a missing person id are a situation of their own", {
+  # Tasks are keyed by (person, task): the two P3 rows of task 4 that lose
+  # their person form one (NA, 4) situation, dropped whole; P3's task 4 keeps
+  # its remaining alternative.
+  dt <- make_hb_panel_data()
+  dt[task == 4 & alt %in% c("a", "b"), pid := NA]
+  expect_warning(d <- hb_prep(dt),
+                 "Removed 1 choice situations containing missing values")
+  expect_identical(d, hb_prep(dt[!is.na(pid)]))
+})
