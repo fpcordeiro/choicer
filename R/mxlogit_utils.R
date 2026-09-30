@@ -859,8 +859,8 @@ run_mxlogit <- function(
 #'   chosen alternative, not by decision maker.
 #' @returns A `choicer_data_mxl` object (list) containing:
 #'   \itemize{
-#'     \item `X`: Fixed-coefficient design matrix (sum(M) x K_x).
-#'     \item `W`: Random-coefficient design matrix (sum(M) x K_w).
+#'     \item `X`: Fixed-coefficient design matrix (sum(M) x K_x, double).
+#'     \item `W`: Random-coefficient design matrix (sum(M) x K_w, double).
 #'     \item `alt_idx`: Integer vector of alternative indices.
 #'     \item `choice_idx`: Integer vector of chosen alternative indices.
 #'     \item `M`: Integer vector with number of alternatives per choice situation.
@@ -927,14 +927,21 @@ prepare_mxl_data <- function(
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
   if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
   if (!is.null(person_col)) needed <- c(needed, person_col)
-  # A private copy of the needed columns only; `data` itself is never modified
-  dt <- .copy_cols(data, needed)
-  if (!all(needed %in% names(dt)))
+  # The covariates are read in place from `src` (the caller's data, never
+  # modified, when possible); only the index columns are copied into `dt`,
+  # and X and W are gathered by source row at the end.
+  prep_src <- .prep_source(data, needed)
+  src <- prep_src$src
+  if (!all(needed %in% names(src)))
     stop("Missing columns: ",
-         paste(setdiff(needed, names(dt)), collapse = ", "))
+         paste(setdiff(needed, names(src)), collapse = ", "))
+  dt <- .copy_cols(src, c(id_col, alt_col, choice_col, weights_col,
+                          cluster_col, person_col))
+  dt[, .choicer_row := seq_len(.N)]
 
   ## Drop ids with missing observations ----------------------------------------
-  ids_to_drop <- unique(dt[[id_col]][.rows_with_na(dt)])
+  has_na <- .rows_with_na(src, prep_src$scan)
+  ids_to_drop <- unique(dt[[id_col]][has_na[dt$.choicer_row]])
   if (length(ids_to_drop) > 0) {
     dt <- dt[!(get(id_col) %in% ids_to_drop)]
     warning("Removed ", length(ids_to_drop),
@@ -946,12 +953,12 @@ prepare_mxl_data <- function(
 
   ## Sanity checks ---------------------------------------------------------
 
-  ## covariates must be numeric (read in place: dt[, ..cols] would copy them)
-  if (!all(vapply(match(covariate_cols, names(dt)),
-                  function(j) is.numeric(.subset2(dt, j)), NA)))
+  ## covariates must be numeric
+  if (!all(vapply(match(covariate_cols, names(src)),
+                  function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
-  if (!all(vapply(match(random_var_cols, names(dt)),
-                  function(j) is.numeric(.subset2(dt, j)), NA)))
+  if (!all(vapply(match(random_var_cols, names(src)),
+                  function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## choice column must be 0 or 1
@@ -1006,13 +1013,16 @@ prepare_mxl_data <- function(
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
-  X <- as.matrix(dt[, ..covariate_cols])
+  .check_design_size(nrow(dt), random_var_cols,
+                     "The random-coefficient design matrix W")
+  X <- .gather_matrix(src, covariate_cols, dt$.choicer_row, "The design matrix X")
   X_res <- check_collinearity(X)
   X <- X_res$mat
   if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped # accumulate dropped vars if we had multiple checks
 
 
-  W <- as.matrix(dt[, ..random_var_cols])
+  W <- .gather_matrix(src, random_var_cols, dt$.choicer_row,
+                      "The random-coefficient design matrix W")
   W_res <- check_collinearity(W)
   W <- W_res$mat
   if (!is.null(W_res$dropped)) {
@@ -1020,7 +1030,11 @@ prepare_mxl_data <- function(
      else dropped_vars <- W_res$dropped
   }
 
-  cols_to_drop <- union(covariate_cols, random_var_cols)
+  # Covariates that are also index columns leave dt here, as they always have.
+  index_cols <- c(id_col, alt_col, choice_col, weights_col, cluster_col,
+                  person_col)
+  cols_to_drop <- c(intersect(union(covariate_cols, random_var_cols), index_cols),
+                    ".choicer_row")
   dt[, (cols_to_drop) := NULL]
 
   ## alternative ids used for delta coefficients

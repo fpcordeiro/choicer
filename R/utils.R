@@ -258,14 +258,10 @@ label_matrix <- function(mat, alt_mapping) {
 #' @returns A data.table.
 #' @noRd
 .copy_cols <- function(data, cols) {
-  nm <- names(data)
-  keep <- which(nm %in% cols)
-  direct <- (identical(class(data), "data.frame") ||
-               data.table::is.data.table(data) || inherits(data, "tbl_df")) &&
-    !anyDuplicated(nm) &&
-    all(vapply(unclass(data), function(v) is.null(dim(v)), logical(1L))) &&
-    all(vapply(keep, function(j) is.atomic(.subset2(data, j)), logical(1L)))
-  if (direct) return(data.table::as.data.table(.subset(data, keep)))
+  if (.direct_route(data, cols)) {
+    keep <- which(names(data) %in% cols)
+    return(data.table::as.data.table(.subset(data, keep)))
+  }
   dt <- data.table::as.data.table(data)[]
   vars_to_drop <- setdiff(names(dt), cols)
   if (length(vars_to_drop) > 0) {
@@ -274,21 +270,113 @@ label_matrix <- function(mat, alt_mapping) {
   dt
 }
 
-#' Rows with a missing value in any column
+#' Whether the preps may read `cols` of the user's data directly
 #'
-#' Column-by-column `rowSums(is.na(dt)) > 0`, without its rows-by-columns
+#' See `.copy_cols()` for why other inputs take the full-copy route.
+#'
+#' @param data User data.
+#' @param cols Names of the columns to be read.
+#' @returns `TRUE` or `FALSE`.
+#' @noRd
+.direct_route <- function(data, cols) {
+  nm <- names(data)
+  (identical(class(data), "data.frame") || data.table::is.data.table(data) ||
+     inherits(data, "tbl_df")) &&
+    !anyDuplicated(nm) &&
+    all(vapply(unclass(data), function(v) is.null(dim(v)), logical(1L))) &&
+    all(vapply(which(nm %in% cols), function(j) is.atomic(.subset2(data, j)),
+               logical(1L)))
+}
+
+#' The data frame the preps read covariates from, and the columns to scan
+#'
+#' The user's data itself, read in place and never modified, when
+#' `.direct_route()` allows; then only the needed columns are scanned for
+#' missing values. Otherwise the table the preps have always built: a full
+#' `as.data.table()` copy with the unused columns dropped by `:=`, all of
+#' whose columns are scanned, as `.SD` was (with duplicated names, `:=` drops
+#' only the first match, and the survivor's missing values still count).
+#'
+#' @param data User data.
+#' @param needed Names of the columns the model uses.
+#' @returns A list: `src`, `data` or a data.table copy of it, and `scan`,
+#'   positions of the columns of `src` to scan for missing values.
+#' @noRd
+.prep_source <- function(data, needed) {
+  if (.direct_route(data, needed)) {
+    return(list(src = data, scan = which(names(data) %in% needed)))
+  }
+  src <- .copy_cols(data, needed)
+  list(src = src, scan = seq_along(src))
+}
+
+#' Rows with a missing value in any of the given columns
+#'
+#' Column-by-column `rowSums(is.na(x[cols])) > 0`, without its rows-by-columns
 #' logical matrix; columns without missing values cost one pass of anyNA().
 #'
-#' @param dt A data.table.
+#' @param x A data frame or data.table.
+#' @param cols Column positions to scan (default: all).
 #' @returns Logical vector with one element per row.
 #' @noRd
-.rows_with_na <- function(dt) {
-  has_na <- logical(nrow(dt))
-  for (j in seq_along(dt)) {
-    col <- .subset2(dt, j)
+.rows_with_na <- function(x, cols = seq_along(x)) {
+  has_na <- logical(nrow(x))
+  for (j in cols) {
+    col <- .subset2(x, j)
     if (anyNA(col)) has_na <- has_na | is.na(col)
   }
   has_na
+}
+
+#' Stop before building a design matrix the kernels cannot address
+#'
+#' choicer builds with RcppArmadillo's default 32-bit word (ARMA_32BIT_WORD),
+#' and the kernels view X and W without copying them: past 2^32 - 1 elements
+#' the element count wraps and rows are misread without an error.
+#'
+#' @param n Number of rows.
+#' @param cols Column names.
+#' @param what Name of the matrix, for the message.
+#' @returns Invisibly, `NULL`.
+#' @noRd
+.check_design_size <- function(n, cols, what) {
+  size <- as.numeric(n) * length(cols)
+  if (size > 2^32 - 1) {
+    stop(what, " would have ", format(n, big.mark = ",", scientific = FALSE),
+         " rows and ", length(cols), " columns, ",
+         format(size, big.mark = ",", scientific = FALSE), " values, more ",
+         "than 2^32 - 1, the most the estimation kernels can address.",
+         call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Design matrix gathered from the source columns
+#'
+#' `X[i, ] = src[rows[i], cols]` in double storage: the values and layout of
+#' `as.matrix()` on the sorted rows, filled in C++ straight from `src`
+#' without copying the covariates into the prep's working table, reading
+#' integer columns' raw storage as `as.matrix()` does. The estimation kernels
+#' take double matrices and would otherwise convert an all-integer design on
+#' every call. Columns are looked up by position, first match, as
+#' `dt[, ..cols]` did.
+#'
+#' @param src Data frame holding the columns (see `.prep_source()`).
+#' @param cols Names of numeric columns of `src`.
+#' @param rows Row indices into `src`, in prepared order.
+#' @param what Name of the matrix, for the size check's message.
+#' @returns A `length(rows)` x `length(cols)` double matrix with column names
+#'   `as.character(cols)` (a named `cols` leaves no names behind, as with
+#'   `as.matrix()`); for zero columns, `as.matrix()`'s 0 x 0 logical matrix,
+#'   which the callers' final checks reject.
+#' @noRd
+.gather_matrix <- function(src, cols, rows, what) {
+  if (!length(cols)) return(as.matrix(data.table::data.table()))
+  .check_design_size(length(rows), cols, what)
+  X <- prep_gather_design(lapply(match(cols, names(src)),
+                                 function(j) .subset2(src, j)), rows)
+  dimnames(X) <- list(NULL, as.character(cols))
+  X
 }
 
 #' Whether prepared choice situations are in ascending-id order

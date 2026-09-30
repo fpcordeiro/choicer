@@ -4,7 +4,7 @@
 # Suppress R CMD check NOTEs for data.table NSE variables
 utils::globalVariables(c(
   ".", "..covariate_cols", "..random_var_cols", "..show_cols",
-  "HAS_NA", "N_CHOICES", "N_OBS", "alt_int", "idx_in_group",
+  "HAS_NA", "N_CHOICES", "N_OBS", "alt_int", "idx_in_group", ".choicer_row",
   # HB prep NSE variables (R/hb_data.R)
   "HB_PERSON", "TASK_HAS_NA", "TASK_HAS_BAD", "task_idx", "HAS_BAD",
   "..task_by", "..x_cols", "..num_cols", "..alt_covariate_cols",

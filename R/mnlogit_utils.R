@@ -384,7 +384,7 @@ run_mnlogit <- function(
 #'   `cluster`; used by `se_method = "cluster"` and `vcov(fit, type = "cluster")`.
 #' @returns A list containing:
 #'   \itemize{
-#'     \item `X`: Design matrix (sum(M) x K).
+#'     \item `X`: Design matrix (sum(M) x K, double).
 #'     \item `alt_idx`: Integer vector of alternative indices.
 #'     \item `choice_idx`: Integer vector of chosen alternative indices.
 #'     \item `M`: Integer vector with number of alternatives per choice situation.
@@ -432,11 +432,17 @@ prepare_mnl_data <- function(
   }
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
   if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
-  # A private copy of the needed columns only; `data` itself is never modified
-  dt <- .copy_cols(data, needed)
-  if (!all(needed %in% names(dt)))
+  # The covariates are read in place from `src` (the caller's data, never
+  # modified, when possible); only the index columns are copied into `dt`,
+  # and X is gathered by source row at the end.
+  prep_src <- .prep_source(data, needed)
+  src <- prep_src$src
+  if (!all(needed %in% names(src)))
     stop("Missing columns: ",
-         paste(setdiff(needed, names(dt)), collapse = ", "))
+         paste(setdiff(needed, names(src)), collapse = ", "))
+  dt <- .copy_cols(src, c(id_col, alt_col, choice_col, weights_col,
+                          cluster_col))
+  dt[, .choicer_row := seq_len(.N)]
 
   ## Remove outside-option rows when modelling it implicitly ------------------
   if (include_outside_option && !is.null(outside_opt_label)) {
@@ -447,7 +453,8 @@ prepare_mnl_data <- function(
   }
 
   ## Drop ids with missing observations ----------------------------------------
-  ids_to_drop <- unique(dt[[id_col]][.rows_with_na(dt)])
+  has_na <- .rows_with_na(src, prep_src$scan)
+  ids_to_drop <- unique(dt[[id_col]][has_na[dt$.choicer_row]])
   if (length(ids_to_drop) > 0) {
     dt <- dt[!(get(id_col) %in% ids_to_drop)]
     warning("Removed ", length(ids_to_drop),
@@ -459,9 +466,9 @@ prepare_mnl_data <- function(
 
   ## Sanity checks -------------------------------------------------------------
 
-  ## Covariates must be numeric (read in place: dt[, ..cols] would copy them)
-  if (!all(vapply(match(covariate_cols, names(dt)),
-                  function(j) is.numeric(.subset2(dt, j)), NA)))
+  ## Covariates must be numeric
+  if (!all(vapply(match(covariate_cols, names(src)),
+                  function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## choice column must be 0/1 and exactly one '1' per choice situation
@@ -499,8 +506,17 @@ prepare_mnl_data <- function(
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
-  X <- as.matrix(dt[, ..covariate_cols])                        # sum(M) x K
-  dt[, (covariate_cols) := NULL]
+  X <- .gather_matrix(src, covariate_cols, dt$.choicer_row,     # sum(M) x K
+                      "The design matrix X")
+  # A repeated covariate stops here, where it always did.
+  if (anyDuplicated(covariate_cols)) {
+    stop("`covariate_cols` names a column more than once: ",
+         paste(unique(covariate_cols[duplicated(covariate_cols)]),
+               collapse = ", "), ".")
+  }
+  # Covariates that are also index columns leave dt here, as they always have.
+  index_cols <- c(id_col, alt_col, choice_col, weights_col, cluster_col)
+  dt[, (c(intersect(covariate_cols, index_cols), ".choicer_row")) := NULL]
   X_res <- check_collinearity(X)
   X <- X_res$mat
   if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped
