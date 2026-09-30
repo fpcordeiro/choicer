@@ -969,7 +969,7 @@ prepare_mxl_data <- function(
   ## Panel: choice situations nest in decision makers. Checked before the
   ## per-id choice counts, which would misfire if ids restart within persons.
   if (!is.null(person_col)) {
-    n_persons_per_id <- dt[, data.table::uniqueN(get(person_col)), by = id_col][["V1"]]
+    n_persons_per_id <- .n_distinct_by(dt, person_col, id_col)
     if (any(n_persons_per_id != 1L)) {
       stop("Each '", id_col, "' must belong to exactly one '", person_col,
            "': `id_col` must identify choice situations uniquely across ",
@@ -1040,8 +1040,9 @@ prepare_mxl_data <- function(
   ## alternative ids used for delta coefficients
   alt_idx <- as.integer(dt$alt_int)                             # length == sum(M)
 
-  ## M[i] - # alternatives per choice situation
-  M <- dt[, .N, by = id_col][["N"]]                             # length N
+  ## M[i] - # alternatives per choice situation (read by position: an id
+  ## column named N would shadow the count)
+  M <- dt[, .N, by = id_col][[2L]]                              # length N
 
   ## N: number of individuals / choice situations
   ids <- dt[, get(id_col)][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
@@ -1073,13 +1074,12 @@ prepare_mxl_data <- function(
     if (!is.numeric(dt[[weights_col]])) {
       stop("`", weights_col, "` must be numeric.")
     }
-    nuniq <- dt[, data.table::uniqueN(get(weights_col)), by = id_col][["V1"]]
+    nuniq <- .n_distinct_by(dt, weights_col, id_col)
     if (any(nuniq != 1L)) {
       stop("`", weights_col, "` must be constant within each '", id_col,
            "' (one weight per choice situation).")
     }
-    wmap <- dt[, get(weights_col)[1L], by = id_col]
-    weights <- wmap[["V1"]][match(ids, wmap[[id_col]])]
+    weights <- .first_by(dt, weights_col, id_col, ids)
     if (any(!is.finite(weights))) {
       stop("`", weights_col, "` produced non-finite weights.")
     }

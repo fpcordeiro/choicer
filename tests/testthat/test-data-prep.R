@@ -504,6 +504,63 @@ test_that("gathered design rows follow the prepared order through filters and so
   expect_identical(q$W, expected("x2", inside$person, inside$id, inside$alt))
 })
 
+test_that("situation-level columns are read correctly for ids named V1 or N", {
+  df <- as.data.frame(create_small_nl_data())      # ids 1..30, six rows each
+  df$person <- (df$id - 1L) %/% 3L + 1L            # three situations per person
+  df$wt <- df$id / 10
+  df$cl <- df$id %% 4L
+  df$pw <- df$person / 10                          # constant within person
+  df$pcl <- df$person %% 4L
+  for (nm in c("V1", "N")) {
+    d <- df
+    names(d)[names(d) == "id"] <- nm
+    q <- prepare_mnl_data(d, nm, "alt", "choice", "x1", weights_col = "wt",
+                          cluster_col = "cl")
+    expect_identical(q$weights, (1:30) / 10)
+    expect_identical(q$cluster, (1:30) %% 4L)
+    expect_identical(q$M, rep(6L, 30))
+    p <- prepare_mxl_data(d, nm, "alt", "choice", "x1", "x2", weights_col = "pw",
+                          cluster_col = "pcl", person_col = "person")
+    expect_identical(p$weights, rep((1:10) / 10, each = 3))
+    expect_identical(p$cluster, rep((1:10) %% 4L, each = 3))
+    expect_identical(p$Ti, rep(3L, 10))
+    expect_identical(p$M, rep(6L, 30))
+  }
+})
+
+test_that("predict(newdata) builds the same choice sets for ids named V1 or N", {
+  df <- as.data.frame(create_small_nl_data())      # ids 1..30, six rows each
+  df$person <- (df$id - 1L) %/% 3L + 1L
+  for (nm in c("V1", "N")) {
+    d <- df
+    names(d)[names(d) == "id"] <- nm
+    fits <- suppressMessages(list(
+      mnl = run_mnlogit(d, nm, "alt", "choice", "x1"),
+      mxl = run_mxlogit(d, nm, "alt", "choice", "x1", "x2", S = 20L,
+                        person_col = "person")
+    ))
+    for (f in fits) {
+      expect_identical(prepare_newdata(f, d)$M, rep(6L, 30))
+      expect_equal(predict(f, newdata = d), predict(f), tolerance = 1e-12)
+    }
+  }
+})
+
+test_that("covariates may carry the names of the working columns", {
+  # alt_int and idx_in_group are columns of the preps' working table; the
+  # covariates are read from the data, so they no longer collide.
+  df <- as.data.frame(create_small_nl_data())      # sorted by id, alt; no NA
+  df$alt_int <- 2 * df$x1
+  df$idx_in_group <- df$x2 + 1
+  cols <- c("alt_int", "idx_in_group")
+  ref <- as.matrix(df[cols])
+  expect_identical(prepare_mnl_data(df, "id", "alt", "choice", cols)$X, ref)
+  expect_identical(prepare_nl_data(df, "id", "alt", "choice", cols, "nest")$X,
+                   ref)
+  expect_identical(prepare_mxl_data(df, "id", "alt", "choice", "x1", cols)$W,
+                   ref)
+})
+
 test_that("a repeated covariate stops MNL and NL preparation, as before", {
   df <- as.data.frame(create_small_nl_data())
   expect_error(prepare_mnl_data(df, "id", "alt", "choice", c("x1", "x1")),
