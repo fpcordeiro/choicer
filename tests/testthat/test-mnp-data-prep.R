@@ -97,3 +97,42 @@ test_that("prepare_mnp_data enforces one choice per situation", {
     "exactly one chosen"
   )
 })
+
+# --- the prep copies only the columns it uses ---
+
+test_that("prepare_mnp_data leaves the caller's data unchanged", {
+  dt <- create_small_mnl_data()
+  set.seed(1)
+  dt <- dt[sample(.N)]                 # shuffled, so the prep reorders rows
+  data.table::setkeyv(dt, "x1")        # a key the prep does not sort by
+  data.table::setindexv(dt, "alt")
+  df <- as.data.frame(dt)
+  dt0 <- data.table::copy(dt)
+  df0 <- data.table::copy(df)
+  prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
+  prepare_mnp_data(df, "id", "alt", "choice", c("x1", "x2"))
+  expect_identical(dt, dt0)            # values, row order, key and index
+  expect_identical(df, df0)
+})
+
+test_that("columns prepare_mnp_data does not use do not affect it", {
+  df <- as.data.frame(create_small_mnl_data())
+  extra <- df
+  extra$note <- c(NA, "a")                     # NAs in an unused column
+  extra$lst <- as.list(seq_len(nrow(extra)))   # a list column
+  extra$x_unused <- NA_real_
+  expect_silent(p <- prepare_mnp_data(extra, "id", "alt", "choice", c("x1", "x2")))
+  expect_identical(p, prepare_mnp_data(df, "id", "alt", "choice", c("x1", "x2")))
+})
+
+test_that("a missing value in a used column drops its choice situation", {
+  dt <- create_small_mnl_data()
+  dt[, x3 := 1]
+  dt[id == 3 & alt == 2, x2 := NA]
+  dt[id == 7 & alt == 1, x3 := NA]     # x3 is not used
+  expect_warning(d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2")),
+                 "Removed 1 choice situations containing missing values")
+  expect_equal(d$N, 19L)
+  expect_identical(d, prepare_mnp_data(dt[id != 3], "id", "alt", "choice",
+                                       c("x1", "x2")))
+})

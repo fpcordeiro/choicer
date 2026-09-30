@@ -36,6 +36,25 @@
   paste0(nchar(person_chr, type = "bytes"), ":", person_chr, "|", id_key)
 }
 
+#' Rows with a non-finite value in any of the given columns
+#'
+#' Column-by-column `!is.finite()`, the counterpart of `.rows_with_na()`:
+#' no rows-by-columns logical matrix, and a column holding only finite values
+#' is not ORed into the result.
+#'
+#' @param x A data frame or data.table.
+#' @param cols Column positions to scan.
+#' @returns Logical vector with one element per row.
+#' @noRd
+.rows_not_finite <- function(x, cols) {
+  bad <- logical(nrow(x))
+  for (j in cols) {
+    finite <- is.finite(.subset2(x, j))
+    if (!all(finite)) bad <- bad | !finite
+  }
+  bad
+}
+
 #' Shared panel preparation for the hierarchical Bayes preps
 #'
 #' Internal workhorse behind [prepare_hmnl_data()] and [prepare_hmnp_data()].
@@ -75,24 +94,19 @@
     include_outside_option = TRUE
 ) {
   ## Preliminary housekeeping --------------------------------------------------
-  dt <- data.table::as.data.table(data)[]
+  needed <- unique(c(person_col, id_col, alt_col, choice_col, covariate_cols,
+                     alt_covariate_cols, cf_residual_col))
+  # A private copy of the needed columns only; `data` itself is never modified
+  dt <- .copy_cols(data, needed)
 
   if (!is.null(cf_residual_col) && cf_residual_col %in% covariate_cols) {
     stop("`cf_residual_col` must not also appear in `covariate_cols`; ",
          "it is appended to the design matrix automatically.")
   }
 
-  needed <- unique(c(person_col, id_col, alt_col, choice_col, covariate_cols,
-                     alt_covariate_cols, cf_residual_col))
   if (!all(needed %in% names(dt)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(dt)), collapse = ", "))
-
-  # Drop non-relevant variables
-  vars_to_drop <- setdiff(names(dt), needed)
-  if (length(vars_to_drop) > 0) {
-    dt[, (vars_to_drop) := NULL]
-  }
 
   # Endogeneity reminder: price-like covariates without a control-function
   # residual mean delta_j = z_j'theta + xi_j is exogenous only conditional on
@@ -129,43 +143,44 @@
   task_by <- c("HB_PERSON", id_col)
 
   ## Drop tasks with missing observations --------------------------------------
-  dt[, HAS_NA := rowSums(is.na(.SD)) > 0]
-  dt[, TASK_HAS_NA := any(HAS_NA), by = task_by]
-  n_bad_tasks <- nrow(unique(dt[TASK_HAS_NA == TRUE, ..task_by]))
-  if (n_bad_tasks > 0) {
-    dt <- dt[TASK_HAS_NA == FALSE]
-    warning("Removed ", n_bad_tasks,
+  ## A flagged row takes its whole task with it; the anti-join matches NA
+  ## keys as grouping by task does.
+  has_na <- .rows_with_na(dt)
+  if (any(has_na)) {
+    bad_tasks <- unique(dt[has_na, ..task_by])
+    dt <- dt[!bad_tasks, on = task_by]
+    warning("Removed ", nrow(bad_tasks),
             " choice situations containing missing values.")
   }
+  rm(has_na)
   if (nrow(dt) == 0) {
     stop("All choice situations removed due to missing values.")
   }
-  dt[, c("HAS_NA", "TASK_HAS_NA") := NULL]
 
   ## Sanity checks -------------------------------------------------------------
 
   ## Covariates (incl. cf residual and alt-level covariates) must be numeric
+  ## (read in place: dt[, ..cols] would copy them)
   x_cols <- c(covariate_cols, cf_residual_col)
   num_cols <- unique(c(x_cols, alt_covariate_cols))
-  if (!all(vapply(dt[, ..num_cols], is.numeric, logical(1L))))
+  num_pos <- match(num_cols, names(dt))
+  if (!all(vapply(num_pos, function(j) is.numeric(.subset2(dt, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## Non-finite covariate values (Inf/-Inf/NaN) are as fatal as NAs: same
   ## graceful task-drop path, instead of failing the terminal
   ## stopifnot(all(is.finite(X))) with an unactionable assertion.
-  dt[, HAS_BAD := Reduce(`|`, lapply(.SD, function(v) !is.finite(v))),
-     .SDcols = num_cols]
-  dt[, TASK_HAS_BAD := any(HAS_BAD), by = task_by]
-  n_bad_tasks <- nrow(unique(dt[TASK_HAS_BAD == TRUE, ..task_by]))
-  if (n_bad_tasks > 0) {
-    dt <- dt[TASK_HAS_BAD == FALSE]
-    warning("Removed ", n_bad_tasks,
+  has_bad <- .rows_not_finite(dt, num_pos)
+  if (any(has_bad)) {
+    bad_tasks <- unique(dt[has_bad, ..task_by])
+    dt <- dt[!bad_tasks, on = task_by]
+    warning("Removed ", nrow(bad_tasks),
             " choice situations containing non-finite covariate values.")
   }
+  rm(has_bad)
   if (nrow(dt) == 0) {
     stop("All choice situations removed due to non-finite covariate values.")
   }
-  dt[, c("HAS_BAD", "TASK_HAS_BAD") := NULL]
 
   ## choice column must be 0/1 with the outside-option convention of
   ## prepare_mnl_data (R/mnlogit_utils.R:459-472): exactly one '1' per task,

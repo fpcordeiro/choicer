@@ -206,6 +206,18 @@
   of 4.4-5.7 times. Peak resident memory, which also counts memory R has freed
   but not returned, is 2.3-2.4 times the input for all three instead of
   5.3-8.1 times (medians of three runs).
+- `prepare_mnp_data()`, `prepare_hmnl_data()` and `prepare_hmnp_data()` (and
+  so `run_mnprobit()`, `run_hmnlogit()` and `run_hmnprobit()`) now also copy
+  only the columns the model uses, scan them for missing values one at a
+  time, and check that the covariates are numeric without copying them. The
+  hierarchical preparations also scan for non-finite covariate values a
+  column at a time, and look up the choice situations to drop only when a
+  row is flagged, where they grouped every row by choice situation twice.
+  The prepared objects are unchanged on every call the test suite makes and
+  on a battery of edge cases, with one exception: a used column that shared
+  its name with a working column of the old code (`HAS_NA`, `TASK_HAS_NA`,
+  `HAS_BAD`, `TASK_HAS_BAD`) stopped the preparation with an error, and now
+  works like any other.
 
 ## Corrections
 
