@@ -159,7 +159,7 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
   # Each id must belong to one decision maker; otherwise the person sort
   # would split an id's rows and misalign the per-id counts M below.
   if (!is.null(person_col) &&
-      any(dt[, data.table::uniqueN(get(person_col)), by = id_col][["V1"]] != 1L)) {
+      any(.n_distinct_by(dt, person_col, id_col) != 1L)) {
     stop("newdata: each '", id_col, "' must belong to exactly one '",
          person_col, "' (ids identify choice situations uniquely, as at fit ",
          "time).")
@@ -179,7 +179,7 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
     stop("newdata covariates must contain only finite values.")
   }
   alt_idx <- as.integer(dt[[alt_int_col]])
-  M <- dt[, .N, by = id_col][["N"]]
+  M <- dt[, .N, by = id_col][[2L]]  # by position: an id named N shadows it
   N <- length(M)
 
   w <- .validate_pred_weights(weights, N)

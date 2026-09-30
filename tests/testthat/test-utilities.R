@@ -255,6 +255,31 @@ test_that("remove_nullspace_cols matches qr() on both sides of the switch", {
   expect_error(remove_nullspace_cols(m), "NA/NaN/Inf in foreign function call")
 })
 
+test_that(".n_distinct_by and .first_by match the per-group expressions they replace", {
+  dt <- data.table::data.table(id = c(3L, 1L, 3L, 1L, 2L, 1L, 2L),
+                               p = c(5L, 6L, 5L, 7L, NA, 6L, 8L),
+                               w = c(1.5, 2, 1.5, 2, 3, 2, NA),
+                               s = c("a", NA, "a", "b", "c", NA, "c"))
+  ids <- unique(dt$id)
+  for (col in c("p", "w", "s", "id")) {
+    expect_identical(.n_distinct_by(dt, col, "id"),
+                     dt[, data.table::uniqueN(get(col)), by = "id"][["V1"]])
+    expect_identical(.first_by(dt, col, "id", ids),
+                     dt[, get(col)[1L], by = "id"][["V1"]][match(ids, unique(dt$id))])
+  }
+})
+
+test_that("per-situation columns work whatever the id and value columns are called", {
+  # With an id column named V1 the old per-group results were read back as
+  # the ids; a comma in a name broke `by = c(id, col)`.
+  dt <- data.table::data.table(V1 = c(1L, 1L, 2L, 2L, 3L, 3L),
+                               w = c(0.5, 0.5, 2, 2, 4, 4))
+  data.table::setnames(dt, "w", "w,adj")
+  expect_identical(.n_distinct_by(dt, "w,adj", "V1"), c(1L, 1L, 1L))
+  expect_identical(.first_by(dt, "w,adj", "V1", 3:1), c(4, 2, 0.5))
+  expect_identical(.collapse_situation_col(dt, "w,adj", "V1", 1:3), c(0.5, 2, 4))
+})
+
 # --- OpenMP thread control tests ---
 
 test_that("get_num_threads returns valid output", {

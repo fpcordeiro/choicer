@@ -265,13 +265,50 @@ label_matrix <- function(mat, alt_mapping) {
 #' @returns Vector of length \code{length(ids)}, one value per situation.
 #' @noRd
 .collapse_situation_col <- function(dt, col, id_col, ids) {
-  nuniq <- dt[, data.table::uniqueN(get(col)), by = id_col][["V1"]]
+  nuniq <- .n_distinct_by(dt, col, id_col)
   if (any(nuniq != 1L)) {
     stop("`", col, "` must be constant within each '", id_col,
          "' (one value per choice situation).", call. = FALSE)
   }
-  cmap <- dt[, get(col)[1L], by = id_col]
-  cmap[["V1"]][match(ids, cmap[[id_col]])]
+  .first_by(dt, col, id_col, ids)
+}
+
+#' Number of distinct values of a column within each choice situation
+#'
+#' `dt[, uniqueN(get(col)), by = id_col]$V1` without sorting every situation
+#' separately (a per-group uniqueN() allocates sort buffers for each of
+#' millions of groups): counts the distinct (id, value) pairs of each id.
+#' The pair table has fixed column names, so any user column name works
+#' (including V1, N, or names with commas).
+#'
+#' @param dt A data.table.
+#' @param col Name of the column whose values are counted.
+#' @param id_col Name of the choice-situation id column.
+#' @returns Integer vector with one count per choice situation, in order of
+#'   first appearance of each id. NA is a value, as in uniqueN(); so is NaN,
+#'   apart from NA; -0 equals 0.
+#' @noRd
+.n_distinct_by <- function(dt, col, id_col) {
+  # Read-only: pairs shares dt's column vectors (setDT() copies nothing).
+  pairs <- data.table::setDT(list(id = dt[[id_col]], value = dt[[col]]))
+  pairs[, .N, by = c("id", "value")][, .N, by = "id"][["N"]]
+}
+
+#' Value of a column at the first row of each choice situation
+#'
+#' `dt[, get(col)[1L], by = id_col]` aligned to `ids`, without evaluating R
+#' code for every situation and without reading the result by the name "V1",
+#' which is also the id column's name when that column is called V1.
+#'
+#' @param dt A data.table.
+#' @param col Name of the column to read.
+#' @param id_col Name of the choice-situation id column.
+#' @param ids Situation ids in prepared order.
+#' @returns Vector of length `length(ids)`.
+#' @noRd
+.first_by <- function(dt, col, id_col, ids) {
+  first <- !duplicated(dt[[id_col]])
+  dt[[col]][first][match(ids, dt[[id_col]][first])]
 }
 
 #' Copy the named columns of the user's data into a new data.table

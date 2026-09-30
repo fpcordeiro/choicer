@@ -192,12 +192,27 @@
   `prepare_hmnl_data()` and `prepare_hmnp_data()`, for which `qr()`'s limit
   was the only stop, now also stop with an error before building an `X` of
   more than 2^32 - 1 values.
+- The checks that a weight, cluster or decision-maker column is constant
+  within each choice situation now count distinct (situation, value) pairs
+  in one grouping, instead of sorting every situation's values separately,
+  which alone allocated 87 of the 97 GB that `prepare_mxl_data()` moved
+  through the heap on the 8.7-million-row claims-style panel; the
+  per-situation value is read from each situation's first row. With all the
+  changes above, on that panel and on a census-style panel of 9.8 million
+  rows, `prepare_mxl_data()` now takes 2.9-3.7 s instead of 5.7-7.6 s,
+  allocates 7.5-8.8 GB instead of 97-149 GB, and its peak heap use is 1.9
+  times the size of its input instead of 4.0-4.5 times; for
+  `prepare_mnl_data()` and `prepare_nl_data()` it is 2.0-2.1 times instead
+  of 4.4-5.7 times. Peak resident memory, which also counts memory R has freed
+  but not returned, is 2.3-2.4 times the input for all three instead of
+  5.3-8.1 times (medians of three runs).
 
 ## Corrections
 
 The following were found while implementing the panel likelihood above and
-the kernel work for population-scale data that followed, and independently
-verified; they affected cross-sectional fits in released versions.
+the kernel and data-preparation work for population-scale data that
+followed, and independently verified; they affected cross-sectional fits in
+released versions.
 
 - `mxl_hessian_parallel()` silently dropped any choice situation whose
   simulated choice probability, summed over draws, was `<= 1e-12`, while the
@@ -259,6 +274,23 @@ verified; they affected cross-sectional fits in released versions.
   set from the one used in estimation. `draws_info$S` now records
   `dim(eta_draws)[2]`. Post-hoc methods reproduce the estimation draws only
   when `eta_draws` was built with `get_halton_normals(S, U, K_w)`.
+- A choice-situation id column named `V1`, the name
+  `data.table::fread(header = FALSE)` and `as.data.frame()` of an unnamed
+  matrix give the first column, made `prepare_mnl_data()`,
+  `prepare_mxl_data()` and `prepare_nl_data()` stop whenever a weight or
+  cluster column was given, with a spurious error that the column varied
+  within a choice situation. An id column named `N` made them return the
+  ids in place of the choice-set sizes `M`, and so did `predict()`,
+  `logsum()` and `consumer_surplus()` with `newdata`. The kernels' checks
+  usually stopped the fit or prediction, but a prediction whose ids summed
+  to the number of rows (ids 1 to 11 with 6 alternatives each, for
+  instance) ran on wrong choice sets without an error, and more rarely so
+  could a fit. Both names now work in these functions.
+- A covariate named `alt_int` or `idx_in_group`, the names of working
+  columns of `prepare_mnl_data()`, `prepare_mxl_data()` and
+  `prepare_nl_data()`, made them stop with an unrelated error. Covariates
+  are now read from the data rather than from the working table, so these
+  names work.
 
 # choicer 0.2.1
 
