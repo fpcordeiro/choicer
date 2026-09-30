@@ -258,6 +258,7 @@
   ## Build objects -------------------------------------------------------------
   ## Structural design matrix: covariates only, cf residual (if any) last.
   ## NO ASC dummies — delta_j is indexed by alt_of_row, never carried in X.
+  .check_design_size(nrow(dt), x_cols, "The design matrix X")
   X <- as.matrix(dt[, ..x_cols])                       # total_rows x K_struct
   X_res <- check_collinearity(X)
   X <- X_res$mat

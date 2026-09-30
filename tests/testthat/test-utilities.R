@@ -206,6 +206,55 @@ test_that("check_collinearity handles single-column matrix", {
   expect_equal(ncol(result$mat), 1)
 })
 
+test_that(".qr_rank_pivot makes qr()'s rank and drop decisions by row chunks", {
+  set.seed(7)
+  n <- 3000
+  x1 <- rnorm(n); x2 <- rnorm(n) * 1e4; z <- rnorm(n)
+  alt <- sample.int(4, n, replace = TRUE)
+  D <- sapply(1:4, function(j) as.numeric(alt == j))
+  rare <- numeric(n); rare[c(3, 77)] <- 1
+  ints <- cbind(a = sample(0:5, n, replace = TRUE),
+                b = sample(0:3, n, replace = TRUE))
+  designs <- list(
+    lincomb = cbind(x1, x2, x3 = 0.7 * x1 - 3e-5 * x2),
+    near_dependent = cbind(x1, x2, x3 = x1 + 1e-10 * z),
+    near_independent = cbind(x1, x2, x3 = x1 + 1e-4 * z),
+    dummy_trap = cbind(int = 1, D, x1),
+    duplicated = cbind(a = x1, b = z, c = x1),
+    zero = cbind(a = x1, z = 0, b = z),
+    two_constants = cbind(a = 1, b = 2, c = z),
+    rare_dummy = cbind(d = rare, x = x1, dx = 2 * rare),
+    integer = cbind(ints, c = ints[, "a"] + 2L * ints[, "b"]),
+    independent = cbind(x1, x2, z)
+  )
+  expect_type(designs$integer, "integer")
+  dropped <- function(q, p) sort(q$pivot[seq_len(p)[-seq_len(q$rank)]])
+  for (nm in names(designs)) {
+    m <- designs[[nm]]
+    ref <- qr(m, tol = 1e-7)
+    for (rows in c(1, 2, ncol(m), 7, 64, n)) {
+      q <- .qr_rank_pivot(m, rows = rows)
+      expect_identical(q$rank, ref$rank, info = paste(nm, rows))
+      expect_identical(dropped(q, ncol(m)), dropped(ref, ncol(m)),
+                       info = paste(nm, rows))
+    }
+  }
+})
+
+test_that("remove_nullspace_cols matches qr() on both sides of the switch", {
+  set.seed(8)
+  n <- 300000                                      # a default chunk + remainder
+  m <- cbind(a = rnorm(n), b = rnorm(n), c = rnorm(n))
+  m <- cbind(m, d = m[, "a"] - 2 * m[, "c"])      # n * p >= 1e6: by chunks
+  expect_identical(remove_nullspace_cols(m), m[, c("a", "b", "c")])
+  small <- m[seq_len(240000), ]                    # n * p < 1e6: qr()
+  expect_identical(remove_nullspace_cols(small), small[, c("a", "b", "c")])
+  m[n - 5, "b"] <- NA                              # in the second chunk
+  expect_error(remove_nullspace_cols(m), "NA/NaN/Inf in foreign function call")
+  m[n - 5, "b"] <- Inf
+  expect_error(remove_nullspace_cols(m), "NA/NaN/Inf in foreign function call")
+})
+
 # --- OpenMP thread control tests ---
 
 test_that("get_num_threads returns valid output", {

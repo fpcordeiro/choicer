@@ -34,6 +34,10 @@ convertTime <- function(time) {
 }
 
 #' Remove columns in the null space of a matrix
+#'
+#' Keeps the columns that `qr(mat, tol)` retains. Designs with a million or
+#' more elements are factored by row chunks (`.qr_rank_pivot()`), without a
+#' design-sized copy.
 #' @param mat A matrix
 #' @param tol Tolerance for rank determination
 #' @returns Matrix with linearly dependent columns removed
@@ -41,12 +45,48 @@ convertTime <- function(time) {
 remove_nullspace_cols <- function(mat, tol = 1e-7) {
   if (is.null(mat)) return(mat)
   if (ncol(mat) == 1) return(mat)
-  qrdecomp <- qr(mat, tol = tol)
+  qrdecomp <- if (as.numeric(nrow(mat)) * ncol(mat) < 1e6) {
+    qr(mat, tol = tol)
+  } else {
+    .qr_rank_pivot(mat, tol)
+  }
   rank <- qrdecomp$rank
   if (rank == ncol(mat)) return(mat)
   bad_cols_idx <- qrdecomp$pivot[(rank + 1):ncol(mat)]
   mat <- mat[, setdiff(1:ncol(mat), bad_cols_idx), drop = FALSE]
   return(mat)
+}
+
+#' Rank and column pivot of qr(mat, tol) for a tall matrix, by row chunks
+#'
+#' Tall-skinny QR: the R factor is updated chunk by chunk,
+#' R = qr.R(qr(rbind(R, chunk))), so it keeps the Gram matrix of the rows seen
+#' so far and never grows past ncol(mat) rows. qr()'s LINPACK rule (limited
+#' column pivoting against `tol` times each column's original norm) depends
+#' on `mat` only through that Gram matrix, so applied to the final R it makes
+#' the same decisions in exact arithmetic; they can differ only where
+#' rounding decides, and there qr() itself changes with row order or BLAS.
+#' The chunks go through LAPACK (dgeqp3: about 2p matrix-vector BLAS calls
+#' per chunk, against LINPACK's p^2 vector calls, whose per-call overhead
+#' can dominate at this size); its column pivoting is undone, as only the
+#' Gram matrix matters. Beyond `mat`, memory holds a few chunk-sized buffers
+#' and a p x p factor, and there is no limit of 2^31 - 1 elements.
+#'
+#' @param mat A numeric matrix.
+#' @param tol Tolerance for rank determination, as in qr().
+#' @param rows Rows per chunk (about 2^20 elements by default).
+#' @returns The qr() of the final R factor (its rank and pivot are used).
+#' @noRd
+.qr_rank_pivot <- function(mat, tol = 1e-7,
+                           rows = max(ncol(mat), floor(2^20 / ncol(mat)))) {
+  n <- nrow(mat)
+  R <- NULL
+  for (s in seq(1, n, by = rows)) {
+    chunk <- mat[s:min(n, s + rows - 1), , drop = FALSE]
+    q <- qr(rbind(R, chunk), LAPACK = TRUE)
+    R <- qr.R(q)[, order(q$pivot), drop = FALSE]
+  }
+  qr(R, tol = tol)
 }
 
 #' Check for collinearity and remove dependent columns
