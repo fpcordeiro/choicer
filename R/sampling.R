@@ -60,6 +60,11 @@
 }
 
 #' Validate the id / alt / choice columns of a long choice data set
+#'
+#' Also loads bit64 when one of the columns is integer64 (see
+#' `.load_bit64_for()`): the ids are then combined, matched and joined, and
+#' the alternatives turned into strata labels, by their values rather than
+#' their raw bits.
 #' @noRd
 .validate_choice_columns <- function(dt, id_col, alt_col, choice_col,
                                      include_outside_option) {
@@ -68,6 +73,7 @@
   if (length(miss) > 0) {
     stop("Missing columns: ", paste(miss, collapse = ", "))
   }
+  .load_bit64_for(dt, match(needed, names(dt)))
   if (!.is_zero_one(dt[[choice_col]])) {
     stop("`", choice_col, "` must contain only 0 and 1.")
   }
@@ -385,19 +391,26 @@ sample_by_choice <- function(data, id_col, alt_col, choice_col,
 
   if (!is.null(seed)) set.seed(seed)
 
-  keep_ids <- list()
+  # Positions in `ids` are sampled, as sample(ids_s, n_s) would draw them, and
+  # the ids are read once at the end: unlist() of the ids themselves would
+  # drop a class such as integer64, whose raw bits %in% then misreads.
+  keep_pos <- list()
   for (s in realized) {
     n_s <- target[[s]]
     if (n_s <= 0L) next
-    ids_s <- ids[strata == s]
-    if (n_s > length(ids_s)) {
-      stop("Stratum '", s, "' has only ", length(ids_s),
+    pos_s <- seq_along(ids)[strata == s]
+    if (n_s > length(pos_s)) {
+      stop("Stratum '", s, "' has only ", length(pos_s),
            " choice situations but ", n_s,
            " were requested (sampling without replacement).")
     }
-    keep_ids[[s]] <- if (n_s == length(ids_s)) ids_s else sample(ids_s, n_s)
+    keep_pos[[s]] <- if (n_s == length(pos_s)) {
+      pos_s
+    } else {
+      pos_s[sample.int(length(pos_s), n_s)]
+    }
   }
-  keep_ids <- unlist(keep_ids, use.names = FALSE)
+  keep_ids <- ids[unlist(keep_pos, use.names = FALSE)]
   if (length(keep_ids) == 0L) {
     stop("No choice situations selected; check `n_per_alt`/`frac_per_alt`.")
   }
