@@ -435,6 +435,9 @@ prepare_mnl_data <- function(
   }
   if (!is.null(weights_col)) needed <- c(needed, weights_col)
   if (!is.null(cluster_col)) needed <- c(needed, cluster_col)
+  # Names first: they need no data, and reading the data can stop for a
+  # missing bit64.
+  .check_col_names(needed, alt_col)
   # The covariates are read in place from `src` (the caller's data, never
   # modified, when possible); only the index columns are copied into `dt`,
   # and X is gathered by source row at the end.
@@ -443,7 +446,6 @@ prepare_mnl_data <- function(
   if (!all(needed %in% names(src)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(src)), collapse = ", "))
-  .check_col_names(needed, alt_col)
   dt <- .copy_cols(src, c(id_col, alt_col, choice_col, weights_col,
                           cluster_col))
   dt[, .choicer_row := seq_len(.N)]

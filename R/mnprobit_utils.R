@@ -323,6 +323,9 @@ prepare_mnp_data <- function(
   ## Preliminary housekeeping --------------------------------------------------
   # Check if all relevant variables are available
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
+  # Names first: they need no data, and reading the data can stop for a
+  # missing bit64.
+  .check_col_names(needed, alt_col)
   # The covariates are read in place from `src` (the caller's data, never
   # modified, when possible); only the index columns are copied into `dt`,
   # and X is gathered by source row at the end.
@@ -331,7 +334,6 @@ prepare_mnp_data <- function(
   if (!all(needed %in% names(src)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(src)), collapse = ", "))
-  .check_col_names(needed, alt_col)
   dt <- .copy_cols(src, c(id_col, alt_col, choice_col))
   dt[, .choicer_row := seq_len(.N)]
 

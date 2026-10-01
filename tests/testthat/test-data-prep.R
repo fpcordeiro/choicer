@@ -676,3 +676,32 @@ test_that("prep_gather_design differences rows against base rows in one pass", {
   expect_identical(prep_gather_design(big, r, base = b),
                    cbind(big[[1]][r] - big[[1]][b], big[[2]][r] - big[[2]][b]))
 })
+
+test_that("column arguments that are not names are reported as missing columns", {
+  # The reserved-name checks run before the data are read; an argument that
+  # is NA or a number is left to the check for missing columns.
+  dt <- create_small_mnl_data()
+  dt[, nest := ifelse(alt == 1L, "a", "b")]
+  missing_na <- "Missing columns: NA"
+  expect_error(prepare_mnl_data(dt, "id", "alt", "choice", c("x1", NA)),
+               missing_na, fixed = TRUE)
+  expect_error(prepare_mnl_data(dt, "id", "alt", "choice", "x1",
+                                weights_col = NA_character_),
+               missing_na, fixed = TRUE)
+  expect_error(prepare_mnl_data(dt, 1, 2, 5, 3), "Missing columns: 1, 2, 5, 3",
+               fixed = TRUE)
+  expect_error(prepare_mnl_data(dt, "id", c("alt", "zz"), "choice", "x1"),
+               "Missing columns: zz", fixed = TRUE)
+  expect_error(prepare_mxl_data(dt, "id", "alt", "choice", "x1", "x2",
+                                person_col = NA_character_),
+               missing_na, fixed = TRUE)
+  expect_error(prepare_nl_data(dt, "id", "alt", "choice", c("x1", NA), "nest"),
+               missing_na, fixed = TRUE)
+  expect_error(prepare_mnp_data(dt, "id", "alt", "choice", c("x1", NA)),
+               missing_na, fixed = TRUE)
+  expect_error(prepare_hmnl_data(dt, "id", "alt", "choice", c("x1", NA)),
+               missing_na, fixed = TRUE)
+  expect_error(prepare_hmnp_data(dt, "id", "alt", "choice", "x1",
+                                 person_col = NA_character_),
+               missing_na, fixed = TRUE)
+})

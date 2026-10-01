@@ -423,6 +423,10 @@ prepare_nl_data <- function(
     weights_col = NULL,
     cluster_col = NULL
 ) {
+  # Names first: they need no data, and reading the data can stop for a
+  # missing bit64. (prepare_mnl_data() below checks its own columns again.)
+  .check_col_names(c(id_col, alt_col, choice_col, covariate_cols, weights_col,
+                     cluster_col, nest_col), alt_col)
   # Only the two columns of the alternative-to-nest map; prepare_mnl_data()
   # below copies the columns it needs itself.
   dt <- .copy_cols(data, c(alt_col, nest_col))
