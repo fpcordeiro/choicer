@@ -392,8 +392,9 @@ unless it says otherwise.
   alternatives each, for instance) ran on wrong choice sets without an
   error, and more rarely so could a fit. A covariate named `levels` in
   `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()` left
-  every alternative code `NA`, and with the outside option an id column
-  named `pos` gave the ids as the chosen positions; fitting then failed.
+  every alternative code `NA` (or, when its values repeated, stopped the
+  preparation), and with the outside option an id column named `pos` gave
+  the ids as the chosen positions; fitting then failed.
   Other clashes stopped with unrelated errors: an id column named `V1` (the
   name `data.table::fread(header = FALSE)` and `as.data.frame()` of an
   unnamed matrix give the first column) in `prepare_mnl_data()`,
@@ -419,15 +420,18 @@ unless it says otherwise.
   the remaining working columns, per-situation results, counts and strata
   carry the reserved prefix `.choicer_` or are read by position; and the
   preparations, post-estimation and the WESML helpers compute their own
-  values before indexing the data or `alt_mapping`, so `levels`, `J`,
-  `outside_opt_label`, `am`, `pos` and the like are no longer looked up
-  among the columns. Inputs without a clash give the same results as
-  before. Two inputs are now errors: a column whose name starts with
-  `.choicer_`, used as an id, alternative, choice, covariate, weight,
-  cluster or decision-maker column; and an alternative column named
-  `alt_int`, `N_OBS`, `N_CHOICES`, `TAKE_RATE` or `MKT_SHARE`, the fixed
-  columns of the returned `alt_mapping`, which must now be renamed.
-  Released versions handled `.choicer_` columns correctly (they used no
+  values before indexing the data or `alt_mapping`, so the names listed
+  above are no longer looked up among the columns. In the preparations
+  (and so the `run_*()` functions), an index column named `id_col` or
+  `choice_col`, or in the hierarchical preparations one named
+  `person_col`, still stops them with an unrelated error, as in released
+  versions. Inputs without a clash give the same results as before. Two
+  inputs are now errors: a column whose name starts with `.choicer_`, used
+  as an id, alternative, choice, covariate, weight, cluster or
+  decision-maker column; and an alternative column named `alt_int`,
+  `N_OBS`, `N_CHOICES`, `TAKE_RATE` or `MKT_SHARE`, the fixed columns of
+  the returned `alt_mapping`, which must now be renamed. Released versions
+  handled `.choicer_` columns correctly (they used no
   such names) and, of the alternative-column names, only an `alt_int`
   column already coded 1 to J, without the outside option.
 - A covariate named like a parameter the fit generates gave two parameters
@@ -443,11 +447,11 @@ unless it says otherwise.
   `Mu_<variable>` and `L_<i><j>` (mixed logit), and the mixed logit's
   `summary()` prints `Sigma_<i><j>` for `L_<i><j>` and `exp(Mu_<variable>)`
   for the mean of a log-normal coefficient; a covariate could take any of
-  these names. Estimation
-  addresses their parameters by position, so without named bounds (below)
-  the estimates, standard errors and predictions were right. But
-  `summary()` stopped with a duplicate row-name error, unless it relabelled
-  the generated parameter (`L_<i><j>`, or a log-normal `Mu_<variable>`),
+  these names. Estimation addresses their parameters by position, so
+  without named bounds (below) the estimates, standard errors and
+  predictions were right. But `summary()` stopped with a duplicate
+  row-name error, unless it relabelled the generated parameter
+  (`L_<i><j>`, or a log-normal `Mu_<variable>`),
   and indexing `coef()` or `vcov()` by name, or `wtp(attr_vars = )`, found
   the covariate: `wtp(attr_vars = "ASC_b")` returned the covariate's WTP,
   and the constant's could not be reached by name. A named bound in
@@ -475,11 +479,13 @@ unless it says otherwise.
   4.9e-324, 2^40 as 5.4e-312), so fits, standard errors and predictions were
   silently wrong. Negative values above -2^52 became `NaN`, which stopped
   the preparation with an unrelated error (`NA/NaN/Inf in foreign function
-  call`). When bit64 was not loaded, as for data read from an `.rds` file,
-  the check for missing values misread these columns too: it took negative
-  values for missing ones, dropping their choice situations with the
-  warning about missing values, and let a missing value into the design as
-  0. The design builders now read integer64 columns as their values, as
+  call`); with bit64 loaded, `prepare_mnp_data()` differenced these columns
+  as integers and so usually stopped the same way. When bit64 was not
+  loaded, as for data read from an `.rds` file, the check for missing
+  values misread these columns too: it took negative values for missing
+  ones, dropping their choice situations with the warning about missing
+  values, and let a missing value into the design as 0. The design
+  builders now read integer64 columns as their values, as
   `as.double()` converts them: `prepare_mnl_data()`, `prepare_mxl_data()`,
   `prepare_nl_data()`, `prepare_mnp_data()`, `prepare_hmnl_data()` and
   `prepare_hmnp_data()` (including `alt_covariate_cols` and
@@ -489,9 +495,9 @@ unless it says otherwise.
   naming the column. An integer64 column among those a model uses now loads
   bit64 first, so its missing values are found and handled as in other
   columns; if bit64 is not installed, such a column is an error. Weights
-  (`weights_col`, a `weights` vector, prediction `weights`) and integer64
-  `X` and `W` matrices in the list form of `newdata` had the same defect and
-  are converted the same way. bit64 is now a suggested package.
+  (`weights_col`, a `weights` vector) and integer64 `X` and `W` matrices in
+  the list form of `newdata` had the same defect and are now converted the
+  same way, as are prediction `weights`. bit64 is now a suggested package.
 
 # choicer 0.2.1
 
