@@ -569,3 +569,26 @@ test_that("a repeated covariate stops MNL and NL preparation, as before", {
                "names a column more than once: x1")
 })
 
+
+test_that("prep_gather_design differences rows against base rows in one pass", {
+  cols <- list(c(1.5, NA, 3.25, -1), c(4L, NA, 6L, 7L))
+  r <- c(4L, 1L, 3L)
+  b <- c(1L, 1L, 2L)
+  # As R's arithmetic forms the differences, NA included, in double.
+  expect_identical(prep_gather_design(cols, r, base = b),
+                   cbind(cols[[1]][r] - cols[[1]][b], cols[[2]][r] - cols[[2]][b]))
+  expect_identical(prep_gather_design(cols, integer(0), base = integer(0)),
+                   matrix(numeric(0), 0, 2))
+  expect_error(prep_gather_design(cols, 1:2, base = 1L), "one index per element")
+  expect_error(prep_gather_design(cols, 1:2, base = c(1L, 5L)), "out of range")
+  expect_error(prep_gather_design(cols, 1:2, base = c(1L, NA)), "out of range")
+  expect_error(prep_gather_design(cols, 1:2, base = c(1, 2)), "NULL or an integer vector")
+  # Past the OpenMP threshold.
+  set.seed(1)
+  n <- 200001L
+  big <- list(rnorm(n), sample.int(1000L, n, TRUE))
+  r <- sample.int(n)
+  b <- sample.int(n)
+  expect_identical(prep_gather_design(big, r, base = b),
+                   cbind(big[[1]][r] - big[[1]][b], big[[2]][r] - big[[2]][b]))
+})

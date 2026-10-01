@@ -213,11 +213,43 @@
   hierarchical preparations also scan for non-finite covariate values a
   column at a time, and look up the choice situations to drop only when a
   row is flagged, where they grouped every row by choice situation twice.
-  The prepared objects are unchanged on every call the test suite makes and
-  on a battery of edge cases, with one exception: a used column that shared
-  its name with a working column of the old code (`HAS_NA`, `TASK_HAS_NA`,
-  `HAS_BAD`, `TASK_HAS_BAD`) stopped the preparation with an error, and now
-  works like any other.
+  Apart from the changes below, the prepared objects are unchanged on every
+  call the test suite makes and on a battery of edge cases; a used column
+  that shared its name with a working column of the old code (`HAS_NA`,
+  `TASK_HAS_NA`, `HAS_BAD`, `TASK_HAS_BAD`) stopped the preparation with an
+  error, and now works like any other.
+- The same three functions now copy only the index columns into their
+  working table and gather `X` in C++ from the caller's covariate columns,
+  as the MNL, MXL and NL preparations do; `prepare_mnp_data()` writes each
+  choice situation's differences from its base alternative in the same
+  pass. `X` is now always double precision there too (posterior draws are
+  unchanged, bit for bit). The hierarchical preparations also read the
+  alternative-level covariates by source row, call a covariate constant
+  within choice situations when every row equals its situation's first row,
+  and look for an alternative listed twice in one pass over the keys; both
+  checks used to evaluate R code for every choice situation. A few inputs
+  now prepare differently. The choice-situation id used as a covariate (a
+  task-order term, say) is now recognized as constant within every
+  situation: it is kept with a message, or dropped with a warning when there
+  is no outside option, where it used to be kept silently. A covariate or
+  alternative-level covariate named like a working column of the
+  preparation (`alt_int`, `idx_in_group`, `task_idx`, `HB_PERSON`) is read
+  as given; it used to be overwritten by that column, which could build `Z`
+  from within-situation positions without a warning. A choice-situation
+  column named `V1` or `N` no longer gives a spurious error (or, for `N` in
+  the hierarchical preparations, situation sizes `M` equal to the situation
+  ids), and integer covariates whose differences or within-situation ranges
+  overflow 32-bit integers no longer fail. On synthetic inputs of 10 million
+  rows in which the model uses every column, `prepare_mnp_data()` (2.5
+  million choice situations of four alternatives) now takes 5.0 s instead
+  of 13.8 s, allocates 6.4 GB instead of 9.0 GB, and its peak heap use is
+  3.0 times the size of its input instead of 4.9 times; `prepare_hmnl_data()`
+  (500,000 respondents with five choice situations of four alternatives
+  each) takes 14.5 s instead of 31.7 s, allocates 12.2 GB instead of
+  15.5 GB, and peaks at 3.1 times its input instead of 4.9 times. Peak
+  resident memory is 4.5 times the input instead of 8.0 times for
+  `prepare_mnp_data()` and 4.7 times instead of 7.6 times for
+  `prepare_hmnl_data()` (medians of three runs).
 
 ## Corrections
 

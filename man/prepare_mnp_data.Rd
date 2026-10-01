@@ -35,8 +35,8 @@ constants (one intercept per non-base alternative).}
 \value{
 A list containing:
 \itemize{
-\item \code{X}: Stacked differenced design matrix ((N * p) x K), covariate
-columns first, then ASC columns when \code{use_asc = TRUE}.
+\item \code{X}: Stacked differenced design matrix ((N * p) x K, double),
+covariate columns first, then ASC columns when \code{use_asc = TRUE}.
 \item \code{y}: Integer vector of choices (0 = base alternative, j in 1..p
 for the j-th non-base alternative), one per choice situation.
 \item \code{p}: Number of utility differences (J - 1).
