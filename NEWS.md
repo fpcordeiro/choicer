@@ -234,9 +234,9 @@
   is no outside option, where it used to be kept silently. Inputs whose
   column names clashed with the preparations' own names are covered under
   Corrections. Integer covariates whose differences or within-situation
-  ranges overflow 32-bit integers no longer fail. On synthetic inputs of 10 million
-  rows in which the model uses every column, `prepare_mnp_data()` (2.5
-  million choice situations of four alternatives) now takes 5.0 s instead
+  ranges overflow 32-bit integers no longer fail. On synthetic inputs of
+  10 million rows in which the model uses every column, `prepare_mnp_data()`
+  (2.5 million choice situations of four alternatives) now takes 5.0 s instead
   of 13.8 s, allocates 6.4 GB instead of 9.0 GB, and its peak heap use is
   3.0 times the size of its input instead of 4.9 times; `prepare_hmnl_data()`
   (500,000 respondents with five choice situations of four alternatives
@@ -250,8 +250,8 @@
 
 The following were found while implementing the panel likelihood above and
 the kernel and data-preparation work for population-scale data that
-followed, and independently verified; they affected fits in released
-versions.
+followed, and independently verified. Each affected released versions
+unless it says otherwise.
 
 - `mxl_hessian_parallel()` silently dropped any choice situation whose
   simulated choice probability, summed over draws, was `<= 1e-12`, while the
@@ -306,6 +306,10 @@ versions.
   highest-weight draw's score. This also prevents spurious curvature when a
   finite utility gap is so large that subtracting the log-sum-exp loses
   normalization accuracy.
+  The weights described here were this development version's log-space
+  weights; released versions normalized linear weights, which sum to one to
+  rounding precision, so there the uncentered form lost accuracy only at far
+  larger scores.
 - `run_mxlogit()`'s advanced workflow (`input_data` + `eta_draws`) recorded
   the `S` argument (default 100) instead of the number of draws in
   `eta_draws`, so post-hoc recomputation (`vcov(fit, type = )`, lazily
@@ -323,8 +327,14 @@ versions.
   per-situation results back under names (`N`, `V1`, `chosen`, `pos`) that
   an id column of the same name shadowed, and looked up variables of their
   own (`levels`, `J`, `outside_opt_label`, `ids_to_drop`) where a column of
-  the same name took their place. These clashes changed the model without
-  an error:
+  the same name took their place. `predict()`, `logsum()` and
+  `consumer_surplus()` with a data.frame `newdata`, `wesml_weights()`,
+  `sample_by_choice()`, and the hierarchical fits and their post-estimation
+  methods did the same: they looked up variables of their own (`am`, `pos`,
+  `spec`, `d`, `choice_col`, `id_col`, `keep_ids`) inside the data or the
+  fit's `alt_mapping`, and read counts and strata back under names (`V1`,
+  `.strat`) that an id column of the same name shadowed. These clashes
+  changed the results without an error:
   - in `prepare_hmnl_data()` / `prepare_hmnp_data()`, a covariate or
     control-function residual named `alt_int`, `idx_in_group` or
     `task_idx`, or one named `HB_PERSON` when the respondent ids were
@@ -346,7 +356,15 @@ versions.
     decision-maker column named `outside_opt_label` kept the outside-option
     rows as an extra inside alternative;
   - an alternative column named `idx_in_group` with unequal choice sets
-    added unidentified constants, leaving every standard error `NA`.
+    added unidentified constants, leaving every standard error `NA`;
+  - in `predict()`, `logsum()` and `consumer_surplus()` with a data.frame
+    `newdata`, a covariate named `pos` whose values were valid positions in
+    the fit's `alt_mapping` (without an outside option, any permutation of 1
+    to J within each choice situation, such as a rank) gave each row the
+    alternative at that position, so the alternative-specific constants and
+    the shares went to the wrong alternatives;
+  - a column named `keep_ids` made `sample_by_choice()` return the wrong
+    choice situations (the whole population when it was the id column).
 
   These changed labels and summaries: an alternative column named
   `alt_int`, or with equal choice sets `idx_in_group`, had its labels
@@ -383,63 +401,72 @@ versions.
   column was given, and always in the hierarchical preparations; a
   covariate named `alt_int` or `idx_in_group` in `prepare_mnl_data()`,
   `prepare_mxl_data()` and `prepare_nl_data()`; and an id, weight or
-  cluster column named like a working column, among others. Fits whose data
-  used a name in the first group, and fits with an id column named `N` that
-  ran, should be re-estimated; for the second group, re-estimate nested
+  cluster column named like a working column, among others. So did,
+  outside the preparations, a covariate named `am` in a data.frame
+  `newdata`, most covariates there named `pos`, and with an outside option
+  one named `spec`; an id column named `V1` or `.strat`, or a choice column
+  named `choice_col`, in `wesml_weights()` and `sample_by_choice()`; and an
+  alternative column named `am`, which stopped `run_hmnlogit()` and
+  `run_hmnprobit()`, or `d`, which stopped their `predict()` without
+  `newdata`, `elasticities()`, `diversion_ratios()` and `ppc_shares()`, and
+  for the HMNL `logsum()` without `newdata` and `consumer_surplus()`. Fits
+  whose data used a name in the first group, and fits with an id column
+  named `N` that ran, should be re-estimated, and the predictions and
+  samples in that group recomputed; for the second group, re-estimate nested
   logit fits and recompute predictions made with `newdata`.
 
-  Covariates are now read from the data rather than from the working table,
-  the remaining working columns and per-situation results carry the
-  reserved prefix `.choicer_` or are read by position, and the preparations
-  no longer look up `levels`, `J`, `outside_opt_label` or `ids_to_drop`
-  among the columns. These changes leave the preparation of inputs without
-  a clash unchanged. Two inputs are now errors: a column whose name starts
-  with `.choicer_`, used as an id, alternative, choice, covariate, weight,
+  Covariates are now read from the data rather than from the working table;
+  the remaining working columns, per-situation results, counts and strata
+  carry the reserved prefix `.choicer_` or are read by position; and the
+  preparations, post-estimation and the WESML helpers compute their own
+  values before indexing the data or `alt_mapping`, so `levels`, `J`,
+  `outside_opt_label`, `am`, `pos` and the like are no longer looked up
+  among the columns. Inputs without a clash give the same results as
+  before. Two inputs are now errors: a column whose name starts with
+  `.choicer_`, used as an id, alternative, choice, covariate, weight,
   cluster or decision-maker column; and an alternative column named
   `alt_int`, `N_OBS`, `N_CHOICES`, `TAKE_RATE` or `MKT_SHARE`, the fixed
   columns of the returned `alt_mapping`, which must now be renamed.
   Released versions handled `.choicer_` columns correctly (they used no
   such names) and, of the alternative-column names, only an `alt_int`
   column already coded 1 to J, without the outside option.
-- `prepare_mnp_data()` (and so `run_mnprobit()`) names the constant of each
-  non-base alternative `ASC_<label>` and builds `param_map` by column name.
-  Since 0.2.0, a covariate with one of those names, such as `ASC_b` next to
-  alternative `b`'s constant, gave the design matrix two columns of that
-  name. The constant then sat in neither the `beta` nor the `asc` block, so
-  `recovery_table()` could not align the ASCs, and `summary()` stopped with a
-  duplicate row-name error. When the covariate was itself alternative `b`'s
-  dummy, one of the two columns was dropped as collinear without the usual
-  message. Such names are now an error that lists the covariates. Rename
-  them, or set `use_asc = FALSE` for ASC dummies built by hand. Other inputs
-  are prepared as before.
-- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` accepted a covariate
-  named like a parameter they generate: `ASC_<label>`, `Lambda_<k>` (nested
-  logit), `Mu_<variable>` and `L_<i><j>` (mixed logit), or like a label the
-  mixed logit's `summary()` prints in place of one: `Sigma_<i><j>` for
-  `L_<i><j>`, and `exp(Mu_<variable>)` for the mean of a log-normal
-  coefficient. Two parameters then shared a name, or a name and a
-  `summary()` label. Estimation addresses parameters by position, so
-  without named bounds (below) the estimates, standard errors and
-  predictions were right. But `summary()` stopped with a duplicate row-name
-  error, unless it relabelled the generated parameter (`L_<i><j>`, or a
-  log-normal `Mu_<variable>`), and indexing `coef()` or `vcov()` by name, or
-  `wtp(attr_vars = )`, found the covariate: `wtp(attr_vars = "ASC_b")`
-  returned the covariate's WTP, and the constant's could not be reached by
-  name. A named bound in `run_mxlogit()` goes to the first parameter of
-  that name, and the fixed coefficients come first, so it bounded the
-  covariate's coefficient and left the generated parameter free. With a
-  covariate named `ASC_b`, `lower = c(ASC_b = 0)` held that covariate's
-  coefficient at 0 whenever its unconstrained estimate was negative, and so
-  moved the other estimates, while alternative `b`'s constant stayed
-  unbounded; a covariate named `L_11` would likewise have taken the
-  documented `lower = c(L_11 = -5)` meant for the first Cholesky diagonal.
-  The three functions now stop before optimizing, and `run_mxlogit()` before
-  building its draws, listing the repeated names. The same check stops an
-  `input_data` whose `X` repeats a column name, and repeated
-  `run_nestlogit(param_names = )`, which used to fit with the same
-  ambiguities. Fits whose parameter names and `summary()` labels are all
-  distinct are unchanged, `summary()` included.
-
+- A covariate named like a parameter the fit generates gave two parameters
+  one name. `prepare_mnp_data()` (and so `run_mnprobit()`) names the
+  constant of each non-base alternative `ASC_<label>` and builds `param_map`
+  by column name: since 0.2.0, a covariate such as `ASC_b` next to
+  alternative `b`'s constant left that constant in neither the `beta` nor
+  the `asc` block, so `recovery_table()` could not align the ASCs, and
+  `summary()` stopped with a duplicate row-name error; when the covariate
+  was itself alternative `b`'s dummy, one of the two columns was dropped as
+  collinear without the usual message. `run_mnlogit()`, `run_mxlogit()` and
+  `run_nestlogit()` generate `ASC_<label>`, `Lambda_<k>` (nested logit),
+  `Mu_<variable>` and `L_<i><j>` (mixed logit), and the mixed logit's
+  `summary()` prints `Sigma_<i><j>` for `L_<i><j>` and `exp(Mu_<variable>)`
+  for the mean of a log-normal coefficient; a covariate could take any of
+  these names. Estimation
+  addresses their parameters by position, so without named bounds (below)
+  the estimates, standard errors and predictions were right. But
+  `summary()` stopped with a duplicate row-name error, unless it relabelled
+  the generated parameter (`L_<i><j>`, or a log-normal `Mu_<variable>`),
+  and indexing `coef()` or `vcov()` by name, or `wtp(attr_vars = )`, found
+  the covariate: `wtp(attr_vars = "ASC_b")` returned the covariate's WTP,
+  and the constant's could not be reached by name. A named bound in
+  `run_mxlogit()` goes to the first parameter of that name, and the fixed
+  coefficients come first, so it bounded the covariate's coefficient and
+  left the generated parameter free. With a covariate named `ASC_b`,
+  `lower = c(ASC_b = 0)` held that covariate's coefficient at 0 whenever its
+  unconstrained estimate was negative, and so moved the other estimates,
+  while alternative `b`'s constant stayed unbounded; a covariate named
+  `L_11` would likewise have taken the documented `lower = c(L_11 = -5)`
+  meant for the first Cholesky diagonal. Such names are now an error that
+  lists them: `prepare_mnp_data()` stops before building `X` (rename the
+  covariates, or set `use_asc = FALSE` for ASC dummies built by hand), and
+  the three other functions stop before optimizing, `run_mxlogit()` before
+  building its draws. The same check stops an `input_data` whose `X`
+  repeats a column name, and repeated `run_nestlogit(param_names = )`, which
+  used to fit with the same ambiguities. Preparations and fits whose
+  parameter names and `summary()` labels are all distinct are unchanged,
+  `summary()` included.
 - Columns of class `integer64` (bit64), which `data.table::fread()` returns
   for integers beyond 2^31 - 1 and several database drivers return for
   `BIGINT`, passed the check that covariates are numeric but entered the
@@ -465,47 +492,6 @@ versions.
   (`weights_col`, a `weights` vector, prediction `weights`) and integer64
   `X` and `W` matrices in the list form of `newdata` had the same defect and
   are converted the same way. bit64 is now a suggested package.
-
-The following affected post-estimation and the WESML helpers in released
-versions:
-
-- `predict()`, `logsum()` and `consumer_surplus()` with a data.frame
-  `newdata` code each row's alternative by its position in the fit's
-  `alt_mapping`, and looked up that table and those positions as the
-  variables `am` and `pos` inside the data, where a covariate of the same
-  name took their place. A covariate named `am` stopped the prediction with
-  "$ operator is invalid for atomic vectors", and one named `pos` usually
-  with an unrelated error ("only 0's may be mixed with negative subscripts",
-  or duplicated (id, alternative) pairs). But a `pos` whose values were
-  valid positions in `alt_mapping` (without an outside option, any
-  permutation of 1 to J within each choice situation, such as a rank)
-  passed every check and silently gave each row the alternative at that
-  position, so the alternative-specific constants and the shares went to the
-  wrong alternatives. With an outside option, a covariate named `spec`
-  stopped the prediction with the same `$` error.
-- `wesml_weights()` and `sample_by_choice()` read the number of chosen
-  alternatives per choice situation back under data.table's automatic name
-  `V1`, so an id column named `V1` stopped them with a spurious error about
-  the number of chosen alternatives; an id column named `.strat`, the name
-  of their working column for the chosen stratum, made them read the ids as
-  the strata and stop with an unrelated error. They also looked up
-  `choice_col`, `id_col` and `keep_ids` inside the data, where a column of
-  the same name took their place whether or not the call used it: a choice
-  column named `choice_col` stopped them with "invalid first argument", and
-  a column named `keep_ids` made `sample_by_choice()` silently return the
-  wrong choice situations (the whole population when it was the id column).
-- An alternative column named `am` stopped `run_hmnlogit()` and
-  `run_hmnprobit()` with "$ operator is invalid for atomic vectors". With one
-  named `d`, the fits succeeded, but `predict()` without `newdata`,
-  `elasticities()`, `diversion_ratios()` and `ppc_shares()` stopped with the
-  same error, as did, for the HMNL, `logsum()` without `newdata` and
-  `consumer_surplus()`. Each looked up a variable of that name inside the
-  fit's `alt_mapping`, where the alternative column took its place.
-
-These values are now computed before the data or `alt_mapping` is indexed,
-and counts and strata are read back under names with the reserved prefix
-`.choicer_`. Inputs without these names give the same results as before, bit
-for bit, on every call the test suite makes.
 
 # choicer 0.2.1
 
