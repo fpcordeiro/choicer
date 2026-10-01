@@ -406,10 +406,11 @@ prepare_mnp_data <- function(
   asc_names <- if (use_asc) paste0("ASC_", alt_mapping[[alt_col]][2:J])
   clash <- intersect(covariate_cols, asc_names)
   if (length(clash) > 0) {
-    stop("Covariate name(s) collide with the generated ASC names: ",
-         paste(clash, collapse = ", "), ". Each non-base alternative's ",
-         "constant is named ASC_<label>; rename the covariate(s), or set ",
-         "use_asc = FALSE if they are ASC dummies built by hand.")
+    .stop_param_names(clash, paste0(
+      "The coefficients take the names of the covariates and of the ",
+      "constants the model generates (ASC_<label>, one per non-base ",
+      "alternative); rename a covariate that takes a generated name, or set ",
+      "use_asc = FALSE if it is an ASC dummy built by hand."))
   }
 
   ## Order rows ----------------------------------------------------------------

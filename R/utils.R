@@ -109,27 +109,46 @@ check_collinearity <- function(X) {
 #'
 #' Coefficients, `vcov()`, `summary()`, `wtp()` and named bounds look
 #' parameters up by name, so a covariate named like a parameter the model
-#' generates would leave two parameters under one name. Each element of
-#' `labels` names the whole parameter vector (the stored names, or the
-#' labels `summary()` prints) and is checked on its own.
+#' generates would leave two parameters under one name, as would a design
+#' matrix that repeats a column name or supplied names that repeat. Each
+#' element of `labels` names the whole parameter vector (the stored names,
+#' or the labels `summary()` prints) and is checked on its own.
 #'
 #' @param labels List of character vectors of parameter names, the stored
 #'   names first.
 #' @param generated The model's generated names, for the message.
+#' @param supplied Whether the caller supplied the names (`param_names`).
 #' @returns `NULL`, invisibly; stops listing the repeated names in parameter
 #'   order.
 #' @noRd
-.check_param_names <- function(labels, generated) {
+.check_param_names <- function(labels, generated, supplied = FALSE) {
   dups <- unique(unlist(lapply(labels, function(nm) nm[duplicated(nm)])))
   if (length(dups) > 0L) {
     dups <- dups[order(match(dups, labels[[1L]]))]
-    stop("Parameter names must be unique; repeated: ",
-         paste0("'", dups, "'", collapse = ", "),
-         ". Covariates may not take the names the model gives its own ",
-         "parameters (", paste(generated, collapse = ", "), ").",
-         call. = FALSE)
+    .stop_param_names(dups, if (supplied) {
+      "Give each parameter its own name in `param_names`."
+    } else {
+      paste0("The coefficients take the names of the covariates (the ",
+             "columns of the design matrix) and of the parameters the model ",
+             "generates (", paste(generated, collapse = ", "), "); rename ",
+             "a covariate that repeats a name or takes a generated one.")
+    })
   }
   invisible(NULL)
+}
+
+#' The error for repeated parameter names
+#'
+#' One message for the rule wherever it is checked: `.check_param_names()`
+#' in the `run_*()` functions, and `prepare_mnp_data()` for its constants.
+#'
+#' @param dups The repeated names.
+#' @param why What the names are made of and how to fix them.
+#' @returns Does not return.
+#' @noRd
+.stop_param_names <- function(dups, why) {
+  stop("Parameter names must be unique; repeated: ",
+       paste0("'", dups, "'", collapse = ", "), ". ", why, call. = FALSE)
 }
 
 #' Extract lower triangular elements (column-major vech)

@@ -21,7 +21,11 @@ test_that("run_mnlogit() rejects a covariate named like an ASC", {
   dt <- make_clash_data()
   expect_error(
     run_mnlogit(dt, "id", "alt", "choice", c("x1", "ASC_b")),
-    "Parameter names must be unique; repeated: 'ASC_b'. Covariates may not",
+    paste0("Parameter names must be unique; repeated: 'ASC_b'. The ",
+           "coefficients take the names of the covariates (the columns of ",
+           "the design matrix) and of the parameters the model generates ",
+           "(ASC_<label>); rename a covariate that repeats a name or takes a ",
+           "generated one."),
     fixed = TRUE
   )
   # Without ASCs the name is free
@@ -45,10 +49,12 @@ test_that("run_nestlogit() rejects covariates named like a lambda or an ASC", {
                "repeated: 'Lambda_1'.", fixed = TRUE)
   expect_error(nl(covariate_cols = c("ASC_b", "x1")),
                "repeated: 'ASC_b'.", fixed = TRUE)
-  # The check runs before the optimizer, on supplied names too
+  # The check runs before the optimizer, on supplied names too, which alone
+  # are then to blame
   expect_error(nl(covariate_cols = "x1",
                   param_names = c("x1", "x1", "ASC_b", "ASC_c")),
-               "repeated: 'x1'.", fixed = TRUE)
+               paste0("repeated: 'x1'. Give each parameter its own name in ",
+                      "`param_names`."), fixed = TRUE)
   # Unique supplied names free the generated ones
   fit <- nl(covariate_cols = c("x1", "Lambda_1"),
             param_names = c("x1", "Lambda_1", "lambda_B", "ASC_b", "ASC_c"))
