@@ -401,6 +401,17 @@ versions.
   Released versions handled `.choicer_` columns correctly (they used no
   such names) and, of the alternative-column names, only an `alt_int`
   column already coded 1 to J, without the outside option.
+- `prepare_mnp_data()` (and so `run_mnprobit()`) names the constant of each
+  non-base alternative `ASC_<label>` and builds `param_map` by column name.
+  Since 0.2.0, a covariate with one of those names, such as `ASC_b` next to
+  alternative `b`'s constant, gave the design matrix two columns of that
+  name. The constant then sat in neither the `beta` nor the `asc` block, so
+  `recovery_table()` could not align the ASCs, and `summary()` stopped with a
+  duplicate row-name error. When the covariate was itself alternative `b`'s
+  dummy, one of the two columns was dropped as collinear without the usual
+  message. Such names are now an error that lists the covariates. Rename
+  them, or set `use_asc = FALSE` for ASC dummies built by hand. Other inputs
+  are prepared as before.
 
 The following affected post-estimation and the WESML helpers in released
 versions:

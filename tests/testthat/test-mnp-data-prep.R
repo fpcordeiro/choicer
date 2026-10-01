@@ -174,3 +174,58 @@ test_that("an id column named N does not shadow the alternative counts", {
   d <- prepare_mnp_data(dt, "N", "alt", "choice", c("x1", "x2"))
   expect_identical(d[c("X", "y", "alt_mapping")], ref[c("X", "y", "alt_mapping")])
 })
+
+test_that("covariates may not take a generated ASC name", {
+  set.seed(7)
+  dt <- data.table(id = rep(1:30, each = 3), alt = rep(c("a", "b", "c"), 30))
+  dt[, `:=`(x1 = rnorm(.N), ASC_b = rnorm(.N), ASC_c = rnorm(.N))]
+  dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+
+  expect_error(
+    prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "ASC_b")),
+    "collide with the generated ASC names: ASC_b.", fixed = TRUE
+  )
+  expect_error(
+    prepare_mnp_data(dt, "id", "alt", "choice", c("ASC_c", "x1", "ASC_b")),
+    "ASC names: ASC_c, ASC_b.", fixed = TRUE
+  )
+  expect_error(
+    run_mnprobit(dt, "id", "alt", "choice", c("x1", "ASC_b"),
+                 mcmc = list(R = 20, burn = 10)),
+    "collide with the generated ASC names"
+  )
+
+  # Only generated names clash: with base "b" there is no ASC_b column
+  d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "ASC_b"),
+                        base_alt = "b")
+  expect_equal(colnames(d$X), c("x1", "ASC_b", "ASC_a", "ASC_c"))
+  expect_equal(d$param_map$beta, 1:2)
+  expect_equal(d$param_map$asc, 3:4)
+
+  # Without ASCs the name belongs to an ordinary covariate
+  d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "ASC_b"),
+                        use_asc = FALSE)
+  expect_equal(colnames(d$X), c("x1", "ASC_b"))
+  expect_equal(d$param_map$beta, 1:2)
+  expect_null(d$param_map$asc)
+})
+
+test_that("ASC dummies built by hand need use_asc = FALSE", {
+  set.seed(8)
+  dt <- data.table(id = rep(1:30, each = 3), alt = rep(c("a", "b", "c"), 30))
+  dt[, x1 := rnorm(.N)]
+  dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+  dt[, `:=`(ASC_b = as.numeric(alt == "b"), ASC_c = as.numeric(alt == "c"))]
+
+  # Used to drop the generated ASC_b silently and file the dummy under beta
+  expect_error(
+    prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "ASC_b", "ASC_c")),
+    "ASC names: ASC_b, ASC_c.", fixed = TRUE
+  )
+
+  # Differenced against the base, the dummies are the generated ASC block
+  d_hand <- prepare_mnp_data(dt, "id", "alt", "choice",
+                             c("x1", "ASC_b", "ASC_c"), use_asc = FALSE)
+  d_auto <- prepare_mnp_data(dt, "id", "alt", "choice", "x1")
+  expect_equal(d_hand$X, d_auto$X)
+})
