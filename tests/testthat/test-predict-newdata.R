@@ -539,3 +539,22 @@ test_that("list path rejects non-integer M and repeated alt codes in a block", {
     "repeat an alternative"
   )
 })
+
+test_that("newdata is prepared without spare column slots", {
+  # options(datatable.alloccol = 0) leaves new tables no room to add a column
+  # in place; prepare_newdata() makes room (setalloccol()) before it set()s
+  # the alternative codes.
+  mnl <- suppressMessages(make_mnl())
+  mxl <- suppressMessages(make_mxl())
+  ref <- list(prepare_newdata(mnl$fit, mnl$dt),
+              prepare_newdata(mxl$fit, mxl$dt))
+  ref_probs <- predict(mnl$fit, newdata = mnl$dt)
+  op <- options(datatable.alloccol = 0L)
+  got <- tryCatch(
+    list(prepare_newdata(mnl$fit, mnl$dt), prepare_newdata(mxl$fit, mxl$dt),
+         predict(mnl$fit, newdata = mnl$dt)),
+    finally = options(op)
+  )
+  expect_identical(got[1:2], ref)
+  expect_equal(got[[3]], ref_probs, tolerance = 1e-12)
+})
