@@ -535,6 +535,21 @@ unless it says otherwise.
   (`weights_col`, a `weights` vector) and integer64 `X` and `W` matrices in
   the list form of `newdata` had the same defect and are now converted the
   same way, as are prediction `weights`. bit64 is now a suggested package.
+- `sample_by_choice()` misread `integer64` ids, as `data.table::fread()`
+  returns ids beyond 2^31 - 1, ever since it was added in 0.2.0: it matched
+  the sampled ids back to the rows after `unlist()` had dropped their
+  class. With bit64 loaded, the sample came back empty without an error;
+  without it, each id drawn from among ids of large magnitude also selected
+  its neighbours (about six choice situations for each one requested, for
+  ids near 10^18). With
+  the outside option, `wesml_weights()` returned its ids as raw bits
+  (doubles such as 7.8e-242) whenever a choice situation chose the outside
+  good and bit64 was not loaded, and with `attach = TRUE` stopped with an
+  unrelated error. Both functions now load bit64 when the id, alternative
+  or choice column is `integer64`, as the preparations do, and keep the
+  ids' class, so they sample and weight such ids by value; if bit64 is not
+  installed, such a column is an error. Samples of other ids are drawn as
+  before.
 
 # choicer 0.2.1
 

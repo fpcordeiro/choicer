@@ -487,3 +487,69 @@ test_that("without bit64, every path that meets an integer64 column says so", {
     no_bit64_msg("newdata$X"), fixed = TRUE
   )
 })
+
+test_that("sample_by_choice() and wesml_weights() read integer64 ids by value", {
+  skip_if_not_installed("bit64")
+  dbl <- int64_choice_data(FALSE)   # ids 1 to 40
+  d0 <- copy(dbl)[id %% 4L == 0L, choice := 0L]   # the outside good, chosen
+  offset <- bit64::as.integer64("1000000000000000000")  # ids beyond 2^53
+  as_i64 <- function(d, big) {   # (the data hold a column named big)
+    ids <- bit64::as.integer64(d$id)
+    if (big) ids <- ids + offset
+    set(copy(d), j = "id", value = ids)[]
+  }
+  ids_back <- function(s, big) {
+    as.integer(if (big) s$id - offset else s$id)
+  }
+  sample_ref <- sample_by_choice(dbl, "id", "alt", "choice", n_per_alt = 3L,
+                                 seed = 1L)
+  out_ref <- sample_by_choice(d0, "id", "alt", "choice", frac_per_alt = 0.5,
+                              seed = 2L, outside_opt_label = "0",
+                              include_outside_option = TRUE)
+  Q <- c(`0` = 0.2, `1` = 0.3, `2` = 0.25, `3` = 0.25)
+  wesml_ref <- wesml_weights(d0, "id", "alt", "choice", Q = Q,
+                             outside_opt_label = "0",
+                             include_outside_option = TRUE)
+  for (big in c(FALSE, TRUE)) {
+    # The same choice situations are drawn, by the same random numbers: the
+    # sample used to come back empty
+    s <- sample_by_choice(as_i64(dbl, big), "id", "alt", "choice",
+                          n_per_alt = 3L, seed = 1L)
+    expect_s3_class(s$id, "integer64")
+    expect_identical(ids_back(s, big), sample_ref$id)
+    expect_identical(s$.wesml_weight, sample_ref$.wesml_weight)
+    s <- sample_by_choice(as_i64(d0, big), "id", "alt", "choice",
+                          frac_per_alt = 0.5, seed = 2L,
+                          outside_opt_label = "0",
+                          include_outside_option = TRUE)
+    expect_identical(ids_back(s, big), out_ref$id)
+    expect_identical(s$.wesml_weight, out_ref$.wesml_weight)
+    # With the outside good, wesml_weights() keeps the ids integer64. With
+    # bit64 loaded, as in this session, it always did; it lost them only
+    # without bit64, which now stops it (below).
+    w <- wesml_weights(as_i64(d0, big), "id", "alt", "choice", Q = Q,
+                       outside_opt_label = "0", include_outside_option = TRUE)
+    expect_s3_class(w$id, "integer64")
+    expect_identical(ids_back(w, big), wesml_ref$id)
+    expect_identical(w$.wesml_weight, wesml_ref$.wesml_weight)
+  }
+
+  # Without bit64 the ids cannot be read by value: large ids used to match
+  # their neighbours, several choice situations for each one drawn
+  local_mocked_bindings(.bit64_available = function() FALSE)
+  expect_error(
+    sample_by_choice(as_i64(dbl, TRUE), "id", "alt", "choice",
+                     n_per_alt = 3L, seed = 1L),
+    no_bit64_msg("Column 'id'"), fixed = TRUE
+  )
+  expect_error(
+    wesml_weights(as_i64(d0, FALSE), "id", "alt", "choice", Q = Q,
+                  outside_opt_label = "0", include_outside_option = TRUE),
+    no_bit64_msg("Column 'id'"), fixed = TRUE
+  )
+  # Integer ids need no bit64
+  expect_identical(
+    sample_by_choice(dbl, "id", "alt", "choice", n_per_alt = 3L, seed = 1L),
+    sample_ref
+  )
+})
