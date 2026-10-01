@@ -231,15 +231,10 @@
   now prepare differently. The choice-situation id used as a covariate (a
   task-order term, say) is now recognized as constant within every
   situation: it is kept with a message, or dropped with a warning when there
-  is no outside option, where it used to be kept silently. A covariate or
-  alternative-level covariate named like a working column of the
-  preparation (`alt_int`, `idx_in_group`, `task_idx`, `HB_PERSON`) is read
-  as given; it used to be overwritten by that column, which could build `Z`
-  from within-situation positions without a warning. A choice-situation
-  column named `V1` or `N` no longer gives a spurious error (or, for `N` in
-  the hierarchical preparations, situation sizes `M` equal to the situation
-  ids), and integer covariates whose differences or within-situation ranges
-  overflow 32-bit integers no longer fail. On synthetic inputs of 10 million
+  is no outside option, where it used to be kept silently. Inputs whose
+  column names clashed with the preparations' own names are covered under
+  Corrections. Integer covariates whose differences or within-situation
+  ranges overflow 32-bit integers no longer fail. On synthetic inputs of 10 million
   rows in which the model uses every column, `prepare_mnp_data()` (2.5
   million choice situations of four alternatives) now takes 5.0 s instead
   of 13.8 s, allocates 6.4 GB instead of 9.0 GB, and its peak heap use is
@@ -255,8 +250,8 @@
 
 The following were found while implementing the panel likelihood above and
 the kernel and data-preparation work for population-scale data that
-followed, and independently verified; they affected cross-sectional fits in
-released versions.
+followed, and independently verified; they affected fits in released
+versions.
 
 - `mxl_hessian_parallel()` silently dropped any choice situation whose
   simulated choice probability, summed over draws, was `<= 1e-12`, while the
@@ -318,23 +313,94 @@ released versions.
   set from the one used in estimation. `draws_info$S` now records
   `dim(eta_draws)[2]`. Post-hoc methods reproduce the estimation draws only
   when `eta_draws` was built with `get_halton_normals(S, U, K_w)`.
-- A choice-situation id column named `V1`, the name
-  `data.table::fread(header = FALSE)` and `as.data.frame()` of an unnamed
-  matrix give the first column, made `prepare_mnl_data()`,
-  `prepare_mxl_data()` and `prepare_nl_data()` stop whenever a weight or
-  cluster column was given, with a spurious error that the column varied
-  within a choice situation. An id column named `N` made them return the
-  ids in place of the choice-set sizes `M`, and so did `predict()`,
-  `logsum()` and `consumer_surplus()` with `newdata`. The kernels' checks
-  usually stopped the fit or prediction, but a prediction whose ids summed
-  to the number of rows (ids 1 to 11 with 6 alternatives each, for
-  instance) ran on wrong choice sets without an error, and more rarely so
-  could a fit. Both names now work in these functions.
-- A covariate named `alt_int` or `idx_in_group`, the names of working
-  columns of `prepare_mnl_data()`, `prepare_mxl_data()` and
-  `prepare_nl_data()`, made them stop with an unrelated error. Covariates
-  are now read from the data rather than from the working table, so these
-  names work.
+- The data preparations (`prepare_mnl_data()`, `prepare_mxl_data()`,
+  `prepare_nl_data()`, `prepare_mnp_data()`, `prepare_hmnl_data()`,
+  `prepare_hmnp_data()`, and the `run_*()` functions that call them) could
+  corrupt or misread an input column whose name matched one of their own.
+  They added working columns with fixed names (`alt_int`, `idx_in_group`,
+  `HAS_NA`, and in the hierarchical preparations `HB_PERSON`, `task_idx`,
+  `TASK_HAS_NA`, `HAS_BAD`, `TASK_HAS_BAD`) to a copy of the data, read
+  per-situation results back under names (`N`, `V1`, `chosen`, `pos`) that
+  an id column of the same name shadowed, and looked up variables of their
+  own (`levels`, `J`, `outside_opt_label`, `ids_to_drop`) where a column of
+  the same name took their place. These clashes changed the model without
+  an error:
+  - in `prepare_hmnl_data()` / `prepare_hmnp_data()`, a covariate or
+    control-function residual named `alt_int`, `idx_in_group` or
+    `task_idx`, or one named `HB_PERSON` when the respondent ids were
+    numeric, was replaced by the alternative codes, the within-situation
+    positions, the task indices or the respondent ids (values -1.2, -0.69,
+    2.29 entered the design matrix as 1, 2, 3), as was an alternative-level
+    covariate named `idx_in_group` when every choice situation offered the
+    same alternatives; `prepare_mnp_data()` differenced the codes of a
+    covariate named `alt_int`;
+  - a choice column named `alt_int` or `idx_in_group` recorded the first
+    alternative of every choice situation as chosen (`idx_in_group` was
+    harmless in `prepare_mnp_data()`), and in the hierarchical preparations
+    one named `task_idx` recorded the outside good in every task but the
+    first;
+  - an id column named `alt_int` or `idx_in_group` with the outside option,
+    and in the hierarchical preparations a task column named `alt_int` or
+    `task_idx`, regrouped the rows into spurious choice situations;
+  - with the outside option, any id, choice, covariate, weight, cluster or
+    decision-maker column named `outside_opt_label` kept the outside-option
+    rows as an extra inside alternative;
+  - an alternative column named `idx_in_group` with unequal choice sets
+    added unidentified constants, leaving every standard error `NA`.
+
+  These changed labels and summaries: an alternative column named
+  `alt_int`, or with equal choice sets `idx_in_group`, had its labels
+  replaced by the codes; one named `TAKE_RATE` or `MKT_SHARE` had its
+  labels, and so the ASC names, overwritten by the take rates or shares;
+  one named `N_OBS` or `N_CHOICES` with numeric labels misstated the take
+  rates or shares, and made `gof(null = "market_shares")` stop (`N_OBS`)
+  or return a wrong null log-likelihood (`N_CHOICES`); and one named `J`
+  mislabelled the constants of `run_mnlogit()`, `run_mxlogit()`,
+  `run_nestlogit()` and `prepare_mnp_data()` (with three alternatives
+  labelled 1 to 3 or stored as a factor, the third alternative's constant
+  took the base alternative's label). Whatever matched alternatives by
+  label inherited the error: `prepare_nl_data()` assigns nests by label, so
+  it stopped or, with text labels such as "1" to "10", assigned wrong
+  nests; `predict()`, `logsum()` and `consumer_surplus()` with `newdata`
+  stopped or attached another alternative's constant (labels 0 to 2 had
+  become 1 to 3); and `predict()` on the hierarchical fits, which takes an
+  unknown label for a new alternative, predicted every alternative from
+  posterior-predictive constants without an error.
+
+  An id column named `N` gave the ids as the choice-set sizes `M`, in the
+  preparations and in `predict()`, `logsum()` and `consumer_surplus()` with
+  `newdata`. The kernels' checks usually stopped the fit or prediction, but
+  a prediction whose ids summed to the number of rows (ids 1 to 11 with 6
+  alternatives each, for instance) ran on wrong choice sets without an
+  error, and more rarely so could a fit. A covariate named `levels` in
+  `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()` left
+  every alternative code `NA`, and with the outside option an id column
+  named `pos` gave the ids as the chosen positions; fitting then failed.
+  Other clashes stopped with unrelated errors: an id column named `V1` (the
+  name `data.table::fread(header = FALSE)` and `as.data.frame()` of an
+  unnamed matrix give the first column) in `prepare_mnl_data()`,
+  `prepare_mxl_data()` and `prepare_nl_data()` whenever a weight or cluster
+  column was given, and always in the hierarchical preparations; a
+  covariate named `alt_int` or `idx_in_group` in `prepare_mnl_data()`,
+  `prepare_mxl_data()` and `prepare_nl_data()`; and an id, weight or
+  cluster column named like a working column, among others. Fits whose data
+  used a name in the first group, and fits with an id column named `N` that
+  ran, should be re-estimated; for the second group, re-estimate nested
+  logit fits and recompute predictions made with `newdata`.
+
+  Covariates are now read from the data rather than from the working table,
+  the remaining working columns and per-situation results carry the
+  reserved prefix `.choicer_` or are read by position, and the preparations
+  no longer look up `levels`, `J`, `outside_opt_label` or `ids_to_drop`
+  among the columns. These changes leave the preparation of inputs without
+  a clash unchanged. Two inputs are now errors: a column whose name starts
+  with `.choicer_`, used as an id, alternative, choice, covariate, weight,
+  cluster or decision-maker column; and an alternative column named
+  `alt_int`, `N_OBS`, `N_CHOICES`, `TAKE_RATE` or `MKT_SHARE`, the fixed
+  columns of the returned `alt_mapping`, which must now be renamed.
+  Released versions handled `.choicer_` columns correctly (they used no
+  such names) and, of the alternative-column names, only an `alt_int`
+  column already coded 1 to J, without the outside option.
 
 # choicer 0.2.1
 
