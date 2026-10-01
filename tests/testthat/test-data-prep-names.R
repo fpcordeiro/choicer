@@ -293,6 +293,10 @@ test_that("column names with the reserved .choicer_ prefix are an error", {
                msg, fixed = TRUE)
   expect_error(prepare_nl_data(d, "id", "alt", "choice", ".choicer_alt_int",
                                "nest"), msg, fixed = TRUE)
+  n <- copy(d)
+  setnames(n, "nest", ".choicer_nest")
+  expect_error(prepare_nl_data(n, "id", "alt", "choice", "x2", ".choicer_nest"),
+               msg, fixed = TRUE)
   expect_error(prepare_mnp_data(d, "id", "alt", "choice", ".choicer_alt_int"),
                msg, fixed = TRUE)
   h <- hb_names_fixture()

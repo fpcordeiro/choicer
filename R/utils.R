@@ -291,20 +291,25 @@ label_matrix <- function(mat, alt_mapping) {
 #' read back from a table grouped by a user column, is named with the prefix
 #' ".choicer_" or read by position, so user columns may not carry that
 #' prefix. The alternative column reappears in the returned `alt_mapping`
-#' beside fixed columns, so it may not take one of their names.
+#' beside fixed columns, so it may not take one of their names. Only the
+#' names are read, so the preparations check them before the data, whose
+#' reading can stop for a missing bit64; an argument that is `NA` or a
+#' number, or an `alt_col` that is not a single name, is left to the checks
+#' that follow.
 #'
 #' @param needed Names of the user columns the preparation uses.
 #' @param alt_col Name of the alternative column.
 #' @returns `NULL`, invisibly; errors on a collision.
 #' @noRd
 .check_col_names <- function(needed, alt_col) {
-  internal <- unique(needed[startsWith(needed, ".choicer_")])
+  if (is.atomic(needed)) needed <- as.character(needed)
+  internal <- unique(needed[startsWith(needed, ".choicer_") %in% TRUE])
   if (length(internal) > 0) {
     stop("Column names beginning with '.choicer_' are reserved for ",
          "choicer's working columns; rename ",
          paste0("'", internal, "'", collapse = ", "), ".", call. = FALSE)
   }
-  if (alt_col %in% .ALT_MAPPING_COLS) {
+  if (length(alt_col) == 1L && alt_col %in% .ALT_MAPPING_COLS) {
     stop("The alternative column cannot be named '", alt_col, "': the ",
          "returned `alt_mapping` reserves ",
          paste0("'", .ALT_MAPPING_COLS, "'", collapse = ", "),

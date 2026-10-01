@@ -462,15 +462,14 @@ unless it says otherwise.
   and in `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()`
   a covariate that is also the id, alternative, choice, weight, cluster or
   decision-maker column (see above for the choice column), now stop them
-  with an error that says why. Two
-  inputs are now errors: a column whose name starts with `.choicer_`, used
-  as an id, alternative, choice, covariate, weight, cluster or
-  decision-maker column; and an alternative column named `alt_int`,
-  `N_OBS`, `N_CHOICES`, `TAKE_RATE` or `MKT_SHARE`, the fixed columns of
-  the returned `alt_mapping`, which must now be renamed. Released versions
-  handled `.choicer_` columns correctly (they used no
-  such names) and, of the alternative-column names, only an `alt_int`
-  column already coded 1 to J, without the outside option.
+  with an error that says why. Two inputs are now errors: a column whose
+  name starts with `.choicer_`, used as an id, alternative, choice,
+  covariate, weight, cluster, nest or decision-maker column; and an
+  alternative column named `alt_int`, `N_OBS`, `N_CHOICES`, `TAKE_RATE` or
+  `MKT_SHARE`, the fixed columns of the returned `alt_mapping`, which must
+  now be renamed. Released versions handled `.choicer_` columns correctly
+  (they used no such names) and, of the alternative-column names, only an
+  `alt_int` column already coded 1 to J, without the outside option.
 - A covariate named like a parameter the fit generates gave two parameters
   one name. `prepare_mnp_data()` (and so `run_mnprobit()`) names the
   constant of each non-base alternative `ASC_<label>` and builds `param_map`

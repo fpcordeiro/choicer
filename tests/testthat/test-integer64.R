@@ -488,6 +488,38 @@ test_that("without bit64, every path that meets an integer64 column says so", {
   )
 })
 
+test_that("a reserved column name is reported before a missing bit64", {
+  # The name checks need only the names; reading an integer64 column without
+  # bit64 used to stop the preparation first.
+  skip_if_not_installed("bit64")
+  d <- int64_choice_data(TRUE)   # big, cnt, z and w are integer64
+  setnames(d, "x1", ".choicer_x")
+  d_nest <- copy(d)[, nest := bit64::as.integer64(ifelse(alt == 1L, 1, 2))]
+  d_alt <- copy(d)
+  setnames(d_alt, c(".choicer_x", "alt"), c("x1", "N_OBS"))
+  local_mocked_bindings(.bit64_available = function() FALSE)
+  reserved <- "Column names beginning with '.choicer_' are reserved"
+  alt_name <- "The alternative column cannot be named 'N_OBS'"
+  for (prep in list(prepare_mnl_data, prepare_mnp_data, prepare_hmnl_data,
+                    prepare_hmnp_data)) {
+    expect_error(prep(d, "id", "alt", "choice", c(".choicer_x", "big")),
+                 reserved, fixed = TRUE)
+    expect_error(prep(d_alt, "id", "N_OBS", "choice", c("x1", "big")),
+                 alt_name, fixed = TRUE)
+  }
+  expect_error(prepare_mxl_data(d, "id", "alt", "choice", ".choicer_x", "big"),
+               reserved, fixed = TRUE)
+  expect_error(prepare_mxl_data(d_alt, "id", "N_OBS", "choice", "x1", "big"),
+               alt_name, fixed = TRUE)
+  # The nested logit reads its (here integer64) nest column first
+  expect_error(prepare_nl_data(d, "id", "alt", "choice", c(".choicer_x", "big"),
+                               "nest"), reserved, fixed = TRUE)
+  expect_error(prepare_nl_data(d_nest, "id", "alt", "choice", ".choicer_x",
+                               "nest"), reserved, fixed = TRUE)
+  expect_error(prepare_nl_data(d_alt, "id", "N_OBS", "choice", "x1", "w"),
+               alt_name, fixed = TRUE)
+})
+
 test_that("sample_by_choice() and wesml_weights() read integer64 ids by value", {
   skip_if_not_installed("bit64")
   dbl <- int64_choice_data(FALSE)   # ids 1 to 40

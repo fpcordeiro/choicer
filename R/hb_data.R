@@ -117,6 +117,9 @@
   ## Preliminary housekeeping --------------------------------------------------
   needed <- unique(c(person_col, id_col, alt_col, choice_col, covariate_cols,
                      alt_covariate_cols, cf_residual_col))
+  # Names first: they need no data, and reading the data can stop for a
+  # missing bit64.
+  .check_col_names(needed, alt_col)
   # The covariates are read in place from `src` (the caller's data, never
   # modified, when possible); only the index columns are copied into `dt`,
   # and X and Z are gathered by source row.
@@ -131,7 +134,6 @@
   if (!all(needed %in% names(src)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(src)), collapse = ", "))
-  .check_col_names(needed, alt_col)
   dt <- .copy_cols(src, c(person_col, id_col, alt_col, choice_col))
   dt[, .choicer_row := seq_len(.N)]
 
