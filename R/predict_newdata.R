@@ -112,9 +112,12 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
 
   # Remove outside-option rows when modelling the outside option implicitly
   # (mirrors prepare_mnl_data(); the outside option is handled in C++).
+  # The rows are computed outside dt[...], where a covariate named `spec`
+  # would mask the local; a lone symbol as `i` is evaluated in this frame.
   if (isTRUE(object$include_outside_option) &&
       !is.null(spec$outside_opt_label)) {
-    dt <- dt[get(alt_col) != spec$outside_opt_label]
+    inside <- dt[[alt_col]] != spec$outside_opt_label
+    dt <- dt[inside]
     if (nrow(dt) == 0) {
       stop("No inside alternatives remain after removing outside option rows.")
     }
@@ -137,7 +140,10 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
 
   # Map alternative labels through the fit-time mapping (authoritative for
   # ASC alignment); labels unseen at fit time are an error. An internal
-  # column name avoids clobbering a covariate that happens to share it.
+  # column name avoids clobbering a covariate that happens to share it, and
+  # set() adds codes computed here, not inside dt[...], where a covariate
+  # named `am` or `pos` would mask the local. set() fills only a spare column
+  # slot, which options(datatable.alloccol = 0) leaves none of.
   am <- object$alt_mapping
   pos <- match(dt[[alt_col]], am[[alt_col]])
   if (anyNA(pos)) {
@@ -149,7 +155,8 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
   if (alt_int_col %in% needed) {
     stop("newdata must not use the reserved column name '", alt_int_col, "'.")
   }
-  dt[, (alt_int_col) := am$alt_int[pos]]
+  data.table::setalloccol(dt, 1L)
+  data.table::set(dt, j = alt_int_col, value = am$alt_int[pos])
 
   # No duplicate (id, alternative) pairs
   if (anyDuplicated(dt, by = c(id_col, alt_int_col)) > 0) {
@@ -179,7 +186,10 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
     stop("newdata covariates must contain only finite values.")
   }
   alt_idx <- as.integer(dt[[alt_int_col]])
-  M <- dt[, .N, by = id_col][[2L]]  # by position: an id named N shadows it
+  # Counted on a private table of the ids: inside dt[...], `by = id_col`
+  # would group by a covariate named `id_col`, and an id column named N
+  # would shadow the count.
+  M <- data.table::setDT(list(id = dt[[id_col]]))[, .N, by = "id"][[2L]]
   N <- length(M)
 
   w <- .validate_pred_weights(weights, N)

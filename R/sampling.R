@@ -71,7 +71,11 @@
   if (!all(dt[[choice_col]] %in% c(0, 1))) {
     stop("`", choice_col, "` must contain only 0 and 1.")
   }
-  counts <- dt[, sum(get(choice_col)), by = id_col][["V1"]]
+  # Chosen alternatives per situation, counted on a private table of the two
+  # columns (setDT() copies nothing): `dt` holds every user column, any of
+  # which could otherwise mask a name used inside dt[...].
+  pairs <- data.table::setDT(list(id = dt[[id_col]], chosen = dt[[choice_col]]))
+  counts <- pairs[, .(.choicer_n = sum(chosen)), by = "id"][[".choicer_n"]]
   if (!include_outside_option && any(counts != 1)) {
     stop("Each '", id_col, "' must have exactly one chosen alternative ",
          "(one 1 in '", choice_col, "').")
@@ -85,15 +89,21 @@
 
 #' Chosen stratum (chosen alternative) for each choice situation
 #'
-#' Returns a data.table with one row per choice situation: the id column and a
-#' character stratum key `.strat` equal to the chosen alternative coerced to
-#' character. Situations with no explicit choice are mapped to the outside
-#' stratum when `include_outside_option = TRUE`.
+#' Returns a data.table keyed by id with one row per choice situation: the id
+#' `.choicer_id` and a character stratum key `.choicer_strat` equal to the
+#' chosen alternative coerced to character. Both names are choicer's own, so
+#' no user id column can collide with them. Situations with no explicit
+#' choice are mapped to the outside stratum when
+#' `include_outside_option = TRUE`.
 #' @noRd
 .choicer_chosen_strata <- function(dt, id_col, alt_col, choice_col,
                                    include_outside_option = FALSE,
                                    outside_opt_label = NULL) {
-  chosen <- dt[get(choice_col) == 1]
+  # Rows and columns computed outside dt[...] (a lone symbol as `i`, and `j`
+  # under with = FALSE, are evaluated in this frame); subsetting the table
+  # rather than the vectors keeps the id column's attributes.
+  is_chosen <- dt[[choice_col]] == 1
+  chosen    <- dt[is_chosen, c(id_col, alt_col), with = FALSE]
   id_vec    <- chosen[[id_col]]
   strat_vec <- as.character(chosen[[alt_col]])
 
@@ -112,9 +122,9 @@
                    rep(as.character(outside_opt_label), length(no_choice)))
   }
 
-  per_id <- data.table::data.table(.id = id_vec, .strat = strat_vec)
-  data.table::setnames(per_id, ".id", id_col)
-  data.table::setkeyv(per_id, id_col)
+  per_id <- data.table::data.table(.choicer_id = id_vec,
+                                   .choicer_strat = strat_vec)
+  data.table::setkeyv(per_id, ".choicer_id")
   per_id
 }
 
@@ -247,15 +257,15 @@ wesml_weights <- function(data, id_col, alt_col, choice_col, Q,
 
   per_id   <- .choicer_chosen_strata(dt, id_col, alt_col, choice_col,
                                      include_outside_option, outside_opt_label)
-  strata   <- per_id[[".strat"]]
+  strata   <- per_id[[".choicer_strat"]]
   N        <- nrow(per_id)
   realized <- sort(unique(strata))
 
   Qn <- .check_shares(Q, realized, "Q", normalize = TRUE)
 
   if (is.null(H)) {
-    tab <- per_id[, .N, by = ".strat"]
-    Hn  <- stats::setNames(tab[["N"]] / N, tab[[".strat"]])
+    tab <- per_id[, .N, by = ".choicer_strat"]
+    Hn  <- stats::setNames(tab[["N"]] / N, tab[[".choicer_strat"]])
   } else {
     Hn <- .check_shares(H, realized, "H", normalize = FALSE)
   }
@@ -272,7 +282,7 @@ wesml_weights <- function(data, id_col, alt_col, choice_col, Q,
              meat = "robust", source = "wesml_weights",
              weight_name = weight_name)
 
-  wt <- data.table::data.table(.id = per_id[[id_col]], .w = w)
+  wt <- data.table::data.table(.id = per_id[[".choicer_id"]], .w = w)
   data.table::setnames(wt, c(".id", ".w"), c(id_col, weight_name))
 
   if (attach) {
@@ -356,9 +366,9 @@ sample_by_choice <- function(data, id_col, alt_col, choice_col,
 
   per_id   <- .choicer_chosen_strata(dt, id_col, alt_col, choice_col,
                                      include_outside_option, outside_opt_label)
-  strata   <- per_id[[".strat"]]
+  strata   <- per_id[[".choicer_strat"]]
   realized <- sort(unique(strata))
-  ids      <- per_id[[id_col]]
+  ids      <- per_id[[".choicer_id"]]
   avail    <- stats::setNames(
     as.integer(table(factor(strata, levels = realized))), realized)
 
@@ -392,7 +402,10 @@ sample_by_choice <- function(data, id_col, alt_col, choice_col,
     stop("No choice situations selected; check `n_per_alt`/`frac_per_alt`.")
   }
 
-  sub <- dt[get(id_col) %in% keep_ids]
+  # Rows computed outside dt[...], where a user column named `keep_ids` would
+  # mask the local; a lone symbol as `i` is evaluated in this frame.
+  sampled <- dt[[id_col]] %in% keep_ids
+  sub <- dt[sampled]
 
   # Population shares Q(j) come from the full data (input == population). Every
   # realized stratum is retained (zero targets are rejected above), so Q is used
@@ -401,19 +414,20 @@ sample_by_choice <- function(data, id_col, alt_col, choice_col,
   sub_per_id <- .choicer_chosen_strata(sub, id_col, alt_col, choice_col,
                                        include_outside_option,
                                        outside_opt_label)
-  sub_strata <- sub_per_id[[".strat"]]
+  sub_strata <- sub_per_id[[".choicer_strat"]]
   N_sub      <- nrow(sub_per_id)
 
-  tabQ  <- per_id[, .N, by = ".strat"]
-  Q_pop <- stats::setNames(tabQ[["N"]] / nrow(per_id), tabQ[[".strat"]])
+  tabQ  <- per_id[, .N, by = ".choicer_strat"]
+  Q_pop <- stats::setNames(tabQ[["N"]] / nrow(per_id),
+                           tabQ[[".choicer_strat"]])
 
-  tabH  <- sub_per_id[, .N, by = ".strat"]
-  H_sub <- stats::setNames(tabH[["N"]] / N_sub, tabH[[".strat"]])
+  tabH  <- sub_per_id[, .N, by = ".choicer_strat"]
+  H_sub <- stats::setNames(tabH[["N"]] / N_sub, tabH[[".choicer_strat"]])
 
   w <- as.numeric(Q_pop[sub_strata] / H_sub[sub_strata])
   w <- w / mean(w)
 
-  wt <- data.table::data.table(.id = sub_per_id[[id_col]], .w = w)
+  wt <- data.table::data.table(.id = sub_per_id[[".choicer_id"]], .w = w)
   data.table::setnames(wt, c(".id", ".w"), c(id_col, weight_name))
   out <- merge(sub, wt, by = id_col, all.x = TRUE, sort = FALSE)
 
