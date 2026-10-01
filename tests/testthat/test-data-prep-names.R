@@ -27,6 +27,22 @@ clash_names <- c(
 # The alternative column reappears in alt_mapping, which keeps these names.
 alt_mapping_names <- c("alt_int", "N_OBS", "N_CHOICES", "TAKE_RATE", "MKT_SHARE")
 
+# The full grids take about 8 seconds, so they run only where testthat runs
+# CRAN-skipped tests (NOT_CRAN=true: local checks, and the GitHub matrix jobs,
+# whose R setup sets it). On CRAN and in the gcc16 job they try one name for
+# each way a clash went wrong (an overwritten working column, a result read
+# under a shadowed name, and a local masked in j and i, in get() and in by),
+# which keeps data.table's handling of the names checked there in about two
+# seconds.
+not_cran <- Sys.getenv("NOT_CRAN")  # read as testthat::skip_on_cran() does
+full_grid <- if (identical(not_cran, "")) interactive() else
+  isTRUE(as.logical(not_cran))
+grid_names <- if (full_grid) {
+  clash_names
+} else {
+  c("alt_int", "N", "levels", "id_col", "task_by")
+}
+
 # Seven choice situations over alternatives a, b, c, stored in reverse so the
 # preparation's sort is exercised; ids are unsorted and not 1..N, so an id
 # read as a count or a position shows up. Situation 70 has a missing x1 and is
@@ -164,8 +180,8 @@ expect_prep_immune <- function(prep, data, args, roles, alt_role) {
   expect_false(any(startsWith(visible_names(ref$value), ".choicer_")))
   failures <- character(0)
   for (role in roles) {
-    to_names <- if (role == alt_role) setdiff(clash_names, alt_mapping_names)
-                else clash_names
+    to_names <- if (role == alt_role) setdiff(grid_names, alt_mapping_names)
+                else grid_names
     for (to in to_names) {
       d <- copy(data)
       setnames(d, role, to)

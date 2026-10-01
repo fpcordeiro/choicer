@@ -183,8 +183,8 @@ test_that("fits and counterfactuals on integer64 data match those on doubles", {
   d64 <- int64_choice_data(TRUE)
   dbl <- int64_choice_data(FALSE)
   fit_mnl <- function(data) {
-    run_mnlogit(data, "id", "alt", "choice", c("x1", "cnt"),
-                control = list(maxeval = 50L))
+    suppressMessages(run_mnlogit(data, "id", "alt", "choice", c("x1", "cnt"),
+                                 control = list(maxeval = 50L)))
   }
   fit <- fit_mnl(dbl)
   fit64 <- fit_mnl(d64)
@@ -207,9 +207,9 @@ test_that("fits and counterfactuals on integer64 data match those on doubles", {
                    consumer_surplus(fit, "cnt", newdata = dbl))
 
   # MXL: newdata fills both X and W
-  mxl <- run_mxlogit(dbl, "id", "alt", "choice", "x1",
-                     random_var_cols = "cnt", S = 10L,
-                     control = list(maxeval = 30L))
+  mxl <- suppressMessages(run_mxlogit(dbl, "id", "alt", "choice", "x1",
+                                      random_var_cols = "cnt", S = 10L,
+                                      control = list(maxeval = 30L)))
   nd <- prepare_newdata(mxl, d64)
   expect_identical(nd, prepare_newdata(mxl, dbl))
   expect_true(is.double(nd$W))
@@ -218,8 +218,9 @@ test_that("fits and counterfactuals on integer64 data match those on doubles", {
 test_that("the list form of newdata takes integer64 X and W matrices", {
   skip_if_not_installed("bit64")
   dbl <- int64_choice_data(FALSE)
-  fit <- run_mnlogit(dbl, "id", "alt", "choice", c("x1", "cnt"),
-                     control = list(maxeval = 50L))
+  fit <- suppressMessages(run_mnlogit(dbl, "id", "alt", "choice",
+                                      c("x1", "cnt"),
+                                      control = list(maxeval = 50L)))
   d <- fit$data
   X <- round(10 * d$X)
   expect_identical(
@@ -233,9 +234,9 @@ test_that("the list form of newdata takes integer64 X and W matrices", {
     predict(fit, newdata = list(X = X, alt_idx = d$alt_idx, M = d$M))
   )
 
-  mxl <- run_mxlogit(dbl, "id", "alt", "choice", "x1",
-                     random_var_cols = "cnt", S = 10L,
-                     control = list(maxeval = 30L))
+  mxl <- suppressMessages(run_mxlogit(dbl, "id", "alt", "choice", "x1",
+                                      random_var_cols = "cnt", S = 10L,
+                                      control = list(maxeval = 30L)))
   dm <- mxl$data
   X <- round(10 * dm$X)
   expect_identical(
@@ -254,9 +255,9 @@ test_that("hierarchical Bayes prediction converts integer64 newdata", {
   dbl[, z1 := round(4 * z1)]
   d <- prepare_hmnl_data(dbl, "task", "alt", "choice", c("x1", "x2"),
                          person_col = "pid", alt_covariate_cols = "z1")
-  fit <- suppressWarnings(
+  fit <- suppressWarnings(suppressMessages(
     run_hmnlogit(input_data = d, mcmc = list(R = 60, burn = 20, seed = 1))
-  )
+  ))
 
   # a new alternative (posterior-predictive delta) with its own z1
   new_rows <- dbl[alt == 1L][, `:=`(alt = 9L, z1 = 7)]
@@ -391,8 +392,9 @@ test_that("each object converted warns once about values from 2^53 up", {
   expect_identical(warning_messages(.validate_pred_weights(big, 1L)),
                    rounded_msg("'weights'"))
 
-  fit <- run_mnlogit(int64_choice_data(FALSE), "id", "alt", "choice",
-                     c("x1", "cnt"), control = list(maxeval = 50L))
+  fit <- suppressMessages(run_mnlogit(int64_choice_data(FALSE), "id", "alt",
+                                      "choice", c("x1", "cnt"),
+                                      control = list(maxeval = 50L)))
   nd <- int64_choice_data(TRUE)
   set(nd, 1L, "cnt", big)
   expect_identical(warning_messages(prepare_newdata(fit, nd)),
@@ -457,8 +459,9 @@ test_that("without bit64, every path that meets an integer64 column says so", {
   d64 <- int64_choice_data(TRUE)
   dbl <- int64_choice_data(FALSE)
   d_nest <- copy(dbl)[, nest := bit64::as.integer64(ifelse(alt == 1L, 1, 2))]
-  fit <- run_mnlogit(dbl, "id", "alt", "choice", c("x1", "cnt"),
-                     control = list(maxeval = 50L))
+  fit <- suppressMessages(run_mnlogit(dbl, "id", "alt", "choice",
+                                      c("x1", "cnt"),
+                                      control = list(maxeval = 50L)))
   X64 <- int64_matrix(round(10 * fit$data$X))
   local_mocked_bindings(.bit64_available = function() FALSE)
 
