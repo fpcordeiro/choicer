@@ -484,34 +484,11 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
     se <- delta_result$se
   }
 
-  # Build display names: L_ij -> Sigma_ij, Mu_x -> exp(Mu_x) for log-normal
-  display_names <- names(object$coefficients)
-  if (!is.null(object$param_map$sigma)) {
-    idx_sigma <- object$param_map$sigma
-    K_w <- length(object$rc_dist)
-    if (object$rc_correlation) {
-      sigma_display <- character(length(idx_sigma))
-      k <- 1
-      for (i in seq_len(K_w)) {
-        for (j in seq_len(i)) {
-          sigma_display[k] <- sprintf("Sigma_%d%d", i, j)
-          k <- k + 1
-        }
-      }
-    } else {
-      sigma_display <- paste0("Sigma_", seq_len(K_w), seq_len(K_w))
-    }
-    display_names[idx_sigma] <- sigma_display
-  }
-  if (object$rc_mean && !is.null(object$param_map$mu)) {
-    K_w <- length(object$rc_dist)
-    for (k in seq_len(K_w)) {
-      if (object$rc_dist[k] == 1) {
-        idx <- object$param_map$mu[k]
-        display_names[idx] <- paste0("exp(", display_names[idx], ")")
-      }
-    }
-  }
+  # Display names: L_ij -> Sigma_ij, Mu_x -> exp(Mu_x) for log-normal
+  display_names <- .mxl_summary_labels(
+    names(object$coefficients), object$param_map, length(object$rc_dist),
+    object$rc_dist, object$rc_correlation, object$rc_mean
+  )
 
   coef_table <- build_coef_table(
     estimates = est,

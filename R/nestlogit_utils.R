@@ -17,7 +17,9 @@
 #' @param id_col Name of the column identifying choice situations.
 #' @param alt_col Name of the column identifying alternatives.
 #' @param choice_col Name of the column indicating chosen alternative (1/0).
-#' @param covariate_cols Vector of column names for covariates.
+#' @param covariate_cols Vector of column names for covariates. None may be
+#'   named like a generated parameter: \code{Lambda_<k>}, or
+#'   \code{ASC_<label>} with \code{use_asc = TRUE}.
 #' @param nest_col Name of the column mapping each alternative to its nest
 #'   (convenience workflow).
 #' @param input_data List containing prepared input data for estimation
@@ -26,8 +28,8 @@
 #'   constants (ASCs).
 #' @param theta_init Optional initial parameter vector. If \code{NULL}, a
 #'   default vector is used.
-#' @param param_names Optional vector of parameter names. If \code{NULL},
-#'   default names are generated.
+#' @param param_names Optional vector of parameter names, which must be
+#'   unique. If \code{NULL}, default names are generated.
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 #'   or a custom function. See \code{\link{run_mnlogit}} for details.
 #' @param control List of optimizer-specific control parameters.
@@ -191,6 +193,21 @@ run_nestlogit <- function(
   n_asc <- if (use_asc) J - 1 else 0
   n_params <- K_x + K_l + n_asc
 
+  # Parameter names, checked for repeats before the optimizer runs
+  if (is.null(param_names)) {
+    beta_names <- colnames(input_data$X)
+    if (is.null(beta_names)) beta_names <- paste0("X_", seq_len(K_x))
+    lambda_names <- paste0("Lambda_", seq_len(K_l))
+    alt_col <- names(input_data$alt_mapping)[2]
+    asc_names <- if (use_asc) {
+      paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
+    } else {
+      character(0)
+    }
+    param_names <- c(beta_names, lambda_names, asc_names)
+  }
+  .check_param_names(list(param_names), c("Lambda_<k>", "ASC_<label>"))
+
   # Initial parameter vector
   if (is.null(theta_init)) {
     theta_init <- c(rep(0, K_x), rep(0.5, K_l), rep(0, n_asc))
@@ -229,19 +246,6 @@ run_nestlogit <- function(
 
   # Parameter names and index map
   theta_hat <- opt$par
-
-  if (is.null(param_names)) {
-    beta_names <- colnames(input_data$X)
-    if (is.null(beta_names)) beta_names <- paste0("X_", seq_len(K_x))
-    lambda_names <- paste0("Lambda_", seq_len(K_l))
-    alt_col <- names(input_data$alt_mapping)[2]
-    asc_names <- if (use_asc) {
-      paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
-    } else {
-      character(0)
-    }
-    param_names <- c(beta_names, lambda_names, asc_names)
-  }
   names(theta_hat) <- param_names
 
   # Parameter index map

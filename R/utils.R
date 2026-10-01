@@ -105,6 +105,33 @@ check_collinearity <- function(X) {
   return(list(mat = X, dropped = colnames_diff))
 }
 
+#' Stop when a fit's parameter names repeat
+#'
+#' Coefficients, `vcov()`, `summary()`, `wtp()` and named bounds look
+#' parameters up by name, so a covariate named like a parameter the model
+#' generates would leave two parameters under one name. Each element of
+#' `labels` names the whole parameter vector (the stored names, or the
+#' labels `summary()` prints) and is checked on its own.
+#'
+#' @param labels List of character vectors of parameter names, the stored
+#'   names first.
+#' @param generated The model's generated names, for the message.
+#' @returns `NULL`, invisibly; stops listing the repeated names in parameter
+#'   order.
+#' @noRd
+.check_param_names <- function(labels, generated) {
+  dups <- unique(unlist(lapply(labels, function(nm) nm[duplicated(nm)])))
+  if (length(dups) > 0L) {
+    dups <- dups[order(match(dups, labels[[1L]]))]
+    stop("Parameter names must be unique; repeated: ",
+         paste0("'", dups, "'", collapse = ", "),
+         ". Covariates may not take the names the model gives its own ",
+         "parameters (", paste(generated, collapse = ", "), ").",
+         call. = FALSE)
+  }
+  invisible(NULL)
+}
+
 #' Extract lower triangular elements (column-major vech)
 #'
 #' Column-major lower-triangular vectorization. For a K x K matrix M,

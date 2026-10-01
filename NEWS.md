@@ -412,6 +412,33 @@ versions.
   message. Such names are now an error that lists the covariates. Rename
   them, or set `use_asc = FALSE` for ASC dummies built by hand. Other inputs
   are prepared as before.
+- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` accepted a covariate
+  named like a parameter they generate: `ASC_<label>`, `Lambda_<k>` (nested
+  logit), `Mu_<variable>` and `L_<i><j>` (mixed logit), or like a label the
+  mixed logit's `summary()` prints in place of one: `Sigma_<i><j>` for
+  `L_<i><j>`, and `exp(Mu_<variable>)` for the mean of a log-normal
+  coefficient. Two parameters then shared a name, or a name and a
+  `summary()` label. Estimation addresses parameters by position, so
+  without named bounds (below) the estimates, standard errors and
+  predictions were right. But `summary()` stopped with a duplicate row-name
+  error, unless it relabelled the generated parameter (`L_<i><j>`, or a
+  log-normal `Mu_<variable>`), and indexing `coef()` or `vcov()` by name, or
+  `wtp(attr_vars = )`, found the covariate: `wtp(attr_vars = "ASC_b")`
+  returned the covariate's WTP, and the constant's could not be reached by
+  name. A named bound in `run_mxlogit()` goes to the first parameter of
+  that name, and the fixed coefficients come first, so it bounded the
+  covariate's coefficient and left the generated parameter free. With a
+  covariate named `ASC_b`, `lower = c(ASC_b = 0)` held that covariate's
+  coefficient at 0 whenever its unconstrained estimate was negative, and so
+  moved the other estimates, while alternative `b`'s constant stayed
+  unbounded; a covariate named `L_11` would likewise have taken the
+  documented `lower = c(L_11 = -5)` meant for the first Cholesky diagonal.
+  The three functions now stop before optimizing, and `run_mxlogit()` before
+  building its draws, listing the repeated names. The same check stops an
+  `input_data` whose `X` repeats a column name, and repeated
+  `run_nestlogit(param_names = )`, which used to fit with the same
+  ambiguities. Fits whose parameter names and `summary()` labels are all
+  distinct are unchanged, `summary()` included.
 
 The following affected post-estimation and the WESML helpers in released
 versions:
