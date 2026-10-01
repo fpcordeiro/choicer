@@ -436,22 +436,26 @@ label_matrix <- function(mat, alt_mapping) {
 #' integer columns' raw storage as `as.matrix()` does. The estimation kernels
 #' take double matrices and would otherwise convert an all-integer design on
 #' every call. Columns are looked up by position, first match, as
-#' `dt[, ..cols]` did.
+#' `dt[, ..cols]` did. With `base`, the rows are differenced in the same
+#' pass, `X[i, ] = src[rows[i], cols] - src[base[i], cols]`, as the
+#' multinomial probit's design is.
 #'
 #' @param src Data frame holding the columns (see `.prep_source()`).
 #' @param cols Names of numeric columns of `src`.
 #' @param rows Row indices into `src`, in prepared order.
 #' @param what Name of the matrix, for the size check's message.
+#' @param base `NULL`, or row indices into `src`, one per element of `rows`,
+#'   of the values to subtract.
 #' @returns A `length(rows)` x `length(cols)` double matrix with column names
 #'   `as.character(cols)` (a named `cols` leaves no names behind, as with
 #'   `as.matrix()`); for zero columns, `as.matrix()`'s 0 x 0 logical matrix,
 #'   which the callers' final checks reject.
 #' @noRd
-.gather_matrix <- function(src, cols, rows, what) {
+.gather_matrix <- function(src, cols, rows, what, base = NULL) {
   if (!length(cols)) return(as.matrix(data.table::data.table()))
   .check_design_size(length(rows), cols, what)
   X <- prep_gather_design(lapply(match(cols, names(src)),
-                                 function(j) .subset2(src, j)), rows)
+                                 function(j) .subset2(src, j)), rows, base)
   dimnames(X) <- list(NULL, as.character(cols))
   X
 }

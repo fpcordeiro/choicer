@@ -396,3 +396,62 @@ test_that("rows with a missing person id are a situation of their own", {
                  "Removed 1 choice situations containing missing values")
   expect_identical(d, hb_prep(dt[!is.na(pid)]))
 })
+
+test_that("X is gathered in double, reading covariates named like working columns", {
+  dt <- make_hb_panel_data()
+  dt[, k := 2L * as.integer(x1)]          # an integer covariate
+  dt[, task_idx := x2]                    # named like a working column
+  d <- prepare_hmnl_data(dt, "task", "alt", "choice", c("k", "task_idx"),
+                         person_col = "pid", outside_opt_label = "out")
+  ref <- hb_prep(dt)
+  expect_identical(d$X, cbind(k = 2 * ref$X[, "x1"], task_idx = ref$X[, "x2"]))
+})
+
+test_that("each choice situation with a repeated alternative is counted once", {
+  dt <- make_hb_panel_data()
+  dt[task == 1 & alt == "c", alt := "a"]              # task 1: a twice
+  dt[task == 4 & alt %in% c("b", "c"), alt := "a"]    # task 4: a three times
+  expect_error(hb_prep(dt),
+               "2 choice situation\\(s\\) contain duplicated alternatives")
+})
+
+test_that("the task id used as a covariate is constant within every task", {
+  dt <- make_hb_panel_data()
+  expect_message(
+    d <- prepare_hmnl_data(dt, "task", "alt", "choice", c("x1", "task"),
+                           person_col = "pid", outside_opt_label = "out"),
+    "constant within every choice situation kept: task"
+  )
+  expect_identical(colnames(d$X), c("x1", "task"))
+  dt2 <- make_hb_panel_data()[alt != "out"]
+  dt2[task == 2 & alt == "a", choice := 1L]   # give every task an inside choice
+  dt2[task == 4 & alt == "c", choice := 1L]
+  expect_warning(
+    d2 <- prepare_hmnl_data(dt2, "task", "alt", "choice", c("x1", "task"),
+                            person_col = "pid", include_outside_option = FALSE),
+    "not identified without an outside option and were dropped: task"
+  )
+  expect_identical(colnames(d2$X), "x1")
+})
+
+test_that("task columns named V1 or N prepare as under any other name", {
+  ref <- hb_prep(make_hb_panel_data())
+  for (nm in c("V1", "N")) {
+    dt <- make_hb_panel_data()
+    data.table::setnames(dt, "task", nm)
+    d <- prepare_hmnl_data(dt, nm, "alt", "choice", c("x1", "x2"),
+                           person_col = "pid", alt_covariate_cols = "qual",
+                           outside_opt_label = "out")
+    d$data_spec$id_col <- "task"
+    expect_identical(d, ref)
+  }
+})
+
+test_that("alternative-level covariates named like working columns are read as given", {
+  dt <- make_hb_panel_data()
+  dt[, idx_in_group := qual]
+  d <- prepare_hmnl_data(dt, "task", "alt", "choice", c("x1", "x2"),
+                         person_col = "pid", alt_covariate_cols = "idx_in_group",
+                         outside_opt_label = "out")
+  expect_identical(unname(d$Z), unname(hb_prep(dt)$Z))
+})

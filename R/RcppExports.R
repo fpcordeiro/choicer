@@ -1559,12 +1559,19 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, n
 #' NA_real_), as as.matrix() does after coercion to double; classed numerics
 #' are read from their raw storage, as as.matrix()'s unlist() reads them.
 #'
+#' With `base`, the same pass writes the differenced design of the
+#' multinomial probit, `X[i, k] = cols[[k]][rows[i]] - cols[[k]][base[i]]`:
+#' the difference of the two values in double (NA when either is NA), as R's
+#' arithmetic forms it, without a second design-sized matrix.
+#'
 #' @param cols List of integer or double vectors.
 #' @param rows Integer vector of 1-based indices into them.
+#' @param base `NULL`, or an integer vector of 1-based indices, one per
+#'   element of `rows`, of the values to subtract.
 #' @returns A `length(rows)` x `length(cols)` double matrix, no dimnames.
 #' @noRd
-prep_gather_design <- function(cols, rows) {
-    .Call(`_choicer_prep_gather_design`, cols, rows)
+prep_gather_design <- function(cols, rows, base = NULL) {
+    .Call(`_choicer_prep_gather_design`, cols, rows, base)
 }
 
 #' Query choicer OpenMP thread settings

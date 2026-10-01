@@ -96,17 +96,22 @@
   ## Preliminary housekeeping --------------------------------------------------
   needed <- unique(c(person_col, id_col, alt_col, choice_col, covariate_cols,
                      alt_covariate_cols, cf_residual_col))
-  # A private copy of the needed columns only; `data` itself is never modified
-  dt <- .copy_cols(data, needed)
+  # The covariates are read in place from `src` (the caller's data, never
+  # modified, when possible); only the index columns are copied into `dt`,
+  # and X and Z are gathered by source row.
+  prep_src <- .prep_source(data, needed)
+  src <- prep_src$src
 
   if (!is.null(cf_residual_col) && cf_residual_col %in% covariate_cols) {
     stop("`cf_residual_col` must not also appear in `covariate_cols`; ",
          "it is appended to the design matrix automatically.")
   }
 
-  if (!all(needed %in% names(dt)))
+  if (!all(needed %in% names(src)))
     stop("Missing columns: ",
-         paste(setdiff(needed, names(dt)), collapse = ", "))
+         paste(setdiff(needed, names(src)), collapse = ", "))
+  dt <- .copy_cols(src, c(person_col, id_col, alt_col, choice_col))
+  dt[, .choicer_row := seq_len(.N)]
 
   # Endogeneity reminder: price-like covariates without a control-function
   # residual mean delta_j = z_j'theta + xi_j is exogenous only conditional on
@@ -145,7 +150,7 @@
   ## Drop tasks with missing observations --------------------------------------
   ## A flagged row takes its whole task with it; the anti-join matches NA
   ## keys as grouping by task does.
-  has_na <- .rows_with_na(dt)
+  has_na <- .rows_with_na(src, prep_src$scan)[dt$.choicer_row]
   if (any(has_na)) {
     bad_tasks <- unique(dt[has_na, ..task_by])
     dt <- dt[!bad_tasks, on = task_by]
@@ -160,17 +165,16 @@
   ## Sanity checks -------------------------------------------------------------
 
   ## Covariates (incl. cf residual and alt-level covariates) must be numeric
-  ## (read in place: dt[, ..cols] would copy them)
   x_cols <- c(covariate_cols, cf_residual_col)
   num_cols <- unique(c(x_cols, alt_covariate_cols))
-  num_pos <- match(num_cols, names(dt))
-  if (!all(vapply(num_pos, function(j) is.numeric(.subset2(dt, j)), NA)))
+  num_pos <- match(num_cols, names(src))
+  if (!all(vapply(num_pos, function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## Non-finite covariate values (Inf/-Inf/NaN) are as fatal as NAs: same
   ## graceful task-drop path, instead of failing the terminal
   ## stopifnot(all(is.finite(X))) with an unactionable assertion.
-  has_bad <- .rows_not_finite(dt, num_pos)
+  has_bad <- .rows_not_finite(src, num_pos)[dt$.choicer_row]
   if (any(has_bad)) {
     bad_tasks <- unique(dt[has_bad, ..task_by])
     dt <- dt[!bad_tasks, on = task_by]
@@ -207,12 +211,17 @@
 
   ## An alternative may appear at most once per choice situation: the kernels'
   ## incremental delta-phase denominator updates assume each (task, j) pair is
-  ## a single row, and a duplicate would silently corrupt them.
-  dup_alt <- dt[, anyDuplicated(alt_int) > 0L, by = task_by][["V1"]]
-  if (any(dup_alt)) {
+  ## a single row, and a duplicate would silently corrupt them. One pass over
+  ## the (person, task, alternative) keys; the situations are counted only
+  ## when a key repeats.
+  keys <- data.table::setDT(list(person = dt$HB_PERSON, task = dt[[id_col]],
+                                 alt = dt$alt_int))
+  if (anyDuplicated(keys)) {
+    n_dup <- nrow(unique(keys[duplicated(keys), c("person", "task")]))
     stop("Each alternative may appear at most once per choice situation; ",
-         sum(dup_alt), " choice situation(s) contain duplicated alternatives.")
+         n_dup, " choice situation(s) contain duplicated alternatives.")
   }
+  rm(keys)
 
   ## Order rows ----------------------------------------------------------------
   ##   between persons          : ascending person
@@ -239,10 +248,16 @@
   ## flattens the pooled MLE) — dropped with a warning. WITH a first-class
   ## outside good it shifts all inside utilities relative to the outside and
   ## is genuinely identified — kept, with an informational message.
-  rng_by_task <- dt[, lapply(.SD, function(v) max(v) - min(v)),
-                    by = task_by, .SDcols = x_cols]
-  task_const <- vapply(x_cols, function(cc) all(rng_by_task[[cc]] == 0),
-                       logical(1L))
+  ## A column at a time from the source: a covariate is constant within every
+  ## task when each row equals its task's first row (the values are finite
+  ## here). Rows are sorted by task and task_idx numbers the tasks in that
+  ## order, so first_src is the source row of each row's task's first row.
+  first_src <- dt$.choicer_row[dt$idx_in_group == 1L][dt$task_idx]
+  task_const <- vapply(x_cols, function(cc) {
+    v <- .subset2(src, match(cc, names(src)))
+    all(v[dt$.choicer_row] == v[first_src])
+  }, logical(1L))
+  rm(first_src)
   dropped_task_const <- character(0)
   if (any(task_const)) {
     const_cols <- x_cols[task_const]
@@ -273,8 +288,8 @@
   ## Build objects -------------------------------------------------------------
   ## Structural design matrix: covariates only, cf residual (if any) last.
   ## NO ASC dummies — delta_j is indexed by alt_of_row, never carried in X.
-  .check_design_size(nrow(dt), x_cols, "The design matrix X")
-  X <- as.matrix(dt[, ..x_cols])                       # total_rows x K_struct
+  X <- .gather_matrix(src, x_cols, dt$.choicer_row,   # total_rows x K_struct
+                      "The design matrix X")
   X_res <- check_collinearity(X)
   X <- X_res$mat
   dropped_vars <- c(dropped_task_const, X_res$dropped)
@@ -286,8 +301,9 @@
   alt_of_row <- as.integer(dt$alt_int)
 
   ## M[t] - # inside alternatives per task (with the implicit outside the
-  ## effective choice set is M + 1)
-  M <- dt[, .N, by = task_by][["N"]]
+  ## effective choice set is M + 1). Read by position: a task column named N
+  ## would shadow the count.
+  M <- dt[, .N, by = task_by][[length(task_by) + 1L]]
   n_tasks <- length(M)
   if (!include_outside_option && any(M < 2)) {
     stop("Each choice situation must contain at least 2 alternatives when ",
@@ -307,9 +323,11 @@
   N_persons <- length(person_ids)
 
   ## Alternative-level design Z (J x P) ----------------------------------------
-  z_res <- .resolve_alt_covariates(dt, alt_covariate_cols, levels)
+  z_res <- .resolve_alt_covariates(src, dt$.choicer_row, dt$alt_int,
+                                   alt_covariate_cols, levels)
   Z <- z_res$Z
   P <- ncol(Z)
+  dt[, .choicer_row := NULL]
 
   ## Alternatives summary (mirrors prepare_mnl_data) ---------------------------
   ## One inside-alternative aggregation; the outside branch only prepends its
@@ -397,15 +415,18 @@
 #' the design is intercept-only (P = 1), so theta_0 is the common inside-good
 #' level relative to the outside option.
 #'
-#' @param dt Sorted prep data.table carrying `alt_int` and the alternative
-#'   covariate columns.
+#' @param src Data frame holding the alternative covariate columns (see
+#'   `.prep_source()`).
+#' @param rows Source row of each prepared row, in prepared (sorted) order.
+#' @param alt_int Integer alternative code (`1..J`) of each prepared row.
 #' @param alt_covariate_cols Names of alternative-level covariate columns, or
 #'   `NULL` for an intercept-only design.
 #' @param levels Sorted vector of inside-alternative labels (length J).
 #' @returns List with `Z` (J x P matrix, intercept first) and `dropped`
 #'   (names of dropped Z columns, possibly empty).
 #' @noRd
-.resolve_alt_covariates <- function(dt, alt_covariate_cols, levels) {
+.resolve_alt_covariates <- function(src, rows, alt_int, alt_covariate_cols,
+                                    levels) {
   J <- length(levels)
   if (is.null(alt_covariate_cols)) {
     Z <- matrix(1, nrow = J, ncol = 1,
@@ -414,22 +435,27 @@
   }
 
   ## Constant-within-alternative validation: z_j is a property of the
-  ## alternative, so any within-alternative variation is a data error.
-  nuniq <- dt[, lapply(.SD, data.table::uniqueN),
-              by = alt_int, .SDcols = alt_covariate_cols]
-  bad <- alt_covariate_cols[
-    vapply(alt_covariate_cols, function(cc) any(nuniq[[cc]] != 1L),
-           logical(1L))
-  ]
+  ## alternative, so any within-alternative variation is a data error. Each
+  ## column is read on the prepared rows, one at a time, beside the
+  ## alternative codes; its value at an alternative's first row is z_j.
+  pos <- match(alt_covariate_cols, names(src))
+  constant <- logical(length(pos))
+  z_first <- vector("list", length(pos))
+  for (k in seq_along(pos)) {
+    pairs <- data.table::setDT(list(alt = alt_int,
+                                    value = .subset2(src, pos[k])[rows]))
+    constant[k] <- all(.n_distinct_by(pairs, "value", "alt") == 1L)
+    z_first[[k]] <- .first_by(pairs, "value", "alt", seq_len(J))
+  }
+  bad <- alt_covariate_cols[!constant]
   if (length(bad) > 0) {
     stop("`alt_covariate_cols` must be constant within each alternative: ",
          paste(bad, collapse = ", "))
   }
 
   ## One row per alternative, in alt_int (= sorted label) order.
-  zdt <- dt[, lapply(.SD, function(v) v[1L]),
-            keyby = alt_int, .SDcols = alt_covariate_cols]
-  Zmat <- as.matrix(zdt[, ..alt_covariate_cols])
+  Zmat <- as.matrix(data.table::setDT(stats::setNames(z_first,
+                                                      alt_covariate_cols)))
 
   ## Non-intercept columns constant ACROSS alternatives carry no information
   ## beyond the intercept — dropped with a message (the intercept itself is

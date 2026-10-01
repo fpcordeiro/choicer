@@ -280,8 +280,8 @@ run_mnprobit <- function(
 #'   constants (one intercept per non-base alternative).
 #' @returns A list containing:
 #'   \itemize{
-#'     \item `X`: Stacked differenced design matrix ((N * p) x K), covariate
-#'       columns first, then ASC columns when `use_asc = TRUE`.
+#'     \item `X`: Stacked differenced design matrix ((N * p) x K, double),
+#'       covariate columns first, then ASC columns when `use_asc = TRUE`.
 #'     \item `y`: Integer vector of choices (0 = base alternative, j in 1..p
 #'       for the j-th non-base alternative), one per choice situation.
 #'     \item `p`: Number of utility differences (J - 1).
@@ -320,14 +320,20 @@ prepare_mnp_data <- function(
   ## Preliminary housekeeping --------------------------------------------------
   # Check if all relevant variables are available
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
-  # A private copy of the needed columns only; `data` itself is never modified
-  dt <- .copy_cols(data, needed)
-  if (!all(needed %in% names(dt)))
+  # The covariates are read in place from `src` (the caller's data, never
+  # modified, when possible); only the index columns are copied into `dt`,
+  # and X is gathered by source row at the end.
+  prep_src <- .prep_source(data, needed)
+  src <- prep_src$src
+  if (!all(needed %in% names(src)))
     stop("Missing columns: ",
-         paste(setdiff(needed, names(dt)), collapse = ", "))
+         paste(setdiff(needed, names(src)), collapse = ", "))
+  dt <- .copy_cols(src, c(id_col, alt_col, choice_col))
+  dt[, .choicer_row := seq_len(.N)]
 
   ## Drop ids with missing observations ----------------------------------------
-  has_na <- .rows_with_na(dt)
+  ## (dt still holds every source row, in source order)
+  has_na <- .rows_with_na(src, prep_src$scan)
   ids_to_drop <- unique(dt[has_na, get(id_col)])
   rm(has_na)
   if (length(ids_to_drop) > 0) {
@@ -341,9 +347,9 @@ prepare_mnp_data <- function(
 
   ## Sanity checks -------------------------------------------------------------
 
-  ## Covariates must be numeric (read in place: dt[, ..cols] would copy them)
-  if (!all(vapply(match(covariate_cols, names(dt)),
-                  function(j) is.numeric(.subset2(dt, j)), NA)))
+  ## Covariates must be numeric
+  if (!all(vapply(match(covariate_cols, names(src)),
+                  function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
   ## choice column must be 0/1 and exactly one '1' per choice situation
@@ -361,7 +367,8 @@ prepare_mnp_data <- function(
   alts <- unique(dt[[alt_col]])
   J <- length(alts)
   if (J < 2) stop("Need at least 2 alternatives.")
-  counts <- dt[, .N, by = id_col][["N"]]
+  # Read by position: an id column named N would shadow the count.
+  counts <- dt[, .N, by = id_col][[2L]]
   n_pairs <- nrow(unique(dt[, c(id_col, alt_col), with = FALSE]))
   if (any(counts != J) || n_pairs != nrow(dt)) {
     stop("MNP requires balanced choice sets: every choice situation must ",
@@ -392,11 +399,16 @@ prepare_mnp_data <- function(
   .check_design_size(N * p,
                      c(covariate_cols, if (use_asc) paste0("ASC_", seq_len(p))),
                      "The design matrix X")
-  ## Differenced design matrix: row (i, j) is X_ij - X_i,base
-  diff_dt <- dt[, lapply(.SD, function(v) v[-1L] - v[1L]),
-                by = id_col, .SDcols = covariate_cols]
-  diff_dt[, (id_col) := NULL]
-  X_diff <- as.matrix(diff_dt)
+  ## Differenced design matrix: row (i, j) is X_ij - X_i,base, gathered in
+  ## one pass from the source rows of the non-base alternatives and,
+  ## repeated J - 1 times, of the base alternative (sorted, each id holds
+  ## alt_int 1..J in order)
+  is_base <- dt$alt_int == 1L
+  X_diff <- .gather_matrix(src, covariate_cols, dt$.choicer_row[!is_base],
+                           "The design matrix X",
+                           base = rep(dt$.choicer_row[is_base], each = p))
+  rm(is_base)
+  dt[, .choicer_row := NULL]
 
   ## Alternatives summary (base alternative is alt_int = 1)
   alt_mapping <- dt[
@@ -414,9 +426,14 @@ prepare_mnp_data <- function(
     X_asc <- diag(1, p)[rep(seq_len(p), N), , drop = FALSE]
     colnames(X_asc) <- paste0("ASC_", alt_mapping[2:J][[alt_col]])
     X <- cbind(X_diff, X_asc)
+    rm(X_asc)
   } else {
     X <- X_diff
   }
+  # Only the covariate names are needed below: release X_diff before the
+  # collinearity check.
+  cov_names <- colnames(X_diff)
+  rm(X_diff)
 
   ## Collinearity check on the combined design: alternative-invariant
   ## covariates difference into the span of the ASC columns
@@ -424,7 +441,7 @@ prepare_mnp_data <- function(
   X <- X_res$mat
 
   ## Parameter index map (robust to collinearity drops)
-  cov_cols_kept <- intersect(colnames(X), colnames(X_diff))
+  cov_cols_kept <- intersect(colnames(X), cov_names)
   asc_cols_kept <- setdiff(colnames(X), cov_cols_kept)
   param_map <- list(beta = match(cov_cols_kept, colnames(X)))
   if (length(asc_cols_kept) > 0) {

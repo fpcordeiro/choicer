@@ -63,8 +63,8 @@
 #'   dropped columns; a `cf_residual_col` coordinate is always normal.
 #' @returns A list of class `c("choicer_data_hmnl", "list")` containing:
 #'   \itemize{
-#'     \item `X`: Structural design matrix (total_rows x K_struct), no ASC
-#'       columns; `cf_residual_col` last when supplied.
+#'     \item `X`: Structural design matrix (total_rows x K_struct, double), no
+#'       ASC columns; `cf_residual_col` last when supplied.
 #'     \item `alt_of_row`: Integer alternative code per row (`1..J`).
 #'     \item `alt_idx`: Alias of `alt_of_row` for the pooled-MLE init.
 #'     \item `Z`: Alternative-level design (J x P), intercept first.

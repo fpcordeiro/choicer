@@ -58,8 +58,8 @@ dropped columns; a \code{cf_residual_col} coordinate is always normal.}
 \value{
 A list of class \code{c("choicer_data_hmnl", "list")} containing:
 \itemize{
-\item \code{X}: Structural design matrix (total_rows x K_struct), no ASC
-columns; \code{cf_residual_col} last when supplied.
+\item \code{X}: Structural design matrix (total_rows x K_struct, double), no
+ASC columns; \code{cf_residual_col} last when supplied.
 \item \code{alt_of_row}: Integer alternative code per row (\verb{1..J}).
 \item \code{alt_idx}: Alias of \code{alt_of_row} for the pooled-MLE init.
 \item \code{Z}: Alternative-level design (J x P), intercept first.

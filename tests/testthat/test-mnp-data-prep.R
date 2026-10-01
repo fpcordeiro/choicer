@@ -136,3 +136,41 @@ test_that("a missing value in a used column drops its choice situation", {
   expect_identical(d, prepare_mnp_data(dt[id != 3], "id", "alt", "choice",
                                        c("x1", "x2")))
 })
+
+test_that("the differenced design is gathered in double from the source columns", {
+  dt <- create_small_mnl_data()
+  dt[, k := as.integer(round(10 * x1))]   # an integer covariate
+  dt[, alt_int := x2]                     # named like a working column
+  d <- prepare_mnp_data(dt, "id", "alt", "choice", c("k", "alt_int"),
+                        use_asc = FALSE)
+  base <- dt[alt == 1][order(id)]         # alternative 1 is the base
+  other <- dt[alt != 1][order(id, alt)]
+  expect_identical(d$X, cbind(k = other$k - rep(base$k, each = 2),
+                              alt_int = other$alt_int - rep(base$alt_int, each = 2)))
+})
+
+test_that("the differenced rows follow the sort, whatever the input order", {
+  dt <- create_small_mnl_data()
+  dt[id == 4 & alt == 2, x1 := NA]        # drops situation 4
+  set.seed(2)
+  shuffled <- dt[sample(.N)]
+  prep <- function(d) {
+    suppressWarnings(prepare_mnp_data(d, "id", "alt", "choice", c("x1", "x2"),
+                                      base_alt = 2L))
+  }
+  expect_identical(prep(shuffled)[c("X", "y")], prep(dt)[c("X", "y")])
+  # Alternatives 1 and 3 minus the base 2, by ascending id.
+  kept <- dt[id != 4]
+  b <- kept[alt == 2][order(id)]
+  o <- kept[alt != 2][order(id, alt)]
+  expect_identical(unname(prep(shuffled)$X[, c("x1", "x2")]),
+                   cbind(o$x1 - rep(b$x1, each = 2), o$x2 - rep(b$x2, each = 2)))
+})
+
+test_that("an id column named N does not shadow the alternative counts", {
+  dt <- create_small_mnl_data()
+  ref <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
+  data.table::setnames(dt, "id", "N")
+  d <- prepare_mnp_data(dt, "N", "alt", "choice", c("x1", "x2"))
+  expect_identical(d[c("X", "y", "alt_mapping")], ref[c("X", "y", "alt_mapping")])
+})

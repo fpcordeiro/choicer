@@ -3,11 +3,10 @@
 
 # Suppress R CMD check NOTEs for data.table NSE variables
 utils::globalVariables(c(
-  ".", "..covariate_cols", "..random_var_cols", "..show_cols",
+  ".", "..show_cols",
   "N_CHOICES", "N_OBS", "alt_int", "idx_in_group", ".choicer_row",
   # HB prep NSE variables (R/hb_data.R)
-  "HB_PERSON", "task_idx",
-  "..task_by", "..x_cols", "..alt_covariate_cols",
+  "HB_PERSON", "task_idx", "..task_by",
   # HB post-estimation / diagnostics NSE variables
   "covered", "observed", "lower", "upper",
   # DGP / simulation NSE variables (R/simulation.R)
