@@ -50,7 +50,8 @@
 #'   order is used.
 #' @param use_asc Logical indicating whether to include alternative-specific
 #'   constants (one intercept per non-base alternative in the differenced
-#'   utilities).
+#'   utilities), named \code{ASC_<label>}. No covariate may have one of these
+#'   names; ASC dummies built by hand need \code{use_asc = FALSE}.
 #' @param prior Named list of prior settings, merged over defaults:
 #'   \describe{
 #'     \item{\code{beta_bar}}{Prior mean of \eqn{\beta} (default \code{rep(0, K)}).}
@@ -277,7 +278,9 @@ run_mnprobit <- function(
 #'   differencing. If \code{NULL} (default), the first alternative in sort
 #'   order is used.
 #' @param use_asc Logical indicating whether to include alternative-specific
-#'   constants (one intercept per non-base alternative).
+#'   constants (one intercept per non-base alternative), named
+#'   \code{ASC_<label>}. No covariate may have one of these names; ASC dummies
+#'   built by hand need \code{use_asc = FALSE}.
 #' @returns A list containing:
 #'   \itemize{
 #'     \item `X`: Stacked differenced design matrix ((N * p) x K, double),
@@ -391,6 +394,29 @@ prepare_mnp_data <- function(
 
   dt <- .code_alternatives(dt, alt_col, levels)
 
+  ## Alternatives summary (base alternative is alt_int = 1)
+  alt_mapping <- dt[
+    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
+    keyby = c(".choicer_alt_int", alt_col)
+  ]
+  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
+  alt_mapping[, `:=`(
+    TAKE_RATE = N_CHOICES / N_OBS,
+    MKT_SHARE = N_CHOICES / sum(N_CHOICES)
+  )]
+
+  ## ASC names, one per non-base alternative. The parameter map below and
+  ## every coefficient label downstream are keyed by column name, so no
+  ## covariate may share one
+  asc_names <- if (use_asc) paste0("ASC_", alt_mapping[[alt_col]][2:J])
+  clash <- intersect(covariate_cols, asc_names)
+  if (length(clash) > 0) {
+    stop("Covariate name(s) collide with the generated ASC names: ",
+         paste(clash, collapse = ", "), ". Each non-base alternative's ",
+         "constant is named ASC_<label>; rename the covariate(s), or set ",
+         "use_asc = FALSE if they are ASC dummies built by hand.")
+  }
+
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id (base first)
   ##   between ids   : ascending id
@@ -414,22 +440,11 @@ prepare_mnp_data <- function(
   rm(is_base)
   dt[, .choicer_row := NULL]
 
-  ## Alternatives summary (base alternative is alt_int = 1)
-  alt_mapping <- dt[
-    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-    keyby = c(".choicer_alt_int", alt_col)
-  ]
-  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
-  alt_mapping[, `:=`(
-    TAKE_RATE = N_CHOICES / N_OBS,
-    MKT_SHARE = N_CHOICES / sum(N_CHOICES)
-  )]
-
   ## ASC block: in differenced utilities the ASCs are J - 1 intercepts, one
   ## per non-base alternative
   if (use_asc) {
     X_asc <- diag(1, p)[rep(seq_len(p), N), , drop = FALSE]
-    colnames(X_asc) <- paste0("ASC_", alt_mapping[[alt_col]][2:J])
+    colnames(X_asc) <- asc_names
     X <- cbind(X_diff, X_asc)
     rm(X_asc)
   } else {

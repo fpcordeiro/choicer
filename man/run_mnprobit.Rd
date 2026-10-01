@@ -39,7 +39,8 @@ order is used.}
 
 \item{use_asc}{Logical indicating whether to include alternative-specific
 constants (one intercept per non-base alternative in the differenced
-utilities).}
+utilities), named \code{ASC_<label>}. No covariate may have one of these
+names; ASC dummies built by hand need \code{use_asc = FALSE}.}
 
 \item{prior}{Named list of prior settings, merged over defaults:
 \describe{

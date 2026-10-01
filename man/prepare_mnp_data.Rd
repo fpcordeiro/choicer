@@ -30,7 +30,9 @@ differencing. If \code{NULL} (default), the first alternative in sort
 order is used.}
 
 \item{use_asc}{Logical indicating whether to include alternative-specific
-constants (one intercept per non-base alternative).}
+constants (one intercept per non-base alternative), named
+\code{ASC_<label>}. No covariate may have one of these names; ASC dummies
+built by hand need \code{use_asc = FALSE}.}
 }
 \value{
 A list containing:
