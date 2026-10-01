@@ -20,7 +20,9 @@ utils::globalVariables(c(
   # Recovery / Monte Carlo NSE variables (R/recovery.R)
   "parameter", "converged", "estimate", "se", "true", "covers",
   "group", "rep_id", "R_success", "mean_est", "median_est",
-  "sd_est", "mean_se", "bias", "rmse", "coverage"
+  "sd_est", "mean_se", "bias", "rmse", "coverage",
+  # WESML helper NSE variables (R/sampling.R)
+  "chosen"
 ))
 
 ## usethis namespace: start

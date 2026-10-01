@@ -287,8 +287,10 @@ run_hmnprobit <- function(
 
   x_names <- colnames(X)
   z_names <- colnames(Z)
+  # Labels are read as a vector: inside alt_mapping[...] an alternative column
+  # named `am` would mask the local.
   am <- input_list$alt_mapping
-  alt_labels <- as.character(am[am$alt_int > 0, ][[input_list$data_spec$alt_col]])
+  alt_labels <- as.character(am[[input_list$data_spec$alt_col]][am$alt_int > 0])
   w_names <- character(K * (K + 1L) / 2L)
   idx <- 1L
   for (a1 in seq_len(K)) {

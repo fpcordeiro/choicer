@@ -79,16 +79,18 @@
            "FALSE; refit with keep_data = TRUE or pass `newdata`.")
     }
     # Rebuild from the stored prep: rows are already sorted and encoded.
+    # Labels are read as a vector: inside alt_mapping[...] an alternative
+    # column named `d` would mask the local.
     d <- object$data
+    am <- d$alt_mapping
+    alt_labels <- as.character(am[[spec$alt_col]][am$alt_int > 0])
     return(list(
       X = d$X,
       task_of_row = rep(seq_along(d$M), times = d$M),
       n_tasks = d$n_tasks,
       task_keys = d$task_keys %||% as.character(seq_len(d$n_tasks)),
       task_keys_exact = !is.null(d$task_keys),
-      alt_label = as.character(
-        d$alt_mapping[d$alt_mapping$alt_int > 0, ][[spec$alt_col]]
-      )[d$alt_of_row],
+      alt_label = alt_labels[d$alt_of_row],
       known_idx = d$alt_of_row,
       z_new = NULL,
       new_labels = character(0),
@@ -127,7 +129,7 @@
   if (!all(is.finite(X))) stop("`newdata` covariates must be finite.")
 
   am <- object$alt_mapping
-  known_labels <- as.character(am[am$alt_int > 0, ][[spec$alt_col]])
+  known_labels <- as.character(am[[spec$alt_col]][am$alt_int > 0])
   alt_label <- as.character(dt[[spec$alt_col]])
   known_idx <- match(alt_label, known_labels)   # NA = new alternative
 

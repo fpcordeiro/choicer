@@ -402,6 +402,47 @@ versions.
   such names) and, of the alternative-column names, only an `alt_int`
   column already coded 1 to J, without the outside option.
 
+The following affected post-estimation and the WESML helpers in released
+versions:
+
+- `predict()`, `logsum()` and `consumer_surplus()` with a data.frame
+  `newdata` code each row's alternative by its position in the fit's
+  `alt_mapping`, and looked up that table and those positions as the
+  variables `am` and `pos` inside the data, where a covariate of the same
+  name took their place. A covariate named `am` stopped the prediction with
+  "$ operator is invalid for atomic vectors", and one named `pos` usually
+  with an unrelated error ("only 0's may be mixed with negative subscripts",
+  or duplicated (id, alternative) pairs). But a `pos` whose values were
+  valid positions in `alt_mapping` (without an outside option, any
+  permutation of 1 to J within each choice situation, such as a rank)
+  passed every check and silently gave each row the alternative at that
+  position, so the alternative-specific constants and the shares went to the
+  wrong alternatives. With an outside option, a covariate named `spec`
+  stopped the prediction with the same `$` error.
+- `wesml_weights()` and `sample_by_choice()` read the number of chosen
+  alternatives per choice situation back under data.table's automatic name
+  `V1`, so an id column named `V1` stopped them with a spurious error about
+  the number of chosen alternatives; an id column named `.strat`, the name
+  of their working column for the chosen stratum, made them read the ids as
+  the strata and stop with an unrelated error. They also looked up
+  `choice_col`, `id_col` and `keep_ids` inside the data, where a column of
+  the same name took their place whether or not the call used it: a choice
+  column named `choice_col` stopped them with "invalid first argument", and
+  a column named `keep_ids` made `sample_by_choice()` silently return the
+  wrong choice situations (the whole population when it was the id column).
+- An alternative column named `am` stopped `run_hmnlogit()` and
+  `run_hmnprobit()` with "$ operator is invalid for atomic vectors". With one
+  named `d`, the fits succeeded, but `predict()` without `newdata`,
+  `elasticities()`, `diversion_ratios()` and `ppc_shares()` stopped with the
+  same error, as did, for the HMNL, `logsum()` without `newdata` and
+  `consumer_surplus()`. Each looked up a variable of that name inside the
+  fit's `alt_mapping`, where the alternative column took its place.
+
+These values are now computed before the data or `alt_mapping` is indexed,
+and counts and strata are read back under names with the reserved prefix
+`.choicer_`. Inputs without these names give the same results as before, bit
+for bit, on every call the test suite makes.
+
 # choicer 0.2.1
 
 Patch release addressing a compilation warning reported by CRAN's GCC check

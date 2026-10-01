@@ -408,10 +408,11 @@ run_hmnlogit <- function(
 
   # delta init: shrunk log choice-share contrasts vs the outside option
   # (add-half so never-chosen alternatives stay finite); theta init: OLS of
-  # delta_init on Z.
+  # delta_init on Z. The counts are read as vectors: inside alt_mapping[...]
+  # an alternative column named `am` would mask the local.
   am <- input_list$alt_mapping
-  n_choices_in <- am[am$alt_int > 0, ][["N_CHOICES"]]
-  n_out <- am[am$alt_int == 0, ][["N_CHOICES"]]
+  n_choices_in <- am$N_CHOICES[am$alt_int > 0]
+  n_out <- am$N_CHOICES[am$alt_int == 0]
   delta_init <- log((n_choices_in + 0.5) / (n_out + 0.5))
   theta_init <- as.numeric(qr.solve(Z, delta_init))
 
@@ -443,7 +444,7 @@ run_hmnlogit <- function(
   # --- Assemble the posterior object -------------------------------------------
   x_names <- colnames(X)
   z_names <- colnames(Z)
-  alt_labels <- as.character(am[am$alt_int > 0, ][[input_list$data_spec$alt_col]])
+  alt_labels <- as.character(am[[input_list$data_spec$alt_col]][am$alt_int > 0])
   w_names <- character(K * (K + 1L) / 2L)
   idx <- 1L
   for (a1 in seq_len(K)) {
