@@ -454,6 +454,9 @@ label_matrix <- function(mat, alt_mapping) {
 #' `as.data.table()` copy with the unused columns dropped by `:=`, all of
 #' whose columns are scanned, as `.SD` was (with duplicated names, `:=` drops
 #' only the first match, and the survivor's missing values still count).
+#' When a scanned column is integer64, bit64 is loaded first (see
+#' `.load_bit64_for()`), so that the checks reading `src` in place see its
+#' values.
 #'
 #' @param data User data.
 #' @param needed Names of the columns the model uses.
@@ -462,16 +465,21 @@ label_matrix <- function(mat, alt_mapping) {
 #' @noRd
 .prep_source <- function(data, needed) {
   if (.direct_route(data, needed)) {
-    return(list(src = data, scan = which(names(data) %in% needed)))
+    src <- data
+    scan <- which(names(data) %in% needed)
+  } else {
+    src <- .copy_cols(data, needed)
+    scan <- seq_along(src)
   }
-  src <- .copy_cols(data, needed)
-  list(src = src, scan = seq_along(src))
+  .load_bit64_for(src, scan)
+  list(src = src, scan = scan)
 }
 
 #' Rows with a missing value in any of the given columns
 #'
 #' Column-by-column `rowSums(is.na(x[cols])) > 0`, without its rows-by-columns
 #' logical matrix; columns without missing values cost one pass of anyNA().
+#' integer64 columns need bit64's methods loaded (`.load_bit64_for()`).
 #'
 #' @param x A data frame or data.table.
 #' @param cols Column positions to scan (default: all).
@@ -514,12 +522,14 @@ label_matrix <- function(mat, alt_mapping) {
 #' `X[i, ] = src[rows[i], cols]` in double storage: the values and layout of
 #' `as.matrix()` on the sorted rows, filled in C++ straight from `src`
 #' without copying the covariates into the prep's working table, reading
-#' integer columns' raw storage as `as.matrix()` does. The estimation kernels
-#' take double matrices and would otherwise convert an all-integer design on
-#' every call. Columns are looked up by position, first match, as
-#' `dt[, ..cols]` did. With `base`, the rows are differenced in the same
-#' pass, `X[i, ] = src[rows[i], cols] - src[base[i], cols]`, as the
-#' multinomial probit's design is.
+#' integer columns' raw storage as `as.matrix()` does. integer64 columns are
+#' read as their values instead, as `.int64_to_double()` converts them and
+#' with its warning for values of magnitude 2^53 or more among the rows read.
+#' The estimation kernels take double matrices and would otherwise convert
+#' an all-integer design on every call. Columns are looked up by position,
+#' first match, as `dt[, ..cols]` did. With `base`, the rows are differenced
+#' in the same pass, `X[i, ] = src[rows[i], cols] - src[base[i], cols]`, as
+#' the multinomial probit's design is.
 #'
 #' @param src Data frame holding the columns (see `.prep_source()`).
 #' @param cols Names of numeric columns of `src`.
@@ -537,6 +547,13 @@ label_matrix <- function(mat, alt_mapping) {
   .check_design_size(length(rows), cols, what)
   X <- prep_gather_design(lapply(match(cols, names(src)),
                                  function(j) .subset2(src, j)), rows, base)
+  big <- attr(X, "int64_big")
+  if (!is.null(big)) {
+    attr(X, "int64_big") <- NULL
+    for (cc in unique(as.character(cols)[big])) {
+      .warn_int64_big(paste0("Column '", cc, "'"))
+    }
+  }
   dimnames(X) <- list(NULL, as.character(cols))
   X
 }
@@ -599,4 +616,133 @@ label_matrix <- function(mat, alt_mapping) {
          "decision makers.", call. = FALSE)
   }
   x[first]
+}
+
+#' Whether bit64 can be loaded
+#'
+#' Its own function so that the tests can mock bit64's absence.
+#'
+#' @returns `TRUE` or `FALSE`.
+#' @noRd
+.bit64_available <- function() requireNamespace("bit64", quietly = TRUE)
+
+#' Stop unless bit64 can be loaded to read an integer64 object
+#'
+#' @param what Name of the object for the message, e.g. "Column 'x1'".
+#' @returns Invisibly, `NULL`.
+#' @noRd
+.need_bit64 <- function(what) {
+  if (!.bit64_available()) {
+    stop(what, " is of class integer64; install the bit64 package to read ",
+         "it.", call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Warn that integer64 values were rounded to doubles
+#'
+#' The warning has class `choicer_int64_big`, so that `.int64_warn_once()`
+#' can drop repeats.
+#'
+#' @param what Name of the converted object, e.g. "Column 'x1'".
+#' @returns Invisibly, the warning message.
+#' @noRd
+.warn_int64_big <- function(what) {
+  warning(warningCondition(
+    paste0(what, " has integer64 values of magnitude 2^53 or more; they ",
+           "were rounded to the nearest double."),
+    class = "choicer_int64_big"))
+}
+
+#' One rounding warning per column across a preparation's conversions
+#'
+#' A preparation can convert a column more than once: a fixed covariate that
+#' is also a random coefficient, a structural covariate that is also an
+#' alternative-level one. The returned function evaluates its argument and
+#' lets through only the first `.warn_int64_big()` warning about each
+#' column, a record its calls share.
+#'
+#' @returns A function of one argument.
+#' @noRd
+.int64_warn_once <- function() {
+  seen <- character(0)
+  function(expr) {
+    withCallingHandlers(expr, choicer_int64_big = function(w) {
+      if (conditionMessage(w) %in% seen) invokeRestart("muffleWarning")
+      seen <<- c(seen, conditionMessage(w))
+    })
+  }
+}
+
+#' Load bit64 when a column read in place is integer64
+#'
+#' bit64's integer64 keeps 64-bit integers in the storage of a double vector,
+#' which base R reads as raw bits: `anyNA()` and `is.na()` miss
+#' `NA_integer64_` (its bits are those of -0) and flag small negative values
+#' (their bits are NaNs), and `is.finite()`, `[` and `==` misread them alike.
+#' bit64 registers methods that read the values when its namespace loads,
+#' which holding an integer64 column does not guarantee (one read from an
+#' `.rds` file arrives without it).
+#'
+#' @param x A data frame.
+#' @param cols Positions of the columns that will be read.
+#' @returns Invisibly, `NULL`; stops when a column is integer64 and bit64
+#'   cannot be loaded.
+#' @noRd
+.load_bit64_for <- function(x, cols = seq_along(x)) {
+  for (j in cols) {
+    if (inherits(.subset2(x, j), "integer64")) {
+      return(.need_bit64(paste0("Column '", names(x)[j], "'")))
+    }
+  }
+  invisible(NULL)
+}
+
+#' The values of an integer64 vector as doubles
+#'
+#' `is.numeric()` accepts integer64 (bit64 defines no method), but code that
+#' reads its storage directly, `as.matrix()` and the C++ kernels among it,
+#' reads the raw bit patterns as doubles: 1 as 4.9e-324, 2^40 as 5.4e-312,
+#' small negative values as NaN. `as.double()` dispatches to bit64's method,
+#' which is exact below 2^53 in magnitude and maps `NA_integer64_` to `NA`;
+#' larger values round to the nearest double, and the warning bit64 gives for
+#' them, which does not say what was converted, is replaced by one that does.
+#' The preps' gathers read integer64 columns in place with the same values
+#' and warning (`prep_gather_design()`).
+#'
+#' @param x A vector or matrix, returned unchanged unless it is integer64.
+#' @param what Name of `x` for the messages, e.g. "Column 'x1'".
+#' @returns `x` as a double vector, or a double matrix with `x`'s `dim` and
+#'   `dimnames`.
+#' @noRd
+.int64_to_double <- function(x, what) {
+  if (!inherits(x, "integer64")) return(x)
+  .need_bit64(what)
+  out <- suppressWarnings(as.double(x))
+  if (any(abs(out) >= 2^53, na.rm = TRUE)) .warn_int64_big(what)
+  dim(out) <- dim(x)             # as.double() drops them
+  dimnames(out) <- dimnames(x)
+  out
+}
+
+#' Convert the integer64 columns of a private table to double, in place
+#'
+#' For tables the caller owns and reads with R code: a prep's working table
+#' of index columns (for its weight column), and the copies the prediction
+#' helpers make of `newdata`. Called before their missing-value checks, so
+#' every later step sees doubles. See `.int64_to_double()`.
+#'
+#' @param dt A data.table owned by the caller; modified in place.
+#' @param cols Names of the columns read as numbers (covariates, weights).
+#' @returns `dt`, invisibly.
+#' @noRd
+.int64_cols_to_double <- function(dt, cols) {
+  for (j in which(names(dt) %in% cols)) {
+    v <- .subset2(dt, j)
+    if (inherits(v, "integer64")) {
+      data.table::set(dt, j = j, value = .int64_to_double(
+        v, paste0("Column '", names(dt)[j], "'")))
+    }
+  }
+  invisible(dt)
 }

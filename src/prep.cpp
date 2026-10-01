@@ -3,13 +3,34 @@
 // preparations.
 #include <Rcpp.h>
 #include <climits>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+
+namespace {
+
+// bit64's integer64 keeps 64-bit integers in the storage of a double vector,
+// NA_integer64_ as INT64_MIN. Element i as bit64's as.double() reads it:
+// NA_real_ for NA, otherwise the nearest double (exact below 2^53).
+inline double int64_value(const double* in, R_xlen_t i) {
+  std::int64_t v;
+  std::memcpy(&v, in + i, sizeof v);
+  return v == INT64_MIN ? NA_REAL : static_cast<double>(v);
+}
+
+// 2^53: from this magnitude up, doubles no longer hold every integer.
+constexpr double kExactInt = 9007199254740992.0;
+
+}  // namespace
 
 //' Gather rows of numeric columns into a double design matrix
 //'
 //' `X[i, k] = cols[[k]][rows[i]]`, written column by column straight from the
 //' caller's columns (read only), so the preps never copy the covariates into
 //' their working table. Integer columns are converted exactly (NA to
-//' NA_real_), as as.matrix() does after coercion to double; classed numerics
+//' NA_real_), as as.matrix() does after coercion to double. integer64
+//' (bit64) columns are read as their values, as bit64's as.double() reads
+//' them, where as.matrix() would read the raw bits; other classed numerics
 //' are read from their raw storage, as as.matrix()'s unlist() reads them.
 //'
 //' With `base`, the same pass writes the differenced design of the
@@ -22,6 +43,9 @@
 //' @param base `NULL`, or an integer vector of 1-based indices, one per
 //'   element of `rows`, of the values to subtract.
 //' @returns A `length(rows)` x `length(cols)` double matrix, no dimnames.
+//'   If integer64 columns hold values of magnitude 2^53 or more in the rows
+//'   read, a logical attribute `int64_big`, one element per column, marks
+//'   them.
 //' @noRd
 // [[Rcpp::export(rng = false)]]
 SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
@@ -62,13 +86,37 @@ SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
     }
   }
   // All checks are done: nothing below throws.
+  SEXP big = PROTECT(Rf_allocVector(LGLSXP, K));  // see @returns
+  int* bg = LOGICAL(big);
+  bool any_big = false;
   SEXP X = PROTECT(Rf_allocMatrix(REALSXP, static_cast<int>(n),
                                   static_cast<int>(K)));
   double* out = REAL(X);
   for (R_xlen_t k = 0; k < K; ++k) {
     SEXP c = VECTOR_ELT(cols, k);
     double* o = out + k * n;
-    if (TYPEOF(c) == REALSXP) {
+    bg[k] = FALSE;
+    if (TYPEOF(c) == REALSXP && Rf_inherits(c, "integer64")) {
+      const double* in = REAL_RO(c);
+      int large = 0;
+      if (diff) {
+        #pragma omp parallel for schedule(static) reduction(|:large) if (n > 100000)
+        for (R_xlen_t i = 0; i < n; ++i) {
+          const double v = int64_value(in, r[i] - 1);
+          const double w = int64_value(in, b[i] - 1);
+          o[i] = (std::isnan(v) || std::isnan(w)) ? NA_REAL : v - w;
+          large |= std::fabs(v) >= kExactInt || std::fabs(w) >= kExactInt;
+        }
+      } else {
+        #pragma omp parallel for schedule(static) reduction(|:large) if (n > 100000)
+        for (R_xlen_t i = 0; i < n; ++i) {
+          o[i] = int64_value(in, r[i] - 1);
+          large |= std::fabs(o[i]) >= kExactInt;
+        }
+      }
+      bg[k] = large != 0;
+      any_big = any_big || large != 0;
+    } else if (TYPEOF(c) == REALSXP) {
       const double* in = REAL_RO(c);
       if (diff) {
         #pragma omp parallel for schedule(static) if (n > 100000)
@@ -96,6 +144,7 @@ SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
       }
     }
   }
-  UNPROTECT(1);
+  if (any_big) Rf_setAttrib(X, Rf_install("int64_big"), big);
+  UNPROTECT(2);
   return X;
 }

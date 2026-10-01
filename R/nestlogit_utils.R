@@ -426,6 +426,7 @@ prepare_nl_data <- function(
   # Only the two columns of the alternative-to-nest map; prepare_mnl_data()
   # below copies the columns it needs itself.
   dt <- .copy_cols(data, c(alt_col, nest_col))
+  .load_bit64_for(dt)
 
   # Validate nest_col exists
   if (!nest_col %in% names(dt)) {
