@@ -481,12 +481,10 @@ prepare_mnl_data <- function(
     stop("All covariates must be numeric.")
 
   ## choice column must be 0/1 and exactly one '1' per choice situation
-  bad_choice <- dt[[choice_col]] %in% c(0, 1) == FALSE
-  if (any(bad_choice))
+  if (!.is_zero_one(dt[[choice_col]]))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
-  n_chosen <- dt[, .(.choicer_n = sum(get(choice_col))),
-                 by = id_col][[".choicer_n"]]
+  n_chosen <- .n_chosen_by(dt, choice_col, id_col)
   if (include_outside_option == FALSE && any(n_chosen != 1)) {
     stop("Each ", id_col, " must have exactly one chosen alternative (one '1' in ",
          choice_col, ").")
@@ -511,8 +509,11 @@ prepare_mnl_data <- function(
   ##   between ids   : ascending id
   data.table::setorderv(dt, c(id_col, ".choicer_alt_int"))
 
-  ## index of each row within its choice set
-  dt[, .choicer_idx_in_group := seq_len(.N), by = id_col]
+  ## index of each row within its choice set (computed outside dt[...], where
+  ## a column named id_col would take the local's place)
+  .choicer_idx <- data.table::rowidv(dt, cols = id_col)
+  dt[, .choicer_idx_in_group := .choicer_idx]
+  rm(.choicer_idx)
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
@@ -524,22 +525,21 @@ prepare_mnl_data <- function(
          paste(unique(covariate_cols[duplicated(covariate_cols)]),
                collapse = ", "), ".")
   }
-  # Covariates that are also index columns leave dt here, as they always have.
-  index_cols <- c(id_col, alt_col, choice_col, weights_col, cluster_col)
-  dt[, (c(intersect(covariate_cols, index_cols), ".choicer_row")) := NULL]
+  dt[, .choicer_row := NULL]
   X_res <- check_collinearity(X)
   X <- X_res$mat
   if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped
+  .check_index_covariates(covariate_cols, c(id_col, alt_col, choice_col,
+                                            weights_col, cluster_col))
 
   ## alternative ids used for delta coefficients
   alt_idx <- as.integer(dt$.choicer_alt_int)                    # length == sum(M)
 
-  ## M[i] - # alternatives per choice situation (read by position: an id
-  ## column named N would shadow the count)
-  M <- dt[, .N, by = id_col][[2L]]                              # length N
+  ## M[i] - # alternatives per choice situation
+  M <- .n_rows_by(dt, id_col)                                   # length N
 
   ## N - number of individuals / choice situations
-  ids <- dt[, get(id_col)][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
+  ids <- dt[[id_col]][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
   N   <- length(ids)
 
   ## Collapse a row-level weight column to one weight per choice situation.
@@ -567,18 +567,18 @@ prepare_mnl_data <- function(
 
   ## choice_idx[i] - 1-based index *within* the choice set data
   ## 0 == outside option (only if chosen = 0 for all inside options & include_outside_option == TRUE)
+  chosen <- dt[[choice_col]] == 1
   if (include_outside_option) {
-    # start with all-zero (everyone assumed to pick the outside good)
+    # start with all-zero (everyone assumed to pick the outside good), then
+    # match the chosen rows' ids (at most one per id) to the master index
     choice_idx <- integer(N)
-    chosen_dt <- dt[get(choice_col) == 1, .(.choicer_idx_in_group), by = id_col]
-
-    # match chosen ids back to the master index vector
-    data.table::setkeyv(chosen_dt, id_col)
-    choice_idx[match(chosen_dt[[id_col]], ids)] <- chosen_dt$.choicer_idx_in_group
+    choice_idx[match(dt[[id_col]][chosen], ids)] <-
+      dt$.choicer_idx_in_group[chosen]
   } else {
     # exactly one explicit choice per id
-    choice_idx <- dt[get(choice_col) == 1, .choicer_idx_in_group]
+    choice_idx <- dt$.choicer_idx_in_group[chosen]
   }
+  rm(chosen)
 
   if (is.null(weights)) weights <- rep(1, length(M))
   weights <- .int64_to_double(weights, "`weights`")
@@ -599,11 +599,7 @@ prepare_mnl_data <- function(
   ## Alternatives summary ------------------------------------------------------
   ## One inside-alternative aggregation; the outside branch only prepends its
   ## synthetic alt_int = 0 row.
-  alt_mapping <- dt[
-    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-    keyby = c(".choicer_alt_int", alt_col)
-  ]
-  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
+  alt_mapping <- .alt_counts(dt, alt_col, choice_col)
   if (include_outside_option) {
     outside_alt_mapping <- data.table::data.table(alt_int=0L, N_OBS = N, N_CHOICES = sum(choice_idx == 0L))
     outside_alt_mapping[[alt_col]] <- outside_opt_label

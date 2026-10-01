@@ -569,6 +569,90 @@ test_that("a repeated covariate stops MNL and NL preparation, as before", {
                "names a column more than once: x1")
 })
 
+test_that("a covariate that is also an index column stops MNL, MXL and NL preparation", {
+  # It left their working table before they read it again: they stopped
+  # with an unrelated error, or counted another object named like the choice
+  # column. They now say why.
+  dt <- create_small_nl_data()
+  dt[, `:=`(w = 1 + id %% 3, cl = id %% 4, pid = (id + 1) %/% 2)]
+  msg <- function(col) {
+    paste0("A covariate cannot also be the id, alternative, choice, weight, ",
+           "cluster or decision-maker column: '", col, "'.")
+  }
+  for (col in c("id", "alt", "choice", "w", "cl")) {
+    expect_error(prepare_mnl_data(dt, "id", "alt", "choice", c("x1", col),
+                                  weights_col = "w", cluster_col = "cl"),
+                 msg(col), fixed = TRUE)
+    expect_error(prepare_nl_data(dt, "id", "alt", "choice", c(col, "x1"),
+                                 "nest", weights_col = "w", cluster_col = "cl"),
+                 msg(col), fixed = TRUE)
+  }
+  for (col in c("id", "alt", "choice", "pid")) {
+    expect_error(prepare_mxl_data(dt, "id", "alt", "choice", c("x1", col),
+                                  "x2", person_col = "pid"),
+                 msg(col), fixed = TRUE)
+    expect_error(prepare_mxl_data(dt, "id", "alt", "choice", "x1", col,
+                                  person_col = "pid"),
+                 msg(col), fixed = TRUE)
+  }
+  # A weight or cluster column the call does not use is an ordinary covariate
+  expect_identical(colnames(prepare_mnl_data(dt, "id", "alt", "choice",
+                                             c("x1", "w", "cl"))$X),
+                   c("x1", "w", "cl"))
+})
+
+test_that("a character or factor choice column is reported as not 0/1", {
+  # "0"/"1" pass a %in% c(0, 1) check by coercion, but the choices cannot be
+  # counted; the preparations and the WESML helpers now say so instead of
+  # failing in sum().
+  dt <- create_small_mnl_data()
+  dt[, nest := ifelse(alt == 1L, "a", "b")]
+  for (as_type in list(as.character, factor)) {
+    d <- copy(dt)[, choice := as_type(choice)]
+    msg <- "`choice` must contain only 0 and 1."
+    expect_error(prepare_mnl_data(d, "id", "alt", "choice", "x1"), msg,
+                 fixed = TRUE)
+    expect_error(prepare_mxl_data(d, "id", "alt", "choice", "x1", "x2"), msg,
+                 fixed = TRUE)
+    expect_error(prepare_nl_data(d, "id", "alt", "choice", "x1", "nest"), msg,
+                 fixed = TRUE)
+    expect_error(prepare_mnp_data(d, "id", "alt", "choice", "x1"), msg,
+                 fixed = TRUE)
+    expect_error(prepare_hmnl_data(d, "id", "alt", "choice", "x1"), msg,
+                 fixed = TRUE)
+    expect_error(prepare_hmnp_data(d, "id", "alt", "choice", "x1"), msg,
+                 fixed = TRUE)
+    expect_error(wesml_weights(d, "id", "alt", "choice",
+                               Q = c(`1` = 0.3, `2` = 0.3, `3` = 0.4)),
+                 msg, fixed = TRUE)
+    expect_error(sample_by_choice(d, "id", "alt", "choice", n_per_alt = 2L),
+                 msg, fixed = TRUE)
+  }
+  # Logical choices are counted as before
+  d <- copy(dt)[, choice := as.logical(choice)]
+  expect_identical(prepare_mnl_data(d, "id", "alt", "choice", "x1")$choice_idx,
+                   prepare_mnl_data(dt, "id", "alt", "choice", "x1")$choice_idx)
+})
+
+test_that("attributes of the choice column do not reach alt_mapping", {
+  # A pdata.frame's or a labelled data set's columns carry attributes. sum()
+  # drops them from the choice counts, where data.table's GForce sum would
+  # keep them, so the counts in alt_mapping are summed by sum().
+  dt <- create_small_mnl_data()
+  dt[, nest := ifelse(alt == 1L, "a", "b")]
+  d <- copy(dt)[, choice := structure(choice, note = "chosen")]
+  preps <- list(
+    function(x) prepare_mnl_data(x, "id", "alt", "choice", "x1"),
+    function(x) prepare_mxl_data(x, "id", "alt", "choice", "x1", "x2"),
+    function(x) prepare_nl_data(x, "id", "alt", "choice", "x1", "nest"),
+    function(x) prepare_mnp_data(x, "id", "alt", "choice", "x1"),
+    function(x) prepare_hmnl_data(x, "id", "alt", "choice", "x1")
+  )
+  for (prep in preps) {
+    expect_identical(prep(d), prep(dt))
+  }
+})
+
 
 test_that("prep_gather_design differences rows against base rows in one pass", {
   cols <- list(c(1.5, NA, 3.25, -1), c(4L, NA, 6L, 7L))

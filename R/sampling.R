@@ -68,7 +68,7 @@
   if (length(miss) > 0) {
     stop("Missing columns: ", paste(miss, collapse = ", "))
   }
-  if (!all(dt[[choice_col]] %in% c(0, 1))) {
+  if (!.is_zero_one(dt[[choice_col]])) {
     stop("`", choice_col, "` must contain only 0 and 1.")
   }
   # Chosen alternatives per situation, counted on a private table of the two

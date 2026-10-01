@@ -338,7 +338,7 @@ prepare_mnp_data <- function(
   ## Drop ids with missing observations ----------------------------------------
   ## (dt still holds every source row, in source order)
   has_na <- .rows_with_na(src, prep_src$scan)
-  ids_to_drop <- unique(dt[has_na, get(id_col)])
+  ids_to_drop <- unique(dt[[id_col]][has_na])
   rm(has_na)
   if (length(ids_to_drop) > 0) {
     # computed outside dt[...], where a column named ids_to_drop would mask it
@@ -359,12 +359,10 @@ prepare_mnp_data <- function(
     stop("All covariates must be numeric.")
 
   ## choice column must be 0/1 and exactly one '1' per choice situation
-  bad_choice <- dt[[choice_col]] %in% c(0, 1) == FALSE
-  if (any(bad_choice))
+  if (!.is_zero_one(dt[[choice_col]]))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
-  n_chosen <- dt[, .(.choicer_n = sum(get(choice_col))),
-                 by = id_col][[".choicer_n"]]
+  n_chosen <- .n_chosen_by(dt, choice_col, id_col)
   if (any(n_chosen != 1)) {
     stop("Each ", id_col, " must have exactly one chosen alternative (one '1' in ",
          choice_col, ").")
@@ -374,8 +372,7 @@ prepare_mnp_data <- function(
   alts <- unique(dt[[alt_col]])
   J <- length(alts)
   if (J < 2) stop("Need at least 2 alternatives.")
-  # Read by position: an id column named N would shadow the count.
-  counts <- dt[, .N, by = id_col][[2L]]
+  counts <- .n_rows_by(dt, id_col)
   n_pairs <- nrow(unique(dt[, c(id_col, alt_col), with = FALSE]))
   if (any(counts != J) || n_pairs != nrow(dt)) {
     stop("MNP requires balanced choice sets: every choice situation must ",
@@ -395,11 +392,7 @@ prepare_mnp_data <- function(
   dt <- .code_alternatives(dt, alt_col, levels)
 
   ## Alternatives summary (base alternative is alt_int = 1)
-  alt_mapping <- dt[
-    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-    keyby = c(".choicer_alt_int", alt_col)
-  ]
-  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
+  alt_mapping <- .alt_counts(dt, alt_col, choice_col)
   alt_mapping[, `:=`(
     TAKE_RATE = N_CHOICES / N_OBS,
     MKT_SHARE = N_CHOICES / sum(N_CHOICES)
@@ -469,7 +462,7 @@ prepare_mnp_data <- function(
   }
 
   ## y: 0 = base alternative, j in 1..p for the j-th non-base alternative
-  y <- as.integer(dt[get(choice_col) == 1, .choicer_alt_int] - 1L)
+  y <- as.integer(dt$.choicer_alt_int[dt[[choice_col]] == 1] - 1L)
 
   ## Final validity checks -----------------------------------------------------
   stopifnot(
