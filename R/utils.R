@@ -314,6 +314,31 @@ label_matrix <- function(mat, alt_mapping) {
   invisible(NULL)
 }
 
+#' Stop when a covariate is also an index column
+#'
+#' The MNL, MXL and NL preparations dropped a covariate that is also their
+#' id, alternative, choice, weight, cluster or decision-maker column from
+#' their working table after gathering the design. When they next read the
+#' column they stopped with an unrelated error, or, for the choice column,
+#' counted any object of its name visible to the call instead (a vector in
+#' the workspace, say). Such a covariate now stops them, at the same point,
+#' with an error that says why.
+#'
+#' @param covariates Names of the covariate columns.
+#' @param index_cols Names of the preparation's index columns.
+#' @returns `NULL`, invisibly; errors on an overlap.
+#' @noRd
+.check_index_covariates <- function(covariates, index_cols) {
+  both <- unique(covariates[covariates %in% index_cols])
+  if (length(both) > 0) {
+    stop("A covariate cannot also be the id, alternative, choice, weight, ",
+         "cluster or decision-maker column: ",
+         paste0("'", both, "'", collapse = ", "), ". To use one as a ",
+         "covariate, copy it under another name.", call. = FALSE)
+  }
+  invisible(NULL)
+}
+
 #' Code the alternatives 1..J in a preparation's working table
 #'
 #' Adds `.choicer_alt_int`, the position of each row's alternative in
@@ -390,6 +415,95 @@ label_matrix <- function(mat, alt_mapping) {
 .first_by <- function(dt, col, id_col, ids) {
   first <- !duplicated(dt[[id_col]])
   dt[[col]][first][match(ids, dt[[id_col]][first])]
+}
+
+#' Whether a choice column holds only 0 and 1
+#'
+#' As numbers or logicals: a character or factor column of "0" and "1"
+#' passes `%in% c(0, 1)` by coercion, but its choices cannot be summed.
+#'
+#' @param x The choice column.
+#' @returns `TRUE` or `FALSE`.
+#' @noRd
+.is_zero_one <- function(x) {
+  !is.character(x) && !is.factor(x) && all(x %in% c(0, 1))
+}
+
+#' A working table's choice-situation keys under fixed names
+#'
+#' A private table holding the columns `by` of `dt` as `k1`, `k2`, ..., and
+#' the further columns given in `...`. setDT() copies nothing: the table
+#' shares `dt`'s vectors. Grouped by those names, it meets no user column
+#' name, so a column named like a local (`id_col`, `choice_col`) cannot take
+#' the local's place, as it would inside `dt[...]`.
+#'
+#' @param dt A data.table.
+#' @param by Names of the columns identifying a choice situation.
+#' @param ... Further named columns, as vectors.
+#' @returns A data.table.
+#' @noRd
+.key_table <- function(dt, by, ...) {
+  keys <- lapply(by, function(cc) dt[[cc]])
+  names(keys) <- paste0("k", seq_along(by))
+  data.table::setDT(c(keys, list(...)))
+}
+
+#' Number of rows of each choice situation
+#'
+#' `dt[, .N, by = by]` counted on a private table (`.key_table()`).
+#'
+#' @param dt A data.table.
+#' @param by Names of the columns identifying a choice situation.
+#' @returns Integer vector, one count per situation in order of first
+#'   appearance.
+#' @noRd
+.n_rows_by <- function(dt, by) {
+  keys <- paste0("k", seq_along(by))
+  .key_table(dt, by)[, .N, by = keys][["N"]]
+}
+
+#' Number of chosen rows of each choice situation
+#'
+#' `dt[, sum(get(choice_col)), by = by]` summed on a private table
+#' (`.key_table()`), by data.table in one pass in C (GForce) rather than by
+#' an R call per situation.
+#'
+#' @param dt A data.table.
+#' @param choice_col Name of the 0/1 choice column (numeric or logical).
+#' @param by Names of the columns identifying a choice situation.
+#' @returns One count per situation in order of first appearance, for
+#'   comparison with 1: unlike `sum()`, GForce keeps the choice column's
+#'   attributes.
+#' @noRd
+.n_chosen_by <- function(dt, choice_col, by) {
+  keys <- paste0("k", seq_along(by))
+  .key_table(dt, by, chosen = dt[[choice_col]])[
+    , list(n = sum(chosen)), by = keys][["n"]]
+}
+
+#' Rows and choices of each alternative
+#'
+#' The first columns of a preparation's `alt_mapping`: `alt_int`, the
+#' alternative's code, the alternative column, and the alternative's numbers
+#' of rows (`N_OBS`) and of choices (`N_CHOICES`), keyed by the first two.
+#' Counted on a private table with fixed names, as `.n_chosen_by()` counts
+#' choices, but summed by `base::sum()` for each alternative: GForce's sum
+#' would keep the choice column's attributes (those of a pdata.frame's
+#' columns, say), which `sum()` drops, and there are only J groups.
+#'
+#' @param dt A preparation's working table, holding `.choicer_alt_int`.
+#' @param alt_col Name of the alternative column.
+#' @param choice_col Name of the 0/1 choice column.
+#' @returns A data.table keyed by `alt_int` and `alt_col`.
+#' @noRd
+.alt_counts <- function(dt, alt_col, choice_col) {
+  tab <- data.table::setDT(list(alt_int = dt$.choicer_alt_int,
+                                alt = dt[[alt_col]],
+                                chosen = dt[[choice_col]]))
+  counts <- tab[, list(N_OBS = .N, N_CHOICES = base::sum(chosen)),
+                keyby = c("alt_int", "alt")]
+  data.table::setnames(counts, "alt", alt_col)
+  counts
 }
 
 #' Copy the named columns of the user's data into a new data.table

@@ -6,8 +6,11 @@
 # idx_in_group, HB_PERSON or task_idx was overwritten, an id column called
 # chosen or pos was misread, and a column called like a local variable the
 # preparation looked up inside the table (levels, J, outside_opt_label,
-# ids_to_drop) took that variable's place. The grid tests rename one input
-# column at a time to such a name and expect the same preparation back.
+# ids_to_drop) took that variable's place. Until the column names were read
+# outside the table too, an index column called id_col, choice_col,
+# person_col or task_by stopped the preparation with an unrelated error.
+# The grid tests rename one input column at a time to such a name and expect
+# the same preparation back.
 
 # Names the preparations wrote or read by fixed name, names of the working
 # tables' summaries and of former working columns, local variables that a
@@ -17,8 +20,9 @@
 clash_names <- c(
   "alt_int", "idx_in_group", "HAS_NA", "HB_PERSON", "task_idx",
   "TASK_HAS_NA", "HAS_BAD", "TASK_HAS_BAD", "N", "V1", "chosen", "pos",
-  "levels", "J", "outside_opt_label", "ids_to_drop", "keep", "has_na",
-  "has_bad", "bad_tasks", "N_OBS", "N_CHOICES", "TAKE_RATE", "MKT_SHARE"
+  "levels", "J", "outside_opt_label", "ids_to_drop", "id_col", "choice_col",
+  "person_col", "task_by", "keep", "has_na", "has_bad", "bad_tasks", "N_OBS",
+  "N_CHOICES", "TAKE_RATE", "MKT_SHARE"
 )
 # The alternative column reappears in alt_mapping, which keeps these names.
 alt_mapping_names <- c("alt_int", "N_OBS", "N_CHOICES", "TAKE_RATE", "MKT_SHARE")

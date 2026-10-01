@@ -245,6 +245,19 @@
   resident memory is 4.5 times the input instead of 8.0 times for
   `prepare_mnp_data()` and 4.7 times instead of 7.6 times for
   `prepare_hmnl_data()` (medians of three runs).
+- All six preparations now count each choice situation's alternatives and
+  chosen rows on private tables of the columns involved, which data.table
+  sums in one pass, and number the rows within each situation in one pass
+  too (`data.table::rowidv()`; `prepare_mnp_data()` has none to number);
+  they used to evaluate R code for every choice situation. On the inputs of
+  the previous item this halves the time `prepare_mnp_data()` takes and
+  cuts that of `prepare_hmnl_data()` by two fifths; on the claims- and
+  census-style panels above, `prepare_mnl_data()`, `prepare_mxl_data()` and
+  `prepare_nl_data()` take 9-15% less time. Memory traffic grows by up to 3%
+  (data.table's working arrays for the sums), and peak heap use is unchanged
+  or lower (medians of three alternated runs). The prepared objects are
+  unchanged on every call the test suite makes and on a battery of edge
+  cases.
 
 ## Corrections
 
@@ -326,15 +339,16 @@ unless it says otherwise.
   `TASK_HAS_NA`, `HAS_BAD`, `TASK_HAS_BAD`) to a copy of the data, read
   per-situation results back under names (`N`, `V1`, `chosen`, `pos`) that
   an id column of the same name shadowed, and looked up variables of their
-  own (`levels`, `J`, `outside_opt_label`, `ids_to_drop`) where a column of
-  the same name took their place. `predict()`, `logsum()` and
-  `consumer_surplus()` with a data.frame `newdata`, `wesml_weights()`,
-  `sample_by_choice()`, and the hierarchical fits and their post-estimation
-  methods did the same: they looked up variables of their own (`am`, `pos`,
-  `spec`, `d`, `choice_col`, `id_col`, `keep_ids`) inside the data or the
-  fit's `alt_mapping`, and read counts and strata back under names (`V1`,
-  `.strat`) that an id column of the same name shadowed. These clashes
-  changed the results without an error:
+  own (`levels`, `J`, `outside_opt_label`, `ids_to_drop`, `id_col`,
+  `choice_col`, and in the hierarchical preparations `person_col` and
+  `task_by`) where a column of the same name took their place. `predict()`,
+  `logsum()` and `consumer_surplus()` with a data.frame `newdata`,
+  `wesml_weights()`, `sample_by_choice()`, and the hierarchical fits and
+  their post-estimation methods did the same: they looked up variables of
+  their own (`am`, `pos`, `spec`, `d`, `choice_col`, `id_col`, `keep_ids`)
+  inside the data or the fit's `alt_mapping`, and read counts and strata
+  back under names (`V1`, `.strat`) that an id column of the same name
+  shadowed. These clashes changed the results without an error:
   - in `prepare_hmnl_data()` / `prepare_hmnp_data()`, a covariate or
     control-function residual named `alt_int`, `idx_in_group` or
     `task_idx`, or one named `HB_PERSON` when the respondent ids were
@@ -344,6 +358,20 @@ unless it says otherwise.
     covariate named `idx_in_group` when every choice situation offered the
     same alternatives; `prepare_mnp_data()` differenced the codes of a
     covariate named `alt_int`;
+  - in the same two functions, a column named `task_by`, other than the
+    task column of a fit without `person_col`, regrouped the rows by its own
+    values: a covariate or control-function residual whose values differ
+    from row to row made every row a choice situation of its own, without
+    an error whenever the outside option was modelled, as it is by default
+    (repeated values usually stopped the preparation);
+  - in `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()`,
+    a choice column also listed in `covariate_cols` left the working table
+    before the choices were counted: the preparation stopped with an
+    unrelated error or, when an object of the column's name was visible to
+    the call (a vector `choice` in the workspace, say), counted that object
+    instead, so that `alt_mapping` credited every alternative with every
+    choice and, unless the rows were already in prepared order, the chosen
+    alternatives were wrong;
   - a choice column named `alt_int` or `idx_in_group` recorded the first
     alternative of every choice situation as chosen (`idx_in_group` was
     harmless in `prepare_mnp_data()`), and in the hierarchical preparations
@@ -401,31 +429,40 @@ unless it says otherwise.
   `prepare_mxl_data()` and `prepare_nl_data()` whenever a weight or cluster
   column was given, and always in the hierarchical preparations; a
   covariate named `alt_int` or `idx_in_group` in `prepare_mnl_data()`,
-  `prepare_mxl_data()` and `prepare_nl_data()`; and an id, weight or
-  cluster column named like a working column, among others. So did,
-  outside the preparations, a covariate named `am` in a data.frame
-  `newdata`, most covariates there named `pos`, and with an outside option
-  one named `spec`; an id column named `V1` or `.strat`, or a choice column
-  named `choice_col`, in `wesml_weights()` and `sample_by_choice()`; and an
-  alternative column named `am`, which stopped `run_hmnlogit()` and
-  `run_hmnprobit()`, or `d`, which stopped their `predict()` without
-  `newdata`, `elasticities()`, `diversion_ratios()` and `ppc_shares()`, and
-  for the HMNL `logsum()` without `newdata` and `consumer_surplus()`. Fits
-  whose data used a name in the first group, and fits with an id column
-  named `N` that ran, should be re-estimated, and the predictions and
-  samples in that group recomputed; for the second group, re-estimate nested
-  logit fits and recompute predictions made with `newdata`.
+  `prepare_mxl_data()` and `prepare_nl_data()`; a column named
+  `choice_col` that a model used (other than the nested logit's nest
+  column), as did one named `id_col` outside the hierarchical preparations
+  and, in those, one named `person_col` when `person_col` was given or
+  `id_col` when it was not; an id or alternative
+  column whose name contains a comma, which data.table's grouping splits
+  into several names; and an id, weight or cluster column named like a
+  working column, among others. So did, outside the preparations, a
+  covariate named `am` in a data.frame `newdata`, most covariates there
+  named `pos`, and with an outside option one named `spec`; an id column
+  named `V1` or `.strat`, or a choice column named `choice_col`, in
+  `wesml_weights()` and `sample_by_choice()`; and an alternative column
+  named `am`, which stopped `run_hmnlogit()` and `run_hmnprobit()`, or
+  `d`, which stopped their `predict()` without `newdata`, `elasticities()`,
+  `diversion_ratios()` and `ppc_shares()`, and for the HMNL `logsum()`
+  without `newdata` and `consumer_surplus()`. Fits whose data used a name
+  in the first group, and fits with an id column named `N` that ran, should
+  be re-estimated, and the predictions and samples in that group
+  recomputed; for the second group, re-estimate nested logit fits and
+  recompute predictions made with `newdata`.
 
   Covariates are now read from the data rather than from the working table;
   the remaining working columns, per-situation results, counts and strata
   carry the reserved prefix `.choicer_` or are read by position; and the
   preparations, post-estimation and the WESML helpers compute their own
-  values before indexing the data or `alt_mapping`, so the names listed
-  above are no longer looked up among the columns. In the preparations
-  (and so the `run_*()` functions), an index column named `id_col` or
-  `choice_col`, or in the hierarchical preparations one named
-  `person_col`, still stops them with an unrelated error, as in released
-  versions. Inputs without a clash give the same results as before. Two
+  values, and read the columns they are given by name, before indexing the
+  data or `alt_mapping`, so the names listed above are no longer looked up
+  among the columns. Inputs without a clash give the same results as
+  before. A choice column stored as text or as a factor, which the
+  preparations, `wesml_weights()` and `sample_by_choice()` never accepted,
+  and in `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()`
+  a covariate that is also the id, alternative, choice, weight, cluster or
+  decision-maker column (see above for the choice column), now stop them
+  with an error that says why. Two
   inputs are now errors: a column whose name starts with `.choicer_`, used
   as an id, alternative, choice, covariate, weight, cluster or
   decision-maker column; and an alternative column named `alt_int`,

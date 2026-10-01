@@ -164,12 +164,11 @@
   ## Two-level indexing: person over task --------------------------------------
   ## person_col = NULL: each choice situation is its own respondent (Ti = 1).
   ## Tasks are keyed by (person, id) so task ids only need to be unique
-  ## within a respondent.
-  if (is.null(person_col)) {
-    dt[, .choicer_person := get(id_col)]
-  } else {
-    dt[, .choicer_person := get(person_col)]
-  }
+  ## within a respondent. (The column is read outside dt[...], where a column
+  ## named id_col or person_col would take the local's place; `:=` copies it.)
+  .choicer_resp <- dt[[if (is.null(person_col)) id_col else person_col]]
+  dt[, .choicer_person := .choicer_resp]
+  rm(.choicer_resp)
   task_by <- c(".choicer_person", id_col)
 
   ## Drop tasks with missing observations --------------------------------------
@@ -214,12 +213,10 @@
   ## choice column must be 0/1 with the outside-option convention of
   ## prepare_mnl_data (R/mnlogit_utils.R:459-472): exactly one '1' per task,
   ## or at most one when an all-zeros task means "outside chosen".
-  bad_choice <- dt[[choice_col]] %in% c(0, 1) == FALSE
-  if (any(bad_choice))
+  if (!.is_zero_one(dt[[choice_col]]))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
-  n_chosen <- dt[, .(.choicer_n = sum(get(choice_col))),
-                 by = task_by][[".choicer_n"]]
+  n_chosen <- .n_chosen_by(dt, choice_col, task_by)
   if (include_outside_option == FALSE && any(n_chosen != 1)) {
     stop("Each ", id_col, " must have exactly one chosen alternative (one '1' in ",
          choice_col, ").")
@@ -258,8 +255,14 @@
   ## (alt_of_row, choice_pos, the kernel CSR offsets).
   data.table::setorderv(dt, c(".choicer_person", id_col, ".choicer_alt_int"))
 
-  dt[, .choicer_idx_in_group := seq_len(.N), by = task_by]
-  dt[, .choicer_task_idx := .GRP, by = task_by]  # 1..n_tasks in sorted order
+  ## Position within the task, and the task's number (1..n_tasks in sorted
+  ## order, where each task's rows are contiguous), computed outside dt[...],
+  ## where a column named task_by would take the local's place.
+  .choicer_idx <- data.table::rowidv(dt, cols = task_by)
+  .choicer_task <- cumsum(.choicer_idx == 1L)
+  dt[, `:=`(.choicer_idx_in_group = .choicer_idx,
+            .choicer_task_idx = .choicer_task)]
+  rm(.choicer_idx, .choicer_task)
 
   # Retain sorted task identities so welfare counterfactuals can match the
   # baseline and policy states by identity rather than silently by position.
@@ -330,9 +333,8 @@
   alt_of_row <- as.integer(dt$.choicer_alt_int)
 
   ## M[t] - # inside alternatives per task (with the implicit outside the
-  ## effective choice set is M + 1). Read by position: a task column named N
-  ## would shadow the count.
-  M <- dt[, .N, by = task_by][[length(task_by) + 1L]]
+  ## effective choice set is M + 1)
+  M <- .n_rows_by(dt, task_by)
   n_tasks <- length(M)
   if (!include_outside_option && any(M < 2)) {
     stop("Each choice situation must contain at least 2 alternatives when ",
@@ -342,9 +344,9 @@
   ## choice_pos[t] - 1-based index of the chosen row *within* its task;
   ## 0 = outside option chosen (only with include_outside_option = TRUE)
   choice_pos <- integer(n_tasks)
-  chosen_dt <- dt[get(choice_col) == 1,
-                  .(.choicer_task_idx, .choicer_idx_in_group)]
-  choice_pos[chosen_dt$.choicer_task_idx] <- chosen_dt$.choicer_idx_in_group
+  chosen <- dt[[choice_col]] == 1
+  choice_pos[dt$.choicer_task_idx[chosen]] <- dt$.choicer_idx_in_group[chosen]
+  rm(chosen)
 
   ## Person-level indexing: Ti tasks per person, in sorted person order
   person_task <- unique(dt[, .(.choicer_person, .choicer_task_idx)])
@@ -362,11 +364,7 @@
   ## Alternatives summary (mirrors prepare_mnl_data) ---------------------------
   ## One inside-alternative aggregation; the outside branch only prepends its
   ## synthetic alt_int = 0 row.
-  alt_mapping <- dt[
-    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-    keyby = c(".choicer_alt_int", alt_col)
-  ]
-  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
+  alt_mapping <- .alt_counts(dt, alt_col, choice_col)
   if (include_outside_option) {
     outside_alt_mapping <- data.table::data.table(
       alt_int = 0L, N_OBS = n_tasks, N_CHOICES = sum(choice_pos == 0L)
