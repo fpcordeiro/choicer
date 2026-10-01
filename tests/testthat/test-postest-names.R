@@ -63,13 +63,15 @@ newdata_check <- function(fit_fun, ref, ref_data, price_var) {
       logsum = identical(logsum(fit, newdata = data), logsum(fit)),
       surplus = identical(consumer_surplus(fit, price, newdata = data),
                           consumer_surplus(fit, price)),
-      reference = identical(probs, ref_probs)
+      # A separate fit: equal to 1e-12, as a BLAS without reproducible
+      # reductions could move its last bits even on one thread.
+      reference = isTRUE(all.equal(probs, ref_probs, tolerance = 1e-12))
     )
   }
 }
 
-# On one thread every fit and prediction is reproducible bit for bit, so a
-# refit on renamed columns must match the reference exactly. On two, the
+# On one thread every fit and prediction is reproducible bit for bit, so the
+# newdata and stored-data paths of a fit must agree exactly. On two, the
 # kernels' reductions can differ in the last bits from run to run, which
 # moves MXL shares and is enough to stop an NL refit elsewhere.
 expect_newdata_immune <- function(fit_fun, data, args, renames, price_var) {
@@ -141,8 +143,10 @@ test_that("a covariate named pos that permutes 1..J keeps the alternative codes"
     run_mnlogit(dt, "id", "alt", "choice", c("x1", "pos"))
   )
   expect_identical(predict(fit, newdata = dt), predict(fit))
-  expect_identical(predict(fit, type = "shares", newdata = dt),
-                   predict(fit, type = "shares"))
+  # Shares are summed across the suite's two OpenMP threads, so repeated
+  # calls can differ in the last bits; a miscoded row moves them by far more.
+  expect_equal(predict(fit, type = "shares", newdata = dt),
+               predict(fit, type = "shares"), tolerance = 1e-12)
 })
 
 # A population of 60 choice situations over three named alternatives, ids
