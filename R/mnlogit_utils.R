@@ -66,6 +66,7 @@
 #' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
 #'   \code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -399,6 +400,14 @@ run_mnlogit <- function(
 #'     \item `alt_mapping`: Data.table mapping alternatives to summary statistics.
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
 #'   }
+#' @section Column names:
+#' No column the model uses (the id, alternative, choice, covariate, weight,
+#' cluster, nest or decision-maker column) may have a name starting with
+#' `.choicer_`, which choicer reserves for its working columns, and the
+#' alternative column may not be named `alt_int`, `N_OBS`, `N_CHOICES`,
+#' `TAKE_RATE` or `MKT_SHARE`, the names of the other columns of
+#' `alt_mapping`. Either is an error that names the column. Columns the model
+#' does not use may have any name.
 #' @examples
 #' library(data.table)
 #' set.seed(42)

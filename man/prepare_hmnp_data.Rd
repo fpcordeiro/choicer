@@ -70,6 +70,17 @@ so unbalanced choice sets are supported and the outside option is
 implicit (its latent utility is a stochastic \eqn{N(0, \sigma^2)} draw in
 the kernel, systematic utility 0).
 }
+\section{Column names}{
+
+No column the model uses (the id, alternative, choice, covariate, weight,
+cluster, nest or decision-maker column) may have a name starting with
+\code{.choicer_}, which choicer reserves for its working columns, and the
+alternative column may not be named \code{alt_int}, \code{N_OBS}, \code{N_CHOICES},
+\code{TAKE_RATE} or \code{MKT_SHARE}, the names of the other columns of
+\code{alt_mapping}. Either is an error that names the column. Columns the model
+does not use may have any name.
+}
+
 \examples{
 library(data.table)
 set.seed(42)

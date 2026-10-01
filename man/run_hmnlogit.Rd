@@ -138,6 +138,17 @@ disk instead of retaining it in memory) is on the roadmap but not built
 in this phase; users needing per-respondent draws at that scale should
 reduce \code{R}, reduce \code{chains}, or use \code{keep_beta_i = "means"}.
 }
+\section{Column names}{
+
+No column the model uses (the id, alternative, choice, covariate, weight,
+cluster, nest or decision-maker column) may have a name starting with
+\code{.choicer_}, which choicer reserves for its working columns, and the
+alternative column may not be named \code{alt_int}, \code{N_OBS}, \code{N_CHOICES},
+\code{TAKE_RATE} or \code{MKT_SHARE}, the names of the other columns of
+\code{alt_mapping}. Either is an error that names the column. Columns the model
+does not use may have any name.
+}
+
 \examples{
 \donttest{
 sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)
