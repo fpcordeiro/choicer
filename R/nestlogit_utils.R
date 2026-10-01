@@ -194,7 +194,8 @@ run_nestlogit <- function(
   n_params <- K_x + K_l + n_asc
 
   # Parameter names, checked for repeats before the optimizer runs
-  if (is.null(param_names)) {
+  names_supplied <- !is.null(param_names)
+  if (!names_supplied) {
     beta_names <- colnames(input_data$X)
     if (is.null(beta_names)) beta_names <- paste0("X_", seq_len(K_x))
     lambda_names <- paste0("Lambda_", seq_len(K_l))
@@ -206,7 +207,8 @@ run_nestlogit <- function(
     }
     param_names <- c(beta_names, lambda_names, asc_names)
   }
-  .check_param_names(list(param_names), c("Lambda_<k>", "ASC_<label>"))
+  .check_param_names(list(param_names), c("Lambda_<k>", "ASC_<label>"),
+                     supplied = names_supplied)
 
   # Initial parameter vector
   if (is.null(theta_init)) {

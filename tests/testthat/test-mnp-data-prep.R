@@ -181,18 +181,21 @@ test_that("covariates may not take a generated ASC name", {
   dt[, `:=`(x1 = rnorm(.N), ASC_b = rnorm(.N), ASC_c = rnorm(.N))]
   dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
 
+  # The message of run_mnlogit(), run_mxlogit() and run_nestlogit()
   expect_error(
     prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "ASC_b")),
-    "collide with the generated ASC names: ASC_b.", fixed = TRUE
+    paste0("Parameter names must be unique; repeated: 'ASC_b'. The ",
+           "coefficients take the names of the covariates and of the ",
+           "constants the model generates"), fixed = TRUE
   )
   expect_error(
     prepare_mnp_data(dt, "id", "alt", "choice", c("ASC_c", "x1", "ASC_b")),
-    "ASC names: ASC_c, ASC_b.", fixed = TRUE
+    "repeated: 'ASC_c', 'ASC_b'.", fixed = TRUE
   )
   expect_error(
     run_mnprobit(dt, "id", "alt", "choice", c("x1", "ASC_b"),
                  mcmc = list(R = 20, burn = 10)),
-    "collide with the generated ASC names"
+    "repeated: 'ASC_b'.", fixed = TRUE
   )
 
   # Only generated names clash: with base "b" there is no ASC_b column
@@ -220,7 +223,7 @@ test_that("ASC dummies built by hand need use_asc = FALSE", {
   # Used to drop the generated ASC_b silently and file the dummy under beta
   expect_error(
     prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "ASC_b", "ASC_c")),
-    "ASC names: ASC_b, ASC_c.", fixed = TRUE
+    "repeated: 'ASC_b', 'ASC_c'.", fixed = TRUE
   )
 
   # Differenced against the base, the dummies are the generated ASC block
