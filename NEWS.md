@@ -440,6 +440,32 @@ versions.
   ambiguities. Fits whose parameter names and `summary()` labels are all
   distinct are unchanged, `summary()` included.
 
+- Columns of class `integer64` (bit64), which `data.table::fread()` returns
+  for integers beyond 2^31 - 1 and several database drivers return for
+  `BIGINT`, passed the check that covariates are numeric but entered the
+  design matrices as their raw 64-bit patterns read as doubles, in every
+  model of released versions. Positive values became tiny numbers (1 read as
+  4.9e-324, 2^40 as 5.4e-312), so fits, standard errors and predictions were
+  silently wrong. Negative values above -2^52 became `NaN`, which stopped
+  the preparation with an unrelated error (`NA/NaN/Inf in foreign function
+  call`). When bit64 was not loaded, as for data read from an `.rds` file,
+  the check for missing values misread these columns too: it took negative
+  values for missing ones, dropping their choice situations with the
+  warning about missing values, and let a missing value into the design as
+  0. The design builders now read integer64 columns as their values, as
+  `as.double()` converts them: `prepare_mnl_data()`, `prepare_mxl_data()`,
+  `prepare_nl_data()`, `prepare_mnp_data()`, `prepare_hmnl_data()` and
+  `prepare_hmnp_data()` (including `alt_covariate_cols` and
+  `cf_residual_col`), and the `newdata` of `predict()`, `logsum()` and
+  `consumer_surplus()`. The conversion is exact below 2^53 in magnitude;
+  from 2^53 up, values are rounded to the nearest double, with a warning
+  naming the column. An integer64 column among those a model uses now loads
+  bit64 first, so its missing values are found and handled as in other
+  columns; if bit64 is not installed, such a column is an error. Weights
+  (`weights_col`, a `weights` vector, prediction `weights`) and integer64
+  `X` and `W` matrices in the list form of `newdata` had the same defect and
+  are converted the same way. bit64 is now a suggested package.
+
 The following affected post-estimation and the WESML helpers in released
 versions:
 

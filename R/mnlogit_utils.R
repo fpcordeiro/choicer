@@ -447,6 +447,7 @@ prepare_mnl_data <- function(
   dt <- .copy_cols(src, c(id_col, alt_col, choice_col, weights_col,
                           cluster_col))
   dt[, .choicer_row := seq_len(.N)]
+  .int64_cols_to_double(dt, weights_col)
 
   ## Remove outside-option rows when modelling it implicitly ------------------
   ## (row filters are computed outside dt[...], where a column named like a
@@ -580,6 +581,7 @@ prepare_mnl_data <- function(
   }
 
   if (is.null(weights)) weights <- rep(1, length(M))
+  weights <- .int64_to_double(weights, "`weights`")
 
   ## Weights must be finite and strictly positive. Zero/negative weights would
   ## silently invalidate weighted and WESML sandwich inference (w in the bread,

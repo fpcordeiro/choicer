@@ -973,6 +973,7 @@ prepare_mxl_data <- function(
   dt <- .copy_cols(src, c(id_col, alt_col, choice_col, weights_col,
                           cluster_col, person_col))
   dt[, .choicer_row := seq_len(.N)]
+  .int64_cols_to_double(dt, weights_col)
 
   ## Drop ids with missing observations ----------------------------------------
   has_na <- .rows_with_na(src, prep_src$scan)
@@ -1053,14 +1054,16 @@ prepare_mxl_data <- function(
   ## design matrix
   .check_design_size(nrow(dt), random_var_cols,
                      "The random-coefficient design matrix W")
-  X <- .gather_matrix(src, covariate_cols, dt$.choicer_row, "The design matrix X")
+  warn_once <- .int64_warn_once()  # a column can be in both X and W
+  X <- warn_once(.gather_matrix(src, covariate_cols, dt$.choicer_row,
+                                "The design matrix X"))
   X_res <- check_collinearity(X)
   X <- X_res$mat
   if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped # accumulate dropped vars if we had multiple checks
 
 
-  W <- .gather_matrix(src, random_var_cols, dt$.choicer_row,
-                      "The random-coefficient design matrix W")
+  W <- warn_once(.gather_matrix(src, random_var_cols, dt$.choicer_row,
+                                "The random-coefficient design matrix W"))
   W_res <- check_collinearity(W)
   W <- W_res$mat
   if (!is.null(W_res$dropped)) {
@@ -1146,6 +1149,7 @@ prepare_mxl_data <- function(
 
   # Weights default = 1
   if (is.null(weights)) weights <- rep(1, N)
+  weights <- .int64_to_double(weights, "`weights`")
 
   ## Weights must be finite and strictly positive. Zero/negative weights would
   ## silently invalidate weighted and WESML sandwich inference (w in the bread,

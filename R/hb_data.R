@@ -316,8 +316,9 @@
   ## Build objects -------------------------------------------------------------
   ## Structural design matrix: covariates only, cf residual (if any) last.
   ## NO ASC dummies — delta_j is indexed by alt_of_row, never carried in X.
-  X <- .gather_matrix(src, x_cols, dt$.choicer_row,   # total_rows x K_struct
-                      "The design matrix X")
+  warn_once <- .int64_warn_once()  # a column can be in both X and Z
+  X <- warn_once(.gather_matrix(src, x_cols, dt$.choicer_row,  # rows x K_struct
+                                "The design matrix X"))
   X_res <- check_collinearity(X)
   X <- X_res$mat
   dropped_vars <- c(dropped_task_const, X_res$dropped)
@@ -352,8 +353,8 @@
   N_persons <- length(person_ids)
 
   ## Alternative-level design Z (J x P) ----------------------------------------
-  z_res <- .resolve_alt_covariates(src, dt$.choicer_row, dt$.choicer_alt_int,
-                                   alt_covariate_cols, levels)
+  z_res <- warn_once(.resolve_alt_covariates(
+    src, dt$.choicer_row, dt$.choicer_alt_int, alt_covariate_cols, levels))
   Z <- z_res$Z
   P <- ncol(Z)
   dt[, .choicer_row := NULL]
@@ -475,7 +476,10 @@
     pairs <- data.table::setDT(list(alt = alt_int,
                                     value = .subset2(src, pos[k])[rows]))
     constant[k] <- all(.n_distinct_by(pairs, "value", "alt") == 1L)
-    z_first[[k]] <- .first_by(pairs, "value", "alt", seq_len(J))
+    # as.matrix() below would read integer64 values as raw bits
+    z_first[[k]] <- .int64_to_double(
+      .first_by(pairs, "value", "alt", seq_len(J)),
+      paste0("Column '", alt_covariate_cols[k], "'"))
   }
   bad <- alt_covariate_cols[!constant]
   if (length(bad) > 0) {

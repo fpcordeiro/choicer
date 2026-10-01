@@ -1556,7 +1556,9 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, n
 #' `X[i, k] = cols[[k]][rows[i]]`, written column by column straight from the
 #' caller's columns (read only), so the preps never copy the covariates into
 #' their working table. Integer columns are converted exactly (NA to
-#' NA_real_), as as.matrix() does after coercion to double; classed numerics
+#' NA_real_), as as.matrix() does after coercion to double. integer64
+#' (bit64) columns are read as their values, as bit64's as.double() reads
+#' them, where as.matrix() would read the raw bits; other classed numerics
 #' are read from their raw storage, as as.matrix()'s unlist() reads them.
 #'
 #' With `base`, the same pass writes the differenced design of the
@@ -1569,6 +1571,9 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, n
 #' @param base `NULL`, or an integer vector of 1-based indices, one per
 #'   element of `rows`, of the values to subtract.
 #' @returns A `length(rows)` x `length(cols)` double matrix, no dimnames.
+#'   If integer64 columns hold values of magnitude 2^53 or more in the rows
+#'   read, a logical attribute `int64_big`, one element per column, marks
+#'   them.
 #' @noRd
 prep_gather_design <- function(cols, rows, base = NULL) {
     .Call(`_choicer_prep_gather_design`, cols, rows, base)

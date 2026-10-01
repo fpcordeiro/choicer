@@ -110,6 +110,9 @@
     stop("`newdata` is missing columns used in estimation: ",
          paste(missing_cols, collapse = ", "))
   }
+  .load_bit64_for(dt, match(needed, names(dt)))
+  .int64_cols_to_double(dt, c(spec$covariate_cols, spec$alt_covariate_cols,
+                              spec$cf_residual_col))
   x_cols <- colnames(object$draws$b)      # estimation column order
   if (!all(x_cols %in% names(dt))) {
     stop("`newdata` is missing structural covariate columns: ",

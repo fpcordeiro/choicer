@@ -15,6 +15,7 @@
 #' @noRd
 .validate_pred_weights <- function(weights, N) {
   if (is.null(weights)) return(rep(1, N))
+  weights <- .int64_to_double(weights, "'weights'")
   if (!is.numeric(weights) || length(weights) != N) {
     stop("'weights' must be a numeric vector with one entry per choice ",
          "situation (expected length ", N, ", got ", length(weights), ").")
@@ -103,6 +104,8 @@ prepare_newdata <- function(object, newdata, weights = NULL) {
   # Subset to used columns; this always copies, so the user's object is
   # never mutated by the reordering below.
   dt <- dt[, needed, with = FALSE]
+  .load_bit64_for(dt)
+  .int64_cols_to_double(dt, c(x_cols, w_cols))
 
   # Check the alternative column for NAs before the outside-option filter
   # below, which would otherwise silently drop NA rows.
@@ -230,7 +233,7 @@ validate_newdata_list <- function(object, newdata, weights = NULL) {
   }
 
   x_cols <- names(object$coefficients)[object$param_map$beta]
-  X <- newdata$X
+  X <- .int64_to_double(newdata$X, "newdata$X")
   if (!is.matrix(X) || !is.numeric(X)) {
     stop("newdata$X must be a numeric matrix.")
   }
@@ -277,7 +280,7 @@ validate_newdata_list <- function(object, newdata, weights = NULL) {
   W <- NULL
   if (identical(object$model, "mxl")) {
     w_cols <- names(object$sW)
-    W <- newdata$W
+    W <- .int64_to_double(newdata$W, "newdata$W")
     if (is.null(W)) {
       stop("newdata list must include 'W' (random-coefficient design matrix) ",
            "for mixed logit prediction.")
