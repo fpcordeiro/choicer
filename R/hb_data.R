@@ -55,6 +55,27 @@
   bad
 }
 
+#' Drop every choice situation that has a flagged row
+#'
+#' An anti-join on keys with fixed names: data.table parses the strings of
+#' `on =` as join conditions, so it cannot join on a task column named, say,
+#' "t>0" or " task". NA keys match each other, as grouping by task does.
+#'
+#' @param dt The preparation's working table.
+#' @param flagged Logical vector, one element per row of `dt`.
+#' @param task_by Names of the person and task columns of `dt`.
+#' @returns List with `dt`, the rows of the other situations in their
+#'   order, and `n_tasks`, the number of situations dropped.
+#' @noRd
+.drop_flagged_tasks <- function(dt, flagged, task_by) {
+  keys <- data.table::setDT(list(person = dt[[task_by[1L]]],
+                                 task = dt[[task_by[2L]]]))
+  bad <- unique(keys[flagged])
+  keep <- rep(TRUE, nrow(dt))
+  keep[keys[bad, on = c("person", "task"), which = TRUE]] <- FALSE
+  list(dt = dt[keep], n_tasks = nrow(bad))
+}
+
 #' Shared panel preparation for the hierarchical Bayes preps
 #'
 #' Internal workhorse behind [prepare_hmnl_data()] and [prepare_hmnp_data()].
@@ -110,6 +131,7 @@
   if (!all(needed %in% names(src)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(src)), collapse = ", "))
+  .check_col_names(needed, alt_col)
   dt <- .copy_cols(src, c(person_col, id_col, alt_col, choice_col))
   dt[, .choicer_row := seq_len(.N)]
 
@@ -130,7 +152,10 @@
   ## Remove outside-option rows when modelling it implicitly ------------------
   ## (mirrors prepare_mnl_data, R/mnlogit_utils.R:432)
   if (include_outside_option && !is.null(outside_opt_label)) {
-    dt <- dt[get(alt_col) != outside_opt_label]
+    # computed outside dt[...], where a column named outside_opt_label would
+    # mask the argument
+    keep <- dt[[alt_col]] != outside_opt_label
+    dt <- dt[keep]
     if (nrow(dt) == 0) {
       stop("No inside alternatives remain after removing outside option rows.")
     }
@@ -141,20 +166,20 @@
   ## Tasks are keyed by (person, id) so task ids only need to be unique
   ## within a respondent.
   if (is.null(person_col)) {
-    dt[, HB_PERSON := get(id_col)]
+    dt[, .choicer_person := get(id_col)]
   } else {
-    dt[, HB_PERSON := get(person_col)]
+    dt[, .choicer_person := get(person_col)]
   }
-  task_by <- c("HB_PERSON", id_col)
+  task_by <- c(".choicer_person", id_col)
 
   ## Drop tasks with missing observations --------------------------------------
   ## A flagged row takes its whole task with it; the anti-join matches NA
   ## keys as grouping by task does.
   has_na <- .rows_with_na(src, prep_src$scan)[dt$.choicer_row]
   if (any(has_na)) {
-    bad_tasks <- unique(dt[has_na, ..task_by])
-    dt <- dt[!bad_tasks, on = task_by]
-    warning("Removed ", nrow(bad_tasks),
+    dropped <- .drop_flagged_tasks(dt, has_na, task_by)
+    dt <- dropped$dt
+    warning("Removed ", dropped$n_tasks,
             " choice situations containing missing values.")
   }
   rm(has_na)
@@ -176,9 +201,9 @@
   ## stopifnot(all(is.finite(X))) with an unactionable assertion.
   has_bad <- .rows_not_finite(src, num_pos)[dt$.choicer_row]
   if (any(has_bad)) {
-    bad_tasks <- unique(dt[has_bad, ..task_by])
-    dt <- dt[!bad_tasks, on = task_by]
-    warning("Removed ", nrow(bad_tasks),
+    dropped <- .drop_flagged_tasks(dt, has_bad, task_by)
+    dt <- dropped$dt
+    warning("Removed ", dropped$n_tasks,
             " choice situations containing non-finite covariate values.")
   }
   rm(has_bad)
@@ -193,12 +218,13 @@
   if (any(bad_choice))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
-  by_task <- dt[, .(chosen = sum(get(choice_col))), by = task_by]
-  if (include_outside_option == FALSE && any(by_task$chosen != 1)) {
+  n_chosen <- dt[, .(.choicer_n = sum(get(choice_col))),
+                 by = task_by][[".choicer_n"]]
+  if (include_outside_option == FALSE && any(n_chosen != 1)) {
     stop("Each ", id_col, " must have exactly one chosen alternative (one '1' in ",
          choice_col, ").")
   }
-  if (include_outside_option && any(by_task$chosen > 1)) {
+  if (include_outside_option && any(n_chosen > 1)) {
     stop("Each ", id_col, " must have at most one chosen alternative (one '1' in ",
          choice_col, "). A choice situation with no explicit choice is ",
          "assumed to be outside option.")
@@ -206,7 +232,7 @@
 
   ## Create integer alternative codes (inside alternatives, 1..J) --------------
   levels <- sort(unique(dt[[alt_col]]))
-  dt[, alt_int := as.integer(factor(get(alt_col), levels = levels))]
+  dt <- .code_alternatives(dt, alt_col, levels)
   J <- length(levels)
 
   ## An alternative may appear at most once per choice situation: the kernels'
@@ -214,8 +240,9 @@
   ## a single row, and a duplicate would silently corrupt them. One pass over
   ## the (person, task, alternative) keys; the situations are counted only
   ## when a key repeats.
-  keys <- data.table::setDT(list(person = dt$HB_PERSON, task = dt[[id_col]],
-                                 alt = dt$alt_int))
+  keys <- data.table::setDT(list(person = dt$.choicer_person,
+                                 task = dt[[id_col]],
+                                 alt = dt$.choicer_alt_int))
   if (anyDuplicated(keys)) {
     n_dup <- nrow(unique(keys[duplicated(keys), c("person", "task")]))
     stop("Each alternative may appear at most once per choice situation; ",
@@ -229,17 +256,17 @@
   ##   within task              : ascending alternative code
   ## This sort is the single source of truth for every downstream index
   ## (alt_of_row, choice_pos, the kernel CSR offsets).
-  data.table::setorderv(dt, c("HB_PERSON", id_col, "alt_int"))
+  data.table::setorderv(dt, c(".choicer_person", id_col, ".choicer_alt_int"))
 
-  dt[, idx_in_group := seq_len(.N), by = task_by]
-  dt[, task_idx := .GRP, by = task_by]      # 1..n_tasks in sorted order
+  dt[, .choicer_idx_in_group := seq_len(.N), by = task_by]
+  dt[, .choicer_task_idx := .GRP, by = task_by]  # 1..n_tasks in sorted order
 
   # Retain sorted task identities so welfare counterfactuals can match the
   # baseline and policy states by identity rather than silently by position.
   task_identity <- unique(dt[, ..task_by])
   task_keys <- .hb_task_keys(
     task_identity[[id_col]],
-    if (!is.null(person_col)) task_identity[["HB_PERSON"]]
+    if (!is.null(person_col)) task_identity[[".choicer_person"]]
   )
 
   ## Task-constant covariates ---------------------------------------------------
@@ -250,9 +277,10 @@
   ## is genuinely identified — kept, with an informational message.
   ## A column at a time from the source: a covariate is constant within every
   ## task when each row equals its task's first row (the values are finite
-  ## here). Rows are sorted by task and task_idx numbers the tasks in that
-  ## order, so first_src is the source row of each row's task's first row.
-  first_src <- dt$.choicer_row[dt$idx_in_group == 1L][dt$task_idx]
+  ## here). Rows are sorted by task and .choicer_task_idx numbers the tasks in
+  ## that order, so first_src is the source row of each row's task's first row.
+  first_src <-
+    dt$.choicer_row[dt$.choicer_idx_in_group == 1L][dt$.choicer_task_idx]
   task_const <- vapply(x_cols, function(cc) {
     v <- .subset2(src, match(cc, names(src)))
     all(v[dt$.choicer_row] == v[first_src])
@@ -298,7 +326,7 @@
   ## Alternative index per row (1..J); doubles as alt_idx for the pooled-MLE
   ## init, which reuses the identical X/M/choice_pos through the existing
   ## frequentist kernels.
-  alt_of_row <- as.integer(dt$alt_int)
+  alt_of_row <- as.integer(dt$.choicer_alt_int)
 
   ## M[t] - # inside alternatives per task (with the implicit outside the
   ## effective choice set is M + 1). Read by position: a task column named N
@@ -313,17 +341,18 @@
   ## choice_pos[t] - 1-based index of the chosen row *within* its task;
   ## 0 = outside option chosen (only with include_outside_option = TRUE)
   choice_pos <- integer(n_tasks)
-  chosen_dt <- dt[get(choice_col) == 1, .(task_idx, pos = idx_in_group)]
-  choice_pos[chosen_dt$task_idx] <- chosen_dt$pos
+  chosen_dt <- dt[get(choice_col) == 1,
+                  .(.choicer_task_idx, .choicer_idx_in_group)]
+  choice_pos[chosen_dt$.choicer_task_idx] <- chosen_dt$.choicer_idx_in_group
 
   ## Person-level indexing: Ti tasks per person, in sorted person order
-  person_task <- unique(dt[, .(HB_PERSON, task_idx)])
-  Ti <- person_task[, .N, by = HB_PERSON][["N"]]
-  person_ids <- unique(person_task$HB_PERSON)
+  person_task <- unique(dt[, .(.choicer_person, .choicer_task_idx)])
+  Ti <- person_task[, .N, by = .choicer_person][["N"]]
+  person_ids <- unique(person_task$.choicer_person)
   N_persons <- length(person_ids)
 
   ## Alternative-level design Z (J x P) ----------------------------------------
-  z_res <- .resolve_alt_covariates(src, dt$.choicer_row, dt$alt_int,
+  z_res <- .resolve_alt_covariates(src, dt$.choicer_row, dt$.choicer_alt_int,
                                    alt_covariate_cols, levels)
   Z <- z_res$Z
   P <- ncol(Z)
@@ -334,8 +363,9 @@
   ## synthetic alt_int = 0 row.
   alt_mapping <- dt[
     , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-    keyby = c("alt_int", alt_col)
+    keyby = c(".choicer_alt_int", alt_col)
   ]
+  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
   if (include_outside_option) {
     outside_alt_mapping <- data.table::data.table(
       alt_int = 0L, N_OBS = n_tasks, N_CHOICES = sum(choice_pos == 0L)

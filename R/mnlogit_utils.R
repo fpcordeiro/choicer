@@ -194,7 +194,7 @@ run_mnlogit <- function(
   # Parameter names and index map (built early so the scaling layer can address
   # blocks and so theta_hat/vcov/se can be named downstream).
   asc_names <- if (use_asc) {
-    paste0("ASC_", input_list$alt_mapping[2:J][[alt_col]])
+    paste0("ASC_", input_list$alt_mapping[[alt_col]][2:J])
   } else {
     character(0)
   }
@@ -440,13 +440,17 @@ prepare_mnl_data <- function(
   if (!all(needed %in% names(src)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(src)), collapse = ", "))
+  .check_col_names(needed, alt_col)
   dt <- .copy_cols(src, c(id_col, alt_col, choice_col, weights_col,
                           cluster_col))
   dt[, .choicer_row := seq_len(.N)]
 
   ## Remove outside-option rows when modelling it implicitly ------------------
+  ## (row filters are computed outside dt[...], where a column named like a
+  ## local variable would mask it)
   if (include_outside_option && !is.null(outside_opt_label)) {
-    dt <- dt[get(alt_col) != outside_opt_label]
+    keep <- dt[[alt_col]] != outside_opt_label
+    dt <- dt[keep]
     if (nrow(dt) == 0) {
       stop("No inside alternatives remain after removing outside option rows.")
     }
@@ -456,7 +460,8 @@ prepare_mnl_data <- function(
   has_na <- .rows_with_na(src, prep_src$scan)
   ids_to_drop <- unique(dt[[id_col]][has_na[dt$.choicer_row]])
   if (length(ids_to_drop) > 0) {
-    dt <- dt[!(get(id_col) %in% ids_to_drop)]
+    keep <- !(dt[[id_col]] %in% ids_to_drop)
+    dt <- dt[keep]
     warning("Removed ", length(ids_to_drop),
             " choice situations containing missing values.")
   }
@@ -476,12 +481,13 @@ prepare_mnl_data <- function(
   if (any(bad_choice))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
-  by_id <- dt[, .(chosen = sum(get(choice_col))), by = id_col]
-  if (include_outside_option == FALSE && any(by_id$chosen != 1)) {
+  n_chosen <- dt[, .(.choicer_n = sum(get(choice_col))),
+                 by = id_col][[".choicer_n"]]
+  if (include_outside_option == FALSE && any(n_chosen != 1)) {
     stop("Each ", id_col, " must have exactly one chosen alternative (one '1' in ",
          choice_col, ").")
   }
-  if (include_outside_option && any(by_id$chosen > 1)) {
+  if (include_outside_option && any(n_chosen > 1)) {
     stop("Each ", id_col, " must have at most one chosen alternative (one '1' in ",
          choice_col, "). An id with no explicit choice is assumed to be outside option.")
   }
@@ -494,15 +500,15 @@ prepare_mnl_data <- function(
     levels <- sort(unique(dt[[alt_col]]))
   }
 
-  dt[, alt_int := as.integer(factor(get(alt_col), levels = levels))]
+  dt <- .code_alternatives(dt, alt_col, levels)
 
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id
   ##   between ids   : ascending id
-  data.table::setorderv(dt, c(id_col, "alt_int"))
+  data.table::setorderv(dt, c(id_col, ".choicer_alt_int"))
 
   ## index of each row within its choice set
-  dt[, idx_in_group := seq_len(.N), by = id_col]
+  dt[, .choicer_idx_in_group := seq_len(.N), by = id_col]
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
@@ -522,7 +528,7 @@ prepare_mnl_data <- function(
   if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped
 
   ## alternative ids used for delta coefficients
-  alt_idx <- as.integer(dt$alt_int)                             # length == sum(M)
+  alt_idx <- as.integer(dt$.choicer_alt_int)                    # length == sum(M)
 
   ## M[i] - # alternatives per choice situation (read by position: an id
   ## column named N would shadow the count)
@@ -560,14 +566,14 @@ prepare_mnl_data <- function(
   if (include_outside_option) {
     # start with all-zero (everyone assumed to pick the outside good)
     choice_idx <- integer(N)
-    chosen_dt <- dt[get(choice_col) == 1, .(pos = idx_in_group), by = id_col]
+    chosen_dt <- dt[get(choice_col) == 1, .(.choicer_idx_in_group), by = id_col]
 
     # match chosen ids back to the master index vector
     data.table::setkeyv(chosen_dt, id_col)
-    choice_idx[match(chosen_dt[[id_col]], ids)] <- chosen_dt$pos
+    choice_idx[match(chosen_dt[[id_col]], ids)] <- chosen_dt$.choicer_idx_in_group
   } else {
     # exactly one explicit choice per id
-    choice_idx <- dt[get(choice_col) == 1, idx_in_group]
+    choice_idx <- dt[get(choice_col) == 1, .choicer_idx_in_group]
   }
 
   if (is.null(weights)) weights <- rep(1, length(M))
@@ -586,22 +592,19 @@ prepare_mnl_data <- function(
   }
 
   ## Alternatives summary ------------------------------------------------------
-
+  ## One inside-alternative aggregation; the outside branch only prepends its
+  ## synthetic alt_int = 0 row.
+  alt_mapping <- dt[
+    , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
+    keyby = c(".choicer_alt_int", alt_col)
+  ]
+  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
   if (include_outside_option) {
-    inside_alt_mapping <- dt[
-      , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-      keyby = c("alt_int", alt_col)
-    ]
     outside_alt_mapping <- data.table::data.table(alt_int=0L, N_OBS = N, N_CHOICES = sum(choice_idx == 0L))
     outside_alt_mapping[[alt_col]] <- outside_opt_label
-    alt_mapping <- list(outside_alt_mapping, inside_alt_mapping) |>
+    alt_mapping <- list(outside_alt_mapping, alt_mapping) |>
       data.table::rbindlist(use.names = TRUE, fill = TRUE)
     data.table::setcolorder(alt_mapping, c("alt_int", alt_col, "N_OBS", "N_CHOICES"))
-  } else {
-    alt_mapping <- dt[
-      , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-      keyby = c("alt_int", alt_col)
-    ]
   }
 
   alt_mapping[, `:=`(

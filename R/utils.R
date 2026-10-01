@@ -252,6 +252,60 @@ label_matrix <- function(mat, alt_mapping) {
   mat
 }
 
+# Columns of the `alt_mapping` summary that the prepare_*_data() functions
+# return beside the user's alternative column.
+.ALT_MAPPING_COLS <- c("alt_int", "N_OBS", "N_CHOICES", "TAKE_RATE", "MKT_SHARE")
+
+#' Reject user column names that collide with choicer's own
+#'
+#' The prepare_*_data() functions copy the user's index columns (ids,
+#' alternatives, choices, weights, clusters, decision makers) into a private
+#' working table. Every working column they add to it, and every result they
+#' read back from a table grouped by a user column, is named with the prefix
+#' ".choicer_" or read by position, so user columns may not carry that
+#' prefix. The alternative column reappears in the returned `alt_mapping`
+#' beside fixed columns, so it may not take one of their names.
+#'
+#' @param needed Names of the user columns the preparation uses.
+#' @param alt_col Name of the alternative column.
+#' @returns `NULL`, invisibly; errors on a collision.
+#' @noRd
+.check_col_names <- function(needed, alt_col) {
+  internal <- unique(needed[startsWith(needed, ".choicer_")])
+  if (length(internal) > 0) {
+    stop("Column names beginning with '.choicer_' are reserved for ",
+         "choicer's working columns; rename ",
+         paste0("'", internal, "'", collapse = ", "), ".", call. = FALSE)
+  }
+  if (alt_col %in% .ALT_MAPPING_COLS) {
+    stop("The alternative column cannot be named '", alt_col, "': the ",
+         "returned `alt_mapping` reserves ",
+         paste0("'", .ALT_MAPPING_COLS, "'", collapse = ", "),
+         " for its own columns. Rename the alternative column.",
+         call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Code the alternatives 1..J in a preparation's working table
+#'
+#' Adds `.choicer_alt_int`, the position of each row's alternative in
+#' `levels`. The codes are computed outside `dt[...]`, where a user column
+#' named `levels` would mask the argument, and enter it under a reserved
+#' name, which no user column can take. `:=` grows a table that has no spare
+#' column slot (`options(datatable.alloccol = 0)`) by reallocating it, so the
+#' caller must keep the returned table.
+#'
+#' @param dt The preparation's working data.table.
+#' @param alt_col Name of the alternative column.
+#' @param levels Alternative labels in code order.
+#' @returns `dt` with the column added, invisibly.
+#' @noRd
+.code_alternatives <- function(dt, alt_col, levels) {
+  .choicer_codes <- as.integer(factor(dt[[alt_col]], levels = levels))
+  dt[, .choicer_alt_int := .choicer_codes]
+}
+
 #' Collapse a row-level column to one value per choice situation
 #'
 #' Used by the prepare_*_data() functions for columns that must be constant

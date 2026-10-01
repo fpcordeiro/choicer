@@ -236,7 +236,7 @@ run_nestlogit <- function(
     lambda_names <- paste0("Lambda_", seq_len(K_l))
     alt_col <- names(input_data$alt_mapping)[2]
     asc_names <- if (use_asc) {
-      paste0("ASC_", input_data$alt_mapping[2:J][[alt_col]])
+      paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
     } else {
       character(0)
     }

@@ -224,7 +224,7 @@ run_mnprobit <- function(
       k <- k + 1L
     }
   }
-  w_names <- paste0("w_", input_list$alt_mapping[2:input_list$J][[alt_col]])
+  w_names <- paste0("w_", input_list$alt_mapping[[alt_col]][2:input_list$J])
   dimnames(Sigma_mat) <- list(w_names, w_names)
 
   # --- Build S3 object -----------------------------------------------------------
@@ -328,6 +328,7 @@ prepare_mnp_data <- function(
   if (!all(needed %in% names(src)))
     stop("Missing columns: ",
          paste(setdiff(needed, names(src)), collapse = ", "))
+  .check_col_names(needed, alt_col)
   dt <- .copy_cols(src, c(id_col, alt_col, choice_col))
   dt[, .choicer_row := seq_len(.N)]
 
@@ -337,7 +338,9 @@ prepare_mnp_data <- function(
   ids_to_drop <- unique(dt[has_na, get(id_col)])
   rm(has_na)
   if (length(ids_to_drop) > 0) {
-    dt <- dt[!(get(id_col) %in% ids_to_drop)]
+    # computed outside dt[...], where a column named ids_to_drop would mask it
+    keep <- !(dt[[id_col]] %in% ids_to_drop)
+    dt <- dt[keep]
     warning("Removed ", length(ids_to_drop),
             " choice situations containing missing values.")
   }
@@ -357,8 +360,9 @@ prepare_mnp_data <- function(
   if (any(bad_choice))
     stop("`", choice_col, "` must contain only 0 and 1.")
 
-  by_id <- dt[, .(chosen = sum(get(choice_col))), by = id_col]
-  if (any(by_id$chosen != 1)) {
+  n_chosen <- dt[, .(.choicer_n = sum(get(choice_col))),
+                 by = id_col][[".choicer_n"]]
+  if (any(n_chosen != 1)) {
     stop("Each ", id_col, " must have exactly one chosen alternative (one '1' in ",
          choice_col, ").")
   }
@@ -385,12 +389,12 @@ prepare_mnp_data <- function(
     levels <- sort(alts)
   }
 
-  dt[, alt_int := as.integer(factor(get(alt_col), levels = levels))]
+  dt <- .code_alternatives(dt, alt_col, levels)
 
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id (base first)
   ##   between ids   : ascending id
-  data.table::setorderv(dt, c(id_col, "alt_int"))
+  data.table::setorderv(dt, c(id_col, ".choicer_alt_int"))
 
   N <- as.integer(nrow(dt) / J)
   p <- J - 1L
@@ -402,8 +406,8 @@ prepare_mnp_data <- function(
   ## Differenced design matrix: row (i, j) is X_ij - X_i,base, gathered in
   ## one pass from the source rows of the non-base alternatives and,
   ## repeated J - 1 times, of the base alternative (sorted, each id holds
-  ## alt_int 1..J in order)
-  is_base <- dt$alt_int == 1L
+  ## alternative codes 1..J in order)
+  is_base <- dt$.choicer_alt_int == 1L
   X_diff <- .gather_matrix(src, covariate_cols, dt$.choicer_row[!is_base],
                            "The design matrix X",
                            base = rep(dt$.choicer_row[is_base], each = p))
@@ -413,8 +417,9 @@ prepare_mnp_data <- function(
   ## Alternatives summary (base alternative is alt_int = 1)
   alt_mapping <- dt[
     , .(N_OBS = .N, N_CHOICES = sum(get(choice_col))),
-    keyby = c("alt_int", alt_col)
+    keyby = c(".choicer_alt_int", alt_col)
   ]
+  data.table::setnames(alt_mapping, ".choicer_alt_int", "alt_int")
   alt_mapping[, `:=`(
     TAKE_RATE = N_CHOICES / N_OBS,
     MKT_SHARE = N_CHOICES / sum(N_CHOICES)
@@ -424,7 +429,7 @@ prepare_mnp_data <- function(
   ## per non-base alternative
   if (use_asc) {
     X_asc <- diag(1, p)[rep(seq_len(p), N), , drop = FALSE]
-    colnames(X_asc) <- paste0("ASC_", alt_mapping[2:J][[alt_col]])
+    colnames(X_asc) <- paste0("ASC_", alt_mapping[[alt_col]][2:J])
     X <- cbind(X_diff, X_asc)
     rm(X_asc)
   } else {
@@ -449,7 +454,7 @@ prepare_mnp_data <- function(
   }
 
   ## y: 0 = base alternative, j in 1..p for the j-th non-base alternative
-  y <- as.integer(dt[get(choice_col) == 1, alt_int] - 1L)
+  y <- as.integer(dt[get(choice_col) == 1, .choicer_alt_int] - 1L)
 
   ## Final validity checks -----------------------------------------------------
   stopifnot(
