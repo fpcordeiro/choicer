@@ -24,6 +24,7 @@
 #' @returns A list of class `c("choicer_data_hmnp", "list")` with the same
 #'   components as [prepare_hmnl_data()] (minus `rc_dist`).
 #' @seealso [prepare_hmnl_data()] for the component-by-component description.
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -106,6 +107,7 @@ prepare_hmnp_data <- function(
 #'   reduce `R`, reduce `chains`, or use `keep_beta_i = "means"`.
 #' @seealso [prepare_hmnp_data()], [simulate_hmnp_data()], [run_hmnlogit()],
 #'   [ess()], [mcse()], [traceplot()]
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnp_data(N = 100, T = 3, J = 4, seed = 42)

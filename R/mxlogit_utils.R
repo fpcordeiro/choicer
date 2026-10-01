@@ -106,7 +106,9 @@
 #' @param covariate_cols Vector of column names for fixed covariates. None
 #'   may take a name the model gives its parameters, or prints for them in
 #'   \code{summary()}: \code{ASC_<label>}, \code{L_<i><j>} and
-#'   \code{Sigma_<i><j>}, or \code{Mu_<variable>} with \code{rc_mean = TRUE}.
+#'   \code{Sigma_<i><j>}, and with \code{rc_mean = TRUE}
+#'   \code{Mu_<variable>} and, for a log-normal coefficient,
+#'   \code{exp(Mu_<variable>)}.
 #' @param random_var_cols Vector of column names for random coefficients.
 #' @param input_data List output from \code{\link{prepare_mxl_data}} (advanced
 #'   workflow). Mutually exclusive with \code{data}.
@@ -288,6 +290,7 @@
 #'   \emph{Review of Economics and Statistics} 80(4), 647-657.
 #' @seealso \code{\link{conditional_tastes}}, \code{\link{run_hmnlogit}} (the
 #'   hierarchical Bayes counterpart)
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -912,6 +915,7 @@ run_mxlogit <- function(
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
 #'     \item `data_spec`: List with column-name metadata (incl. `person_col`).
 #'   }
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' library(data.table)
 #' set.seed(42)

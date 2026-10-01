@@ -67,6 +67,7 @@
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
 #'   \code{nobs()}.
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -399,6 +400,7 @@ run_nestlogit <- function(
 #'       (in \code{alt_mapping} row order) to its nest.
 #'     \item \code{data_spec}: List with column name metadata including \code{nest_col}.
 #'   }
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' library(data.table)
 #' set.seed(42)

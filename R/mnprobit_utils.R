@@ -82,6 +82,7 @@
 #'
 #' McCulloch, R., & Rossi, P. E. (1994). An exact likelihood analysis of the
 #' multinomial probit model. \emph{Journal of Econometrics}, 64(1-2), 207-240.
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -299,6 +300,7 @@ run_mnprobit <- function(
 #'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
 #'     \item `data_spec`: List with column name metadata.
 #'   }
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' library(data.table)
 #' set.seed(42)

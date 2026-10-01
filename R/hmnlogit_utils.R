@@ -84,6 +84,7 @@
 #'       `outside_opt_label`, `cf_residual_col`, `alt_covariate_cols`).
 #'   }
 #' @seealso [prepare_hmnp_data()] for the hierarchical probit counterpart.
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -230,6 +231,7 @@ prepare_hmnl_data <- function(
 #'   reduce `R`, reduce `chains`, or use `keep_beta_i = "means"`.
 #' @seealso [prepare_hmnl_data()], [simulate_hmnl_data()],
 #'   [recovery_table()], [rhat()], [ess()], [mcse()], [traceplot()]
+#' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)

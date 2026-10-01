@@ -108,6 +108,17 @@ must contain the same \eqn{J} alternatives. To model an outside option,
 include it as explicit rows with zero covariates and set \code{base_alt}
 to its label.
 }
+\section{Column names}{
+
+No column the model uses (the id, alternative, choice, covariate, weight,
+cluster, nest or decision-maker column) may have a name starting with
+\code{.choicer_}, which choicer reserves for its working columns, and the
+alternative column may not be named \code{alt_int}, \code{N_OBS}, \code{N_CHOICES},
+\code{TAKE_RATE} or \code{MKT_SHARE}, the names of the other columns of
+\code{alt_mapping}. Either is an error that names the column. Columns the model
+does not use may have any name.
+}
+
 \examples{
 \donttest{
 library(data.table)

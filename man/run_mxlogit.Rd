@@ -51,7 +51,9 @@ Mutually exclusive with \code{input_data}.}
 \item{covariate_cols}{Vector of column names for fixed covariates. None
 may take a name the model gives its parameters, or prints for them in
 \code{summary()}: \code{ASC_<label>}, \code{L_<i><j>} and
-\code{Sigma_<i><j>}, or \code{Mu_<variable>} with \code{rc_mean = TRUE}.}
+\code{Sigma_<i><j>}, and with \code{rc_mean = TRUE}
+\code{Mu_<variable>} and, for a log-normal coefficient,
+\code{exp(Mu_<variable>)}.}
 
 \item{random_var_cols}{Vector of column names for random coefficients.}
 
@@ -291,6 +293,17 @@ standard errors must be clustered by decision maker (\code{cluster_col}),
 and its log-likelihood, AIC and BIC are not comparable with those of the
 panel fit.
 }
+\section{Column names}{
+
+No column the model uses (the id, alternative, choice, covariate, weight,
+cluster, nest or decision-maker column) may have a name starting with
+\code{.choicer_}, which choicer reserves for its working columns, and the
+alternative column may not be named \code{alt_int}, \code{N_OBS}, \code{N_CHOICES},
+\code{TAKE_RATE} or \code{MKT_SHARE}, the names of the other columns of
+\code{alt_mapping}. Either is an error that names the column. Columns the model
+does not use may have any name.
+}
+
 \examples{
 \donttest{
 library(data.table)
