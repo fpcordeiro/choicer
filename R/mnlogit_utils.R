@@ -17,6 +17,8 @@
 #' @param alt_col Name of the column identifying alternatives.
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen).
 #' @param covariate_cols Vector of names of columns to be used as covariates.
+#'   With \code{use_asc = TRUE}, none may be named like a constant,
+#'   \code{ASC_<label>}.
 #' @param input_data List output from \code{\link{prepare_mnl_data}} (advanced
 #'   workflow). Mutually exclusive with \code{data}.
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"}, or
@@ -199,6 +201,7 @@ run_mnlogit <- function(
     character(0)
   }
   param_names <- c(colnames(input_list$X), asc_names)
+  .check_param_names(list(param_names), "ASC_<label>")
   param_map <- list(beta = seq_len(K_x))
   if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
 

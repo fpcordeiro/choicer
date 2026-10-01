@@ -48,7 +48,10 @@ Mutually exclusive with \code{input_data}.}
 
 \item{choice_col}{Name of the column indicating chosen alternative (1/0).}
 
-\item{covariate_cols}{Vector of column names for fixed covariates.}
+\item{covariate_cols}{Vector of column names for fixed covariates. None
+may take a name the model gives its parameters, or prints for them in
+\code{summary()}: \code{ASC_<label>}, \code{L_<i><j>} and
+\code{Sigma_<i><j>}, or \code{Mu_<variable>} with \code{rc_mean = TRUE}.}
 
 \item{random_var_cols}{Vector of column names for random coefficients.}
 

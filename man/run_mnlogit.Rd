@@ -35,7 +35,9 @@ Mutually exclusive with \code{input_data}.}
 
 \item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen).}
 
-\item{covariate_cols}{Vector of names of columns to be used as covariates.}
+\item{covariate_cols}{Vector of names of columns to be used as covariates.
+With \code{use_asc = TRUE}, none may be named like a constant,
+\code{ASC_<label>}.}
 
 \item{input_data}{List output from \code{\link{prepare_mnl_data}} (advanced
 workflow). Mutually exclusive with \code{data}.}

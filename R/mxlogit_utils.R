@@ -33,6 +33,36 @@
   unname(out)
 }
 
+# Labels of the random-coefficient covariance block, in the order of its
+# Cholesky parameters: <prefix>_<i><j> over the lower triangle by rows, or
+# the diagonal <prefix>_<k><k> without correlation. "L" names the Cholesky
+# factor in the parameter vector; summary() shows "Sigma", the covariance
+# L L' it implies.
+.mxl_cov_names <- function(prefix, K_w, rc_correlation) {
+  if (!rc_correlation) {
+    return(paste0(prefix, "_", seq_len(K_w), seq_len(K_w)))
+  }
+  i <- rep(seq_len(K_w), seq_len(K_w))
+  sprintf("%s_%d%d", prefix, i, sequence(seq_len(K_w)))
+}
+
+# Labels summary() prints for a mixed logit's parameters: the covariance
+# block as Sigma_<i><j>, and the mean of a log-normal coefficient as
+# exp(Mu_<variable>). run_mxlogit() checks them for repeats before the
+# kernels have validated rc_dist, so only its first K_w entries are read.
+.mxl_summary_labels <- function(param_names, param_map, K_w, rc_dist,
+                                rc_correlation, rc_mean) {
+  labels <- param_names
+  if (!is.null(param_map$sigma)) {
+    labels[param_map$sigma] <- .mxl_cov_names("Sigma", K_w, rc_correlation)
+  }
+  if (rc_mean && !is.null(param_map$mu)) {
+    idx <- param_map$mu[rc_dist[seq_len(K_w)] %in% 1L]
+    labels[idx] <- paste0("exp(", labels[idx], ")")
+  }
+  labels
+}
+
 #' Runs mixed logit estimation
 #'
 #' Estimates a mixed logit model via simulated maximum likelihood.
@@ -73,7 +103,10 @@
 #' @param id_col Name of the column identifying choice situations.
 #' @param alt_col Name of the column identifying alternatives.
 #' @param choice_col Name of the column indicating chosen alternative (1/0).
-#' @param covariate_cols Vector of column names for fixed covariates.
+#' @param covariate_cols Vector of column names for fixed covariates. None
+#'   may take a name the model gives its parameters, or prints for them in
+#'   \code{summary()}: \code{ASC_<label>}, \code{L_<i><j>} and
+#'   \code{Sigma_<i><j>}, or \code{Mu_<variable>} with \code{rc_mean = TRUE}.
 #' @param random_var_cols Vector of column names for random coefficients.
 #' @param input_data List output from \code{\link{prepare_mxl_data}} (advanced
 #'   workflow). Mutually exclusive with \code{data}.
@@ -407,20 +440,6 @@ run_mxlogit <- function(
       cluster_col = cluster_col,
       person_col = person_col
     )
-    K_w <- ncol(input_data$W)
-    if (draws == "store") {
-      # One K_w x S draw block per likelihood unit: per decision maker with
-      # person_col, per choice situation otherwise.
-      n_units <- length(.unit_first(input_data))
-      eta_draws <- get_halton_normals(S, n_units, K_w)
-    } else {
-      # generate mode: no cube ever materialized; empty placeholder
-      eta_draws <- array(0, dim = c(K_w, 0L, 0L))
-      # Draw seed from R RNG when not supplied (like run_mnprobit)
-      if (is.null(seed)) {
-        seed <- sample.int(.Machine$integer.max, 1L)
-      }
-    }
   } else {
     # Advanced workflow
     if (draws == "generate") {
@@ -468,21 +487,36 @@ run_mxlogit <- function(
   # Parameter names (built early; reused for theta_hat, vcov, se downstream)
   beta_names <- colnames(input_data$X)
   mu_names <- if (rc_mean) paste0("Mu_", colnames(input_data$W)) else character(0)
-  if (rc_correlation) {
-    sigma_names <- character(L_size)
-    nm_idx <- 1L
-    for (i in seq_len(K_w)) {
-      for (j in seq_len(i)) {
-        sigma_names[nm_idx] <- sprintf("L_%d%d", i, j)
-        nm_idx <- nm_idx + 1L
-      }
-    }
-  } else {
-    sigma_names <- paste0("L_", seq_len(K_w), seq_len(K_w))
-  }
+  sigma_names <- .mxl_cov_names("L", K_w, rc_correlation)
   alt_col <- names(input_data$alt_mapping)[2]
   asc_names <- paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
   param_names <- c(beta_names, mu_names, sigma_names, asc_names)
+  # summary() relabels some parameters: its labels may not repeat either
+  .check_param_names(
+    list(param_names,
+         .mxl_summary_labels(param_names, param_map, K_w, rc_dist,
+                             rc_correlation, rc_mean)),
+    c("ASC_<label>", "Mu_<variable>", "L_<i><j>", "Sigma_<i><j>",
+      "exp(Mu_<variable>)")
+  )
+
+  # Draws for the convenience workflow, built once the inputs have passed
+  # the checks above: a store-mode cube can take gigabytes.
+  if (has_data) {
+    if (draws == "store") {
+      # One K_w x S draw block per likelihood unit: per decision maker with
+      # person_col, per choice situation otherwise.
+      n_units <- length(.unit_first(input_data))
+      eta_draws <- get_halton_normals(S, n_units, K_w)
+    } else {
+      # generate mode: no cube ever materialized; empty placeholder
+      eta_draws <- array(0, dim = c(K_w, 0L, 0L))
+      # Draw seed from R RNG when not supplied (like run_mnprobit)
+      if (is.null(seed)) {
+        seed <- sample.int(.Machine$integer.max, 1L)
+      }
+    }
+  }
 
   # --- Variable scaling (optional) --------------------------------------------
   # Scale columns of X and W by their sample SD to improve Hessian conditioning.

@@ -37,7 +37,9 @@ Mutually exclusive with \code{input_data}.}
 
 \item{choice_col}{Name of the column indicating chosen alternative (1/0).}
 
-\item{covariate_cols}{Vector of column names for covariates.}
+\item{covariate_cols}{Vector of column names for covariates. None may be
+named like a generated parameter: \code{Lambda_<k>}, or
+\code{ASC_<label>} with \code{use_asc = TRUE}.}
 
 \item{nest_col}{Name of the column mapping each alternative to its nest
 (convenience workflow).}
@@ -51,8 +53,8 @@ constants (ASCs).}
 \item{theta_init}{Optional initial parameter vector. If \code{NULL}, a
 default vector is used.}
 
-\item{param_names}{Optional vector of parameter names. If \code{NULL},
-default names are generated.}
+\item{param_names}{Optional vector of parameter names, which must be
+unique. If \code{NULL}, default names are generated.}
 
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 or a custom function. See \code{\link{run_mnlogit}} for details.}
