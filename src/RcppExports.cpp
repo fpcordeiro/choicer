@@ -849,16 +849,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_loglik_gradient_parallel
-Rcpp::List nl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+Rcpp::List nl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
@@ -868,16 +868,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_bhhh_parallel
-arma::mat nl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+arma::mat nl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
@@ -887,16 +887,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_scores_parallel
-arma::mat nl_scores_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option);
+arma::mat nl_scores_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
@@ -905,16 +905,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_loglik_numeric_hessian
-arma::mat nl_loglik_numeric_hessian(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, double eps);
+arma::mat nl_loglik_numeric_hessian(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, double eps);
 RcppExport SEXP _choicer_nl_loglik_numeric_hessian(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP epsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
@@ -925,16 +925,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_loglik_hessian_parallel
-arma::mat nl_loglik_hessian_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+arma::mat nl_loglik_hessian_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_loglik_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
@@ -944,16 +944,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_predict
-Rcpp::List nl_predict(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::uvec& nest_idx, const bool use_asc, const bool include_outside_option);
+Rcpp::List nl_predict(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const Rcpp::IntegerVector& nest_idx, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_predict(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP nest_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
     rcpp_result_gen = Rcpp::wrap(nl_predict(theta, X, alt_idx, M, nest_idx, use_asc, include_outside_option));
@@ -961,17 +961,17 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_predict_shares
-arma::vec nl_predict_shares(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::uvec& nest_idx, const bool use_asc, const bool include_outside_option);
+arma::vec nl_predict_shares(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const Rcpp::IntegerVector& nest_idx, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_predict_shares(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP nest_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
     rcpp_result_gen = Rcpp::wrap(nl_predict_shares(theta, X, alt_idx, M, weights, nest_idx, use_asc, include_outside_option));
@@ -979,16 +979,16 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_elasticities_parallel
-arma::mat nl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& choice_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const int elast_var_idx, const bool use_asc, const bool include_outside_option);
+arma::mat nl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const int elast_var_idx, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_elasticities_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP elast_var_idxSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type choice_idx(choice_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const int >::type elast_var_idx(elast_var_idxSEXP);
@@ -999,15 +999,15 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_diversion_ratios_parallel
-arma::mat nl_diversion_ratios_parallel(const arma::vec& theta, const arma::mat& X, const arma::uvec& alt_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
+arma::mat nl_diversion_ratios_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_nl_diversion_ratios_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
@@ -1017,7 +1017,7 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_blp_contraction
-arma::vec nl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const arma::vec& lambda, const arma::uvec& alt_idx, const arma::uvec& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const double damping, const double tol, const int max_iter);
+arma::vec nl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const arma::vec& lambda, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const double damping, const double tol, const int max_iter);
 RcppExport SEXP _choicer_nl_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP betaSEXP, SEXP lambdaSEXP, SEXP alt_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP include_outside_optionSEXP, SEXP dampingSEXP, SEXP tolSEXP, SEXP max_iterSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
@@ -1027,8 +1027,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type beta(betaSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type lambda(lambdaSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type nest_idx(nest_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest_idx(nest_idxSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
