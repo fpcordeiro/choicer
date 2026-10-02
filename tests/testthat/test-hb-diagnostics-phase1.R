@@ -309,6 +309,16 @@ test_that("traceplot() falls back gracefully when object$chains is unavailable",
 
 # --- 8. keep_beta_i = "draws" memory guard (corrected 1.9x x chains formula) --
 
+test_that("the memory estimate counts kept draws without int overflow", {
+  # R - burn + thin - 1L overflowed to NA for a thin near
+  # .Machine$integer.max, and the guard's comparison then failed
+  fx <- .hmnl_fx_phase1(N = 10, T = 1, J = 3)
+  fit <- suppressWarnings(run_hmnlogit(
+    input_data = fx$d, keep_beta_i = "draws",
+    mcmc = list(R = 10, burn = 0, thin = .Machine$integer.max)))
+  expect_identical(fit$mcmc$R_keep, 1L)
+})
+
 test_that("memory guard stop() fires above 4 GB and reports the 1.9x-chains formula", {
   fx <- .hmnl_fx_phase1(N = 10, T = 1, J = 3)
   K <- fx$d$K_struct
@@ -317,7 +327,7 @@ test_that("memory guard stop() fires above 4 GB and reports the 1.9x-chains form
   R <- 7000001L
   burn <- 1L
   thin <- 1L
-  R_keep_est <- (R - burn + thin - 1L) %/% thin
+  R_keep_est <- 1L + (R - burn - 1L) %/% thin
   bytes_per_chain <- 8 * as.numeric(K) * N * R_keep_est * .HB_BETA_I_WRAP_FACTOR
   bytes_total <- bytes_per_chain * chains
   expect_gt(bytes_total, 4e9)
@@ -345,7 +355,7 @@ test_that("memory guard warning() fires between 1 GB and 4 GB with the corrected
   R <- 4000001L
   burn <- 1L
   thin <- 1L
-  R_keep_est <- (R - burn + thin - 1L) %/% thin
+  R_keep_est <- 1L + (R - burn - 1L) %/% thin
   bytes_per_chain <- 8 * as.numeric(K) * N * R_keep_est * .HB_BETA_I_WRAP_FACTOR
   bytes_total <- bytes_per_chain * chains
   expect_gt(bytes_total, 1e9)
@@ -375,7 +385,7 @@ test_that("memory guard also fires for run_hmnprobit with the same corrected for
   R <- 7000001L
   burn <- 1L
   thin <- 1L
-  R_keep_est <- (R - burn + thin - 1L) %/% thin
+  R_keep_est <- 1L + (R - burn - 1L) %/% thin
   bytes_per_chain <- 8 * as.numeric(K) * N * R_keep_est * .HB_BETA_I_WRAP_FACTOR
   bytes_total <- bytes_per_chain * chains
   expect_gt(bytes_total, 4e9)

@@ -599,6 +599,13 @@ unless it says otherwise.
   in the other nested logit kernels, this includes a nest code below 1 on
   an alternative that no choice situation offers, which used to be
   ignored.
+- `run_mnprobit()`, `run_hmnlogit()` and `run_hmnprobit()` miscounted the
+  draws to keep when `R - burn + thin - 1` exceeded `.Machine$integer.max`,
+  as for a `thin` near it: the count overflowed an integer. Where it came
+  out 0 this aborted R in builds with OpenMP; otherwise the run stopped
+  with an unrelated Armadillo error (with `keep_beta_i = "draws"`, the
+  memory estimate failed first, with another unrelated error). The count,
+  `ceiling((R - burn) / thin)`, is now formed without overflow.
 
 # choicer 0.2.1
 

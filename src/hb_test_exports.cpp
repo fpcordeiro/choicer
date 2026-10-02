@@ -2,8 +2,8 @@
 // for unit testing (tests/testthat/test-hb-internal.R). These functions are
 // NOT user-facing API; they are @noRd and only exported so the Phase-0
 // correctness gates (hand-rolled Cholesky/trisolves vs LAPACK references,
-// LSE with the implicit outside term, the sigma_d scale-mixture Gibbs) are
-// callable from R.
+// LSE with the implicit outside term, the sigma_d scale-mixture Gibbs) and
+// the panel offsets are callable from R.
 //
 // DO NOT add any of these to the public documentation or NAMESPACE.
 // They are kept internal through @noRd roxygen tags. All are rng = false:
@@ -116,4 +116,18 @@ Rcpp::NumericVector hb_test_sigma_d2_gibbs(const arma::vec& xi,
     out[r] = sigma_d2;
   }
   return out;
+}
+
+//' HbPanel's offsets of positive counts, summed in 64 bits, for testing
+//' hb_internal.h
+//'
+//' @param x Integer vector (situation sizes or tasks per respondent).
+//' @return The offsets 0, x[1], x[1] + x[2], ..., or NULL when a count is
+//'   below 1 or a sum passes 2^31 - 1.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+SEXP hb_test_panel_offsets(const Rcpp::IntegerVector& x) {
+  std::vector<int> offsets;
+  if (!HbPanel::prefix_offsets(x, offsets)) return R_NilValue;
+  return Rcpp::wrap(offsets);
 }

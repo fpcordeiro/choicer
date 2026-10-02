@@ -53,6 +53,17 @@ test_that("mnp_gibbs honours thinning", {
   expect_equal(nrow(out$betadraw), 50L)
 })
 
+test_that("mnp_gibbs counts kept draws without int overflow", {
+  # R - burn + thin - 1 overflowed for a thin near .Machine$integer.max,
+  # leaving no row for the one kept draw (an abort under OpenMP)
+  dt <- create_small_mnl_data()
+  d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
+  out <- do.call(mnp_gibbs, make_gibbs_args(d, R = 10L, burn = 0L,
+                                            thin = .Machine$integer.max))
+  expect_identical(out$R_keep, 1L)
+  expect_identical(nrow(out$betadraw), 1L)
+})
+
 test_that("mnp_gibbs draws are seed-reproducible and thread-invariant", {
   on.exit(set_num_threads(2L), add = TRUE)
 
@@ -76,6 +87,17 @@ test_that("mnp_gibbs draws are seed-reproducible and thread-invariant", {
   args2 <- args
   args2$seed <- 999
   expect_false(identical(do.call(mnp_gibbs, args2)$betadraw, out1$betadraw))
+})
+
+test_that("mnp_gibbs reports N * p past 2^31 - 1 unwrapped", {
+  dt <- create_small_mnl_data()
+  d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
+  a <- make_gibbs_args(d)
+  a$X <- matrix(0, 4, 1)
+  a$y <- c(1L, 0L)
+  a$p <- .Machine$integer.max
+  expect_error(do.call(mnp_gibbs, a), "X has 4 rows but N * p is 4294967294.",
+               fixed = TRUE)
 })
 
 test_that("mnp_gibbs validates inputs", {

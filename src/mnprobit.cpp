@@ -66,9 +66,9 @@ static void validate_mnp_inputs(const arma::mat& X, const Rcpp::IntegerVector& y
   if (K < 1) {
     Rcpp::stop("X must have at least one column.");
   }
-  if (X.n_rows != static_cast<arma::uword>(N) * p) {
-    Rcpp::stop("X has %d rows but N * p is %d.",
-               static_cast<int>(X.n_rows), N * p);
+  const long long n_rows_expected = static_cast<long long>(N) * p;
+  if (static_cast<long long>(X.n_rows) != n_rows_expected) {
+    Rcpp::stop("X has %d rows but N * p is %d.", X.n_rows, n_rows_expected);
   }
   if (!X.is_finite()) {
     Rcpp::stop("X contains non-finite values.");
@@ -249,7 +249,7 @@ Rcpp::List mnp_gibbs(const arma::mat& X,
     }
   }
 
-  const int R_keep = (R - burn + thin - 1) / thin;
+  const int R_keep = 1 + (R - burn - 1) / thin; // ceil((R - burn) / thin)
   arma::mat betadraw(R_keep, K);
   arma::mat sigmadraw(R_keep, p * (p + 1) / 2);
 

@@ -5,6 +5,7 @@
 #include "rng.h"
 #include "bayes_samplers.h"
 #include <R_ext/Utils.h>   // R_CheckUserInterrupt / R_ToplevelExec
+#include <limits>
 #include <vector>
 
 // ============================================================================
@@ -48,11 +49,13 @@
 // ----------------------------------------------------------------------------
 // Panel indexing: two-level (person, task) structure over the row-major data
 // produced by .prepare_hb_panel() (R/hb_data.R). All offsets are CSR-style
-// half-open ranges built with compute_prefix_sum (src/utils.cpp:98).
+// half-open ranges, summed in 64 bits. The kernels' validators have checked
+// sum(M) = nrow(X), at most 2^31 - 1 as an R dimension, and sum(Ti) =
+// n_tasks, so each offset fits in an int (build() checks it again).
 //
-// build() allocates R vectors (through compute_prefix_sum), so it must be
-// called on the master thread BEFORE the parallel region opens; afterwards
-// the struct is read-only and safe to share across threads.
+// build() reads the R input vectors, so it must be called on the master
+// thread BEFORE the parallel region opens; afterwards the struct is read-only
+// and safe to share across threads.
 // ----------------------------------------------------------------------------
 struct HbPanel {
   int N_persons = 0;      // respondents
@@ -85,10 +88,30 @@ struct HbPanel {
   std::vector<int> choice_pos;        // n_tasks: 1-based within-task position
                                       //   of the choice; 0 = outside chosen
 
+  // The offsets of positive counts x (situation sizes, tasks per
+  // respondent): offsets[0] = 0 and offsets[t + 1] = x[0] + ... + x[t],
+  // summed in 64 bits. False when a count is below 1 (NA included) or a sum
+  // passes 2^31 - 1, so build() never sizes or fills anything from them.
+  static bool prefix_offsets(const Rcpp::IntegerVector& x,
+                             std::vector<int>& offsets) {
+    const R_xlen_t n = x.size();
+    const int* xv = x.begin();
+    offsets.assign(static_cast<std::size_t>(n) + 1, 0);
+    long long sum = 0;
+    for (R_xlen_t t = 0; t < n; ++t) {
+      if (xv[t] < 1) return false;
+      sum += xv[t];
+      if (sum > std::numeric_limits<int>::max()) return false;
+      offsets[t + 1] = static_cast<int>(sum);
+    }
+    return true;
+  }
+
   // Build from the prep outputs (M, Ti, alt_of_row, choice_pos are the
-  // 1-based R-side vectors). Returns false on any inconsistency (sizes that
-  // do not add up, out-of-range codes, a 0 choice without an outside option)
-  // so kernels can abort cleanly instead of indexing out of bounds.
+  // 1-based R-side vectors). Returns false on any inconsistency (counts below
+  // 1, sizes that do not add up, out-of-range codes, a 0 choice without an
+  // outside option) so kernels can abort cleanly instead of indexing out of
+  // bounds.
   bool build(const Rcpp::IntegerVector& M, const Rcpp::IntegerVector& Ti,
              const Rcpp::IntegerVector& alt_of_row_1b,
              const Rcpp::IntegerVector& choice_pos_1b,
@@ -99,14 +122,9 @@ struct HbPanel {
     include_outside = include_outside_option;
     if (n_tasks < 1 || N_persons < 1 || J < 1) return false;
 
-    // compute_prefix_sum allocates R vectors; copy into plain std::vectors
-    // immediately (build() runs on the master thread before the parallel
-    // region) so no SEXP is ever touched by a worker.
-    {
-      const Rcpp::IntegerVector ro = compute_prefix_sum(M);
-      const Rcpp::IntegerVector to = compute_prefix_sum(Ti);
-      row_offsets.assign(ro.begin(), ro.end());
-      task_offsets.assign(to.begin(), to.end());
+    // Plain std::vectors, so no SEXP is ever touched by a worker.
+    if (!prefix_offsets(M, row_offsets) || !prefix_offsets(Ti, task_offsets)) {
+      return false;
     }
     total_rows = row_offsets[n_tasks];
     if (task_offsets[N_persons] != n_tasks) return false;
@@ -116,7 +134,6 @@ struct HbPanel {
     // Row -> task map and per-alternative counts (fixed row order).
     task_of_row.assign(total_rows, 0);
     for (int t = 0; t < n_tasks; ++t) {
-      if (M[t] < 1) return false;
       for (int r = row_offsets[t]; r < row_offsets[t + 1]; ++r) {
         task_of_row[r] = t;
       }
@@ -133,7 +150,7 @@ struct HbPanel {
     // CSR row lists over alternatives; the fill loop runs in ascending row
     // order, so rows are ascending within each alternative — the fixed
     // summation order for the per-delta_j sufficient statistics.
-    alt_row_offsets.assign(J + 1, 0);
+    alt_row_offsets.assign(static_cast<std::size_t>(J) + 1, 0);
     for (int a = 0; a < J; ++a) {
       alt_row_offsets[a + 1] = alt_row_offsets[a] + counts[a];
     }
