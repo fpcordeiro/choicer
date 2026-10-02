@@ -85,14 +85,14 @@ using mxl_off = choicer_off;
 
 // The theta-independent layout of the stacked design, built and validated on
 // the primary thread by every kernel call: the situation core shared with the
-// MNL kernels (ChoiceLayout, choicer_internal.h: situation offsets, and
-// pointers to the per-row alternative codes and per-situation choices, read in
-// place from the kernel's integer arguments), plus the likelihood units of a
-// panel. It is valid for one kernel call only: when an argument was coerced
-// from doubles, the integer copy belongs to the Rcpp wrapper of that call.
-// Building it is one pass over the rows (in parallel above 10^6 rows) and one
-// over the situations, about 20 ms at 10^8 rows: under 1% of an evaluation,
-// too little to repay caching.
+// MNL and NL kernels (ChoiceLayout, choicer_internal.h: situation offsets,
+// and pointers to the per-row alternative codes and per-situation choices,
+// read in place from the kernel's integer arguments), plus the likelihood
+// units of a panel. It is valid for one kernel call only: when an argument
+// was coerced from doubles, the integer copy belongs to the Rcpp wrapper of
+// that call. Building it is one pass over the rows (in parallel above 10^6
+// rows) and one over the situations, about 20 ms at 10^8 rows: under 1% of
+// an evaluation, too little to repay caching.
 struct MxlLayout : ChoiceLayout {
   mxl_off U = 0;                 // likelihood units
   mxl_off max_unit_rows = 0;     // rows of the largest unit
@@ -156,7 +156,7 @@ inline MxlLayout mxl_layout_build(const arma::mat& X,
   }
 
   // Situations and alternative codes (ChoiceLayout's checks, shared with the
-  // MNL kernels), then the choices.
+  // MNL and NL kernels), then the choices.
   choice_layout_situations(lay, X, alt_idx, M, weights, &choice_idx);
   choice_layout_codes(lay);
   validate_choices(lay, include_outside_option, kernel);

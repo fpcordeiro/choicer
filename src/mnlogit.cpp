@@ -495,18 +495,9 @@ Rcpp::List mnl_predict(
   );
 }
 
-// The shares' denominator: the sum of the weights, which must be positive.
-static double mnl_shares_denominator(const arma::vec& weights) {
-  const double denominator = arma::sum(weights);
-  if (denominator <= 0) {
-    Rcpp::stop("Error: Sum of weights must be positive.");
-  }
-  return denominator;
-}
-
 // Prediction of shares (internal function), from the base utilities of all
 // rows (X * beta plus the rows' ASCs). denominator is
-// mnl_shares_denominator(weights), which the callers check before they form
+// shares_denominator(weights), which the callers check before they form
 // the utilities.
 static arma::vec mnl_predict_shares_internal(
     const arma::vec& base_util,        // sum(M) x 1 vector of base utilities
@@ -620,10 +611,12 @@ arma::vec mnl_predict_shares(
 
   // total number of distinct alternatives (alt_idx.max() on the arma::uvec
   // argument this replaces threw on an empty alt_idx; kept)
-  if (lay.n_rows == 0) throw std::logic_error("Mat::max(): object has no elements");
+  if (lay.n_rows == 0) {
+    throw std::logic_error("Mat::max(): object has no elements");
+  }
   const int num_alts = compute_J_total(lay.J, include_outside_option);
 
-  const double denominator = mnl_shares_denominator(weights);
+  const double denominator = shares_denominator(weights);
   const arma::vec base_util =
       compute_base_util(X, par.beta, lay, use_asc, par.delta);
   arma::vec global_shares = mnl_predict_shares_internal(
@@ -691,7 +684,7 @@ arma::vec blp_contraction(
 
   // X * beta, once: only delta changes across the iterations. Each one adds
   // its ASCs to a copy of it, in one buffer kept across them.
-  const double denominator = mnl_shares_denominator(weights);
+  const double denominator = shares_denominator(weights);
   const arma::vec Xb = X * beta;
   arma::vec base_util;
   auto predict_shares = [&](const arma::vec& inside_delta) {

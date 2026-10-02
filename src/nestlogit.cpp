@@ -6,7 +6,7 @@
 // after the likelihood kernel; see the full doc comment at the definition).
 static void nl_parse_theta(
     const arma::vec& theta,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const int K,
     const bool use_asc,
     const bool include_outside_option,
@@ -17,12 +17,28 @@ static void nl_parse_theta(
     int& delta_length,
     arma::ivec* nest_k_to_theta_idx = nullptr);
 
-// Rows of the largest choice set (M is validated positive), for the
-// per-thread buffers of nl_individual_probs().
-static int nl_max_m(const Rcpp::IntegerVector& M) {
-  int max_m = 0;
-  for (const int m : M) max_m = std::max(max_m, m);
-  return max_m;
+// The number of nests: the largest nest code, as arma::max() gave it on the
+// arma::uvec argument this replaces, which threw std::logic_error on an empty
+// nest_idx (kept). Codes below 1 are reported by nl_parse_theta() and
+// nl_blp_contraction().
+static int nl_n_nests(const Rcpp::IntegerVector& nest_idx) {
+  if (nest_idx.size() == 0) {
+    throw std::logic_error("max(): object has no elements");
+  }
+  int n_nests = std::numeric_limits<int>::min();
+  for (const int k : nest_idx) n_nests = std::max(n_nests, k);
+  return n_nests;
+}
+
+// The 0-based nest of each of a situation's m alternatives, from their
+// 1-based codes alt and the 1-based nest codes nest. The kernels index lambda
+// and their per-nest buffers with the result unchecked, so two checks must
+// come first: nl_layout_build() (every alternative code at most nest_idx's
+// length) and nl_parse_theta() or nl_blp_contraction()'s own check (every
+// nest code at least 1).
+static inline void nl_gather_nests(int* nest0, const int* alt, const int* nest,
+                                   const int m) {
+  for (int j = 0; j < m; ++j) nest0[j] = nest[alt[j] - 1] - 1;
 }
 
 //' Log-likelihood and gradient for Nested Logit model
@@ -64,19 +80,18 @@ static int nl_max_m(const Rcpp::IntegerVector& M) {
 Rcpp::List nl_loglik_gradient_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
   // Extract dimensions
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
-  const int n_nests = arma::max(nest_idx); // assuming nest_idx uses 1-based indexing
+  const int n_nests = nl_n_nests(nest_idx);
 
   // --- 1. Parameter Parsing (shared helper; also returns the map from full
   // nest index k to lambda_k's position in theta, -1 for singleton nests) ---
@@ -86,34 +101,24 @@ Rcpp::List nl_loglik_gradient_parallel(
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length,
                  &nest_k_to_theta_idx);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
-                     &weights, &choice_idx);
-
-  // 0-based indexing for inputs
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-  
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes, choices and nest codes read in place
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights, &choice_idx);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
   // --- H2: Serial pre-loop validation of chosen-alternative indices ---
   // Rcpp::stop() is only safe outside parallel regions.
-  for (int i = 0; i < N; ++i) {
-    const int chosen_alt_idx_check = choice_idx[i];
-    if (include_outside_option && chosen_alt_idx_check == 0) continue; // outside option is valid
-    const int chosen_inside = chosen_alt_idx_check - 1;
-    if (chosen_inside < 0 || chosen_inside >= M[i]) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, nullptr);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -132,17 +137,17 @@ Rcpp::List nl_loglik_gradient_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
 
       // Get individual-specific data
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // m_i
       int* nest_idx0_i      = nest_buf.data(); // m_i
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
 
       // --- 2. Calculate Utilities and Probabilities ---
 
@@ -161,7 +166,7 @@ Rcpp::List nl_loglik_gradient_parallel(
 
       // --- 3. Log-Likelihood Calculation ---
 
-      const int chosen_alt_idx = choice_idx[i];
+      const int chosen_alt_idx = lay.choice[i];
       double log_P_choice;
 
       int chosen_nest_k = -1;
@@ -320,18 +325,17 @@ Rcpp::List nl_loglik_gradient_parallel(
 arma::mat nl_bhhh_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   // Parameter parsing (shared helper; also returns nest-k -> theta index map)
   arma::vec beta, lambda, delta;
@@ -340,32 +344,22 @@ arma::mat nl_bhhh_parallel(
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length,
                  &nest_k_to_theta_idx);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
-                     &weights, &choice_idx);
-
-  // 0-based indexing for inputs
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes, choices and nest codes read in place
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights, &choice_idx);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    const int chosen_alt_idx_check = choice_idx[i];
-    if (include_outside_option && chosen_alt_idx_check == 0) continue;
-    const int chosen_inside = chosen_alt_idx_check - 1;
-    if (chosen_inside < 0 || chosen_inside >= M[i]) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (nl_bhhh_parallel)", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, "nl_bhhh_parallel");
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -384,16 +378,16 @@ arma::mat nl_bhhh_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
 
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // m_i
       int* nest_idx0_i      = nest_buf.data(); // m_i
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
       const double* V_inside = base_util.memptr() + start_idx;
@@ -406,7 +400,7 @@ arma::mat nl_bhhh_parallel(
       const double* P_k = pr.P_k.data();
       const double* log_I_k = pr.log_I_k.data();
 
-      const int chosen_alt_idx = choice_idx[i];
+      const int chosen_alt_idx = lay.choice[i];
       int chosen_nest_k = -1;
       int chosen_inside_idx = -1;
       if (!(include_outside_option && chosen_alt_idx == 0)) {
@@ -496,17 +490,16 @@ arma::mat nl_bhhh_parallel(
 arma::mat nl_scores_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   // Parameter parsing (shared helper; also returns nest-k -> theta index map)
   arma::vec beta, lambda, delta;
@@ -515,33 +508,23 @@ arma::mat nl_scores_parallel(
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length,
                  &nest_k_to_theta_idx);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
-                     nullptr, &choice_idx);
-
-  // 0-based indexing for inputs
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes, choices and nest codes read in place
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, nullptr, &choice_idx);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    const int chosen_alt_idx_check = choice_idx[i];
-    if (include_outside_option && chosen_alt_idx_check == 0) continue;
-    const int chosen_inside = chosen_alt_idx_check - 1;
-    if (chosen_inside < 0 || chosen_inside >= M[i]) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (nl_scores_parallel)", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, "nl_scores_parallel");
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   // Output: one row per choice situation (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
-  arma::mat scores(N, n_params);
-  const int max_m = nl_max_m(M);
+  arma::mat scores(static_cast<arma::uword>(N), n_params);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -558,15 +541,15 @@ arma::mat nl_scores_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
 
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // m_i
       int* nest_idx0_i      = nest_buf.data(); // m_i
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
       const double* V_inside = base_util.memptr() + start_idx;
@@ -579,7 +562,7 @@ arma::mat nl_scores_parallel(
       const double* P_k = pr.P_k.data();
       const double* log_I_k = pr.log_I_k.data();
 
-      const int chosen_alt_idx = choice_idx[i];
+      const int chosen_alt_idx = lay.choice[i];
       int chosen_nest_k = -1;
       int chosen_inside_idx = -1;
       if (!(include_outside_option && chosen_alt_idx == 0)) {
@@ -686,9 +669,9 @@ arma::mat nl_scores_parallel(
 arma::mat nl_loglik_numeric_hessian(
   const arma::vec& theta,
   const arma::mat& X,
-  const arma::uvec& alt_idx,
-  const arma::uvec& choice_idx,
-  const arma::uvec& nest_idx,
+  const Rcpp::IntegerVector& alt_idx,
+  const Rcpp::IntegerVector& choice_idx,
+  const Rcpp::IntegerVector& nest_idx,
   const Rcpp::IntegerVector& M,
   const arma::vec& weights,
   const bool use_asc = true,
@@ -796,19 +779,18 @@ arma::mat nl_loglik_numeric_hessian(
 arma::mat nl_loglik_hessian_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
   // Extract dimensions
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   // --- 1. Parameter Parsing ---
   arma::vec beta, lambda, delta;
@@ -817,32 +799,22 @@ arma::mat nl_loglik_hessian_parallel(
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length,
                  &nest_k_to_theta_idx);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta,
-                     &weights, &choice_idx);
-
-  // 0-based indexing for inputs
-  arma::uvec alt_idx0  = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes, choices and nest codes read in place
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights, &choice_idx);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
   // --- H2: Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    const int chosen_alt_idx_check = choice_idx[i];
-    if (include_outside_option && chosen_alt_idx_check == 0) continue;
-    const int chosen_inside = chosen_alt_idx_check - 1;
-    if (chosen_inside < 0 || chosen_inside >= M[i]) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, nullptr);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   // Initialize global Hessian accumulator
   arma::mat global_H(n_params, n_params, arma::fill::zeros);
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -859,17 +831,17 @@ arma::mat nl_loglik_hessian_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i       = M[i];
-      const int start_idx = S[i];
-      const int end_idx   = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i       = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i    = weights[i];
 
       // Step 2a: Slice individual data
       const arma::mat X_i        = X.rows(start_idx, end_idx);  // m_i x K
-      arma::uvec alt_idx0_i      = alt_idx0.subvec(start_idx, end_idx);
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]};
       int* nest_idx0_i           = nest_buf.data();
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside     = base_util.memptr() + start_idx;
 
       // Step 2b: Compute probabilities
@@ -883,7 +855,7 @@ arma::mat nl_loglik_hessian_parallel(
       const double log_P_outside = pr.log_P_outside;
 
       // Resolve chosen alternative
-      const int chosen_alt_idx_i  = choice_idx[i];
+      const int chosen_alt_idx_i  = lay.choice[i];
       int chosen_nest_k       = -1;
       int chosen_inside_idx   = -1;
 
@@ -1224,7 +1196,7 @@ arma::mat nl_loglik_hessian_parallel(
 // Used by every entry point, including nl_loglik_gradient_parallel.
 static void nl_parse_theta(
     const arma::vec& theta,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const int K,
     const bool use_asc,
     const bool include_outside_option,
@@ -1243,22 +1215,23 @@ static void nl_parse_theta(
     Rcpp::stop("Theta vector too short: missing beta parameters "
                "(expected at least %d, got %d).", K, n_params);
   }
-  if (nest_idx.n_elem == 0) {
+  if (nest_idx.size() == 0) {
     Rcpp::stop("nest_idx must be non-empty.");
   }
-  const int n_nests = arma::max(nest_idx); // 1-based nest_idx
+  const int n_nests = nl_n_nests(nest_idx); // 1-based nest_idx
+
+  // Every code is at most n_nests, so a code is valid when it is at least 1
+  // (NA_INTEGER, the most negative int, is not). Checked before n_nests sizes
+  // anything.
+  for (const int k : nest_idx) {
+    if (k < 1) Rcpp::stop("Invalid nest index found in nest_idx.");
+  }
 
   beta = theta.subvec(0, K - 1);
 
   // Identify singleton nests
   arma::uvec nest_counts = arma::zeros<arma::uvec>(n_nests);
-  for (unsigned int j = 0; j < nest_idx.n_elem; ++j) {
-    if (nest_idx[j] > 0 && (int)nest_idx[j] <= n_nests) {
-      nest_counts[nest_idx[j] - 1]++;
-    } else {
-      Rcpp::stop("Invalid nest index found in nest_idx.");
-    }
-  }
+  for (const int k : nest_idx) nest_counts[k - 1]++;
   arma::uvec is_singleton = (nest_counts == 1);
   const int n_non_singleton_nests = arma::accu(is_singleton == 0);
 
@@ -1354,31 +1327,29 @@ static void nl_parse_theta(
 Rcpp::List nl_predict(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  const int N = M.size();
   const int K = X.n_cols;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   arma::vec beta, lambda, delta;
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta);
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   arma::vec V_all = arma::zeros(X.n_rows);
   arma::vec P_all = arma::zeros(X.n_rows);
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1390,14 +1361,13 @@ Rcpp::List nl_predict(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i       = M[i];
-      const int start_idx = S[i];
-      const int end_idx   = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i       = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
 
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
       int* nest_idx0_i = nest_buf.data();
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
@@ -1415,35 +1385,26 @@ Rcpp::List nl_predict(
   );
 }
 
-// Predicted NL market shares (file-local internal).
-// alt_idx0/nest_idx0 are 0-based. delta is the *full* delta vector
-// (index 0 = first inside alt). Returns weighted shares of length num_alts
-// (index 0 = outside option when present, then inside alts in order).
+// Predicted NL market shares (file-local internal), from the base utilities
+// of all rows (X * beta plus the rows' ASCs). nest holds the 1-based nest
+// codes of the alternatives, and denominator is shares_denominator(weights),
+// which the callers check before they form the utilities. Returns weighted
+// shares of length num_alts (index 0 = outside option when present, then
+// inside alts in order).
 static arma::vec nl_predict_shares_internal(
-    const arma::mat& X,
-    const arma::vec& beta,
+    const arma::vec& base_util,
+    const ChoiceLayout& lay,
+    const int* nest,
     const arma::vec& lambda,
-    const arma::uvec& alt_idx0,
-    const arma::uvec& nest_idx0,
-    const Rcpp::IntegerVector& M,
-    const Rcpp::IntegerVector& S,
     const arma::vec& weights,
-    const arma::vec& delta,
+    const double denominator,
     const int n_nests,
     const int num_alts,
-    const bool use_asc,
     const bool include_outside_option
 ) {
-  const int N = M.size();
-  const double denominator = arma::sum(weights);
-  if (denominator <= 0) {
-    Rcpp::stop("Error: Sum of weights must be positive.");
-  }
-
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
-
+  const choicer_off N = lay.N;
   arma::vec global_shares = arma::zeros(num_alts);
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1456,15 +1417,14 @@ static arma::vec nl_predict_shares_internal(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i       = M[i];
-      const int start_idx = S[i];
-      const int end_idx   = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i       = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
       const double w_i    = weights[i];
 
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]};
       int* nest_idx0_i = nest_buf.data();
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
@@ -1477,9 +1437,9 @@ static arma::vec nl_predict_shares_internal(
       }
       for (int a = 0; a < m_i; ++a) {
         if (include_outside_option) {
-          local_shares(alt_idx0_i(a) + 1) += w_i * P_i(a);
+          local_shares(alt_idx0_i[a] + 1) += w_i * P_i(a);
         } else {
-          local_shares(alt_idx0_i(a)) += w_i * P_i(a);
+          local_shares(alt_idx0_i[a]) += w_i * P_i(a);
         }
       }
     }
@@ -1527,31 +1487,35 @@ static arma::vec nl_predict_shares_internal(
 arma::vec nl_predict_shares(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
   const int K = X.n_cols;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   arma::vec beta, lambda, delta;
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights);
 
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+  // total number of distinct alternatives (alt_idx.max() on the arma::uvec
+  // argument this replaces threw on an empty alt_idx; kept)
+  if (lay.n_rows == 0) {
+    throw std::logic_error("Mat::max(): object has no elements");
+  }
+  const int num_alts = compute_J_total(lay.J, include_outside_option);
 
-  int num_alts = include_outside_option ? (alt_idx.max() + 1) : alt_idx.max();
-
+  const double denominator = shares_denominator(weights);
+  const arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
   return nl_predict_shares_internal(
-    X, beta, lambda, alt_idx0, nest_idx0, M, S, weights, delta,
-    n_nests, num_alts, use_asc, include_outside_option
+    base_util, lay, nest_idx.begin(), lambda, weights, denominator, n_nests,
+    num_alts, include_outside_option
   );
 }
 
@@ -1593,9 +1557,9 @@ arma::vec nl_predict_shares(
 arma::mat nl_elasticities_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx, // kept for consistency, not used
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx, // kept for consistency, not used
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const int elast_var_idx,
@@ -1603,9 +1567,8 @@ arma::mat nl_elasticities_parallel(
     const bool include_outside_option = false
 ) {
   (void)choice_idx;
-  const int N = M.size();
   const int K = X.n_cols;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   const int var_idx = elast_var_idx - 1;
   if (var_idx < 0 || var_idx >= K) {
@@ -1616,22 +1579,20 @@ arma::mat nl_elasticities_parallel(
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
   const double beta_k = beta(var_idx);
 
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-
-  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
 
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1641,20 +1602,20 @@ arma::mat nl_elasticities_parallel(
     double local_total_weight = 0.0;
     NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
     std::vector<int> nest_buf(max_m);   // each inside alternative's nest
+    std::vector<int> global_map_buf(max_m); // each one's global index
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i       = M[i];
-      const int start_idx = S[i];
-      const int end_idx   = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i       = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i    = weights[i];
       const auto X_i      = X.rows(start_idx, end_idx);
 
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
       int* nest_idx0_i = nest_buf.data();
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
@@ -1666,8 +1627,9 @@ arma::mat nl_elasticities_parallel(
       arma::vec x_k_i = X_i.col(var_idx);
 
       // Global alternative index for each inside alt (outside option = 0)
-      arma::uvec global_map =
-          build_global_alt_map_inside(alt_idx0_i, include_outside_option);
+      int* global_map = global_map_buf.data();
+      fill_global_alt_map_inside(global_map, lay.alt + lay.row_off[i], m_i,
+                                 include_outside_option);
 
       // Elasticity of P_ij (row j) w.r.t. attribute x of alt a (col a):
       //   E_ja = beta_k * x_{ia} * d log P_ij / d V_ia
@@ -1769,38 +1731,35 @@ arma::mat nl_elasticities_parallel(
 arma::mat nl_diversion_ratios_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  const int N = M.size();
   const int K = X.n_cols;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
   arma::vec beta, lambda, delta;
   int delta_start_idx, delta_length;
   nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
                  beta, lambda, delta, delta_start_idx, delta_length);
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights);
+  const choicer_off N = lay.N;
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-
-  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
 
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j
   // denominator(j)  = sum_i w_i * (dP_ij/dV_ij)
   arma::mat global_numerator = arma::zeros(J_total, J_total);
   arma::vec global_denominator = arma::zeros(J_total);
-  const int max_m = nl_max_m(M);
+  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1810,19 +1769,18 @@ arma::mat nl_diversion_ratios_parallel(
     arma::vec local_denominator = arma::zeros(J_total);
     NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
     std::vector<int> nest_buf(max_m);   // each inside alternative's nest
+    std::vector<int> global_map_buf(max_m); // each one's global index
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i       = M[i];
-      const int start_idx = S[i];
-      const int end_idx   = start_idx + m_i - 1;
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i       = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
       const double w_i    = weights[i];
 
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
       int* nest_idx0_i = nest_buf.data();
-      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
@@ -1834,8 +1792,9 @@ arma::mat nl_diversion_ratios_parallel(
       const double P_out = include_outside_option ? std::exp(log_P_outside) : 0.0;
 
       // Global alternative index for each inside alt (outside option = 0)
-      arma::uvec global_map =
-          build_global_alt_map_inside(alt_idx0_i, include_outside_option);
+      int* global_map = global_map_buf.data();
+      fill_global_alt_map_inside(global_map, lay.alt + lay.row_off[i], m_i,
+                                 include_outside_option);
 
       // For each perturbed alt j (column), accumulate response of every alt.
       // dP_im/dV_ij = P_im * (d log P_im/d V_ij), with r = nest of j:
@@ -1960,8 +1919,8 @@ arma::vec nl_blp_contraction(
     const arma::mat& X,
     const arma::vec& beta,
     const arma::vec& lambda,
-    const arma::uvec& alt_idx,
-    const arma::uvec& nest_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool include_outside_option = false,
@@ -1970,16 +1929,18 @@ arma::vec nl_blp_contraction(
     const int    max_iter = 1000
 ) {
   const bool use_asc = true;
-  const int n_nests = arma::max(nest_idx);
+  const int n_nests = nl_n_nests(nest_idx);
 
-  int num_alts = include_outside_option ? (delta.n_elem + 1) : delta.n_elem;
+  const int num_alts =
+      include_outside_option ? (delta.n_elem + 1) : delta.n_elem;
   if ((int)target_shares.n_elem != num_alts) {
     Rcpp::stop("Error: target_shares must have the same length as the total number of alternatives.");
   }
   if (arma::any(target_shares <= 0)) {
     Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
   }
-  validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights);
 
   // nl_parse_theta() is not run here, so check the two invariants that keep
   // nl_individual_probs() in bounds against the lambda given: nest codes from
@@ -1987,28 +1948,39 @@ arma::vec nl_blp_contraction(
   // used to fail an Armadillo bounds or size check inside the parallel loop
   // (which terminates R under OpenMP); nl_individual_probs() now indexes
   // lambda directly.
-  if (nest_idx.min() < 1) {
-    Rcpp::stop("nest_idx must use 1-based nest indices (found %d).",
-               static_cast<int>(nest_idx.min()));
+  const int nest_min = *std::min_element(nest_idx.begin(), nest_idx.end());
+  if (nest_min < 1) {
+    Rcpp::stop("nest_idx must use 1-based nest indices (found %s).",
+               nest_min == NA_INTEGER ? "NA" : std::to_string(nest_min));
   }
   if (static_cast<int>(lambda.n_elem) != n_nests) {
     Rcpp::stop("lambda must have one entry per nest of nest_idx (%d); it has "
-               "%d.", n_nests, static_cast<int>(lambda.n_elem));
+               "%d.", n_nests, lambda.n_elem);
   }
 
-  arma::uvec alt_idx0 = alt_idx - 1;
-  arma::uvec nest_idx0 = nest_idx - 1;
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+  // X * beta, once: only delta changes across the iterations. Each one adds
+  // its ASCs to a copy of it, in one buffer kept across them.
+  const double denominator = shares_denominator(weights);
+  const arma::vec Xb = X * beta;
+  arma::vec base_util;
+  auto predict_shares = [&](const arma::vec& inside_delta) {
+    base_util = Xb;
+    add_row_asc(base_util, lay, inside_delta);
+    return nl_predict_shares_internal(base_util, lay, nest_idx.begin(), lambda,
+                                      weights, denominator, n_nests, num_alts,
+                                      include_outside_option);
+  };
 
   // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
   // residual) lives in the outside-inclusive share space of length num_alts:
   //   index 0 = outside option (when present), indices 1..J = inside alts.
-  // But nl_predict_shares_internal indexes delta by INSIDE-alt index
-  // (alt_idx0 in {0..J-1}) and expects a length-J inside-delta vector (the
-  // outside option is handled separately via include_outside_option). We
-  // therefore feed it delta_old.subvec(1, num_alts - 1) when an outside option
-  // is present, and pin the outside slot delta_old[0] = 0 throughout (the
-  // outside option's utility is the fixed normalization).
+  // But predict_shares() adds the ASCs by inside alternative (add_row_asc()
+  // reads delta at each row's code minus 1, in 0..J-1), so it takes a length-J
+  // inside-delta vector (the outside option is handled separately via
+  // include_outside_option). We therefore feed it
+  // delta_old.subvec(1, num_alts - 1) when an outside option is present, and
+  // pin the outside slot delta_old[0] = 0 throughout (the outside option's
+  // utility is the fixed normalization).
   arma::vec delta_old = arma::zeros(num_alts);
   if (include_outside_option) {
     delta_old.subvec(1, num_alts - 1) = delta;
@@ -2022,10 +1994,7 @@ arma::vec nl_blp_contraction(
     ? arma::vec(delta_old.subvec(1, num_alts - 1))
     : delta_old;
 
-  arma::vec log_shares_old = nl_predict_shares_internal(
-    X, beta, lambda, alt_idx0, nest_idx0, M, S, weights, inside_delta_old,
-    n_nests, num_alts, use_asc, include_outside_option
-  );
+  arma::vec log_shares_old = predict_shares(inside_delta_old);
   log_shares_old = arma::log(log_shares_old);
   arma::vec log_shares_target = arma::log(target_shares);
   arma::vec delta_new = delta_old;
@@ -2050,10 +2019,7 @@ arma::vec nl_blp_contraction(
     inside_delta_old = include_outside_option
       ? arma::vec(delta_old.subvec(1, num_alts - 1))
       : delta_old;
-    log_shares_old = nl_predict_shares_internal(
-      X, beta, lambda, alt_idx0, nest_idx0, M, S, weights, inside_delta_old,
-      n_nests, num_alts, use_asc, include_outside_option
-    );
+    log_shares_old = predict_shares(inside_delta_old);
     log_shares_old = arma::log(log_shares_old);
     ++iter;
   }

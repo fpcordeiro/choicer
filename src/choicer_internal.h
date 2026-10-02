@@ -23,9 +23,9 @@
 //     parsers, so no entry point can parse an inconsistent theta;
 //   * data-shape validation (X/W/alt_idx/M/eta/weights consistency), called
 //     by every exported entry point: in the layout builders (MNL:
-//     choice_layout_build below; MXL estimation: mxl_layout_build) and, for
-//     the kernels that still take arma::uvec indices, in the
-//     validate_*_inputs helpers.
+//     choice_layout_build below; NL: nl_layout_build; MXL estimation:
+//     mxl_layout_build) and, for the MXL prediction kernels, which still
+//     take arma::uvec indices, in the validate_*_inputs helpers.
 // Every check is O(1) or a single O(rows) integer scan — negligible next to
 // one likelihood evaluation — and turns what would otherwise be an obscure
 // Armadillo bounds error (or silently wrong output) into an actionable
@@ -87,21 +87,6 @@ inline void validate_choice_data(const arma::mat& X, const arma::uvec& alt_idx,
   }
 }
 
-inline void validate_nl_inputs(const arma::mat& X, const arma::uvec& alt_idx,
-                               const arma::uvec& nest_idx,
-                               const Rcpp::IntegerVector& M,
-                               const bool use_asc, const arma::vec& delta,
-                               const arma::vec* weights = nullptr,
-                               const arma::uvec* choice_idx = nullptr) {
-  validate_choice_data(X, alt_idx, M, use_asc, delta, weights, choice_idx);
-  if (alt_idx.n_elem > 0 && nest_idx.n_elem < alt_idx.max()) {
-    Rcpp::stop("nest_idx has %d entries but alt_idx references alternative %d "
-               "(one nest index per global alternative is required).",
-               static_cast<int>(nest_idx.n_elem),
-               static_cast<int>(alt_idx.max()));
-  }
-}
-
 // eta_draws holds one K_w x S draw block per likelihood unit: per choice
 // situation in the cross-section (n_units < 0, the default), per decision
 // maker in a panel (n_units = number of decision makers).
@@ -151,11 +136,12 @@ inline void check_rc_dist_length(const arma::uvec& rc_dist, const int K_w) {
 // kernel's integer arguments (no per-call copy). Offsets are 64-bit
 // (choicer_off). R caps a matrix at 2^31 - 1 rows, so the row offsets fit in
 // an int; the element offsets formed from them (row + column * n_rows) are
-// Armadillo's (arma::uword). ChoiceLayout is the core shared by the MNL
-// kernels (choice_layout_build) and the MXL estimation kernels (MxlLayout,
-// mxl_layout_build). It is valid for one kernel call only: when an argument
-// was coerced from doubles, the integer copy belongs to that call's Rcpp
-// wrapper. Build it on the primary thread; it is read-only afterwards.
+// Armadillo's (arma::uword). ChoiceLayout is the core shared by the MNL and
+// NL kernels (choice_layout_build, nl_layout_build) and by the MXL
+// estimation kernels (MxlLayout, mxl_layout_build). It is valid for one
+// kernel call only: when an argument was coerced from doubles, the integer
+// copy belongs to that call's Rcpp wrapper. Build it on the primary thread;
+// it is read-only afterwards.
 // ----------------------------------------------------------------------------
 using choicer_off = std::ptrdiff_t;
 
@@ -295,6 +281,37 @@ inline ChoiceLayout choice_layout_build(
                "alt_idx references alternative %d.", delta.n_elem, lay.J);
   }
   return lay;
+}
+
+// The layout of the NL kernels: choice_layout_build(), then one nest code per
+// alternative the rows reference. The nest codes are read in place too
+// (nest_idx.begin()), and nothing here checks their values: a kernel reads
+// nest[a] only after nl_parse_theta() (or nl_blp_contraction()'s own check)
+// has found every code at least 1, and the codes are at most n_nests by
+// construction (nl_n_nests()).
+inline ChoiceLayout nl_layout_build(
+    const arma::mat& X, const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M,
+    const bool use_asc, const arma::vec& delta,
+    const arma::vec* weights = nullptr,
+    const Rcpp::IntegerVector* choice_idx = nullptr) {
+  ChoiceLayout lay =
+      choice_layout_build(X, alt_idx, M, use_asc, delta, weights, choice_idx);
+  if (lay.n_rows > 0 && static_cast<choicer_off>(nest_idx.size()) < lay.J) {
+    Rcpp::stop("nest_idx has %d entries but alt_idx references alternative %d "
+               "(one nest index per global alternative is required).",
+               nest_idx.size(), lay.J);
+  }
+  return lay;
+}
+
+// The shares' denominator: the sum of the weights, which must be positive.
+inline double shares_denominator(const arma::vec& weights) {
+  const double denominator = arma::sum(weights);
+  if (denominator <= 0) {
+    Rcpp::stop("Error: Sum of weights must be positive.");
+  }
+  return denominator;
 }
 
 // ----------------------------------------------------------------------------
@@ -456,20 +473,13 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
 // base_util = X*beta (+ W*mu_final) (+ delta scattered by alternative).
 // The MXL overload handles both W layouts: row-aligned with X
 // (sum(M) x K_w) or one row per global alternative (J x K_w).
-// ----------------------------------------------------------------------------
-inline arma::vec compute_base_util(const arma::mat& X, const arma::vec& beta,
-                                   const arma::uvec& alt_idx0,
-                                   const bool use_asc, const arma::vec& delta) {
-  arma::vec base_util = X * beta;
-  if (use_asc) base_util += delta.elem(alt_idx0);
-  return base_util;
-}
-
-// The same with the alternative codes read in place: X * beta in the same
+//
+// The MNL and NL forms read the alternative codes in place: X * beta in a
 // single BLAS call, then each row's ASC added to its base utility, the one
-// addition per element that += delta.elem(alt_idx0) makes (in parallel above
+// addition per element that += delta.elem(alt_idx0) made (in parallel above
 // 10^6 rows; every element is independent, so the sums are unchanged).
 // add_row_asc() serves callers that keep X * beta across calls (BLP).
+// ----------------------------------------------------------------------------
 inline void add_row_asc(arma::vec& base_util, const ChoiceLayout& lay,
                         const arma::vec& delta) {
   double* bu = base_util.memptr();
@@ -820,17 +830,6 @@ inline arma::uvec build_global_alt_map(const arma::uvec& alt_idx0_i,
   return global_j_map;
 }
 
-inline arma::uvec build_global_alt_map_inside(const arma::uvec& alt_idx0_i,
-                                              const bool include_outside_option) {
-  arma::uvec global_map(alt_idx0_i.n_elem);
-  if (include_outside_option) {
-    global_map = alt_idx0_i + 1;
-  } else {
-    global_map = alt_idx0_i;
-  }
-  return global_map;
-}
-
 // build_global_alt_map() from the 1-based codes of a situation's m rows, into
 // a caller-owned buffer of at least m + 1 entries (one per thread, sized once
 // from the layout's max_m).
@@ -841,6 +840,15 @@ inline void fill_global_alt_map(int* map, const int* alt, const int m,
     for (int j = 0; j < m; ++j) map[j + 1] = alt[j]; // inside alts are 1...J
   } else {
     for (int j = 0; j < m; ++j) map[j] = alt[j] - 1; // no outside: 0...J-1
+  }
+}
+
+// The inside variant (NL): one entry per inside alternative, from the 1-based
+// codes of a situation's m rows.
+inline void fill_global_alt_map_inside(int* map, const int* alt, const int m,
+                                       const bool include_outside_option) {
+  for (int j = 0; j < m; ++j) {
+    map[j] = include_outside_option ? alt[j] : alt[j] - 1;
   }
 }
 

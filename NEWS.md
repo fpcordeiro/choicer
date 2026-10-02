@@ -131,33 +131,46 @@
   split into draw batches. The numerical changes of substance are the
   corrections below.
 
-## Multinomial logit kernels at population scale
+## Multinomial and nested logit kernels at population scale
 
-- The multinomial logit kernels now read the stacked design's alternative
-  codes and choices in place, as the mixed logit estimation kernels already
-  did. They used to copy them into Armadillo index vectors on every call
-  (through doubles, again shifted to start at zero, and once more for each
-  choice situation). That covers the kernels behind `run_mnlogit()`
-  (likelihood, gradient, Hessian, BHHH and scores) and behind its
+- The multinomial and nested logit kernels now read the stacked design's
+  alternative codes, the choices and the alternatives' nests in place, as
+  the mixed logit estimation kernels already did. They used to copy them
+  into Armadillo index vectors on every call (through doubles, again
+  shifted to start at zero, and once more for each choice situation). That
+  covers the kernels behind `run_mnlogit()` and `run_nestlogit()`
+  (likelihood, gradient, Hessian, BHHH and scores) and behind their
   post-estimation methods (predictions, shares, elasticities, diversion
-  ratios and `blp_contraction()`), whose contraction also forms `X beta`
-  once instead of at every iteration. On a synthetic design of 17.5 million
+  ratios, `blp_contraction()` and `nl_blp_contraction()`), whose
+  contractions also form `X beta` once instead of at every iteration. The
+  nested logit kernels also compute each choice situation's probabilities
+  in buffers allocated once per thread, where they built about a dozen
+  Armadillo vectors per situation. On a synthetic design of 17.5 million
   rows (500,000 choice situations of 20 to 50 alternatives, 10 covariates),
-  a gradient evaluation took 23% less time at one thread and 39% less at
-  eleven, moved 0.5 GB less through the heap, and peaked at 0.14 GB of
-  working memory instead of 0.57 GB; twenty iterations of the BLP
-  contraction took 42% and 70% less time (medians of six alternated runs).
+  a multinomial logit gradient evaluation took 23% less time at one thread
+  and 39% less at eleven, moved 0.5 GB less through the heap, and peaked at
+  0.14 GB of working memory instead of 0.57 GB; twenty iterations of the
+  BLP contraction took 42% and 70% less time (medians of six alternated
+  runs). On 7 million rows (200,000 choice situations of 20 to 50
+  alternatives in 10 nests), a nested logit gradient evaluation took 37%
+  less time at one thread and 46% less at eleven, and peaked at 0.06 GB of
+  working memory instead of 0.23 GB; twenty iterations of its
+  contraction took 47% and 65% less time and moved 0.1 GB through the heap
+  instead of 10.9 GB (medians of three alternated runs; with 40 nests, 42%
+  and 50% for the gradient and 51% and 64% for the contraction).
   Estimates, standard errors, predictions and every post-estimation
   quantity are unchanged, bit for bit.
 - The same kernels now treat malformed index vectors, which only a
   hand-built `input_data` list or a direct call can supply, in a defined
   way. A missing or negative alternative code is reported as such, where it
-  went through an undefined conversion (and read as 0 on ARM processors); a
-  missing or negative choice is an error, where on ARM a missing choice
-  counted as choosing the outside option; and an index beyond the integer
-  range becomes `NA`, with R's warning. `blp_contraction()` given no choice
-  situations and an empty `delta` now stops at its check of the weights
-  instead of indexing the empty vector.
+  went through an undefined conversion (and read as 0 on ARM processors),
+  and a missing nest code always as an invalid one; a missing or negative
+  choice is an error, where on ARM, with an outside option, it counted as
+  choosing that option; and an index beyond the integer range becomes `NA`,
+  with R's warning. `blp_contraction()` and `nl_blp_contraction()` given no
+  choice situations and an empty `delta` now stop at their check of the
+  weights, where they read past the empty vector or, with an outside
+  option, failed an Armadillo bounds check.
 
 ## Data preparation at population scale
 
@@ -579,9 +592,9 @@ unless it says otherwise.
   before.
 - `nl_blp_contraction()` takes `lambda` and `nest_idx` as given, not from a
   fitted model, and never checked them against each other: a nest code
-  below 1, or a `lambda` with other than one entry per nest, failed an
-  Armadillo index or size check inside the contraction's parallel loop,
-  which aborted R in builds with OpenMP and was an Armadillo error in
+  below 1 or missing, or a `lambda` with other than one entry per nest,
+  failed an Armadillo index or size check inside the contraction's parallel
+  loop, which aborted R in builds with OpenMP and was an Armadillo error in
   builds without it. Both are now errors before the contraction starts. As
   in the other nested logit kernels, this includes a nest code below 1 on
   an alternative that no choice situation offers, which used to be
