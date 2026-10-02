@@ -348,6 +348,19 @@ test_softmax_n <- function(v) {
     .Call(`_choicer_test_softmax_n`, v)
 }
 
+#' nl_individual_probs() next to its Armadillo-expression reference, for a
+#' bitwise comparison in tests
+#'
+#' @param V Inside utilities of one individual.
+#' @param nest0 0-based nest of each inside alternative (same length as V).
+#' @param lambda Full lambda vector, one entry per nest.
+#' @param include_outside_option Whether the outside option is in the set.
+#' @return List with each output of both versions (`*_ref` the reference).
+#' @noRd
+test_nl_individual_probs <- function(V, nest0, lambda, include_outside_option) {
+    .Call(`_choicer_test_nl_individual_probs`, V, nest0, lambda, include_outside_option)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.

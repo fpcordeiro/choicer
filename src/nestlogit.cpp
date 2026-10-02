@@ -17,6 +17,14 @@ static void nl_parse_theta(
     int& delta_length,
     arma::ivec* nest_k_to_theta_idx = nullptr);
 
+// Rows of the largest choice set (M is validated positive), for the
+// per-thread buffers of nl_individual_probs().
+static int nl_max_m(const Rcpp::IntegerVector& M) {
+  int max_m = 0;
+  for (const int m : M) max_m = std::max(max_m, m);
+  return max_m;
+}
+
 //' Log-likelihood and gradient for Nested Logit model
 //'
 //' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
@@ -105,6 +113,7 @@ Rcpp::List nl_loglik_gradient_parallel(
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -114,6 +123,8 @@ Rcpp::List nl_loglik_gradient_parallel(
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
     arma::vec grad_vec; // pre-allocated per-thread, resized per individual
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
@@ -130,19 +141,23 @@ Rcpp::List nl_loglik_gradient_parallel(
       // Get individual-specific data
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
-      arma::uvec nest_idx0_i= nest_idx0.elem(alt_idx0_i); // m_i
+      int* nest_idx0_i      = nest_buf.data(); // m_i
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
 
       // --- 2. Calculate Utilities and Probabilities ---
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
-      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+      const double* V_inside = base_util.memptr() + start_idx;
 
       // Per-individual probability block (shared helper)
-      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_j_given_k = pr.P_j_given_k.data();
+      const double* P_k = pr.P_k.data();
+      const double* log_I_k = pr.log_I_k.data();
+      const double* log_P_i = pr.log_P_i.data();
+      const double log_P_outside = pr.log_P_outside;
 
       // --- 3. Log-Likelihood Calculation ---
 
@@ -350,6 +365,7 @@ arma::mat nl_bhhh_parallel(
 
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -359,6 +375,8 @@ arma::mat nl_bhhh_parallel(
     arma::mat local_bhhh = arma::zeros(n_params, n_params);
     arma::vec grad_vec; // resized per individual
     arma::vec s_i;      // per-individual score
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
@@ -374,17 +392,19 @@ arma::mat nl_bhhh_parallel(
 
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
-      arma::uvec nest_idx0_i= nest_idx0.elem(alt_idx0_i); // m_i
+      int* nest_idx0_i      = nest_buf.data(); // m_i
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
-      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+      const double* V_inside = base_util.memptr() + start_idx;
 
       // Per-individual probability block (shared helper)
-      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_j_given_k = pr.P_j_given_k.data();
+      const double* P_k = pr.P_k.data();
+      const double* log_I_k = pr.log_I_k.data();
 
       const int chosen_alt_idx = choice_idx[i];
       int chosen_nest_k = -1;
@@ -521,6 +541,7 @@ arma::mat nl_scores_parallel(
   // Output: one row per choice situation (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
   arma::mat scores(N, n_params);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -528,6 +549,8 @@ arma::mat nl_scores_parallel(
   {
     arma::vec grad_vec; // resized per individual
     arma::vec s_i;      // per-individual score
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
@@ -542,17 +565,19 @@ arma::mat nl_scores_parallel(
 
       const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // m_i
-      arma::uvec nest_idx0_i= nest_idx0.elem(alt_idx0_i); // m_i
+      int* nest_idx0_i      = nest_buf.data(); // m_i
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
-      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+      const double* V_inside = base_util.memptr() + start_idx;
 
       // Per-individual probability block (shared helper)
-      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_j_given_k = pr.P_j_given_k.data();
+      const double* P_k = pr.P_k.data();
+      const double* log_I_k = pr.log_I_k.data();
 
       const int chosen_alt_idx = choice_idx[i];
       int chosen_nest_k = -1;
@@ -817,6 +842,7 @@ arma::mat nl_loglik_hessian_parallel(
 
   // Initialize global Hessian accumulator
   arma::mat global_H(n_params, n_params, arma::fill::zeros);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -824,6 +850,8 @@ arma::mat nl_loglik_hessian_parallel(
   {
     // Thread-local Hessian accumulator
     arma::mat local_H(n_params, n_params, arma::fill::zeros);
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
@@ -840,16 +868,19 @@ arma::mat nl_loglik_hessian_parallel(
       // Step 2a: Slice individual data
       const arma::mat X_i        = X.rows(start_idx, end_idx);  // m_i x K
       arma::uvec alt_idx0_i      = alt_idx0.subvec(start_idx, end_idx);
-      arma::uvec nest_idx0_i     = nest_idx0.elem(alt_idx0_i);
-      arma::vec  V_inside        = base_util.subvec(start_idx, end_idx);
+      int* nest_idx0_i           = nest_buf.data();
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      const double* V_inside     = base_util.memptr() + start_idx;
 
       // Step 2b: Compute probabilities
-      arma::vec P_i_vec, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i_vec, P_j_given_k, P_k, log_I_k,
-                          log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i_vec(pr.P_i.data(), m_i, false, true);
+      const double* P_j_given_k = pr.P_j_given_k.data();
+      const double* P_k = pr.P_k.data();
+      const double* log_I_k = pr.log_I_k.data();
+      const double* log_P_i = pr.log_P_i.data();
+      const double log_P_outside = pr.log_P_outside;
 
       // Resolve chosen alternative
       const int chosen_alt_idx_i  = choice_idx[i];
@@ -1347,27 +1378,35 @@ Rcpp::List nl_predict(
 
   arma::vec V_all = arma::zeros(X.n_rows);
   arma::vec P_all = arma::zeros(X.n_rows);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel
 #endif
-  for (int i = 0; i < N; ++i) {
-    const int m_i       = M[i];
-    const int start_idx = S[i];
-    const int end_idx   = start_idx + m_i - 1;
+  {
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
-    arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-    arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
-    arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (int i = 0; i < N; ++i) {
+      const int m_i       = M[i];
+      const int start_idx = S[i];
+      const int end_idx   = start_idx + m_i - 1;
 
-    arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-    double log_P_outside;
-    nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                        include_outside_option,
-                        P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+      int* nest_idx0_i = nest_buf.data();
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      const double* V_inside = base_util.memptr() + start_idx;
 
-    V_all.subvec(start_idx, end_idx) = V_inside;
-    P_all.subvec(start_idx, end_idx) = P_i;
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+
+      V_all.subvec(start_idx, end_idx) = base_util.subvec(start_idx, end_idx);
+      P_all.subvec(start_idx, end_idx) = P_i;
+    }
   }
 
   return Rcpp::List::create(
@@ -1404,12 +1443,15 @@ static arma::vec nl_predict_shares_internal(
   arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
 
   arma::vec global_shares = arma::zeros(num_alts);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
 #endif
   {
     arma::vec local_shares = arma::zeros(num_alts);
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1421,14 +1463,14 @@ static arma::vec nl_predict_shares_internal(
       const double w_i    = weights[i];
 
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-      arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
-      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+      int* nest_idx0_i = nest_buf.data();
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      const double* V_inside = base_util.memptr() + start_idx;
 
-      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double log_P_outside = pr.log_P_outside;
 
       if (include_outside_option) {
         local_shares(0) += w_i * std::exp(log_P_outside);
@@ -1589,6 +1631,7 @@ arma::mat nl_elasticities_parallel(
 
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1596,6 +1639,8 @@ arma::mat nl_elasticities_parallel(
   {
     arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
     double local_total_weight = 0.0;
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1608,14 +1653,14 @@ arma::mat nl_elasticities_parallel(
       const auto X_i      = X.rows(start_idx, end_idx);
 
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-      arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
-      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+      int* nest_idx0_i = nest_buf.data();
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      const double* V_inside = base_util.memptr() + start_idx;
 
-      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_j_given_k = pr.P_j_given_k.data();
 
       // x_k for each inside alternative
       arma::vec x_k_i = X_i.col(var_idx);
@@ -1755,6 +1800,7 @@ arma::mat nl_diversion_ratios_parallel(
   // denominator(j)  = sum_i w_i * (dP_ij/dV_ij)
   arma::mat global_numerator = arma::zeros(J_total, J_total);
   arma::vec global_denominator = arma::zeros(J_total);
+  const int max_m = nl_max_m(M);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -1762,6 +1808,8 @@ arma::mat nl_diversion_ratios_parallel(
   {
     arma::mat local_numerator = arma::zeros(J_total, J_total);
     arma::vec local_denominator = arma::zeros(J_total);
+    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
+    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1773,14 +1821,15 @@ arma::mat nl_diversion_ratios_parallel(
       const double w_i    = weights[i];
 
       arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-      arma::uvec nest_idx0_i = nest_idx0.elem(alt_idx0_i);
-      arma::vec V_inside = base_util.subvec(start_idx, end_idx);
+      int* nest_idx0_i = nest_buf.data();
+      for (int j = 0; j < m_i; ++j) nest_idx0_i[j] = nest_idx0[alt_idx0_i[j]];
+      const double* V_inside = base_util.memptr() + start_idx;
 
-      arma::vec P_i, P_j_given_k, P_k, log_I_k, log_P_i;
-      double log_P_outside;
-      nl_individual_probs(V_inside, nest_idx0_i, lambda, n_nests,
-                          include_outside_option,
-                          P_i, P_j_given_k, P_k, log_I_k, log_P_i, log_P_outside);
+      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+                          include_outside_option, pr);
+      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_j_given_k = pr.P_j_given_k.data();
+      const double log_P_outside = pr.log_P_outside;
 
       const double P_out = include_outside_option ? std::exp(log_P_outside) : 0.0;
 
@@ -1931,6 +1980,21 @@ arma::vec nl_blp_contraction(
     Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
   }
   validate_nl_inputs(X, alt_idx, nest_idx, M, use_asc, delta, &weights);
+
+  // nl_parse_theta() is not run here, so check the two invariants that keep
+  // nl_individual_probs() in bounds against the lambda given: nest codes from
+  // 1, and one lambda per nest. A code below 1 or a lambda of another length
+  // used to fail an Armadillo bounds or size check inside the parallel loop
+  // (which terminates R under OpenMP); nl_individual_probs() now indexes
+  // lambda directly.
+  if (nest_idx.min() < 1) {
+    Rcpp::stop("nest_idx must use 1-based nest indices (found %d).",
+               static_cast<int>(nest_idx.min()));
+  }
+  if (static_cast<int>(lambda.n_elem) != n_nests) {
+    Rcpp::stop("lambda must have one entry per nest of nest_idx (%d); it has "
+               "%d.", n_nests, static_cast<int>(lambda.n_elem));
+  }
 
   arma::uvec alt_idx0 = alt_idx - 1;
   arma::uvec nest_idx0 = nest_idx - 1;

@@ -243,6 +243,20 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// test_nl_individual_probs
+Rcpp::List test_nl_individual_probs(const arma::vec& V, const Rcpp::IntegerVector& nest0, const arma::vec& lambda, const bool include_outside_option);
+RcppExport SEXP _choicer_test_nl_individual_probs(SEXP VSEXP, SEXP nest0SEXP, SEXP lambdaSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type V(VSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest0(nest0SEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type lambda(lambdaSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(test_nl_individual_probs(V, nest0, lambda, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -1083,6 +1097,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_hmnl_gibbs", (DL_FUNC) &_choicer_hmnl_gibbs, 26},
     {"_choicer_hmnp_gibbs", (DL_FUNC) &_choicer_hmnp_gibbs, 24},
     {"_choicer_test_softmax_n", (DL_FUNC) &_choicer_test_softmax_n, 1},
+    {"_choicer_test_nl_individual_probs", (DL_FUNC) &_choicer_test_nl_individual_probs, 4},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},
     {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 7},
