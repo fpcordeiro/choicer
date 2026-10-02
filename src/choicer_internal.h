@@ -646,6 +646,139 @@ inline double log_sum_exp_n(const double* x, const int n) {
 }
 
 // ----------------------------------------------------------------------------
+// Nested logit: one individual's probabilities
+//
+// Given one individual's inside utilities V (m entries), the 0-based nest of
+// each inside alternative (nest, m entries), the *full* lambda vector
+// (n_nests entries, singletons fixed to 1) and the outside-option flag,
+// nl_individual_probs() fills in pr:
+//   P_i           (m)        joint choice probability  P_ij = P(j|k) * P_k
+//   P_j_given_k   (m)        within-nest conditional probability P(j|k)
+//   P_k           (n_nests)  marginal nest probability P_k
+//   log_I_k       (n_nests)  log inclusive value of each nest (-inf if empty)
+//   log_P_i       (m)        log joint choice probability (stabilised)
+//   log_P_outside            log probability of the outside option (-inf if
+//                            there is none)
+// with the same two-level log-sum-exp stabilisation as the likelihood kernel
+// (the outside option has V = 0 and lambda = 1, so its nest term is 0).
+//
+// NlProbs holds the outputs and the working arrays: one per thread, sized
+// once for the largest choice set and the number of nests, so the helper
+// allocates nothing per individual. The arithmetic is that of the Armadillo
+// expressions this replaced, operation for operation and in their order:
+// elementwise quotients, products, differences and exp() of the same
+// operands; the maximum nest term by op_max::direct_max's paired scan
+// (direct_max_n); and the sum of their exponentials by
+// arrayops::accumulate's two accumulators, which is how accu() sums an exp()
+// expression whether or not it first materializes it (it does when Armadillo
+// uses OpenMP; under -ffast-math it sums in one accumulator, but no order is
+// fixed there). lambda_k log I_k is formed once, into nest_terms, and every
+// later use reads that rounded product, never a fused multiply-add of it. The
+// results are therefore bitwise those of the Armadillo version, which
+// test_nl_individual_probs() keeps for comparison (kernel_test_exports.cpp).
+// ----------------------------------------------------------------------------
+struct NlProbs {
+  std::vector<double> P_i, P_j_given_k, log_P_i; // m (sized for the largest)
+  std::vector<double> P_k, log_I_k;              // n_nests
+  double log_P_outside = 0.0;
+  // working arrays
+  std::vector<double> V_over_lambda, log_P_j_given_k;             // m
+  std::vector<double> max_V_k, I_k_unscaled, nest_terms, log_P_k; // n_nests
+
+  NlProbs(const choicer_off max_m, const int n_nests)
+      : P_i(max_m), P_j_given_k(max_m), log_P_i(max_m), P_k(n_nests),
+        log_I_k(n_nests), V_over_lambda(max_m), log_P_j_given_k(max_m),
+        max_V_k(n_nests), I_k_unscaled(n_nests), nest_terms(n_nests),
+        log_P_k(n_nests) {}
+};
+
+inline void nl_individual_probs(const double* V, const int* nest, const int m,
+                                const arma::vec& lambda, const int n_nests,
+                                const bool include_outside_option,
+                                NlProbs& pr) {
+  const double* lam = lambda.memptr();
+  const double inf = arma::datum::inf;
+
+  // V_ij / lambda_k  (lambda_k = 1 for singletons)
+  double* V_over_lambda = pr.V_over_lambda.data();
+  for (int j = 0; j < m; ++j) V_over_lambda[j] = V[j] / lam[nest[j]];
+
+  // --- log_I_k (inclusive value) via log-sum-exp within each nest ---
+  double* max_V_k = pr.max_V_k.data();
+  for (int k = 0; k < n_nests; ++k) max_V_k[k] = -inf;
+  for (int j = 0; j < m; ++j) {
+    const int k = nest[j];
+    if (V_over_lambda[j] > max_V_k[k]) {
+      max_V_k[k] = V_over_lambda[j];
+    }
+  }
+
+  double* I_k_unscaled = pr.I_k_unscaled.data();
+  for (int k = 0; k < n_nests; ++k) I_k_unscaled[k] = 0.0;
+  for (int j = 0; j < m; ++j) {
+    const int k = nest[j];
+    if (std::isfinite(max_V_k[k])) {
+      I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
+    }
+  }
+
+  double* log_I_k = pr.log_I_k.data();
+  for (int k = 0; k < n_nests; ++k) {
+    log_I_k[k] = -inf;
+    if (I_k_unscaled[k] > 0) {
+      log_I_k[k] = max_V_k[k] + std::log(I_k_unscaled[k]);
+    }
+  }
+
+  // --- log(P_k) (nest probability) ---
+  double* nest_terms = pr.nest_terms.data();
+  for (int k = 0; k < n_nests; ++k) nest_terms[k] = lam[k] * log_I_k[k];
+
+  double max_nest_term = direct_max_n(nest_terms, n_nests);
+  if (!std::isfinite(max_nest_term)) {
+    max_nest_term = 0;
+  }
+
+  double acc1 = 0.0, acc2 = 0.0;
+  int k2;
+  for (k2 = 1; k2 < n_nests; k2 += 2) {
+    acc1 += std::exp(nest_terms[k2 - 1] - max_nest_term);
+    acc2 += std::exp(nest_terms[k2] - max_nest_term);
+  }
+  if (k2 - 1 < n_nests) acc1 += std::exp(nest_terms[k2 - 1] - max_nest_term);
+  double sum_exp_nest_terms = acc1 + acc2;
+  if (include_outside_option) {
+    // Outside option: V=0, lambda=1 -> term = 0
+    sum_exp_nest_terms += std::exp(0.0 - max_nest_term);
+  }
+
+  const double log_denom_P_nest = max_nest_term + std::log(sum_exp_nest_terms);
+
+  double* log_P_k = pr.log_P_k.data();
+  for (int k = 0; k < n_nests; ++k) {
+    log_P_k[k] = nest_terms[k] - log_denom_P_nest;
+  }
+  pr.log_P_outside = include_outside_option ? (0.0 - log_denom_P_nest) : -inf;
+
+  // --- log(P_j|k) and log(P_ij) ---
+  double* log_P_j_given_k = pr.log_P_j_given_k.data();
+  double* log_P_i = pr.log_P_i.data();
+  for (int j = 0; j < m; ++j) {
+    log_P_j_given_k[j] = V_over_lambda[j] - log_I_k[nest[j]];
+  }
+  for (int j = 0; j < m; ++j) {
+    log_P_i[j] = log_P_j_given_k[j] + log_P_k[nest[j]];
+  }
+
+  double* P_i = pr.P_i.data();
+  double* P_j_given_k = pr.P_j_given_k.data();
+  double* P_k = pr.P_k.data();
+  for (int j = 0; j < m; ++j) P_i[j] = std::exp(log_P_i[j]);
+  for (int j = 0; j < m; ++j) P_j_given_k[j] = std::exp(log_P_j_given_k[j]);
+  for (int k = 0; k < n_nests; ++k) P_k[k] = std::exp(log_P_k[k]);
+}
+
+// ----------------------------------------------------------------------------
 // Delta-block (ASC) gradient scatter, in inside-alternative space:
 // diff_inside has one entry per inside alternative (callers with an outside
 // option pass diff_vec.subvec(1, m_i), a zero-copy subview). When there is no

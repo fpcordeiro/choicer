@@ -577,6 +577,15 @@ unless it says otherwise.
   ids' class, so they sample and weight such ids by value; if bit64 is not
   installed, such a column is an error. Samples of other ids are drawn as
   before.
+- `nl_blp_contraction()` takes `lambda` and `nest_idx` as given, not from a
+  fitted model, and never checked them against each other: a nest code
+  below 1, or a `lambda` with other than one entry per nest, failed an
+  Armadillo index or size check inside the contraction's parallel loop,
+  which aborted R in builds with OpenMP and was an Armadillo error in
+  builds without it. Both are now errors before the contraction starts. As
+  in the other nested logit kernels, this includes a nest code below 1 on
+  an alternative that no choice situation offers, which used to be
+  ignored.
 
 # choicer 0.2.1
 
