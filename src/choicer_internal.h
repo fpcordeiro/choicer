@@ -2,6 +2,12 @@
 #define CHOICER_INTERNAL_HPP
 
 #include "choicer.h"
+#include <algorithm>
+#include <cstddef>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 // ============================================================================
 // Internal helpers shared by mnlogit.cpp, mxlogit.cpp and nestlogit.cpp.
@@ -15,8 +21,11 @@
 // Validation lives in two places, and is always on:
 //   * theta-block validation (lengths, K > 0, lambda > 0) inside the theta
 //     parsers, so no entry point can parse an inconsistent theta;
-//   * data-shape validation (X/W/alt_idx/M/eta/weights consistency) in the
-//     validate_*_inputs helpers below, called by every exported entry point.
+//   * data-shape validation (X/W/alt_idx/M/eta/weights consistency), called
+//     by every exported entry point: in the layout builders (MNL:
+//     choice_layout_build below; MXL estimation: mxl_layout_build) and, for
+//     the kernels that still take arma::uvec indices, in the
+//     validate_*_inputs helpers.
 // Every check is O(1) or a single O(rows) integer scan — negligible next to
 // one likelihood evaluation — and turns what would otherwise be an obscure
 // Armadillo bounds error (or silently wrong output) into an actionable
@@ -132,6 +141,160 @@ inline void check_rc_dist_length(const arma::uvec& rc_dist, const int K_w) {
   if (static_cast<int>(rc_dist.n_elem) != K_w) {
     Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
   }
+}
+
+// ----------------------------------------------------------------------------
+// Layout of the stacked design
+//
+// The theta-independent layout of a kernel call: situation offsets, and the
+// per-row alternative codes and per-situation choices, read in place from the
+// kernel's integer arguments (no per-call copy). Offsets are 64-bit
+// (choicer_off). R caps a matrix at 2^31 - 1 rows, so the row offsets fit in
+// an int; the element offsets formed from them (row + column * n_rows) are
+// Armadillo's (arma::uword). ChoiceLayout is the core shared by the MNL
+// kernels (choice_layout_build) and the MXL estimation kernels (MxlLayout,
+// mxl_layout_build). It is valid for one kernel call only: when an argument
+// was coerced from doubles, the integer copy belongs to that call's Rcpp
+// wrapper. Build it on the primary thread; it is read-only afterwards.
+// ----------------------------------------------------------------------------
+using choicer_off = std::ptrdiff_t;
+
+// A pass over the stacked rows runs in parallel above this many rows; below
+// it a thread team costs more than the pass. Each such pass is elementwise or
+// an exact min/max, so the thread count never changes its result.
+constexpr choicer_off CHOICER_PARALLEL_ROWS = 1000000;
+
+struct ChoiceLayout {
+  choicer_off n_rows = 0;            // stacked alternative rows, sum(M)
+  choicer_off N = 0;                 // choice situations
+  choicer_off max_m = 0;             // rows of the largest situation
+  int J = 0;                         // largest alternative code
+  std::vector<choicer_off> row_off;  // situation t: rows [row_off[t], row_off[t+1])
+  const int* alt = nullptr;          // row r: 1-based alternative code
+  const int* choice = nullptr;       // situation t: the kernel's choice_idx
+
+  // Rows of situation t (M[t]), and the 0-based alternative of row r
+  int m(const choicer_off t) const {
+    return static_cast<int>(row_off[t + 1] - row_off[t]);
+  }
+  int alt0(const choicer_off r) const { return alt[r] - 1; }
+};
+
+// 0-based alternative codes of consecutive rows, read from the 1-based codes
+// in place: what scatter_delta_grad() and the per-situation loops index.
+struct AltCodes0 {
+  const int* alt; // 1-based codes from the first row
+  int operator[](const int j) const { return alt[j] - 1; }
+};
+
+// The situations: row offsets, summed in 64 bits, and the largest choice set;
+// then the design's height and the lengths of alt_idx, weights and
+// choice_idx, with validate_choice_data()'s messages in its order. Pass
+// nullptr for weights or choice_idx where the kernel takes none, or (MNL)
+// where validate_choice_data() was not given them.
+inline void choice_layout_situations(ChoiceLayout& lay, const arma::mat& X,
+                                     const Rcpp::IntegerVector& alt_idx,
+                                     const Rcpp::IntegerVector& M,
+                                     const arma::vec* weights,
+                                     const Rcpp::IntegerVector* choice_idx) {
+  const choicer_off N = M.size();
+  const int* m = M.begin();
+  lay.N = N;
+  lay.row_off.assign(static_cast<std::size_t>(N) + 1, 0);
+  for (choicer_off t = 0; t < N; ++t) {
+    if (m[t] <= 0) { // NA_INTEGER is negative
+      Rcpp::stop("M must be positive for every individual (M[%d] = %d).",
+                 t + 1, m[t]);
+    }
+    lay.row_off[t + 1] = lay.row_off[t] + m[t];
+    lay.max_m = std::max<choicer_off>(lay.max_m, m[t]);
+  }
+  lay.n_rows = lay.row_off[N];
+  if (lay.n_rows != static_cast<choicer_off>(X.n_rows)) {
+    Rcpp::stop("X has %d rows but sum(M) is %d.", X.n_rows, lay.n_rows);
+  }
+  if (static_cast<choicer_off>(alt_idx.size()) != lay.n_rows) {
+    Rcpp::stop("alt_idx length (%d) does not match the number of rows of X "
+               "(%d).", alt_idx.size(), X.n_rows);
+  }
+  if (weights && static_cast<choicer_off>(weights->n_elem) != N) {
+    Rcpp::stop("weights length (%d) does not match N (%d)", weights->n_elem, N);
+  }
+  if (choice_idx && static_cast<choicer_off>(choice_idx->size()) != N) {
+    Rcpp::stop("choice_idx length (%d) does not match N (%d)",
+               choice_idx->size(), N);
+  }
+  lay.alt = alt_idx.begin();
+  lay.choice = choice_idx ? choice_idx->begin() : nullptr;
+}
+
+// The alternative codes, in one min/max pass over the rows: they are 1-based,
+// and NA_INTEGER, the most negative int, fails the same check and is reported
+// as NA. (The arma::uvec arguments this replaces read NA and negative codes
+// through a double-to-unsigned cast, which is undefined.) J is the largest
+// code, 0 without rows.
+inline void choice_layout_codes(ChoiceLayout& lay) {
+  int a_min = std::numeric_limits<int>::max(), a_max = 0;
+  const int* alt = lay.alt;
+  const choicer_off n_rows = lay.n_rows;
+#ifdef _OPENMP
+#pragma omp parallel for reduction(min : a_min) reduction(max : a_max) \
+    if (n_rows > CHOICER_PARALLEL_ROWS)
+#endif
+  for (choicer_off r = 0; r < n_rows; ++r) {
+    a_min = std::min(a_min, alt[r]);
+    a_max = std::max(a_max, alt[r]);
+  }
+  if (n_rows > 0 && a_min < 1) {
+    Rcpp::stop("alt_idx must use 1-based alternative indices (found %s).",
+               a_min == NA_INTEGER ? "NA" : std::to_string(a_min));
+  }
+  lay.J = a_max;
+}
+
+// Every situation's choice is a slot of its choice set: 1..M[t], or 0 for the
+// outside option when there is one. The slot is formed in 64 bits, so no
+// choice, NA_INTEGER included, overflows it; NA is rejected by name. `kernel`
+// (or nullptr) names the kernel in the message, as the BHHH, score and MXL
+// kernels have always done.
+inline void validate_choices(const ChoiceLayout& lay,
+                             const bool include_outside_option,
+                             const char* kernel) {
+  for (choicer_off t = 0; t < lay.N; ++t) {
+    const int c = lay.choice[t];
+    const choicer_off slot =
+        include_outside_option ? choicer_off(c) : choicer_off(c) - 1;
+    const choicer_off n_choices =
+        include_outside_option ? choicer_off(lay.m(t)) + 1 : lay.m(t);
+    if (c == NA_INTEGER || slot < 0 || slot >= n_choices) {
+      if (kernel) {
+        Rcpp::stop("Invalid chosen alternative index for individual %d (%s)",
+                   t, kernel);
+      }
+      Rcpp::stop("Invalid chosen alternative index for individual %d", t);
+    }
+  }
+}
+
+// The layout of the MNL kernels, with validate_choice_data()'s checks in its
+// order and with its messages: the situations, the alternative codes, and
+// the delta block's coverage of them. choice_idx is only length-checked here
+// and kept for validate_choices(): pass nullptr where the kernel takes no
+// choices or does not check them.
+inline ChoiceLayout choice_layout_build(
+    const arma::mat& X, const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& M, const bool use_asc, const arma::vec& delta,
+    const arma::vec* weights = nullptr,
+    const Rcpp::IntegerVector* choice_idx = nullptr) {
+  ChoiceLayout lay;
+  choice_layout_situations(lay, X, alt_idx, M, weights, choice_idx);
+  choice_layout_codes(lay);
+  if (use_asc && lay.n_rows > 0 &&
+      static_cast<choicer_off>(delta.n_elem) < lay.J) {
+    Rcpp::stop("Theta's delta (ASC) block implies %d alternatives but "
+               "alt_idx references alternative %d.", delta.n_elem, lay.J);
+  }
+  return lay;
 }
 
 // ----------------------------------------------------------------------------
@@ -299,6 +462,34 @@ inline arma::vec compute_base_util(const arma::mat& X, const arma::vec& beta,
                                    const bool use_asc, const arma::vec& delta) {
   arma::vec base_util = X * beta;
   if (use_asc) base_util += delta.elem(alt_idx0);
+  return base_util;
+}
+
+// The same with the alternative codes read in place: X * beta in the same
+// single BLAS call, then each row's ASC added to its base utility, the one
+// addition per element that += delta.elem(alt_idx0) makes (in parallel above
+// 10^6 rows; every element is independent, so the sums are unchanged).
+// add_row_asc() serves callers that keep X * beta across calls (BLP).
+inline void add_row_asc(arma::vec& base_util, const ChoiceLayout& lay,
+                        const arma::vec& delta) {
+  double* bu = base_util.memptr();
+  const double* d = delta.memptr();
+  const int* alt = lay.alt;
+  const choicer_off n_rows = lay.n_rows;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) \
+    if (n_rows > CHOICER_PARALLEL_ROWS)
+#endif
+  for (choicer_off r = 0; r < n_rows; ++r) {
+    bu[r] += d[alt[r] - 1];
+  }
+}
+
+inline arma::vec compute_base_util(const arma::mat& X, const arma::vec& beta,
+                                   const ChoiceLayout& lay,
+                                   const bool use_asc, const arma::vec& delta) {
+  arma::vec base_util = X * beta;
+  if (use_asc) add_row_asc(base_util, lay, delta);
   return base_util;
 }
 
@@ -507,6 +698,19 @@ inline arma::uvec build_global_alt_map_inside(const arma::uvec& alt_idx0_i,
   return global_map;
 }
 
+// build_global_alt_map() from the 1-based codes of a situation's m rows, into
+// a caller-owned buffer of at least m + 1 entries (one per thread, sized once
+// from the layout's max_m).
+inline void fill_global_alt_map(int* map, const int* alt, const int m,
+                                const bool include_outside_option) {
+  if (include_outside_option) {
+    map[0] = 0;                              // outside option = global index 0
+    for (int j = 0; j < m; ++j) map[j + 1] = alt[j]; // inside alts are 1...J
+  } else {
+    for (int j = 0; j < m; ++j) map[j] = alt[j] - 1; // no outside: 0...J-1
+  }
+}
+
 // ----------------------------------------------------------------------------
 // Output-matrix dimensions: number of inside alternatives and total
 // alternatives (including the outside option when present). arma::max is only
@@ -518,9 +722,21 @@ inline int compute_J_inside(const bool use_asc, const arma::vec& delta,
                  : (static_cast<int>(arma::max(alt_idx0)) + 1);
 }
 
+// The same from the layout. arma::max() of an empty alt_idx0 threw
+// std::logic_error "max(): object has no elements", which is kept.
+inline int compute_J_inside(const bool use_asc, const arma::vec& delta,
+                            const ChoiceLayout& lay) {
+  if (use_asc) return static_cast<int>(delta.n_elem);
+  if (lay.n_rows == 0) throw std::logic_error("max(): object has no elements");
+  return lay.J;
+}
+
+// Formed in 64 bits and narrowed: the largest code, 2^31 - 1, with an
+// outside option wraps to a negative count instead of overflowing int.
 inline int compute_J_total(const int J_inside,
                            const bool include_outside_option) {
-  return include_outside_option ? J_inside + 1 : J_inside;
+  return static_cast<int>(static_cast<choicer_off>(J_inside) +
+                          (include_outside_option ? 1 : 0));
 }
 
 #endif // CHOICER_INTERNAL_HPP

@@ -81,36 +81,31 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 // if that is lifted. Armadillo indices (arma::uword) are taken from them where
 // a matrix is sliced.
 // ============================================================================
-using mxl_off = std::ptrdiff_t;
+using mxl_off = choicer_off;
 
 // The theta-independent layout of the stacked design, built and validated on
-// the primary thread by every kernel call: situation (and, in a panel, unit)
-// offsets, and pointers to the per-row alternative codes and per-situation
-// choices, read in place from the kernel's integer arguments. It is valid for
-// one kernel call only: when an argument was coerced from doubles, the integer
-// copy belongs to the Rcpp wrapper of that call. Building it is one pass over
-// the rows (in parallel above 10^6 rows) and one over the situations, about
-// 20 ms at 10^8 rows: under 1% of an evaluation, too little to repay caching.
-struct MxlLayout {
-  mxl_off n_rows = 0;            // stacked alternative rows, sum(M)
-  mxl_off N = 0;                 // choice situations
+// the primary thread by every kernel call: the situation core shared with the
+// MNL kernels (ChoiceLayout, choicer_internal.h: situation offsets, and
+// pointers to the per-row alternative codes and per-situation choices, read in
+// place from the kernel's integer arguments), plus the likelihood units of a
+// panel. It is valid for one kernel call only: when an argument was coerced
+// from doubles, the integer copy belongs to the Rcpp wrapper of that call.
+// Building it is one pass over the rows (in parallel above 10^6 rows) and one
+// over the situations, about 20 ms at 10^8 rows: under 1% of an evaluation,
+// too little to repay caching.
+struct MxlLayout : ChoiceLayout {
   mxl_off U = 0;                 // likelihood units
   mxl_off max_unit_rows = 0;     // rows of the largest unit
-  int J = 0;                     // largest alternative code
   bool include_outside_option = false;
-  std::vector<mxl_off> row_off;  // situation t: rows [row_off[t], row_off[t+1])
   std::vector<mxl_off> unit_off; // panel: unit u's situations [unit_off[u],
                                  // unit_off[u+1]); empty in the cross-section
-  const int* alt = nullptr;      // row r: 1-based alternative code
-  const int* choice = nullptr;   // situation t: the kernel's choice_idx
 
   // First situation of unit u (u = U gives N): unit u is situation u in the
   // cross-section.
   mxl_off unit_first(const mxl_off u) const {
     return unit_off.empty() ? u : unit_off[u];
   }
-  // 0-based alternative of row r, and the slot of situation t's choice in P
-  int alt0(const mxl_off r) const { return alt[r] - 1; }
+  // The slot of situation t's choice in P
   int chosen(const mxl_off t) const {
     return include_outside_option ? choice[t] : choice[t] - 1;
   }
@@ -134,7 +129,6 @@ inline MxlLayout mxl_layout_build(const arma::mat& X,
                                   const char* kernel) {
   MxlLayout lay;
   const mxl_off N = M.size();
-  lay.N = N;
   lay.include_outside_option = include_outside_option;
 
   // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL).
@@ -161,66 +155,11 @@ inline MxlLayout mxl_layout_build(const arma::mat& X,
     }
   }
 
-  // Situations: row offsets, the design's height, the index vectors' lengths.
-  const int* m_ptr = M.begin();
-  lay.row_off.assign(N + 1, 0);
-  for (mxl_off t = 0; t < N; ++t) {
-    if (m_ptr[t] <= 0) { // NA_INTEGER is negative
-      Rcpp::stop("M must be positive for every individual (M[%d] = %d).",
-                 t + 1, m_ptr[t]);
-    }
-    lay.row_off[t + 1] = lay.row_off[t] + m_ptr[t];
-  }
-  lay.n_rows = lay.row_off[N];
-  if (lay.n_rows != static_cast<mxl_off>(X.n_rows)) {
-    Rcpp::stop("X has %d rows but sum(M) is %d.", X.n_rows, lay.n_rows);
-  }
-  if (static_cast<mxl_off>(alt_idx.size()) != lay.n_rows) {
-    Rcpp::stop("alt_idx length (%d) does not match the number of rows of X "
-               "(%d).", alt_idx.size(), X.n_rows);
-  }
-  if (weights && static_cast<mxl_off>(weights->n_elem) != N) {
-    Rcpp::stop("weights length (%d) does not match N (%d)", weights->n_elem, N);
-  }
-  if (static_cast<mxl_off>(choice_idx.size()) != N) {
-    Rcpp::stop("choice_idx length (%d) does not match N (%d)",
-               choice_idx.size(), N);
-  }
-  lay.alt = alt_idx.begin();
-  lay.choice = choice_idx.begin();
-
-  // Alternative codes are 1-based; NA_INTEGER, the most negative int, fails
-  // the same check.
-  int a_min = std::numeric_limits<int>::max(), a_max = 0;
-  const int* alt = lay.alt;
-  const mxl_off n_rows = lay.n_rows;
-#ifdef _OPENMP
-#pragma omp parallel for reduction(min : a_min) reduction(max : a_max) \
-    if (n_rows > 1000000)
-#endif
-  for (mxl_off r = 0; r < n_rows; ++r) {
-    a_min = std::min(a_min, alt[r]);
-    a_max = std::max(a_max, alt[r]);
-  }
-  if (n_rows > 0 && a_min < 1) {
-    Rcpp::stop("alt_idx must use 1-based alternative indices (found %s).",
-               a_min == NA_INTEGER ? "NA" : std::to_string(a_min));
-  }
-  lay.J = a_max;
-
-  // Choices: a slot of the situation's choice set (0 = the outside option),
-  // NA tested before any arithmetic on it.
-  const int* choice = lay.choice;
-  for (mxl_off t = 0; t < N; ++t) {
-    const int c = choice[t];
-    const mxl_off slot = include_outside_option ? mxl_off(c) : mxl_off(c) - 1;
-    const mxl_off n_choices =
-        include_outside_option ? mxl_off(m_ptr[t]) + 1 : mxl_off(m_ptr[t]);
-    if (c == NA_INTEGER || slot < 0 || slot >= n_choices) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (%s)",
-                 t, kernel);
-    }
-  }
+  // Situations and alternative codes (ChoiceLayout's checks, shared with the
+  // MNL kernels), then the choices.
+  choice_layout_situations(lay, X, alt_idx, M, weights, &choice_idx);
+  choice_layout_codes(lay);
+  validate_choices(lay, include_outside_option, kernel);
 
   lay.max_unit_rows = 0;
   for (mxl_off u = 0; u < lay.U; ++u) {
@@ -418,12 +357,6 @@ inline const arma::mat mxl_eta_view(const MxlUnitData& ud,
   return arma::mat(const_cast<double*>(sc.eta), ud.W.n_cols, ud.S, false,
                    true);
 }
-
-// 0-based alternative codes of the loaded unit's rows, for scatter_delta_grad.
-struct MxlUnitAlt0 {
-  const int* alt; // 1-based codes from the unit's first row
-  int operator[](const int j) const { return alt[j] - 1; }
-};
 
 // Load unit u into the thread's buffers: its rows of X and W (for an
 // alternative-level W, the rows of its alternatives), the base utilities
@@ -669,7 +602,7 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
   // Delta block (scatter -- irregular alt-index mapping)
   if (ud.use_asc) {
     scatter_delta_grad(score, par.idx_delta_start, sc.d_bar,
-                       MxlUnitAlt0{ud.lay.alt + sc.r0}, static_cast<int>(sc.R),
+                       AltCodes0{ud.lay.alt + sc.r0}, static_cast<int>(sc.R),
                        ud.include_outside_option, 1.0);
   }
 }
