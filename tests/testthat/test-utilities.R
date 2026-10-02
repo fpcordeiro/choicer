@@ -339,3 +339,14 @@ test_that("set_num_threads updates reported OpenMP max threads", {
     expect_equal(info_after$omp_get_num_threads, 1L)
   }
 })
+
+test_that("choicer is built with Armadillo's 64-bit word", {
+  # src/Makevars defines ARMA_64BIT_WORD: the kernels view R's matrices and
+  # cubes without copying them, and under a 32-bit word the element count of
+  # one of more than 2^32 - 1 values wraps. Armadillo keeps the 32-bit word
+  # where pointers are 32-bit, so the expectation follows the platform.
+  expect_identical(choicer:::test_arma_word_bytes(), .Machine$sizeof.pointer)
+  if (.Machine$sizeof.pointer == 8L) {
+    expect_identical(choicer:::test_arma_view_n_elem(), 6442450941)
+  }
+})

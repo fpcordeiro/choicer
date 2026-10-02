@@ -2,7 +2,7 @@
 // helpers for unit testing. These functions are NOT user-facing API; they are
 // @noRd and only exported so that tests can pin the raw-array softmax,
 // log-sum-exp and nested logit probabilities to their Armadillo counterparts
-// bit for bit.
+// bit for bit, and check how Armadillo is configured (its index word).
 //
 // DO NOT add any of these to the public documentation or NAMESPACE.
 
@@ -167,4 +167,27 @@ Rcpp::List test_nl_individual_probs(const arma::vec& V,
       Rcpp::Named("log_P_i") = num(pr.log_P_i, m),
       Rcpp::Named("log_P_outside_ref") = log_P_outside,
       Rcpp::Named("log_P_outside") = pr.log_P_outside);
+}
+
+//' Bytes in Armadillo's index type, arma::uword: 8 when choicer is built with
+//' ARMA_64BIT_WORD (src/Makevars) on a 64-bit platform
+//'
+//' @return An integer.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+int test_arma_word_bytes() {
+  return static_cast<int>(sizeof(arma::uword));
+}
+
+//' Element count of a no-copy Armadillo view of a (2^31 - 1) x 3 matrix, as
+//' RcppArmadillo views R's matrices: 6442450941 under a 64-bit word, wrapped
+//' to 2147483645 under a 32-bit one. The view is never read.
+//'
+//' @return A double.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+double test_arma_view_n_elem() {
+  double cell = 0.0;
+  const arma::mat view(&cell, 2147483647u, 3u, false, true);
+  return static_cast<double>(view.n_elem);
 }
