@@ -36,40 +36,30 @@
 Rcpp::List mnl_loglik_gradient_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
   // Extract beta and delta from theta
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes and choices read in place
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc,
+                                               par.delta, &weights, &choice_idx);
+  const choicer_off N = lay.N;
 
   // --- H2: Serial pre-loop validation of chosen-alternative indices ---
   // Rcpp::stop() is only safe outside parallel regions.
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, nullptr);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -89,14 +79,14 @@ Rcpp::List mnl_loglik_gradient_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
       const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
 
       // Build utility vector V_i
       arma::vec V_i(num_choices);
@@ -110,7 +100,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
       const double log_denom = stable_softmax(V_i, P_i);
 
       // Identify chosen alternative (validated serially above)
-      int chosen_alt = choice_idx[i];
+      int chosen_alt = lay.choice[i];
       if (!include_outside_option) {
         chosen_alt -= 1; // shift by 1 for inside-only indexing
       }
@@ -223,38 +213,26 @@ Rcpp::List mnl_loglik_gradient_parallel(
 arma::mat mnl_bhhh_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights, &choice_idx);
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc,
+                                               par.delta, &weights, &choice_idx);
+  const choicer_off N = lay.N;
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mnl_bhhh_parallel)", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, "mnl_bhhh_parallel");
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Global BHHH accumulator
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
@@ -271,14 +249,14 @@ arma::mat mnl_bhhh_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
       const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
 
       // Build utility vector V_i
       arma::vec V_i(num_choices);
@@ -290,7 +268,7 @@ arma::mat mnl_bhhh_parallel(
       stable_softmax(V_i, P_i);
 
       // Chosen alternative (validated serially above)
-      int chosen_alt = choice_idx[i];
+      int chosen_alt = lay.choice[i];
       if (!include_outside_option) chosen_alt -= 1;
 
       // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
@@ -346,41 +324,29 @@ arma::mat mnl_bhhh_parallel(
 arma::mat mnl_scores_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
     const Rcpp::IntegerVector& M,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, nullptr, &choice_idx);
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc,
+                                               par.delta, nullptr, &choice_idx);
+  const choicer_off N = lay.N;
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
-  for (int i = 0; i < N; ++i) {
-    int chosen = choice_idx[i];
-    if (!include_outside_option) chosen -= 1;
-    const int num_choices_i = include_outside_option ? M[i] + 1 : M[i];
-    if (chosen < 0 || chosen >= num_choices_i) {
-      Rcpp::stop("Invalid chosen alternative index for individual %d (mnl_scores_parallel)", i);
-    }
-  }
+  validate_choices(lay, include_outside_option, "mnl_scores_parallel");
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Output: one row per choice situation (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
-  arma::mat scores(N, n_params);
+  arma::mat scores(static_cast<arma::uword>(N), n_params);
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -392,13 +358,13 @@ arma::mat mnl_scores_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
 
       // Build utility vector V_i
       arma::vec V_i(num_choices);
@@ -410,7 +376,7 @@ arma::mat mnl_scores_parallel(
       stable_softmax(V_i, P_i);
 
       // Chosen alternative (validated serially above)
-      int chosen_alt = choice_idx[i];
+      int chosen_alt = lay.choice[i];
       if (!include_outside_option) chosen_alt -= 1;
 
       // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
@@ -475,26 +441,20 @@ arma::mat mnl_scores_parallel(
 Rcpp::List mnl_predict(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
   // Extract beta and delta from theta
-  const int N = M.size();
   const int K = X.n_cols;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta);
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Compute prefix sums for indexing
-  Rcpp::IntegerVector S = compute_prefix_sum(M);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta);
+  const choicer_off N = lay.N;
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Preallocate predicted values
   arma::vec V_all = arma::zeros(X.n_rows);
@@ -503,11 +463,11 @@ Rcpp::List mnl_predict(
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic)
 #endif
-  for (int i = 0; i < N; ++i) {
-    const int m_i         = M[i];
+  for (choicer_off i = 0; i < N; ++i) {
+    const int m_i         = lay.m(i);
     const int num_choices = include_outside_option ? m_i + 1 : m_i;
-    const int start_idx   = S[i];
-    const int end_idx     = start_idx + m_i - 1;
+    const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+    const arma::uword end_idx   = start_idx + m_i - 1;
 
     // Build utility vector V_i
     arma::vec V_i(num_choices);
@@ -535,26 +495,28 @@ Rcpp::List mnl_predict(
   );
 }
 
-// Prediciton of shares (internal function)
-arma::vec mnl_predict_shares_internal(
-    const arma::mat& X,
-    const arma::vec& beta,
-    const arma::uvec& alt_idx0,        // 0-based indexing of alternatives
-    const Rcpp::IntegerVector& M,      // N x 1 vector with number of alternatives for each individual
-    const Rcpp::IntegerVector& S,      // N x 1 vector with prefix sums for alternative indices
-    const arma::vec& weights,          // N x 1 vector with weights for each observation
-    const arma::vec& delta,            // J x 1 vector with alternative-specific constants
-    const int num_alts,                // total number of distinct alternatives
-    const bool use_asc = true,         // whether to use alternative-specific constants
-    const bool include_outside_option = false  // whether to include
-) {
-  const int N = M.size();
+// The shares' denominator: the sum of the weights, which must be positive.
+static double mnl_shares_denominator(const arma::vec& weights) {
   const double denominator = arma::sum(weights);
   if (denominator <= 0) {
     Rcpp::stop("Error: Sum of weights must be positive.");
   }
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, alt_idx0, use_asc, delta);
+  return denominator;
+}
+
+// Prediction of shares (internal function), from the base utilities of all
+// rows (X * beta plus the rows' ASCs). denominator is
+// mnl_shares_denominator(weights), which the callers check before they form
+// the utilities.
+static arma::vec mnl_predict_shares_internal(
+    const arma::vec& base_util,        // sum(M) x 1 vector of base utilities
+    const ChoiceLayout& lay,           // layout of the stacked design
+    const arma::vec& weights,          // N x 1 vector with weights for each observation
+    const double denominator,          // sum of the weights
+    const int num_alts,                // total number of distinct alternatives
+    const bool include_outside_option  // whether to include an outside option
+) {
+  const choicer_off N = lay.N;
 
   // Initialize global accumulator for predicted shares
   arma::vec global_shares = arma::zeros(num_alts);
@@ -570,12 +532,12 @@ arma::vec mnl_predict_shares_internal(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-  for (int i = 0; i < N; ++i) {
-    const int m_i         = M[i];
+  for (choicer_off i = 0; i < N; ++i) {
+    const int m_i         = lay.m(i);
     const int num_choices = include_outside_option ? m_i + 1 : m_i;
-    const int start_idx   = S[i];
-    const int end_idx     = start_idx + m_i - 1;
-    arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
+    const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+    const arma::uword end_idx   = start_idx + m_i - 1;
+    const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
 
     // Build utility vector V_i
     arma::vec V_i(num_choices);
@@ -594,9 +556,9 @@ arma::vec mnl_predict_shares_internal(
     for (int a = 0; a < m_i; ++a) {
       if (include_outside_option) {
         // outside option at index 0
-        local_shares(alt_idx0_i(a) + 1) += weights[i] * P_i(a + 1);
+        local_shares(alt_idx0_i[a] + 1) += weights[i] * P_i(a + 1);
       } else {
-        local_shares(alt_idx0_i(a)) += weights[i] * P_i(a);
+        local_shares(alt_idx0_i[a]) += weights[i] * P_i(a);
       }
     }
 
@@ -643,7 +605,7 @@ arma::vec mnl_predict_shares_internal(
 arma::vec mnl_predict_shares(
     const arma::vec& theta,            // K + J - 1 or K + J vector with model parameters
     const arma::mat& X,                // sum(M) x K design matrix with covariates. M\[i] x K matrix for individual i
-    const arma::uvec& alt_idx,         // sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+    const Rcpp::IntegerVector& alt_idx, // sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
     const Rcpp::IntegerVector& M,      // N x 1 vector with number of alternatives for each individual
     const arma::vec& weights,          // N x 1 vector with weights for each observation
     const bool use_asc = true,         // whether to use alternative-specific constants
@@ -653,19 +615,19 @@ arma::vec mnl_predict_shares(
   const int K = X.n_cols;
 
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta,
+                                               &weights);
 
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
+  // total number of distinct alternatives (alt_idx.max() on the arma::uvec
+  // argument this replaces threw on an empty alt_idx; kept)
+  if (lay.n_rows == 0) throw std::logic_error("Mat::max(): object has no elements");
+  const int num_alts = compute_J_total(lay.J, include_outside_option);
 
-  // Compute prefix sums for indexing
-  Rcpp::IntegerVector S = compute_prefix_sum(M);
-
-  // total number of distinct alternatives
-  int num_alts = include_outside_option ? (alt_idx.max() + 1) :  alt_idx.max();
-
+  const double denominator = mnl_shares_denominator(weights);
+  const arma::vec base_util =
+      compute_base_util(X, par.beta, lay, use_asc, par.delta);
   arma::vec global_shares = mnl_predict_shares_internal(
-    X, par.beta, alt_idx0, M, S, weights, par.delta, num_alts, use_asc, include_outside_option
+    base_util, lay, weights, denominator, num_alts, include_outside_option
   );
 
   return global_shares;
@@ -706,7 +668,7 @@ arma::vec blp_contraction(
   const arma::vec& target_shares,
   const arma::mat& X,
   const arma::vec& beta,
-  const arma::uvec& alt_idx,
+  const Rcpp::IntegerVector& alt_idx,
   const Rcpp::IntegerVector& M,
   const arma::vec& weights,
   const bool include_outside_option = false,
@@ -724,23 +686,31 @@ arma::vec blp_contraction(
   if (arma::any(target_shares <= 0)) {
     Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
   }
-  validate_choice_data(X, alt_idx, M, use_asc, delta, &weights);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, delta,
+                                               &weights);
 
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Compute prefix sums for indexing
-  Rcpp::IntegerVector S = compute_prefix_sum(M);
+  // X * beta, once: only delta changes across the iterations. Each one adds
+  // its ASCs to a copy of it, in one buffer kept across them.
+  const double denominator = mnl_shares_denominator(weights);
+  const arma::vec Xb = X * beta;
+  arma::vec base_util;
+  auto predict_shares = [&](const arma::vec& inside_delta) {
+    base_util = Xb;
+    add_row_asc(base_util, lay, inside_delta);
+    return mnl_predict_shares_internal(base_util, lay, weights, denominator,
+                                       num_alts, include_outside_option);
+  };
 
   // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
   // residual) lives in the outside-inclusive share space of length num_alts:
   //   index 0 = outside option (when present), indices 1..J = inside alts.
-  // But mnl_predict_shares_internal indexes delta by INSIDE-alt index
-  // (alt_idx0 in {0..J-1}) and expects a length-J inside-delta vector (the
-  // outside option is handled separately via include_outside_option). We
-  // therefore feed it delta_old.subvec(1, num_alts - 1) when an outside option
-  // is present, and pin the outside slot delta_old[0] = 0 throughout (the
-  // outside option's utility is the fixed normalization).
+  // But predict_shares() adds the ASCs by inside alternative (add_row_asc()
+  // reads delta at each row's code minus 1, in 0..J-1), so it takes a length-J
+  // inside-delta vector (the outside option is handled separately via
+  // include_outside_option). We therefore feed it
+  // delta_old.subvec(1, num_alts - 1) when an outside option is present, and
+  // pin the outside slot delta_old[0] = 0 throughout (the outside option's
+  // utility is the fixed normalization).
   arma::vec delta_old = arma::zeros(num_alts);
   if (include_outside_option) {
     delta_old.subvec(1, num_alts - 1) = delta; // outside option at index 0
@@ -755,9 +725,7 @@ arma::vec blp_contraction(
     : delta_old;
 
   // Initialize shares and delta_new
-  arma::vec log_shares_old = mnl_predict_shares_internal(
-    X, beta, alt_idx0, M, S, weights, inside_delta_old, num_alts, use_asc, include_outside_option
-  );
+  arma::vec log_shares_old = predict_shares(inside_delta_old);
   log_shares_old = arma::log(log_shares_old);
   arma::vec log_shares_target = arma::log(target_shares);
   arma::vec delta_new = delta_old;
@@ -784,9 +752,7 @@ arma::vec blp_contraction(
       inside_delta_old = include_outside_option
         ? arma::vec(delta_old.subvec(1, num_alts - 1))
         : delta_old;
-      log_shares_old = mnl_predict_shares_internal(
-        X, beta, alt_idx0, M, S, weights, inside_delta_old, num_alts, use_asc, include_outside_option
-      );
+      log_shares_old = predict_shares(inside_delta_old);
       log_shares_old = arma::log(log_shares_old);
       ++iter;
   }
@@ -836,8 +802,8 @@ arma::vec blp_contraction(
 arma::mat mnl_loglik_hessian_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx, // Note: choice_idx is not needed for Hessian
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx, // Note: choice_idx is not needed for Hessian
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
@@ -846,22 +812,18 @@ arma::mat mnl_loglik_hessian_parallel(
   (void)choice_idx; // silence unused-parameter warning
 
   // Extract beta and delta from theta
-  const int N = M.size();
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
 
   // Split theta into beta and delta (ASCs) as in your gradient function
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Compute prefix sums for indexing each individual's block in X / alt_idx
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
+  // Layout of the stacked design (each individual's block in X / alt_idx)
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta,
+                                               &weights);
+  const choicer_off N = lay.N;
 
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Prepare global accumulator
   arma::mat global_hess = arma::zeros(n_params, n_params);
@@ -876,16 +838,16 @@ arma::mat mnl_loglik_hessian_parallel(
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
 
       // M[i] x K view of design rows for this individual (inside alts only)
       const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // inside alt IDs (0-based), length M[i]
+      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // inside alt IDs (0-based), length M[i]
 
       // Build utility vector V_i
       arma::vec V_i(num_choices);
@@ -1050,16 +1012,17 @@ arma::mat mnl_loglik_hessian_parallel(
 arma::mat mnl_elasticities_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx, // Kept for consistency, but not used
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx, // Kept for consistency, but not used
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const int elast_var_idx,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
+  (void)choice_idx;
+
   // --- 1. Parameter and Variable Setup ---
-  const int N = M.size();
   const int K = X.n_cols;
 
   // Convert 1-based R index to 0-based C++ index
@@ -1070,23 +1033,19 @@ arma::mat mnl_elasticities_parallel(
 
   // Extract beta and delta (same logic as loglik function)
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta,
+                                               &weights);
+  const choicer_off N = lay.N;
   const double beta_k = par.beta(var_idx); // The coefficient for our variable
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
 
   // Determine total number of alternatives for the output matrix
   // J_inside = number of alternatives (with or without normalization)
   // J_total = total size of matrix (J_inside + 1 if outside option)
-  const int J_inside = compute_J_inside(use_asc, par.delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
 
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Prepare global accumulators
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
@@ -1099,18 +1058,19 @@ arma::mat mnl_elasticities_parallel(
     // Thread-local accumulators
     arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
     double local_total_weight = 0.0;
+    // Local-to-global alternative map, sized once for the largest choice set
+    std::vector<int> global_j_map(static_cast<std::size_t>(lay.max_m) + 1);
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
       const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
 
       // --- 2. Compute Probabilities (same as loglik) ---
       arma::vec V_i(num_choices);
@@ -1133,8 +1093,8 @@ arma::mat mnl_elasticities_parallel(
 
       // Map local choice set indices (0...num_choices-1) to global
       // alternative indices (0...J_total-1)
-      arma::uvec global_j_map =
-          build_global_alt_map(alt_idx0_i, m_i, include_outside_option);
+      fill_global_alt_map(global_j_map.data(), lay.alt + lay.row_off[i], m_i,
+                          include_outside_option);
 
       // --- 4. Compute Individual Elasticity Matrix ---
       // E_n(i, j) = elasticity of P_ni w.r.t attribute x_njk
@@ -1220,32 +1180,27 @@ arma::mat mnl_elasticities_parallel(
 arma::mat mnl_diversion_ratios_parallel(
     const arma::vec& theta,
     const arma::mat& X,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
     const bool include_outside_option = false
 ) {
   // --- 1. Parameter and Variable Setup ---
-  const int N = M.size();
   const int K = X.n_cols;
 
   // Extract beta and delta (same logic as elasticities/loglik)
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
-
-  // alt_idx is 1-based indexing => shift to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta,
+                                               &weights);
+  const choicer_off N = lay.N;
 
   // Determine total number of alternatives for the output matrix
-  const int J_inside = compute_J_inside(use_asc, par.delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
 
-  // Compute prefix sums for indexing
-  const Rcpp::IntegerVector S = compute_prefix_sum(M);
-
   // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, alt_idx0, use_asc, par.delta);
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Prepare global accumulators
   // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j)
@@ -1260,18 +1215,18 @@ arma::mat mnl_diversion_ratios_parallel(
     // Thread-local accumulators
     arma::mat local_numerator = arma::zeros(J_total, J_total);
     arma::vec local_denominator = arma::zeros(J_total);
+    // Local-to-global alternative map, sized once for the largest choice set
+    std::vector<int> global_j_map(static_cast<std::size_t>(lay.max_m) + 1);
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i         = M[i];
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx   = S[i];
-      const int end_idx     = start_idx + m_i - 1;
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
-
-      arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx); // M[i]
 
       // --- 2. Compute Probabilities ---
       arma::vec V_i(num_choices);
@@ -1282,8 +1237,8 @@ arma::mat mnl_diversion_ratios_parallel(
       stable_softmax(V_i, P_i);
 
       // --- 3. Map local indices to global alternative indices ---
-      arma::uvec global_j_map =
-          build_global_alt_map(alt_idx0_i, m_i, include_outside_option);
+      fill_global_alt_map(global_j_map.data(), lay.alt + lay.row_off[i], m_i,
+                          include_outside_option);
 
       // --- 4. Accumulate numerator and denominator ---
       for (int j_local = 0; j_local < num_choices; ++j_local) {
