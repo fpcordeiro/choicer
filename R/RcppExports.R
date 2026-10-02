@@ -170,6 +170,17 @@ hb_test_sigma_d2_gibbs <- function(xi, n_iter, seed, half_cauchy, s_d, c0, d0) {
     .Call(`_choicer_hb_test_sigma_d2_gibbs`, xi, n_iter, seed, half_cauchy, s_d, c0, d0)
 }
 
+#' HbPanel's offsets of positive counts, summed in 64 bits, for testing
+#' hb_internal.h
+#'
+#' @param x Integer vector (situation sizes or tasks per respondent).
+#' @return The offsets 0, x[1], x[1] + x[2], ..., or NULL when a count is
+#'   below 1 or a sum passes 2^31 - 1.
+#' @noRd
+hb_test_panel_offsets <- function(x) {
+    .Call(`_choicer_hb_test_panel_offsets`, x)
+}
+
 #' Gibbs sampler for the hierarchical Bayesian multinomial logit model
 #'
 #' Runs the adaptive random-walk Metropolis-within-Gibbs sampler for the

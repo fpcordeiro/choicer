@@ -5,6 +5,7 @@
 #   choicer:::hb_test_spd_solve(A, b)
 #   choicer:::hb_test_logsumexp(v, include_outside)
 #   choicer:::hb_test_sigma_d2_gibbs(xi, n_iter, seed, half_cauchy, s_d, c0, d0)
+#   choicer:::hb_test_panel_offsets(x)
 # The hand-rolled Cholesky/trisolves are the worker-thread-safe replacements
 # for LAPACK inside the OpenMP region, so they are validated against the
 # LAPACK-backed base R references here.
@@ -117,4 +118,18 @@ test_that("sigma_d2 scale-mixture Gibbs is positive and in the right ballpark", 
     s_d = 1, c0 = 3, d0 = 3
   )
   expect_identical(draws, again)
+})
+
+test_that("HbPanel sums its offsets in 64 bits and refuses bad counts", {
+  offsets <- choicer:::hb_test_panel_offsets
+  im <- .Machine$integer.max
+  expect_identical(offsets(c(3L, 2L, 4L)), c(0L, 3L, 5L, 9L))
+  expect_identical(offsets(integer(0)), 0L)
+  expect_identical(offsets(c(im - 1L, 1L)), c(0L, im - 1L, im))
+  # A sum past 2^31 - 1 is refused rather than wrapped, and so is a count
+  # below 1, NA included
+  expect_null(offsets(c(im, 1L)))
+  expect_null(offsets(c(5L, -2L)))
+  expect_null(offsets(c(1L, 0L)))
+  expect_null(offsets(c(2L, NA_integer_)))
 })

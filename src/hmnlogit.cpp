@@ -131,17 +131,15 @@ static void validate_hmnl_inputs(const arma::mat& X, const arma::mat& Z,
     ti_sum += Ti[i];
   }
   if (total_rows != static_cast<long long>(X.n_rows)) {
-    Rcpp::stop("X has %d rows but sum(M) is %d.",
-               static_cast<int>(X.n_rows), static_cast<int>(total_rows));
+    Rcpp::stop("X has %d rows but sum(M) is %d.", X.n_rows, total_rows);
   }
   if (ti_sum != n_tasks) {
     Rcpp::stop("sum(Ti) (%d) does not match the number of choice situations "
-               "(%d).", static_cast<int>(ti_sum), n_tasks);
+               "(%d).", ti_sum, n_tasks);
   }
   if (alt_of_row.size() != total_rows) {
     Rcpp::stop("alt_of_row length (%d) does not match the number of rows of "
-               "X (%d).", static_cast<int>(alt_of_row.size()),
-               static_cast<int>(total_rows));
+               "X (%d).", alt_of_row.size(), total_rows);
   }
   for (int rr = 0; rr < alt_of_row.size(); ++rr) {
     if (alt_of_row[rr] < 1 || alt_of_row[rr] > J) {
@@ -151,8 +149,7 @@ static void validate_hmnl_inputs(const arma::mat& X, const arma::mat& Z,
   }
   if (choice_pos.size() != n_tasks) {
     Rcpp::stop("choice_pos length (%d) does not match the number of choice "
-               "situations (%d).", static_cast<int>(choice_pos.size()),
-               n_tasks);
+               "situations (%d).", choice_pos.size(), n_tasks);
   }
   for (int t = 0; t < n_tasks; ++t) {
     if (choice_pos[t] < 0 || choice_pos[t] > M[t]) {
@@ -374,7 +371,7 @@ Rcpp::List hmnl_gibbs(const arma::mat& X,
     Rcpp::stop("sd_prior: s_d, c0, and d0 must be positive numbers.");
   }
 
-  // Panel indexing (master thread: build() allocates R vectors, then the
+  // Panel indexing (master thread: build() reads the R vectors, then the
   // struct is plain-C++ and read-only inside the region).
   HbPanel panel;
   if (!panel.build(M, Ti, alt_of_row, choice_pos, J,
@@ -433,7 +430,7 @@ Rcpp::List hmnl_gibbs(const arma::mat& X,
   arma::vec mu_delta(J), xi_tmp(J);
 
   // --- Recording -------------------------------------------------------------
-  const int R_keep = (R - burn + thin - 1) / thin;
+  const int R_keep = 1 + (R - burn - 1) / thin; // ceil((R - burn) / thin)
   arma::mat bdraw(R_keep, K);
   arma::mat wdraw(R_keep, K * (K + 1) / 2);
   arma::mat deltadraw(R_keep, J);

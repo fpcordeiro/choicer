@@ -356,7 +356,7 @@ run_hmnlogit <- function(
     # assembled -- so all `chains` cubes are simultaneously resident at
     # peak, regardless of how many chains are requested. Budget for the
     # worst case (chains-fold), not just one chain's footprint.
-    R_keep_est <- (R - burn + thin - 1L) %/% thin
+    R_keep_est <- 1L + (R - burn - 1L) %/% thin
     bytes_per_chain <- 8 * as.numeric(K) * N * R_keep_est * .HB_BETA_I_WRAP_FACTOR
     bytes_total <- bytes_per_chain * chains
     if (bytes_total > 4e9) {

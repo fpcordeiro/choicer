@@ -164,6 +164,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// hb_test_panel_offsets
+SEXP hb_test_panel_offsets(const Rcpp::IntegerVector& x);
+RcppExport SEXP _choicer_hb_test_panel_offsets(SEXP xSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type x(xSEXP);
+    rcpp_result_gen = Rcpp::wrap(hb_test_panel_offsets(x));
+    return rcpp_result_gen;
+END_RCPP
+}
 // hmnl_gibbs
 Rcpp::List hmnl_gibbs(const arma::mat& X, const arma::mat& Z, const Rcpp::IntegerVector& M, const Rcpp::IntegerVector& choice_pos, const bool include_outside_option, const Rcpp::IntegerVector& alt_of_row, const Rcpp::IntegerVector& Ti, const Rcpp::IntegerVector& rc_dist, const arma::vec& beta_pooled, const arma::vec& delta_init, const arma::vec& theta_init, const arma::vec& b_bar, const arma::mat& A, const double nu, const arma::mat& V, const arma::vec& theta_bar, const arma::mat& A_theta, const Rcpp::List& sd_prior, const int R, const int burn, const int thin, const double seed, const int keep_beta_i, const double s_init, const double accept_target, const int trace);
 RcppExport SEXP _choicer_hmnl_gibbs(SEXP XSEXP, SEXP ZSEXP, SEXP MSEXP, SEXP choice_posSEXP, SEXP include_outside_optionSEXP, SEXP alt_of_rowSEXP, SEXP TiSEXP, SEXP rc_distSEXP, SEXP beta_pooledSEXP, SEXP delta_initSEXP, SEXP theta_initSEXP, SEXP b_barSEXP, SEXP ASEXP, SEXP nuSEXP, SEXP VSEXP, SEXP theta_barSEXP, SEXP A_thetaSEXP, SEXP sd_priorSEXP, SEXP RSEXP, SEXP burnSEXP, SEXP thinSEXP, SEXP seedSEXP, SEXP keep_beta_iSEXP, SEXP s_initSEXP, SEXP accept_targetSEXP, SEXP traceSEXP) {
@@ -1094,6 +1104,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_hb_test_spd_solve", (DL_FUNC) &_choicer_hb_test_spd_solve, 2},
     {"_choicer_hb_test_logsumexp", (DL_FUNC) &_choicer_hb_test_logsumexp, 2},
     {"_choicer_hb_test_sigma_d2_gibbs", (DL_FUNC) &_choicer_hb_test_sigma_d2_gibbs, 7},
+    {"_choicer_hb_test_panel_offsets", (DL_FUNC) &_choicer_hb_test_panel_offsets, 1},
     {"_choicer_hmnl_gibbs", (DL_FUNC) &_choicer_hmnl_gibbs, 26},
     {"_choicer_hmnp_gibbs", (DL_FUNC) &_choicer_hmnp_gibbs, 24},
     {"_choicer_test_softmax_n", (DL_FUNC) &_choicer_test_softmax_n, 1},

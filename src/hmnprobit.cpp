@@ -124,17 +124,15 @@ static void validate_hmnp_inputs(const arma::mat& X, const arma::mat& Z,
     ti_sum += Ti[i];
   }
   if (total_rows != static_cast<long long>(X.n_rows)) {
-    Rcpp::stop("X has %d rows but sum(M) is %d.",
-               static_cast<int>(X.n_rows), static_cast<int>(total_rows));
+    Rcpp::stop("X has %d rows but sum(M) is %d.", X.n_rows, total_rows);
   }
   if (ti_sum != n_tasks) {
     Rcpp::stop("sum(Ti) (%d) does not match the number of choice situations "
-               "(%d).", static_cast<int>(ti_sum), n_tasks);
+               "(%d).", ti_sum, n_tasks);
   }
   if (alt_of_row.size() != total_rows) {
     Rcpp::stop("alt_of_row length (%d) does not match the number of rows of "
-               "X (%d).", static_cast<int>(alt_of_row.size()),
-               static_cast<int>(total_rows));
+               "X (%d).", alt_of_row.size(), total_rows);
   }
   for (int rr = 0; rr < alt_of_row.size(); ++rr) {
     if (alt_of_row[rr] < 1 || alt_of_row[rr] > J) {
@@ -144,8 +142,7 @@ static void validate_hmnp_inputs(const arma::mat& X, const arma::mat& Z,
   }
   if (choice_pos.size() != n_tasks) {
     Rcpp::stop("choice_pos length (%d) does not match the number of choice "
-               "situations (%d).", static_cast<int>(choice_pos.size()),
-               n_tasks);
+               "situations (%d).", choice_pos.size(), n_tasks);
   }
   for (int t = 0; t < n_tasks; ++t) {
     if (choice_pos[t] < 0 || choice_pos[t] > M[t]) {
@@ -386,7 +383,7 @@ Rcpp::List hmnp_gibbs(const arma::mat& X,
   arma::cube G(K, K, N);
 
   // --- Recording -------------------------------------------------------------
-  const int R_keep = (R - burn + thin - 1) / thin;
+  const int R_keep = 1 + (R - burn - 1) / thin; // ceil((R - burn) / thin)
   arma::mat bdraw(R_keep, K);
   arma::mat wdraw(R_keep, K * (K + 1) / 2);
   arma::mat deltadraw(R_keep, J);
@@ -498,7 +495,7 @@ Rcpp::List hmnp_gibbs(const arma::mat& X,
         // delta-residualized utilities. Precision W^{-1} + G_i / s2 (worker
         // thread: hand-rolled Cholesky only).
         Xoshiro256pp rng_b = make_stream(useed, static_cast<uint64_t>(r),
-                                         static_cast<uint64_t>(N + i));
+                                         static_cast<uint64_t>(N) + i);
         const arma::mat& Gi = G.slice(i);
         for (int cj = 0; cj < K; ++cj) {
           for (int ci = 0; ci < K; ++ci) {

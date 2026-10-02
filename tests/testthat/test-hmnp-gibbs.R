@@ -125,6 +125,27 @@ test_that("hmnp_gibbs keep_beta_i modes are consistent", {
                unname(as.matrix(out2$beta_i_mean)), tolerance = 1e-12)
 })
 
+test_that("hmnp_gibbs counts kept draws without int overflow", {
+  # R - burn + thin - 1 overflowed for a thin near .Machine$integer.max,
+  # leaving no row for the one kept draw (an abort under OpenMP)
+  fx <- make_hmnp_fixture()
+  out <- do.call(hmnp_gibbs, make_hmnp_args(fx$d, R = 10L, burn = 0L,
+                                             thin = .Machine$integer.max,
+                                             keep_beta_i = 2L))
+  expect_identical(out$R_keep, 1L)
+  expect_identical(nrow(out$bdraw), 1L)
+  expect_identical(dim(out$beta_i_draws)[3], 1L)
+})
+
+test_that("hmnp_gibbs reports sum(M) past 2^31 - 1 unwrapped", {
+  fx <- make_hmnp_fixture()
+  a <- make_hmnp_args(fx$d)
+  a$M <- c(.Machine$integer.max, 1L)
+  expect_error(do.call(hmnp_gibbs, a),
+               sprintf("X has %d rows but sum(M) is 2147483648.",
+                       nrow(fx$d$X)), fixed = TRUE)
+})
+
 test_that("hmnp_gibbs validates inputs", {
   fx <- make_hmnp_fixture()
   args <- make_hmnp_args(fx$d)
