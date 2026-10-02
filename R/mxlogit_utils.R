@@ -1249,7 +1249,7 @@ prepare_mxl_data <- function(
 #' sequence. Store mode supports at most \eqn{2^{31} - 1} points
 #' (\eqn{S \times N}), the largest starting index \code{halton(start = )}
 #' accepts, and \eqn{2^{32} - 1} values (\eqn{K_w \times S \times N}), the
-#' most the kernels address with their 32-bit indices;
+#' largest cube choicer supports;
 #' \code{draws = "generate"} in \code{\link{run_mxlogit}} has neither limit and
 #' never materializes the cube.
 #'
@@ -1278,12 +1278,13 @@ get_halton_normals <- function(S, N, K_w) {
          "starting index randtoolbox::halton(start = ) accepts. Refit with ",
          "run_mxlogit(draws = \"generate\").")
   }
-  # The kernels address the cube with Armadillo's 32-bit indices (choicer
-  # does not define ARMA_64BIT_WORD); a larger cube would be misread.
+  # The kernels addressed the cube with Armadillo's 32-bit indices, which
+  # misread a larger one; choicer now defines ARMA_64BIT_WORD, and this stop
+  # stays until cubes that large have been run end to end.
   if (n_points * K_w > 2^32 - 1) {
     stop("A store-mode draw cube needs K_w * S * N = ",
          format(n_points * K_w, big.mark = ",", scientific = FALSE),
-         " values, more than 2^32 - 1, the most the kernels can address. ",
+         " values, more than 2^32 - 1, the largest cube choicer supports. ",
          "Refit with run_mxlogit(draws = \"generate\").")
   }
   .halton_cube(S, N, K_w)

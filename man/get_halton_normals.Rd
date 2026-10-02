@@ -28,7 +28,7 @@ filled a block of units at a time, so it never holds a second copy of the
 sequence. Store mode supports at most \eqn{2^{31} - 1} points
 (\eqn{S \times N}), the largest starting index \code{halton(start = )}
 accepts, and \eqn{2^{32} - 1} values (\eqn{K_w \times S \times N}), the
-most the kernels address with their 32-bit indices;
+largest cube choicer supports;
 \code{draws = "generate"} in \code{\link{run_mxlogit}} has neither limit and
 never materializes the cube.
 }

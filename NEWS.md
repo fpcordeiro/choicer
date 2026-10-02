@@ -189,10 +189,10 @@
   and stops before allocating a cube that store mode cannot handle: more
   than 2^31 - 1 points (`S * N`), the largest starting index
   `randtoolbox::halton()` accepts, where the old code failed with an
-  unrelated error; or more than 2^32 - 1 values (`K_w * S * N`), the most
-  the kernels can address with their 32-bit indices.
-  `draws = "generate"` has neither limit. choicer now requires randtoolbox
-  1.31.0 or later, the release that added `halton(start = )`.
+  unrelated error; or more than 2^32 - 1 values (`K_w * S * N`), the
+  largest cube choicer supports. `draws = "generate"` has neither limit.
+  choicer now requires randtoolbox 1.31.0 or later, the release that added
+  `halton(start = )`.
 - `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()` (and so
   `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()`) copy only the
   columns the model uses from a data.frame, tibble or data.table, where they
@@ -215,8 +215,8 @@
   matrix, which the estimation kernels converted to double on every call.
   Estimates, standard errors and predictions are unchanged, bit for bit.
   The functions now stop with an error when `X` or `W` would hold more than
-  2^32 - 1 values (for instance 10^9 rows and 5 covariates), the most the
-  estimation kernels can address with their 32-bit indices.
+  2^32 - 1 values (for instance 10^9 rows and 5 covariates), the largest
+  design choicer supports.
 - The collinearity check that drops dependent covariates (the columns
   `qr(X, tol = 1e-7)` moves past its rank) now factors a design of a
   million or more values by row chunks and applies `qr()`'s own rank rule
@@ -228,11 +228,11 @@
   no longer makes `qr()`'s copies of the design (about three times its
   size), nor stops at its limit of 2^31 - 1 values, which ended the
   preparation of any larger design (for instance 2.2 * 10^8 rows and 10
-  covariates) with "too large a matrix for LINPACK". Designs up to the
-  kernels' 2^32 - 1 values can now be prepared. `prepare_mnp_data()`,
-  `prepare_hmnl_data()` and `prepare_hmnp_data()`, for which `qr()`'s limit
-  was the only stop, now also stop with an error before building an `X` of
-  more than 2^32 - 1 values.
+  covariates) with "too large a matrix for LINPACK". Designs of up to
+  2^32 - 1 values, the largest choicer supports, can now be prepared.
+  `prepare_mnp_data()`, `prepare_hmnl_data()` and `prepare_hmnp_data()`,
+  for which `qr()`'s limit was the only stop, now also stop with an error
+  before building an `X` of more than 2^32 - 1 values.
 - The checks that a weight, cluster or decision-maker column is constant
   within each choice situation now count distinct (situation, value) pairs
   in one grouping, instead of sorting every situation's values separately,
@@ -299,6 +299,24 @@
   or lower (medians of three alternated runs). The prepared objects are
   unchanged on every call the test suite makes and on a battery of edge
   cases.
+- The compiled code now uses Armadillo's 64-bit word (`ARMA_64BIT_WORD`).
+  The kernels read the design matrices and draw cubes in place, and under
+  RcppArmadillo's default 32-bit word the element count and the element
+  offsets of a matrix or cube of more than 2^32 - 1 values wrapped without
+  an error: whole-matrix products were right, but a slice of it (a choice
+  situation's rows, a unit's draws) read the wrong values wherever it
+  reached past the first 2^32 - 1. The preparations and
+  `get_halton_normals()` keep their stops at that size for now, but inputs
+  that reach the kernels another way (a hand-built `input_data`,
+  `eta_draws`, the `newdata` of `predict()`) are now read correctly, and
+  outputs of more than 2^32 - 1 values, such as the score matrix behind
+  `vcov(type = "robust")`, `vcov(type = "cluster")` and `wesml_vcov()` or
+  the output of `conditional_tastes()`, are now allocated where Armadillo
+  stopped with "requested size is too large". Below 2^32 values, results
+  are unchanged, bit for bit. The mixed logit prediction functions, which
+  still copy their index vectors, now use 8 more bytes per row of the
+  design for those copies (and, with stored draws, 16 more per choice
+  situation).
 
 ## Corrections
 

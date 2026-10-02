@@ -632,11 +632,13 @@ label_matrix <- function(mat, alt_mapping) {
   has_na
 }
 
-#' Stop before building a design matrix the kernels cannot address
+#' Stop before building a design matrix larger than choicer supports
 #'
-#' choicer builds with RcppArmadillo's default 32-bit word (ARMA_32BIT_WORD),
-#' and the kernels view X and W without copying them: past 2^32 - 1 elements
-#' the element count wraps and rows are misread without an error.
+#' The kernels view X and W without copying them. They used Armadillo's
+#' 32-bit word, under which the element count wraps past 2^32 - 1 and rows are
+#' misread without an error; choicer now defines ARMA_64BIT_WORD
+#' (src/Makevars), and this stop stays until designs that large have been run
+#' end to end.
 #'
 #' @param n Number of rows.
 #' @param cols Column names.
@@ -649,7 +651,7 @@ label_matrix <- function(mat, alt_mapping) {
     stop(what, " would have ", format(n, big.mark = ",", scientific = FALSE),
          " rows and ", length(cols), " columns, ",
          format(size, big.mark = ",", scientific = FALSE), " values, more ",
-         "than 2^32 - 1, the most the estimation kernels can address.",
+         "than 2^32 - 1, the largest design choicer supports.",
          call. = FALSE)
   }
   invisible(NULL)

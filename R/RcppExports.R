@@ -372,6 +372,25 @@ test_nl_individual_probs <- function(V, nest0, lambda, include_outside_option) {
     .Call(`_choicer_test_nl_individual_probs`, V, nest0, lambda, include_outside_option)
 }
 
+#' Bytes in Armadillo's index type, arma::uword: 8 when choicer is built with
+#' ARMA_64BIT_WORD (src/Makevars) on a 64-bit platform
+#'
+#' @return An integer.
+#' @noRd
+test_arma_word_bytes <- function() {
+    .Call(`_choicer_test_arma_word_bytes`)
+}
+
+#' Element count of a no-copy Armadillo view of a (2^31 - 1) x 3 matrix, as
+#' RcppArmadillo views R's matrices: 6442450941 under a 64-bit word, wrapped
+#' to 2147483645 under a 32-bit one. The view is never read.
+#'
+#' @return A double.
+#' @noRd
+test_arma_view_n_elem <- function() {
+    .Call(`_choicer_test_arma_view_n_elem`)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.

@@ -75,10 +75,10 @@ arma::mat build_var_mat(const arma::vec &L_params, const int K_w,
 // Layout of the stacked design
 //
 // Offsets into the stacked design are 64-bit (mxl_off). R caps a matrix at
-// 2^31 - 1 rows, so today they only keep offset arithmetic clear of int
-// overflow; the ceiling that binds first is Armadillo's 32-bit element count
-// (RcppArmadillo's default ARMA_32BIT_WORD), and the kernels need no change
-// if that is lifted. Armadillo indices (arma::uword) are taken from them where
+// 2^31 - 1 rows, so they keep offset arithmetic clear of int overflow; element
+// counts and offsets are Armadillo's (arma::uword), 64-bit because choicer
+// defines ARMA_64BIT_WORD (src/Makevars), so a view of a design past 2^32 - 1
+// elements does not wrap. Armadillo indices are taken from the offsets where
 // a matrix is sliced.
 // ============================================================================
 using mxl_off = choicer_off;

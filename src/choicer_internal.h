@@ -78,11 +78,21 @@ inline void validate_choice_data(const arma::mat& X, const arma::uvec& alt_idx,
       Rcpp::stop("alt_idx must use 1-based alternative indices (found %d).",
                  static_cast<int>(alt_idx.min()));
     }
-    if (use_asc && delta.n_elem < alt_idx.max()) {
+    // The double-to-unsigned cast that built alt_idx is undefined for NA and
+    // negative values: x86-64 reads NA as 0 and a negative value as 2^32
+    // minus its magnitude under a 32-bit arma::uword, and both as 2^63 or
+    // more under the 64-bit one; ARM reads both as 0, which the check above
+    // reports.
+    const arma::uword a_max = alt_idx.max();
+    constexpr arma::uword int_max = std::numeric_limits<int>::max();
+    if (a_max > int_max) {
+      Rcpp::stop("alt_idx must use 1-based alternative indices below 2^31 "
+                 "(found NA, a negative value or a larger one).");
+    }
+    if (use_asc && delta.n_elem < a_max) {
       Rcpp::stop("Theta's delta (ASC) block implies %d alternatives but "
                  "alt_idx references alternative %d.",
-                 static_cast<int>(delta.n_elem),
-                 static_cast<int>(alt_idx.max()));
+                 static_cast<int>(delta.n_elem), static_cast<int>(a_max));
     }
   }
 }
@@ -136,12 +146,13 @@ inline void check_rc_dist_length(const arma::uvec& rc_dist, const int K_w) {
 // kernel's integer arguments (no per-call copy). Offsets are 64-bit
 // (choicer_off). R caps a matrix at 2^31 - 1 rows, so the row offsets fit in
 // an int; the element offsets formed from them (row + column * n_rows) are
-// Armadillo's (arma::uword). ChoiceLayout is the core shared by the MNL and
-// NL kernels (choice_layout_build, nl_layout_build) and by the MXL
-// estimation kernels (MxlLayout, mxl_layout_build). It is valid for one
-// kernel call only: when an argument was coerced from doubles, the integer
-// copy belongs to that call's Rcpp wrapper. Build it on the primary thread;
-// it is read-only afterwards.
+// Armadillo's (arma::uword, 64-bit: src/Makevars defines ARMA_64BIT_WORD).
+// ChoiceLayout is the core shared by the MNL and NL kernels
+// (choice_layout_build, nl_layout_build) and by the MXL estimation kernels
+// (MxlLayout, mxl_layout_build). It is valid for one kernel call only: when
+// an argument was coerced from doubles, the integer copy belongs to that
+// call's Rcpp wrapper. Build it on the primary thread; it is read-only
+// afterwards.
 // ----------------------------------------------------------------------------
 using choicer_off = std::ptrdiff_t;
 
