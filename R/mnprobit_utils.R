@@ -424,16 +424,12 @@ prepare_mnp_data <- function(
   p <- J - 1L
 
   ## Build objects -------------------------------------------------------------
-  .check_design_size(N * p,
-                     c(covariate_cols, if (use_asc) paste0("ASC_", seq_len(p))),
-                     "The design matrix X")
   ## Differenced design matrix: row (i, j) is X_ij - X_i,base, gathered in
   ## one pass from the source rows of the non-base alternatives and,
   ## repeated J - 1 times, of the base alternative (sorted, each id holds
   ## alternative codes 1..J in order)
   is_base <- dt$.choicer_alt_int == 1L
   X_diff <- .gather_matrix(src, covariate_cols, dt$.choicer_row[!is_base],
-                           "The design matrix X",
                            base = rep(dt$.choicer_row[is_base], each = p))
   rm(is_base)
   dt[, .choicer_row := NULL]

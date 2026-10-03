@@ -183,15 +183,14 @@
   building the cube took 21 s instead of 27 s, peak memory fell from 3.0 to
   1.4 times the size of the cube (the rest is R's garbage-collection slack),
   and 1.3 thousand allocations replaced 8 million. The single call also
-  computed positions in its output with 32-bit integers, which overflow past
-  2^31 - 1 values (a 17 GB cube); each block now stays far below that. The
-  function now checks that `S`, `N` and `K_w` are positive whole numbers,
-  and stops before allocating a cube that store mode cannot handle: more
-  than 2^31 - 1 points (`S * N`), the largest starting index
+  formed positions in its output with C `int` arithmetic, which is undefined
+  past 2^31 - 1 values (a 17 GB cube); each block now stays far below that.
+  The function now checks that `S`, `N` and `K_w` are positive whole
+  numbers, and stops before allocating a cube that store mode cannot
+  handle: more than 2^31 - 1 points (`S * N`), the largest starting index
   `randtoolbox::halton()` accepts, where the old code failed with an
-  unrelated error; or more than 2^32 - 1 values (`K_w * S * N`), the
-  largest cube choicer supports. `draws = "generate"` has neither limit.
-  choicer now requires randtoolbox 1.31.0 or later, the release that added
+  unrelated error. `draws = "generate"` has no such limit. choicer now
+  requires randtoolbox 1.31.0 or later, the release that added
   `halton(start = )`.
 - `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()` (and so
   `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()`) copy only the
@@ -214,9 +213,6 @@
   design matrix whose columns were all integer used to be an integer
   matrix, which the estimation kernels converted to double on every call.
   Estimates, standard errors and predictions are unchanged, bit for bit.
-  The functions now stop with an error when `X` or `W` would hold more than
-  2^32 - 1 values (for instance 10^9 rows and 5 covariates), the largest
-  design choicer supports.
 - The collinearity check that drops dependent covariates (the columns
   `qr(X, tol = 1e-7)` moves past its rank) now factors a design of a
   million or more values by row chunks and applies `qr()`'s own rank rule
@@ -228,11 +224,8 @@
   no longer makes `qr()`'s copies of the design (about three times its
   size), nor stops at its limit of 2^31 - 1 values, which ended the
   preparation of any larger design (for instance 2.2 * 10^8 rows and 10
-  covariates) with "too large a matrix for LINPACK". Designs of up to
-  2^32 - 1 values, the largest choicer supports, can now be prepared.
-  `prepare_mnp_data()`, `prepare_hmnl_data()` and `prepare_hmnp_data()`,
-  for which `qr()`'s limit was the only stop, now also stop with an error
-  before building an `X` of more than 2^32 - 1 values.
+  covariates) with "too large a matrix for LINPACK". Such designs can now
+  be prepared for every model.
 - The checks that a weight, cluster or decision-maker column is constant
   within each choice situation now count distinct (situation, value) pairs
   in one grouping, instead of sorting every situation's values separately,
@@ -299,24 +292,6 @@
   or lower (medians of three alternated runs). The prepared objects are
   unchanged on every call the test suite makes and on a battery of edge
   cases.
-- The compiled code now uses Armadillo's 64-bit word (`ARMA_64BIT_WORD`).
-  The kernels read the design matrices and draw cubes in place, and under
-  RcppArmadillo's default 32-bit word the element count and the element
-  offsets of a matrix or cube of more than 2^32 - 1 values wrapped without
-  an error: whole-matrix products were right, but a slice of it (a choice
-  situation's rows, a unit's draws) read the wrong values wherever it
-  reached past the first 2^32 - 1. The preparations and
-  `get_halton_normals()` keep their stops at that size for now, but inputs
-  that reach the kernels another way (a hand-built `input_data`,
-  `eta_draws`, the `newdata` of `predict()`) are now read correctly, and
-  outputs of more than 2^32 - 1 values, such as the score matrix behind
-  `vcov(type = "robust")`, `vcov(type = "cluster")` and `wesml_vcov()` or
-  the output of `conditional_tastes()`, are now allocated where Armadillo
-  stopped with "requested size is too large". Below 2^32 values, results
-  are unchanged, bit for bit. The mixed logit prediction functions, which
-  still copy their index vectors, now use 8 more bytes per row of the
-  design for those copies (and, with stored draws, 16 more per choice
-  situation).
 
 ## Corrections
 
@@ -624,6 +599,37 @@ unless it says otherwise.
   with an unrelated Armadillo error (with `keep_beta_i = "draws"`, the
   memory estimate failed first, with another unrelated error). The count,
   `ceiling((R - burn) / thin)`, is now formed without overflow.
+- Mixed logit fits with stored draws (`draws = "store"`, the default) read
+  some units' draws from the wrong place, without an error, once the draw
+  cube (`K_w * S * N` values) was large enough that a unit's draws began
+  past its first 2^32 values. The cube was built for any `S * N` up to
+  2^31 - 1 points (past that, building it failed). With three random
+  coefficients, the default 100 draws and 15 million choice situations, for
+  instance, it holds 36 GB, and the last 683,442 situations read other
+  units' draws in place of their own. Those draws entered the estimates and
+  their standard errors, and every result that rebuilds the cube: standard
+  errors recomputed with `vcov(type = )` or `wesml_vcov()`, predictions,
+  elasticities, diversion ratios, BLP inversions, log-sums, consumer surplus
+  and fit statistics. Such results should be recomputed. The compiled code
+  used RcppArmadillo's default 32-bit word, under which the kernels'
+  in-place view of a matrix or cube of more than 2^32 - 1 values wrapped its
+  element count and element offsets: a unit's draws, or a choice situation's
+  covariate values, that began past the first 2^32 values were read from the
+  wrong place. A hand-built `eta_draws` that large was misread the same way.
+  A design matrix that large (for instance 10^9 rows and 5 covariates)
+  reached the kernels only through a hand-built `input_data`, the `newdata`
+  of a prediction or welfare function, or a direct call to an exported
+  contraction function: the preparations stopped it earlier, at `qr()`'s
+  limit of 2^31 - 1 values. The compiled code now uses Armadillo's 64-bit
+  word (`ARMA_64BIT_WORD`), so the kernels read matrices and cubes of any
+  size R can hold, and outputs of more than 2^32 - 1 values, such as the
+  score matrix behind `vcov(type = "robust")`, `vcov(type = "cluster")` and
+  `wesml_vcov()` or the output of `conditional_tastes()`, are allocated
+  where Armadillo stopped with "requested size is too large". Below 2^32
+  values, results are unchanged, bit for bit. The mixed logit prediction
+  functions, which still copy their index vectors, now use 8 more bytes per
+  row of the design for those copies (and, with stored draws, 16 more per
+  choice situation).
 
 # choicer 0.2.1
 

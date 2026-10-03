@@ -322,8 +322,7 @@
   ## Structural design matrix: covariates only, cf residual (if any) last.
   ## NO ASC dummies — delta_j is indexed by alt_of_row, never carried in X.
   warn_once <- .int64_warn_once()  # a column can be in both X and Z
-  X <- warn_once(.gather_matrix(src, x_cols, dt$.choicer_row,  # rows x K_struct
-                                "The design matrix X"))
+  X <- warn_once(.gather_matrix(src, x_cols, dt$.choicer_row))  # rows x K_struct
   X_res <- check_collinearity(X)
   X <- X_res$mat
   dropped_vars <- c(dropped_task_const, X_res$dropped)

@@ -528,8 +528,7 @@ prepare_mnl_data <- function(
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
-  X <- .gather_matrix(src, covariate_cols, dt$.choicer_row,     # sum(M) x K
-                      "The design matrix X")
+  X <- .gather_matrix(src, covariate_cols, dt$.choicer_row)     # sum(M) x K
   # A repeated covariate stops here, where it always did.
   if (anyDuplicated(covariate_cols)) {
     stop("`covariate_cols` names a column more than once: ",

@@ -23,14 +23,12 @@ Create halton normal draws in appropriate format for mixed logit estimation
 \details{
 Draw unit \eqn{i} receives the \eqn{S} consecutive points
 \eqn{(i - 1)S + 1, \ldots, iS} of the \eqn{K_w}-dimensional Halton sequence
-of \code{randtoolbox::halton()}, mapped to standard normals. The cube is
-filled a block of units at a time, so it never holds a second copy of the
-sequence. Store mode supports at most \eqn{2^{31} - 1} points
-(\eqn{S \times N}), the largest starting index \code{halton(start = )}
-accepts, and \eqn{2^{32} - 1} values (\eqn{K_w \times S \times N}), the
-largest cube choicer supports;
-\code{draws = "generate"} in \code{\link{run_mxlogit}} has neither limit and
-never materializes the cube.
+of \code{randtoolbox::halton()}, mapped to standard normals. The cube
+takes \eqn{8 K_w S N} bytes and is filled a block of units at a time, so it
+never holds a second copy of the sequence. Store mode supports at most
+\eqn{2^{31} - 1} points (\eqn{S \times N}), the largest starting index
+\code{halton(start = )} accepts; \code{draws = "generate"} in
+\code{\link{run_mxlogit}} has no such limit and never materializes the cube.
 }
 \examples{
 draws <- get_halton_normals(S = 50, N = 10, K_w = 2)

@@ -154,8 +154,13 @@ test_that("get_halton_normals validates sizes and the sequence index limit", {
   expect_error(get_halton_normals(100, 3e7, 1), "more than 2\\^31 - 1")
   expect_error(get_halton_normals(2, 2^30, 1), "more than 2\\^31 - 1")       # S * N = 2^31
   expect_error(get_halton_normals(50000L, 50000L, 1L), "more than 2\\^31 - 1") # no integer NA
-  expect_error(get_halton_normals(100, 1.5e7, 3), "more than 2\\^32 - 1")    # K_w * S * N
-  expect_error(get_halton_normals(2^16, 2^14, 4), "more than 2\\^32 - 1")    # exactly 2^32
+})
+
+test_that("get_halton_normals() admits cubes past 2^32 - 1 values", {
+  # The builder is mocked, so nothing is allocated: only S * N is limited.
+  local_mocked_bindings(.halton_cube = function(S, N, K_w) c(S, N, K_w))
+  expect_identical(get_halton_normals(100, 1.5e7, 3), c(100, 1.5e7, 3))  # 4.5e9 values
+  expect_identical(get_halton_normals(2^16, 2^14, 4), c(2^16, 2^14, 4))  # exactly 2^32
 })
 
 # --- check_collinearity / remove_nullspace_cols tests ---

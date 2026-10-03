@@ -338,7 +338,7 @@ test_that("prep_gather_design() reads integer64 storage as bit64's as.double()",
   df <- data.frame(a = 1:10)
   df$big <- x
   expect_warning(
-    m <- .gather_matrix(df, c("a", "big", "big"), rows, "X"),
+    m <- .gather_matrix(df, c("a", "big", "big"), rows),
     "Column 'big' has integer64 values of magnitude 2^53 or more",
     fixed = TRUE
   )
