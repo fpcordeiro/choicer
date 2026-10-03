@@ -365,10 +365,10 @@ struct HaltonGen {
     //   i=1, s=0 → n=1 → phi_2(1) = 0.5, matching randtoolbox start=1 in compat mode.
     //
     // eta_i is resized to K_w × S on entry; the caller owns this buffer (thread-private).
-    void fill_eta_i(arma::mat& eta_i, int i) const {
+    // i is 64-bit, so the start of a block past the 2^31 - 1st does not overflow.
+    void fill_eta_i(arma::mat& eta_i, const uint64_t i) const {
         eta_i.set_size(K_w, S);
-        fill_block(eta_i.memptr(),
-                   static_cast<uint64_t>(i - 1) * static_cast<uint64_t>(S) + 1ULL);
+        fill_block(eta_i.memptr(), (i - 1) * static_cast<uint64_t>(S) + 1ULL);
     }
 
 private:

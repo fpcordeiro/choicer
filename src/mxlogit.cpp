@@ -2,6 +2,8 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "halton.h"
+#include <cstring>
+#include <memory>
 
 // Reconstruct lower-triangular choleski factor L from L_params
 // [[Rcpp::export]]
@@ -397,7 +399,7 @@ inline void mxl_unit_load(const MxlUnitData& ud, const mxl_off u,
     }
   }
   if (ud.use_generate) {
-    ud.gen.fill_eta_i(sc.eta_buf, static_cast<int>(u + 1));
+    ud.gen.fill_eta_i(sc.eta_buf, static_cast<uint64_t>(u) + 1);
     sc.eta = sc.eta_buf.memptr();
   } else {
     sc.eta = ud.eta_draws.slice_memptr(static_cast<arma::uword>(u));
@@ -1520,6 +1522,325 @@ Rcpp::List mxl_conditional_tastes_parallel(
 }
 
 // ============================================================================
+// Prediction: one choice situation at a time
+//
+// The prediction kernels integrate each choice situation over the population
+// taste distribution with its own K_w x S block of draws: situation t reads
+// cube slice t (store mode) or Halton block t + 1 (generate mode), in a panel
+// as in the cross-section (predictions are unconditional). A kernel validates
+// its inputs and lays out the stacked design on the primary thread (the
+// alternative codes are read in place, row offsets are 64-bit), forms the base
+// utilities once and allocates every thread's buffers there, then loops over
+// the situations in parallel without allocating.
+//
+// Every result is bitwise that of the per-situation Armadillo code this
+// replaced at the same thread count (choicer's own per-situation work does not
+// depend on it; a multithreaded BLAS may split the base product, as before),
+// with BLAS libraries whose results do not depend on operand addresses, such
+// as the reference BLAS and OpenBLAS:
+//   * the base utilities are the same full products, X beta, then
+//     += W mu_final for a row-aligned W (one dgemv with beta = 1 into
+//     X beta), with an alternative-level W's W mu_final and then the ASCs
+//     added per row, so no BLAS call changes its shape;
+//   * Gamma = L eta and W_t Gamma are the same Armadillo products on
+//     matrices of the same shapes (Armadillo picks its BLAS call, or its own
+//     code for tiny matrices, from the shapes alone), and the draws reach them
+//     through a copy into a thread buffer, as they did;
+//   * the draw loops use stable_softmax_n() and max_shifted_lse_n()
+//     (Armadillo's operations in Armadillo's order) and element-wise sums.
+// ============================================================================
+
+// The team of a prediction kernel's parallel regions, and so the number of
+// scratch sets it allocates: OpenMP's next team, within the thread limit, and
+// at most one thread per situation, but two for a single situation, so that
+// its region stays active and, as before, an OpenMP-built BLAS runs the
+// situation's products single-threaded.
+inline int mxl_pred_threads(const mxl_off n_situations) {
+#ifdef _OPENMP
+  mxl_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
+#else
+  mxl_off n = 1;
+#endif
+  n = std::min(n, std::max<mxl_off>(n_situations, 2));
+  return static_cast<int>(std::max<mxl_off>(n, 1));
+}
+
+inline int mxl_thread_num() {
+#ifdef _OPENMP
+  return omp_get_thread_num();
+#else
+  return 0;
+#endif
+}
+
+// An uninitialized array of n doubles, the thread that uses it touching it
+// first, with 128 bytes of padding (a cache line on Apple silicon, two on
+// x86-64) so that no two threads' buffers share one.
+inline std::unique_ptr<double[]> mxl_buffer(const std::size_t n) {
+  return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
+}
+
+// An n x 1 R matrix, the form in which RcppArmadillo returns an arma::vec
+// (choicer.h includes <RcppArmadillo.h>, which leaves
+// RCPP_ARMADILLO_RETURN_COLVEC_AS_VECTOR undefined), not initialized: the
+// kernel writes every element.
+inline Rcpp::NumericVector mxl_col_result(const mxl_off n) {
+  Rcpp::NumericVector x(Rcpp::no_init(static_cast<R_xlen_t>(n)));
+  x.attr("dim") = Rcpp::Dimension(static_cast<std::size_t>(n), 1);
+  return x;
+}
+
+// Where situation t's K_w x S draws come from: Halton block t + 1, formed on
+// the fly (generate mode), or slice t - c0 of the store-mode draws in memory,
+// which hold situations [c0, c1). The primary thread loads them between
+// parallel regions (load()); they are read-only inside.
+struct MxlPredDraws {
+  int K_w = 0, S = 0;
+  bool generate = false;
+  HaltonGen gen;                 // generate mode
+  const double* cube = nullptr;  // store mode: the draws of situations [c0, c1)
+  mxl_off c0 = 0;
+
+  // Make the draws of situations [first, c1) available and return c1 > first:
+  // all of them, from the generator or the whole cube.
+  mxl_off load(const mxl_off first, const mxl_off N) {
+    c0 = 0;
+    (void)first;
+    return N;
+  }
+
+  // Write situation t's draws (column-major K_w x S) to eta.
+  void fill(double* eta, const mxl_off t) const {
+    if (generate) {
+      gen.fill_block(eta, static_cast<uint64_t>(t) * static_cast<uint64_t>(S) + 1);
+      return;
+    }
+    const std::size_t n = static_cast<std::size_t>(K_w) * static_cast<std::size_t>(S);
+    if (n > 0) {
+      std::memcpy(eta, cube + static_cast<std::size_t>(t - c0) * n,
+                  n * sizeof(double));
+    }
+  }
+};
+
+// What the per-situation routine reads, shared by all threads: the stacked
+// design and its layout, the parameters, the base utilities and the draws.
+// A kernel fills it on the primary thread in the order of its own checks;
+// it holds no SEXP.
+struct MxlPredData {
+  const arma::mat& X;
+  const arma::mat& W;               // row-aligned with X, or J x K_w
+  const arma::uvec& rc_dist;
+  ChoiceLayout lay;
+  arma::vec mu_final, delta;        // delta: padded, all J; empty without ASCs
+  arma::mat L;
+  const double* base = nullptr;     // per row: X beta (+ W mu_final, row-aligned W)
+  arma::vec W_mu;                   // alternative-level W: W mu_final per alternative
+  MxlPredDraws draws;
+  int K_w = 0, S = 0;
+  bool use_asc = false, include_outside_option = false, alt_level_W = false;
+
+  MxlPredData(const arma::mat& X_, const arma::mat& W_, const arma::uvec& rc_dist_)
+      : X(X_), W(W_), rc_dist(rc_dist_) {}
+  MxlPredData(const MxlPredData&) = delete;
+  MxlPredData& operator=(const MxlPredData&) = delete;
+};
+
+// Generate-mode checks of a prediction kernel, before its layout.
+inline void mxl_pred_check_generate(const int gen_S, const int K_w) {
+  if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
+  if (K_w > HALTON_N_PRIMES) {
+    Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or "
+               "extend the primes table.");
+  }
+}
+
+// The layout of a prediction kernel, with the messages of
+// validate_mxl_inputs() and in its order: the situations, the alternative
+// codes and the ASCs' coverage of them (choice_layout_build()), then in store
+// mode the cube's dimensions, then W's rows. Generate mode checks W's rows
+// too (it used to stop at an Armadillo bounds error).
+inline void mxl_pred_layout(MxlPredData& pd, const Rcpp::IntegerVector& alt_idx,
+                            const Rcpp::IntegerVector& M,
+                            const arma::cube& eta_draws, const bool store,
+                            const bool use_asc, const arma::vec& delta,
+                            const arma::vec* weights) {
+  pd.lay = choice_layout_build(pd.X, alt_idx, M, use_asc, delta, weights);
+  const ChoiceLayout& lay = pd.lay;
+  if (store) {
+    if (static_cast<mxl_off>(eta_draws.n_slices) != lay.N) {
+      Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
+                 eta_draws.n_slices, lay.N);
+    }
+    if (eta_draws.n_rows != pd.W.n_cols) {
+      Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
+                 eta_draws.n_rows, pd.W.n_cols);
+    }
+  }
+  if (pd.W.n_rows != pd.X.n_rows && lay.n_rows > 0 &&
+      static_cast<mxl_off>(pd.W.n_rows) < lay.J) {
+    Rcpp::stop("W must be row-aligned with X (%d rows) or contain one row per "
+               "global alternative (at least %d rows); got %d rows.",
+               pd.X.n_rows, lay.J, pd.W.n_rows);
+  }
+}
+
+// The parameters, flags and draw source of a prediction kernel, after its
+// checks.
+inline void mxl_pred_setup(MxlPredData& pd, const arma::vec& mu_final,
+                           const arma::mat& L, const arma::vec& delta,
+                           const bool use_asc, const bool include_outside_option,
+                           const arma::cube& eta_draws, const int gen_seed,
+                           const int gen_scramble, const int gen_S) {
+  pd.mu_final = mu_final;
+  pd.L = L;
+  pd.delta = delta;
+  pd.use_asc = use_asc;
+  pd.include_outside_option = include_outside_option;
+  pd.alt_level_W = pd.W.n_rows != pd.X.n_rows;
+  pd.K_w = static_cast<int>(pd.W.n_cols);
+  pd.S = gen_seed >= 0 ? gen_S : static_cast<int>(eta_draws.n_cols);
+  pd.draws.K_w = pd.K_w;
+  pd.draws.S = pd.S;
+  pd.draws.generate = gen_seed >= 0;
+  if (pd.draws.generate) {
+    pd.draws.gen = HaltonGen(static_cast<uint64_t>(gen_seed), pd.S, pd.K_w,
+                             gen_scramble);
+  } else {
+    pd.draws.cube = eta_draws.memptr();
+  }
+}
+
+// The base utilities of every row into `base` (n rows; it may view a
+// kernel's output): X beta, then += W mu_final for a row-aligned W, the
+// expressions compute_base_util_mxl() formed before its ASCs. An
+// alternative-level W's W mu_final goes to W_mu instead; mxl_pred_load() adds
+// it and then the ASCs row by row, as that function did.
+inline void mxl_pred_base(MxlPredData& pd, arma::vec& base,
+                          const arma::vec& beta) {
+  base = pd.X * beta;
+  if (!pd.alt_level_W) {
+    base += pd.W * pd.mu_final;
+  } else {
+    pd.W_mu = pd.W * pd.mu_final;
+  }
+  pd.base = base.memptr();
+}
+
+// A thread's buffers for the situation in hand, sized once on the primary
+// thread for the largest choice set and viewed per situation by Armadillo
+// matrices of the exact shape; never resized. aux holds a kernel's own
+// per-situation arrays; tid is the thread that uses them.
+struct MxlPredScratch {
+  std::unique_ptr<double[]> eta, gamma, W_t, WGamma, bu, v, p, aux;
+  int tid = 0;
+
+  MxlPredScratch(const MxlPredData& pd, const std::size_t n_aux, const int tid_)
+      : tid(tid_) {
+    const std::size_t K_w = pd.K_w, S = pd.S;
+    const std::size_t m = static_cast<std::size_t>(pd.lay.max_m);
+    eta = mxl_buffer(K_w * S);
+    gamma = mxl_buffer(K_w * S);
+    W_t = mxl_buffer(m * K_w);
+    WGamma = mxl_buffer(m * S);
+    bu = mxl_buffer(m);
+    v = mxl_buffer(m + 1);
+    p = mxl_buffer(m + 1);
+    aux = mxl_buffer(n_aux);
+  }
+};
+
+// Every thread's scratch, allocated on the primary thread, so that running
+// out of memory is an R error saying how much each thread needs, not a
+// failure inside the parallel region.
+inline std::vector<MxlPredScratch> mxl_pred_scratch(const MxlPredData& pd,
+                                                    const int n_threads,
+                                                    const std::size_t n_aux) {
+  std::vector<MxlPredScratch> sc;
+  try {
+    sc.reserve(n_threads);
+    for (int i = 0; i < n_threads; ++i) sc.emplace_back(pd, n_aux, i);
+  } catch (const std::bad_alloc&) {
+    std::vector<MxlPredScratch>().swap(sc);  // release before reporting
+    const double K_w = pd.K_w, S = pd.S, m = static_cast<double>(pd.lay.max_m);
+    const double bytes = sizeof(double) * (2.0 * K_w * S + m * (K_w + S + 3.0) +
+                                           static_cast<double>(n_aux));
+    if (n_threads > 1) {
+      Rcpp::stop("Not enough memory for the prediction's working arrays: "
+                 "%.2f GB per thread for %d threads (the largest choice "
+                 "situation stacks %d alternative rows; S = %d draws). Run "
+                 "fewer threads with set_num_threads().", bytes / 1e9,
+                 n_threads, pd.lay.max_m, pd.S);
+    }
+    Rcpp::stop("Not enough memory for the prediction's working arrays: %.2f GB "
+               "(the largest choice situation stacks %d alternative rows; "
+               "S = %d draws).", bytes / 1e9, pd.lay.max_m, pd.S);
+  }
+  return sc;
+}
+
+// Run body(t, sc) for every situation t, in parallel, each thread with its
+// own scratch: chunk by chunk of the draw source (a single chunk unless the
+// store-mode draws come in chunks), each chunk one parallel region, so the
+// primary thread loads a chunk's draws between regions.
+template <typename Body>
+inline void mxl_pred_run(MxlPredData& pd, std::vector<MxlPredScratch>& scratch,
+                         Body body) {
+  const int n_threads = static_cast<int>(scratch.size());
+  for (mxl_off c0 = 0; c0 < pd.lay.N;) {
+    const mxl_off c1 = pd.draws.load(c0, pd.lay.N);
+    if (c1 <= c0) Rcpp::stop("Internal error: the draws made no progress.");
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+    {
+      MxlPredScratch& sc = scratch[mxl_thread_num()];
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+      for (mxl_off t = c0; t < c1; ++t) body(t, sc);
+    }
+    c0 = c1;
+  }
+}
+
+// Load situation t into the thread's buffers: its base utilities (with an
+// alternative-level W's W mu_final, then the ASCs, added row by row), its
+// draws, Gamma = L eta with the log-normal transform, its rows of W and
+// W_t Gamma (m x S). Returns its number of rows m.
+inline int mxl_pred_load(const MxlPredData& pd, const mxl_off t,
+                         MxlPredScratch& sc) {
+  const ChoiceLayout& lay = pd.lay;
+  const mxl_off r0 = lay.row_off[t];
+  const int m = lay.m(t);
+  const AltCodes0 alt0{lay.alt + r0};
+  double* bu = sc.bu.get();
+  for (int a = 0; a < m; ++a) bu[a] = pd.base[r0 + a];
+  if (pd.alt_level_W) {
+    for (int a = 0; a < m; ++a) bu[a] += pd.W_mu[alt0[a]];
+  }
+  if (pd.use_asc) {
+    for (int a = 0; a < m; ++a) bu[a] += pd.delta[alt0[a]];
+  }
+
+  const int K_w = pd.K_w, S = pd.S;
+  pd.draws.fill(sc.eta.get(), t);
+  const arma::mat eta(sc.eta.get(), K_w, S, false, true);
+  arma::mat Gamma(sc.gamma.get(), K_w, S, false, true);
+  batch_gamma_draws_into(Gamma, pd.L, eta, pd.rc_dist);
+
+  arma::mat W_t(sc.W_t.get(), m, K_w, false, true);
+  for (int k = 0; k < K_w; ++k) {
+    for (int a = 0; a < m; ++a) {
+      W_t.at(a, k) = pd.alt_level_W ? pd.W.at(alt0[a], k) : pd.W.at(r0 + a, k);
+    }
+  }
+  arma::mat WGamma(sc.WGamma.get(), m, S, false, true);
+  WGamma = W_t * Gamma;
+  return m;
+}
+
+// ============================================================================
 // Mixed Logit: Share Prediction and BLP Contraction
 // ============================================================================
 
@@ -1684,7 +2005,7 @@ Rcpp::List mxl_predict(
     const arma::vec& theta,
     const arma::mat& X,
     const arma::mat& W,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::cube& eta_draws,
     const arma::uvec& rc_dist,
@@ -1694,128 +2015,74 @@ Rcpp::List mxl_predict(
     const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+  // Parse theta into parameter blocks (shared helper; validates theta), then
+  // the inputs and their layout, on the primary thread
+  const MxlParams par = parse_mxl_theta(theta, X.n_cols, W.n_cols, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  const arma::vec& beta = par.beta;
-  const arma::vec& mu_final = par.mu_final;
-  const arma::mat& L = par.L;
-  const arma::vec& delta = par.delta;
+  const bool generate = gen_seed >= 0;
+  if (generate) mxl_pred_check_generate(gen_S, W.n_cols);
+  MxlPredData pd(X, W, rc_dist);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  nullptr);
+  mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
+                 include_outside_option, eta_draws, gen_seed, gen_scramble,
+                 gen_S);
+  const ChoiceLayout& lay = pd.lay;
+  const std::size_t max_m = static_cast<std::size_t>(lay.max_m);
+  std::vector<MxlPredScratch> scratch =
+      mxl_pred_scratch(pd, mxl_pred_threads(lay.N), 2 * max_m);
 
-  // 0-based alt indices and prefix sums
-  arma::uvec alt_idx0 = alt_idx - 1;
-  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+  // Outputs, each written once by the situation that owns its slots. The
+  // base utilities are formed in choice_prob, which a situation reads into
+  // its buffers before writing its probabilities there.
+  Rcpp::NumericVector choice_prob = mxl_col_result(lay.n_rows);
+  Rcpp::NumericVector utility = mxl_col_result(lay.n_rows);
+  Rcpp::NumericVector choice_prob_outside;
+  if (include_outside_option) choice_prob_outside = mxl_col_result(lay.N);
+  arma::vec base(choice_prob.begin(), lay.n_rows, false, true);
+  mxl_pred_base(pd, base, par.beta);
+  double* prob = choice_prob.begin();
+  double* util = utility.begin();
+  double* prob_outside = include_outside_option ? choice_prob_outside.begin()
+                                                : nullptr;
+  const int S = pd.S;
+  const double S_d = static_cast<double>(S);
+  const int o = include_outside_option ? 1 : 0;  // outside option: slot 0
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
-                                          alt_idx0, use_asc, delta);
-
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_p = (gen_seed >= 0);
-  HaltonGen halton_gen_p;
-  if (use_generate_p) {
-    halton_gen_p = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  // Output accumulators (each individual writes to a disjoint subvec)
-  arma::vec choice_prob = arma::zeros(X.n_rows);
-  arma::vec utility = arma::zeros(X.n_rows);
-  arma::vec choice_prob_outside;
-  if (include_outside_option) {
-    choice_prob_outside = arma::zeros(N);
-  }
-
-  // Thread-private buffers (declared outside the parallel loop for OpenMP)
-  arma::mat eta_i_buf_p;
-  arma::mat eta_i_store_p;
-
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) firstprivate(eta_i_buf_p, eta_i_store_p)
-#endif
-  for (int i = 0; i < N; ++i) {
-    const int m_i = M[i];
-    const int num_choices = include_outside_option ? m_i + 1 : m_i;
-    const int start_idx = S_prefix[i];
-    const int end_idx = start_idx + m_i - 1;
-    const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-
-    arma::mat W_i =
-        make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
-
-    // Pre-computed base utility for this individual
-    const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
-
-    // Per-individual accumulators (averaged over draws)
-    arma::vec P_inside_avg = arma::zeros(m_i);
-    arma::vec util_inside_avg = arma::zeros(m_i);
+  mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
+    const int m = mxl_pred_load(pd, t, sc);
+    const double* bu = sc.bu.get();
+    double* v = sc.v.get();
+    double* p = sc.p.get();
+    double* P_inside_avg = sc.aux.get();          // m: averaged over draws
+    double* util_inside_avg = P_inside_avg + max_m;
+    for (int a = 0; a < m; ++a) {
+      P_inside_avg[a] = 0.0;
+      util_inside_avg[a] = 0.0;
+    }
     double P_outside_avg = 0.0;
 
-    // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-    const arma::mat* eta_i_ptr_p;
-    if (use_generate_p) {
-      halton_gen_p.fill_eta_i(eta_i_buf_p, i + 1);
-      eta_i_ptr_p = &eta_i_buf_p;
-    } else {
-      eta_i_store_p = eta_draws.slice(i);
-      eta_i_ptr_p = &eta_i_store_p;
-    }
-    const arma::mat& eta_i_p_ref = *eta_i_ptr_p;
-    arma::mat Gamma_final = batch_gamma_draws(L, eta_i_p_ref, rc_dist);
-
-    // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
-    const arma::mat WGamma = W_i * Gamma_final;
-
-    arma::vec inside_utils(m_i);
-    arma::vec V_s(num_choices);
-    arma::vec P_s;
-
-    for (int s = 0; s < Sdraw; ++s) {
-      inside_utils = base_util_i + WGamma.col(s);
-
-      fill_choice_utilities(V_s, inside_utils, num_choices,
-                            include_outside_option);
-
-      // Stable softmax
-      stable_softmax(V_s, P_s);
-
-      // Accumulate inside probabilities and utilities
-      if (include_outside_option) {
-        P_outside_avg += P_s(0);
-        P_inside_avg += P_s.subvec(1, num_choices - 1);
-      } else {
-        P_inside_avg += P_s;
+    for (int s = 0; s < S; ++s) {
+      const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m;
+      if (o) v[0] = 0.0;
+      for (int a = 0; a < m; ++a) {
+        v[o + a] = bu[a] + wg[a];          // inside utility at draw s
+        util_inside_avg[a] += v[o + a];
       }
-      util_inside_avg += inside_utils;
+      stable_softmax_n(v, p, m + o);       // shifts v in place
+      if (o) P_outside_avg += p[0];
+      for (int a = 0; a < m; ++a) P_inside_avg[a] += p[o + a];
     }
 
-    // Average over draws
-    const double S_d = static_cast<double>(Sdraw);
-    P_inside_avg /= S_d;
-    util_inside_avg /= S_d;
-    if (include_outside_option) {
-      P_outside_avg /= S_d;
-      choice_prob_outside(i) = P_outside_avg;
+    // Average over draws; disjoint writes by situation — no race
+    const mxl_off r0 = lay.row_off[t];
+    for (int a = 0; a < m; ++a) {
+      prob[r0 + a] = P_inside_avg[a] / S_d;
+      util[r0 + a] = util_inside_avg[a] / S_d;
     }
-
-    // Disjoint writes by individual — no race
-    choice_prob.subvec(start_idx, end_idx) = P_inside_avg;
-    utility.subvec(start_idx, end_idx) = util_inside_avg;
-  }
+    if (o) prob_outside[t] = P_outside_avg / S_d;
+  });
 
   Rcpp::List out;
   out["choice_prob"] = choice_prob;
@@ -1878,115 +2145,56 @@ Rcpp::List mxl_predict(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::vec mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat &W,
-                     const arma::uvec &alt_idx, const Rcpp::IntegerVector &M,
+Rcpp::NumericVector mxl_logsum(const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+                     const Rcpp::IntegerVector &alt_idx, const Rcpp::IntegerVector &M,
                      const arma::cube &eta_draws, const arma::uvec &rc_dist,
                      const bool rc_correlation = true, const bool rc_mean = false,
                      const bool use_asc = true, const bool include_outside_option = false,
                      const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
-  // Basic dimensions
-  const int N = M.size();
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+  // Parse theta into parameter blocks (shared helper; validates theta), then
+  // the inputs and their layout, on the primary thread
+  const MxlParams par = parse_mxl_theta(theta, X.n_cols, W.n_cols, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  const arma::vec& beta = par.beta;
-  const arma::vec& mu_final = par.mu_final;
-  const arma::mat& L = par.L;
-  const arma::vec& delta = par.delta;
+  const bool generate = gen_seed >= 0;
+  if (generate) mxl_pred_check_generate(gen_S, W.n_cols);
+  MxlPredData pd(X, W, rc_dist);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  nullptr);
+  mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
+                 include_outside_option, eta_draws, gen_seed, gen_scramble,
+                 gen_S);
+  const ChoiceLayout& lay = pd.lay;
 
-  // 0-based alt indices and prefix sums
-  arma::uvec alt_idx0 = alt_idx - 1;
-  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+  std::vector<MxlPredScratch> scratch =
+      mxl_pred_scratch(pd, mxl_pred_threads(lay.N), 0);
+  arma::vec base(lay.n_rows, arma::fill::none);
+  mxl_pred_base(pd, base, par.beta);
+  const int S = pd.S;
+  const int o = include_outside_option ? 1 : 0;  // outside option: slot 0
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
-                                          alt_idx0, use_asc, delta);
+  // Output (each situation writes only its own slot)
+  Rcpp::NumericVector logsum = mxl_col_result(lay.N);
+  double* ls = logsum.begin();
 
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_ls = (gen_seed >= 0);
-  HaltonGen halton_gen_ls;
-  if (use_generate_ls) {
-    halton_gen_ls = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  // Thread-private buffers (declared here; copied per-thread via firstprivate)
-  arma::mat eta_i_buf_ls;
-  arma::mat eta_i_store_ls;
-
-  // Output accumulator (each individual writes only its own slot)
-  arma::vec logsum = arma::zeros(N);
-
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic) firstprivate(eta_i_buf_ls, eta_i_store_ls)
-#endif
-  for (int i = 0; i < N; ++i) {
-    const int m_i = M[i];
-    const int num_choices = include_outside_option ? m_i + 1 : m_i;
-    const int start_idx = S_prefix[i];
-    const int end_idx = start_idx + m_i - 1;
-    const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-
-    arma::mat W_i =
-        make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
-
-    // Pre-computed base utility for this individual
-    const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
-
-    // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-    const arma::mat* eta_i_ptr_ls;
-    if (use_generate_ls) {
-      halton_gen_ls.fill_eta_i(eta_i_buf_ls, i + 1);
-      eta_i_ptr_ls = &eta_i_buf_ls;
-    } else {
-      eta_i_store_ls = eta_draws.slice(i);
-      eta_i_ptr_ls = &eta_i_store_ls;
-    }
-    const arma::mat& eta_i_ls_ref = *eta_i_ptr_ls;
-    arma::mat Gamma_final = batch_gamma_draws(L, eta_i_ls_ref, rc_dist);
-
-    // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
-    const arma::mat WGamma = W_i * Gamma_final;
+  mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
+    const int m = mxl_pred_load(pd, t, sc);
+    const double* bu = sc.bu.get();
+    double* v = sc.v.get();
 
     // Accumulate the per-draw log-sum-exp (NOT the logsum of averaged
     // utilities; see the Jensen note in the docs above).
     double logsum_acc = 0.0;
-
-    // CHANGE #5: hoist per-draw temporaries outside the s loop
-    arma::vec inside_utils(m_i);
-    arma::vec V_s(num_choices);
-
-    for (int s = 0; s < Sdraw; ++s) {
-      inside_utils = base_util_i + WGamma.col(s);
-
-      // Build full V_s with the outside option's V = 0 slot when present
-      if (include_outside_option) {
-        V_s(0) = 0.0; // outside option fixed at 0
-        V_s.subvec(1, num_choices - 1) = inside_utils;
-      } else {
-        V_s = inside_utils;
-      }
-
-      // Stable log-sum-exp (max-subtraction)
-      const double V_max = V_s.max();
-      logsum_acc += V_max + std::log(arma::accu(arma::exp(V_s - V_max)));
+    for (int s = 0; s < S; ++s) {
+      const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m;
+      if (o) v[0] = 0.0;  // outside option fixed at 0
+      for (int a = 0; a < m; ++a) v[o + a] = bu[a] + wg[a];
+      logsum_acc += max_shifted_lse_n(v, m + o);
     }
 
-    // Average over draws; disjoint write by individual — no race
-    logsum(i) = logsum_acc / static_cast<double>(Sdraw);
-  }
+    // Average over draws; disjoint write by situation — no race
+    ls[t] = logsum_acc / static_cast<double>(S);
+  });
 
   return logsum;
 }

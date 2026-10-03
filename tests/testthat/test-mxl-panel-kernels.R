@@ -371,9 +371,10 @@ test_that("overflowing utilities give the same sentinel, skip and NaN in draw ba
 })
 
 test_that("the raw-array softmax and log-sum-exp match Armadillo's bit for bit", {
-  # The draw loop uses stable_softmax_n() and log_sum_exp_n() on reused
-  # buffers; they must reproduce stable_softmax() and logSumExp() exactly,
-  # signed zeros, infinities and NaN included.
+  # The draw loops use stable_softmax_n(), log_sum_exp_n() and
+  # max_shifted_lse_n() on reused buffers; they must reproduce
+  # stable_softmax(), logSumExp() and the log-sum's max + log(accu(exp()))
+  # exactly, signed zeros, infinities and NaN included.
   set.seed(5)
   cases <- c(lapply(1:40, function(n) stats::rnorm(n, sd = 3)),
              list(0, -0, c(0, -0), c(-0, 0), c(1, 1), c(-Inf, 0), c(Inf, 1),
@@ -391,6 +392,8 @@ test_that("the raw-array softmax and log-sum-exp match Armadillo's bit for bit",
                 label = paste(what, ": log denominator"))
     expect_true(identical(r$lse_raw, r$lse_arma, num.eq = FALSE),
                 label = paste(what, ": log-sum-exp"))
+    expect_true(identical(r$lse_shift_raw, r$lse_shift_arma, num.eq = FALSE),
+                label = paste(what, ": max-shifted log-sum"))
   }
 })
 
