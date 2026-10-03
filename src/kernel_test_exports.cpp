@@ -10,12 +10,13 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 
-//' stable_softmax_n() and log_sum_exp_n() next to stable_softmax() and
-//' logSumExp(), for a bitwise comparison in tests
+//' stable_softmax_n(), log_sum_exp_n() and max_shifted_lse_n() next to
+//' stable_softmax(), logSumExp() and the Armadillo expression of the mixed
+//' logit log-sum, for a bitwise comparison in tests
 //'
 //' @param v Numeric vector of utilities (length >= 1).
 //' @return List with the shifted utilities, probabilities and log-denominator
-//'   from both softmax versions, and both log-sum-exps of v.
+//'   from both softmax versions, and both versions of each log-sum-exp of v.
 //' @noRd
 // [[Rcpp::export]]
 Rcpp::List test_softmax_n(const arma::vec& v) {
@@ -30,7 +31,10 @@ Rcpp::List test_softmax_n(const arma::vec& v) {
       Rcpp::Named("log_denom_arma") = ld_arma,
       Rcpp::Named("log_denom_raw") = ld_raw,
       Rcpp::Named("lse_arma") = logSumExp(v),
-      Rcpp::Named("lse_raw") = log_sum_exp_n(v.memptr(), n));
+      Rcpp::Named("lse_raw") = log_sum_exp_n(v.memptr(), n),
+      Rcpp::Named("lse_shift_arma") =
+          v.max() + std::log(arma::accu(arma::exp(v - v.max()))),
+      Rcpp::Named("lse_shift_raw") = max_shifted_lse_n(v.memptr(), n));
 }
 
 // nl_individual_probs() as it was written on Armadillo expressions (src/choicer.h

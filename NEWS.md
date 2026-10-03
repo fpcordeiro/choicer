@@ -172,6 +172,36 @@
   weights, where they read past the empty vector or, with an outside
   option, failed an Armadillo bounds check.
 
+## Mixed logit — prediction at population scale
+
+- The mixed logit kernels behind `predict()` and `logsum()` (and so
+  `consumer_surplus()`, `gof()` and the fit statistics of `summary()`) now
+  read the stacked design's alternative codes in place and simulate each
+  choice situation in buffers allocated once per thread. They used to copy
+  the codes twice on every call and allocate about ten objects per choice
+  situation, among them its rows-by-draws matrix of random utilities and,
+  for the log-sums, a temporary at every draw; with stored draws, they also
+  gave each situation's draws a matrix header created under a lock shared
+  by all threads. On a synthetic school-census design of 9.8 million rows
+  (245,000 choice situations of 10 to 100 schools, three random
+  coefficients, `S = 100`), a prediction of choice probabilities moved
+  0.16 GB through the heap in 51 allocations instead of 11.8 GB in 2.2
+  million, and took 16% less time at one thread and 20% less at eleven
+  (23% and 39% with stored draws); the log-sums moved 0.08 GB in 19
+  allocations instead of 18.8 GB in 22 million, and took 27% and 26% less
+  time (65% and 90% with stored draws; medians of three alternated runs).
+  On a claims-like panel of similar size the gains were 14-27% for the
+  probabilities and 24-44% for the log-sums. Predictions and log-sums are
+  unchanged, bit for bit.
+- The same kernels now treat malformed alternative codes, which only a
+  direct call can supply, in a defined way: a missing or negative code is
+  reported as such, where it went through an undefined conversion (read as
+  0 on ARM processors, as too large on x86-64), and a code beyond the
+  integer range becomes `NA`, with R's warning. With draws generated on the
+  fly, an alternative-level `W` with fewer rows than the largest
+  alternative code is now reported as with stored draws, where it stopped
+  at an Armadillo bounds error.
+
 ## Data preparation at population scale
 
 - `get_halton_normals()` builds the draw cube of `draws = "store"`, at fit
@@ -626,10 +656,10 @@ unless it says otherwise.
   score matrix behind `vcov(type = "robust")`, `vcov(type = "cluster")` and
   `wesml_vcov()` or the output of `conditional_tastes()`, are allocated
   where Armadillo stopped with "requested size is too large". Below 2^32
-  values, results are unchanged, bit for bit. The mixed logit prediction
-  functions, which still copy their index vectors, now use 8 more bytes per
-  row of the design for those copies (and, with stored draws, 16 more per
-  choice situation).
+  values, results are unchanged, bit for bit. The mixed logit functions for
+  shares, BLP inversions, elasticities and diversion ratios, which still
+  copy their index vectors, now use 8 more bytes per row of the design for
+  those copies (and, with stored draws, 16 more per choice situation).
 
 # choicer 0.2.1
 

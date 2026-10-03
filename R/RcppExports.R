@@ -348,12 +348,13 @@ hmnp_gibbs <- function(X, Z, M, choice_pos, include_outside_option, alt_of_row, 
     .Call(`_choicer_hmnp_gibbs`, X, Z, M, choice_pos, include_outside_option, alt_of_row, Ti, delta_init, theta_init, b_bar, A, nu, V, theta_bar, A_theta, sd_prior, a0, s0, R, burn, thin, seed, keep_beta_i, trace)
 }
 
-#' stable_softmax_n() and log_sum_exp_n() next to stable_softmax() and
-#' logSumExp(), for a bitwise comparison in tests
+#' stable_softmax_n(), log_sum_exp_n() and max_shifted_lse_n() next to
+#' stable_softmax(), logSumExp() and the Armadillo expression of the mixed
+#' logit log-sum, for a bitwise comparison in tests
 #'
 #' @param v Numeric vector of utilities (length >= 1).
 #' @return List with the shifted utilities, probabilities and log-denominator
-#'   from both softmax versions, and both log-sum-exps of v.
+#'   from both softmax versions, and both versions of each log-sum-exp of v.
 #' @noRd
 test_softmax_n <- function(v) {
     .Call(`_choicer_test_softmax_n`, v)

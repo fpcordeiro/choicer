@@ -24,7 +24,8 @@
 //   * data-shape validation (X/W/alt_idx/M/eta/weights consistency), called
 //     by every exported entry point: in the layout builders (MNL:
 //     choice_layout_build below; NL: nl_layout_build; MXL estimation:
-//     mxl_layout_build) and, for the MXL prediction kernels, which still
+//     mxl_layout_build; MXL predictions and log-sums: mxl_pred_layout) and,
+//     for the MXL shares, BLP, elasticity and diversion kernels, which still
 //     take arma::uvec indices, in the validate_*_inputs helpers.
 // Every check is O(1) or a single O(rows) integer scan — negligible next to
 // one likelihood evaluation — and turns what would otherwise be an obscure
@@ -148,8 +149,9 @@ inline void check_rc_dist_length(const arma::uvec& rc_dist, const int K_w) {
 // an int; the element offsets formed from them (row + column * n_rows) are
 // Armadillo's (arma::uword, 64-bit: src/Makevars defines ARMA_64BIT_WORD).
 // ChoiceLayout is the core shared by the MNL and NL kernels
-// (choice_layout_build, nl_layout_build) and by the MXL estimation kernels
-// (MxlLayout, mxl_layout_build). It is valid for one kernel call only: when
+// (choice_layout_build, nl_layout_build), by the MXL estimation kernels
+// (MxlLayout, mxl_layout_build) and by the MXL prediction kernels
+// (mxl_pred_layout). It is valid for one kernel call only: when
 // an argument was coerced from doubles, the integer copy belongs to that
 // call's Rcpp wrapper. Build it on the primary thread; it is read-only
 // afterwards.
@@ -664,6 +666,22 @@ inline double log_sum_exp_n(const double* x, const int n) {
   }
   if (j - 1 < n) acc1 += std::exp(x[j - 1] - a);
   return a + std::log(acc1 + acc2);
+}
+
+// V_max + log(accu(exp(V - V_max))) of the n >= 1 entries of v: the log-sum
+// of one draw as mxl_logsum() has always formed it, with Armadillo's max scan
+// and two-accumulator sum. Unlike log_sum_exp_n() it has no special cases: an
+// infinite maximum gives NaN, as that expression did.
+inline double max_shifted_lse_n(const double* v, const int n) {
+  const double v_max = direct_max_n(v, n);
+  double acc1 = 0.0, acc2 = 0.0;
+  int j;
+  for (j = 1; j < n; j += 2) {
+    acc1 += std::exp(v[j - 1] - v_max);
+    acc2 += std::exp(v[j] - v_max);
+  }
+  if (j - 1 < n) acc1 += std::exp(v[j - 1] - v_max);
+  return v_max + std::log(acc1 + acc2);
 }
 
 // ----------------------------------------------------------------------------
