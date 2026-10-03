@@ -632,31 +632,6 @@ label_matrix <- function(mat, alt_mapping) {
   has_na
 }
 
-#' Stop before building a design matrix larger than choicer supports
-#'
-#' The kernels view X and W without copying them. They used Armadillo's
-#' 32-bit word, under which the element count wraps past 2^32 - 1 and rows are
-#' misread without an error; choicer now defines ARMA_64BIT_WORD
-#' (src/Makevars), and this stop stays until designs that large have been run
-#' end to end.
-#'
-#' @param n Number of rows.
-#' @param cols Column names.
-#' @param what Name of the matrix, for the message.
-#' @returns Invisibly, `NULL`.
-#' @noRd
-.check_design_size <- function(n, cols, what) {
-  size <- as.numeric(n) * length(cols)
-  if (size > 2^32 - 1) {
-    stop(what, " would have ", format(n, big.mark = ",", scientific = FALSE),
-         " rows and ", length(cols), " columns, ",
-         format(size, big.mark = ",", scientific = FALSE), " values, more ",
-         "than 2^32 - 1, the largest design choicer supports.",
-         call. = FALSE)
-  }
-  invisible(NULL)
-}
-
 #' Design matrix gathered from the source columns
 #'
 #' `X[i, ] = src[rows[i], cols]` in double storage: the values and layout of
@@ -674,7 +649,6 @@ label_matrix <- function(mat, alt_mapping) {
 #' @param src Data frame holding the columns (see `.prep_source()`).
 #' @param cols Names of numeric columns of `src`.
 #' @param rows Row indices into `src`, in prepared order.
-#' @param what Name of the matrix, for the size check's message.
 #' @param base `NULL`, or row indices into `src`, one per element of `rows`,
 #'   of the values to subtract.
 #' @returns A `length(rows)` x `length(cols)` double matrix with column names
@@ -682,9 +656,8 @@ label_matrix <- function(mat, alt_mapping) {
 #'   `as.matrix()`); for zero columns, `as.matrix()`'s 0 x 0 logical matrix,
 #'   which the callers' final checks reject.
 #' @noRd
-.gather_matrix <- function(src, cols, rows, what, base = NULL) {
+.gather_matrix <- function(src, cols, rows, base = NULL) {
   if (!length(cols)) return(as.matrix(data.table::data.table()))
-  .check_design_size(length(rows), cols, what)
   X <- prep_gather_design(lapply(match(cols, names(src)),
                                  function(j) .subset2(src, j)), rows, base)
   big <- attr(X, "int64_big")

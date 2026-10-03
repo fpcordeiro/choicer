@@ -236,11 +236,11 @@
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
 #' @param draws Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
-#'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube, one
-#'   block per likelihood unit (\code{U} decision makers with \code{person_col}, choice
-#'   situations otherwise; existing behavior, exact reproducibility). It supports at
-#'   most \eqn{2^{31} - 1} points (\eqn{S \times U}) and \eqn{2^{32} - 1} values
-#'   (\eqn{K_w \times S \times U}); \code{predict()}, \code{elasticities()},
+#'   \code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube
+#'   (\eqn{8 K_w S U} bytes), one block per likelihood unit (\code{U} decision
+#'   makers with \code{person_col}, choice situations otherwise; existing
+#'   behavior, exact reproducibility). It supports at most \eqn{2^{31} - 1}
+#'   points (\eqn{S \times U}); \code{predict()}, \code{elasticities()},
 #'   \code{diversion_ratios()}, \code{blp()}, \code{logsum()},
 #'   \code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
 #'   statistics) regenerate one block per choice situation, so for them the
@@ -1059,18 +1059,14 @@ prepare_mxl_data <- function(
 
   ## Build objects -------------------------------------------------------------
   ## design matrix
-  .check_design_size(nrow(dt), random_var_cols,
-                     "The random-coefficient design matrix W")
   warn_once <- .int64_warn_once()  # a column can be in both X and W
-  X <- warn_once(.gather_matrix(src, covariate_cols, dt$.choicer_row,
-                                "The design matrix X"))
+  X <- warn_once(.gather_matrix(src, covariate_cols, dt$.choicer_row))
   X_res <- check_collinearity(X)
   X <- X_res$mat
   if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped # accumulate dropped vars if we had multiple checks
 
 
-  W <- warn_once(.gather_matrix(src, random_var_cols, dt$.choicer_row,
-                                "The random-coefficient design matrix W"))
+  W <- warn_once(.gather_matrix(src, random_var_cols, dt$.choicer_row))
   W_res <- check_collinearity(W)
   W <- W_res$mat
   if (!is.null(W_res$dropped)) {
@@ -1244,14 +1240,12 @@ prepare_mxl_data <- function(
 #'
 #' Draw unit \eqn{i} receives the \eqn{S} consecutive points
 #' \eqn{(i - 1)S + 1, \ldots, iS} of the \eqn{K_w}-dimensional Halton sequence
-#' of \code{randtoolbox::halton()}, mapped to standard normals. The cube is
-#' filled a block of units at a time, so it never holds a second copy of the
-#' sequence. Store mode supports at most \eqn{2^{31} - 1} points
-#' (\eqn{S \times N}), the largest starting index \code{halton(start = )}
-#' accepts, and \eqn{2^{32} - 1} values (\eqn{K_w \times S \times N}), the
-#' largest cube choicer supports;
-#' \code{draws = "generate"} in \code{\link{run_mxlogit}} has neither limit and
-#' never materializes the cube.
+#' of \code{randtoolbox::halton()}, mapped to standard normals. The cube
+#' takes \eqn{8 K_w S N} bytes and is filled a block of units at a time, so it
+#' never holds a second copy of the sequence. Store mode supports at most
+#' \eqn{2^{31} - 1} points (\eqn{S \times N}), the largest starting index
+#' \code{halton(start = )} accepts; \code{draws = "generate"} in
+#' \code{\link{run_mxlogit}} has no such limit and never materializes the cube.
 #'
 #' @param S Number of draws per draw unit
 #' @param N number of draw units: choice situations, or decision makers for a
@@ -1277,15 +1271,6 @@ get_halton_normals <- function(S, N, K_w) {
          " points of the Halton sequence, more than 2^31 - 1, the largest ",
          "starting index randtoolbox::halton(start = ) accepts. Refit with ",
          "run_mxlogit(draws = \"generate\").")
-  }
-  # The kernels addressed the cube with Armadillo's 32-bit indices, which
-  # misread a larger one; choicer now defines ARMA_64BIT_WORD, and this stop
-  # stays until cubes that large have been run end to end.
-  if (n_points * K_w > 2^32 - 1) {
-    stop("A store-mode draw cube needs K_w * S * N = ",
-         format(n_points * K_w, big.mark = ",", scientific = FALSE),
-         " values, more than 2^32 - 1, the largest cube choicer supports. ",
-         "Refit with run_mxlogit(draws = \"generate\").")
   }
   .halton_cube(S, N, K_w)
 }

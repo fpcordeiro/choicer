@@ -1032,8 +1032,7 @@ The implementation parallelizes over individuals using OpenMP:
    $K_w\times S\times U$ cube during estimation, one $K_w \times S$ block per unit ($U$
    decision makers under `person_col`, or $N$ choice situations otherwise). It is filled a
    block of units at a time with `halton(start = )`, which returns exactly those points.
-   Store mode needs $US \le 2^{31} - 1$, the largest starting index `halton()` accepts,
-   and $K_w U S \le 2^{32} - 1$, the largest cube choicer supports.
+   Store mode needs $US \le 2^{31} - 1$, the largest starting index `halton()` accepts.
    The prediction family (`predict()`, `elasticities()`, `diversion_ratios()`, `blp()`,
    `logsum()`, `consumer_surplus()`, and `gof()` through `predict()`) regenerates one block
    per choice situation, so for a panel fit $N$ replaces $U$ there. The fitted

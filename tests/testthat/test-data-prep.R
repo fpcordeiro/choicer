@@ -445,10 +445,10 @@ test_that("design matrices are double, with the covariate names as column names"
                    num(c("x1", "k2")))
   expect_identical(prepare_mxl_data(df, "id", "alt", "choice", "x1", c(w = "k1"))$W,
                    num("k1"))
-  expect_identical(.gather_matrix(df, c("x1", "x1"), seq_len(nrow(df)), "X"),
+  expect_identical(.gather_matrix(df, c("x1", "x1"), seq_len(nrow(df))),
                    num(c("x1", "x1")))
   cc <- character(0)
-  expect_identical(.gather_matrix(df, cc, seq_len(nrow(df)), "X"),
+  expect_identical(.gather_matrix(df, cc, seq_len(nrow(df))),
                    as.matrix(data.table::as.data.table(df)[, ..cc]))
 })
 
@@ -461,16 +461,6 @@ test_that("prep_gather_design gathers rows exactly and checks its inputs", {
   expect_error(prep_gather_design(cols, c(0L, 1L)), "out of range")
   expect_error(prep_gather_design(cols, c(NA_integer_, 1L)), "out of range")
   expect_error(prep_gather_design(list(letters[1:4]), 1L), "neither integer nor double")
-})
-
-test_that("design matrices past 2^32 - 1 values are refused before they are built", {
-  expect_error(.check_design_size(2^31, c("a", "b"), "The design matrix X"),
-               "X would have 2,147,483,648 rows and 2 columns.*more than 2\\^32 - 1")
-  expect_silent(.check_design_size(2^31 - 1, c("a", "b"), "The design matrix X"))
-  # Wired into .gather_matrix() ahead of any allocation (seq_len() is compact).
-  df <- as.data.frame(create_small_nl_data())
-  expect_error(.gather_matrix(df, c("x1", "x2", "id"), seq_len(.Machine$integer.max), "X"),
-               "more than 2\\^32 - 1")
 })
 
 test_that("gathered design rows follow the prepared order through filters and sorts", {

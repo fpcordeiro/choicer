@@ -176,11 +176,11 @@ each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.}
 (convenience workflow).}
 
 \item{draws}{Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
-\code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube, one
-block per likelihood unit (\code{U} decision makers with \code{person_col}, choice
-situations otherwise; existing behavior, exact reproducibility). It supports at
-most \eqn{2^{31} - 1} points (\eqn{S \times U}) and \eqn{2^{32} - 1} values
-(\eqn{K_w \times S \times U}); \code{predict()}, \code{elasticities()},
+\code{"store"} pre-materializes the full \eqn{K_w \times S \times U} Halton cube
+(\eqn{8 K_w S U} bytes), one block per likelihood unit (\code{U} decision
+makers with \code{person_col}, choice situations otherwise; existing
+behavior, exact reproducibility). It supports at most \eqn{2^{31} - 1}
+points (\eqn{S \times U}); \code{predict()}, \code{elasticities()},
 \code{diversion_ratios()}, \code{blp()}, \code{logsum()},
 \code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
 statistics) regenerate one block per choice situation, so for them the
