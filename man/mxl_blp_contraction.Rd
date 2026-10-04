@@ -62,12 +62,18 @@ mxl_blp_contraction(
 
 \item{max_iter}{maximum iterations (default 1000)}
 
-\item{gen_seed}{Integer master seed for the on-the-fly Halton generator. \code{< 0}
-(default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-on the fly from this seed.}
+\item{gen_seed}{Integer. \code{< 0} (default) uses the materialized
+\code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+\code{gen_scramble}), with this master seed for the digit permutations of
+\code{gen_scramble = 1}.}
 
-\item{gen_scramble}{Integer scramble mode for on-the-fly generation: \code{0} =
-identity permutations, \code{1} = seeded position-wise digit permutations.}
+\item{gen_scramble}{Integer mode of the draws formed on the fly: \code{0} =
+identity permutations (plain Halton) through the generator's inverse normal
+CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+permutations through R's \code{qnorm()}, the store-mode draws of
+\code{\link{get_halton_normals}} formed without its cube (bit for bit where
+randtoolbox and choicer are compiled with the same floating-point
+contraction). Other values are an error.}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
 }

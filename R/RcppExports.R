@@ -24,7 +24,8 @@ halton_inv_normal_cdf <- function(p) {
 #'
 #' Returns an n x dim matrix using global indices 1..n (one row per index,
 #' one column per dimension). For scramble=0 (compat mode) the result
-#' reproduces randtoolbox::halton(n, dim, normal=FALSE) exactly.
+#' reproduces randtoolbox::halton(n, dim, normal=FALSE) (bit for bit where both
+#' are compiled with the same floating-point contraction).
 #'
 #' @param n Number of Halton points (rows).
 #' @param dim Number of dimensions (columns).
@@ -69,6 +70,22 @@ halton_generate_normal <- function(S, N, K_w, seed, scramble) {
 #' @noRd
 halton_fill_block <- function(n0, S, K_w, seed, scramble) {
     .Call(`_choicer_halton_fill_block`, n0, S, K_w, seed, scramble)
+}
+
+#' Block of uniforms from HaltonGen::fill_uniforms (pass 1 of fill_block)
+#'
+#' The uniforms the MXL prediction kernels map to normals with R's qnorm()
+#' for store-mode draws on the fly (gen_scramble = 2, identity permutations).
+#'
+#' @param n0 First global Halton index of the block, as for halton_fill_block.
+#' @param S Number of draws (columns).
+#' @param K_w Number of random-coefficient dimensions (rows).
+#' @param seed Master seed, as for halton_fill_block.
+#' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
+#' @return K_w x S arma::mat; column s holds the uniforms of index n0 + s.
+#' @noRd
+halton_fill_uniforms <- function(n0, S, K_w, seed, scramble) {
+    .Call(`_choicer_halton_fill_uniforms`, n0, S, K_w, seed, scramble)
 }
 
 #' Per-index reference for halton_fill_block
@@ -783,7 +800,8 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise
+#'   digit permutations; other values are an error.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @param Ti Optional integer vector with the number of choice situations of
 #'   each decision maker (panel likelihood); situations must be sorted by
@@ -862,7 +880,8 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise
+#'   digit permutations; other values are an error.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @param Ti Optional integer vector with the number of choice situations of
 #'   each decision maker (panel likelihood); situations must be sorted by
@@ -930,7 +949,8 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 #'   on the fly from this seed.
 #' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise
+#'   digit permutations; other values are an error.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @param Ti Optional integer vector with the number of choice situations of
 #'   each decision maker (panel likelihood); situations must be sorted by
@@ -993,29 +1013,24 @@ mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M,
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether the outside option is present
-#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-#'   on the fly from this seed.
-#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+#'   \code{gen_scramble}), with this master seed for the digit permutations of
+#'   \code{gen_scramble = 1}.
+#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+#'   identity permutations (plain Halton) through the generator's inverse normal
+#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+#'   permutations through R's \code{qnorm()}, the store-mode draws of
+#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+#'   randtoolbox and choicer are compiled with the same floating-point
+#'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-#' @param draw_block \code{NULL}, or in store mode a function of
-#'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-#'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-#'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-#'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-#'   vector of \code{n K_w} values in that column-major order is read). The
-#'   kernel then reads the draws of \code{chunk_size} choice situations at a
-#'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-#'   \code{K_w} and \code{S}.
-#' @param chunk_size Choice situations per chunk of draws, a positive whole
-#'   number, used with \code{draw_block}.
 #' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 #'   simulated mean of the deterministic + W*gamma component), and, when
 #'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
 #' @keywords internal
-mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, draw_block = NULL, chunk_size = 0) {
-    .Call(`_choicer_mxl_predict`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, draw_block, chunk_size)
+mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_predict`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
 
 #' Simulated expected logsum (inclusive value) for Mixed Logit
@@ -1040,23 +1055,18 @@ mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlat
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether the outside option is present
-#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-#'   on the fly from this seed.
-#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+#'   \code{gen_scramble}), with this master seed for the digit permutations of
+#'   \code{gen_scramble = 1}.
+#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+#'   identity permutations (plain Halton) through the generator's inverse normal
+#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+#'   permutations through R's \code{qnorm()}, the store-mode draws of
+#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+#'   randtoolbox and choicer are compiled with the same floating-point
+#'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-#' @param draw_block \code{NULL}, or in store mode a function of
-#'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-#'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-#'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-#'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-#'   vector of \code{n K_w} values in that column-major order is read). The
-#'   kernel then reads the draws of \code{chunk_size} choice situations at a
-#'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-#'   \code{K_w} and \code{S}.
-#' @param chunk_size Choice situations per chunk of draws, a positive whole
-#'   number, used with \code{draw_block}.
 #' @returns Vector of length N with the simulated expected logsum per choice
 #'   situation.
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -1080,8 +1090,8 @@ mxl_predict <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlat
 #' head(ls)
 #' }
 #' @keywords internal
-mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, draw_block = NULL, chunk_size = 0) {
-    .Call(`_choicer_mxl_logsum`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, draw_block, chunk_size)
+mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_logsum`, theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
 
 #' Predicted aggregate market shares for Mixed Logit
@@ -1101,27 +1111,22 @@ mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlati
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
-#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-#'   on the fly from this seed.
-#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+#'   \code{gen_scramble}), with this master seed for the digit permutations of
+#'   \code{gen_scramble = 1}.
+#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+#'   identity permutations (plain Halton) through the generator's inverse normal
+#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+#'   permutations through R's \code{qnorm()}, the store-mode draws of
+#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+#'   randtoolbox and choicer are compiled with the same floating-point
+#'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-#' @param draw_block \code{NULL}, or in store mode a function of
-#'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-#'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-#'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-#'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-#'   vector of \code{n K_w} values in that column-major order is read). The
-#'   kernel then reads the draws of \code{chunk_size} choice situations at a
-#'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-#'   \code{K_w} and \code{S}.
-#' @param chunk_size Choice situations per chunk of draws, a positive whole
-#'   number, used with \code{draw_block}.
 #' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 #' @keywords internal
-mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, draw_block = NULL, chunk_size = 0) {
-    .Call(`_choicer_mxl_predict_shares`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, draw_block, chunk_size)
+mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_predict_shares`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
 
 #' Diversion ratios for Mixed Logit (simulated, derivative-based)
@@ -1152,27 +1157,22 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
-#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-#'   on the fly from this seed.
-#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+#'   \code{gen_scramble}), with this master seed for the digit permutations of
+#'   \code{gen_scramble = 1}.
+#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+#'   identity permutations (plain Halton) through the generator's inverse normal
+#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+#'   permutations through R's \code{qnorm()}, the store-mode draws of
+#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+#'   randtoolbox and choicer are compiled with the same floating-point
+#'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-#' @param draw_block \code{NULL}, or in store mode a function of
-#'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-#'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-#'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-#'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-#'   vector of \code{n K_w} values in that column-major order is read). The
-#'   kernel then reads the draws of \code{chunk_size} choice situations at a
-#'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-#'   \code{K_w} and \code{S}.
-#' @param chunk_size Choice situations per chunk of draws, a positive whole
-#'   number, used with \code{draw_block}.
 #' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 #' @keywords internal
-mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, draw_block = NULL, chunk_size = 0) {
-    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, draw_block, chunk_size)
+mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
 
 #' BLP contraction mapping for mixed logit
@@ -1198,11 +1198,17 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' @param include_outside_option whether outside option is included
 #' @param tol convergence tolerance (default 1e-8)
 #' @param max_iter maximum iterations (default 1000)
-#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-#'   on the fly from this seed.
-#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations, \code{1} = seeded position-wise digit permutations.
+#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+#'   \code{gen_scramble}), with this master seed for the digit permutations of
+#'   \code{gen_scramble = 1}.
+#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+#'   identity permutations (plain Halton) through the generator's inverse normal
+#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+#'   permutations through R's \code{qnorm()}, the store-mode draws of
+#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+#'   randtoolbox and choicer are compiled with the same floating-point
+#'   contraction). Other values are an error.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 #' @returns vector with converged delta (ASC) values
 #' @examples
@@ -1229,15 +1235,6 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, 
     .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S)
 }
 
-#' BLP contraction with store-mode draws in chunks
-#'
-#' mxl_blp_contraction() with the chunked draw source of the prediction
-#' kernels: draw_block and chunk_size as in mxl_predict(). blp() calls it.
-#' @noRd
-mxl_blp_contraction_chunked <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, draw_block = NULL, chunk_size = 0) {
-    .Call(`_choicer_mxl_blp_contraction_chunked`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S, draw_block, chunk_size)
-}
-
 #' Compute aggregate elasticities for mixed logit model
 #'
 #' Computes the aggregate elasticity matrix (weighted average of individual
@@ -1260,23 +1257,18 @@ mxl_blp_contraction_chunked <- function(delta, target_shares, X, W, beta, mu, L_
 #' @param rc_mean whether mu parameters are estimated
 #' @param use_asc whether ASCs are included
 #' @param include_outside_option whether outside option is included
-#' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-#'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-#'   on the fly from this seed.
-#' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-#'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+#'   \code{gen_scramble}), with this master seed for the digit permutations of
+#'   \code{gen_scramble = 1}.
+#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+#'   identity permutations (plain Halton) through the generator's inverse normal
+#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+#'   permutations through R's \code{qnorm()}, the store-mode draws of
+#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+#'   randtoolbox and choicer are compiled with the same floating-point
+#'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-#' @param draw_block \code{NULL}, or in store mode a function of
-#'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-#'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-#'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-#'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-#'   vector of \code{n K_w} values in that column-major order is read). The
-#'   kernel then reads the draws of \code{chunk_size} choice situations at a
-#'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-#'   \code{K_w} and \code{S}.
-#' @param chunk_size Choice situations per chunk of draws, a positive whole
-#'   number, used with \code{draw_block}.
 #' @returns J x J matrix of aggregate elasticities
 #' @examples
 #' \donttest{
@@ -1297,8 +1289,8 @@ mxl_blp_contraction_chunked <- function(delta, target_shares, X, W, beta, mu, L_
 #' elas
 #' }
 #' @keywords internal
-mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, draw_block = NULL, chunk_size = 0) {
-    .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, draw_block, chunk_size)
+mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
+    .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
 }
 
 #' Log-likelihood and gradient for Nested Logit model

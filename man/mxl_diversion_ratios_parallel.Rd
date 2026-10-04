@@ -21,9 +21,7 @@ mxl_diversion_ratios_parallel(
   include_outside_option = FALSE,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L,
-  draw_block = NULL,
-  chunk_size = 0
+  gen_S = 0L
 )
 }
 \arguments{
@@ -55,27 +53,20 @@ mxl_diversion_ratios_parallel(
 
 \item{include_outside_option}{whether outside option is included}
 
-\item{gen_seed}{Integer master seed for the on-the-fly Halton generator. \code{< 0}
-(default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-on the fly from this seed.}
+\item{gen_seed}{Integer. \code{< 0} (default) uses the materialized
+\code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+\code{gen_scramble}), with this master seed for the digit permutations of
+\code{gen_scramble = 1}.}
 
-\item{gen_scramble}{Integer scramble mode for on-the-fly generation: \code{0} =
-identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.}
+\item{gen_scramble}{Integer mode of the draws formed on the fly: \code{0} =
+identity permutations (plain Halton) through the generator's inverse normal
+CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+permutations through R's \code{qnorm()}, the store-mode draws of
+\code{\link{get_halton_normals}} formed without its cube (bit for bit where
+randtoolbox and choicer are compiled with the same floating-point
+contraction).}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
-
-\item{draw_block}{\code{NULL}, or in store mode a function of
-\code{(start, n)} returning points \code{start, ..., start + n - 1}
-(1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-vector of \code{n K_w} values in that column-major order is read). The
-kernel then reads the draws of \code{chunk_size} choice situations at a
-time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-\code{K_w} and \code{S}.}
-
-\item{chunk_size}{Choice situations per chunk of draws, a positive whole
-number, used with \code{draw_block}.}
 }
 \value{
 J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.

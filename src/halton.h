@@ -13,10 +13,10 @@
 //   - Include order: this header must be included from a .cpp translation unit that
 //     has already included choicer.h (which brings in RcppArmadillo.h), so arma::
 //     types are available here even though halton.h does not include them directly.
-//   - Thread safety: HaltonGen is const after construction; fill_block() and
-//     fill_eta_i() write only a buffer owned by the calling thread and keep their
-//     working state on the stack. Multiple threads may call them simultaneously on
-//     the same const HaltonGen without data races.
+//   - Thread safety: HaltonGen is const after construction; fill_block(),
+//     fill_uniforms() and fill_eta_i() write only a buffer owned by the calling
+//     thread and keep their working state on the stack. Multiple threads may call
+//     them simultaneously on the same const HaltonGen without data races.
 //   - Bitwise reproducibility: n = (i-1)*S + s + 1 is a deterministic function of
 //     (i, s, S) and the permutation table is a deterministic function of the seed,
 //     so results are identical regardless of OpenMP thread count or schedule.
@@ -165,7 +165,9 @@ inline double inv_normal_cdf(double p) {
 // ============================================================================
 // §2.5–2.6 Position-wise digit permutations and HaltonGen
 //
-// scramble_mode = 0: identity permutations (compat mode, matches randtoolbox exactly)
+// scramble_mode = 0: identity permutations (compat mode: randtoolbox's points, bit
+//                    for bit where both are compiled with the same floating-point
+//                    contraction; see fill_uniforms())
 // scramble_mode = 1: seeded Fisher–Yates digit permutation for every
 // (dimension k, digit position d), shared across all sequence indices.
 //
@@ -333,6 +335,22 @@ struct HaltonGen {
     // last index n0 + S - 1 must not pass 2^64 - 1.
     void fill_block(double* e, const uint64_t n0) const {
         if (S <= 0 || K_w <= 0) return;
+        fill_uniforms(e, n0);
+        const size_t n_eta = static_cast<size_t>(K_w) * static_cast<size_t>(S);
+        for (size_t j = 0; j < n_eta; ++j) e[j] = inv_normal_cdf(e[j]);
+    }
+
+    // Pass 1 of fill_block(): the uniforms of indices n0, ..., n0 + S - 1 in
+    // e[s * K_w + k], with fill_block()'s preconditions (n0 >= 1, e holding
+    // K_w * S doubles, the last index not past 2^64 - 1). In identity mode
+    // they are randtoolbox::halton()'s points: the same digits times the same
+    // place values, added in the same order, so bit for bit where randtoolbox
+    // and this header are compiled with the same floating-point contraction
+    // (both fusing each multiply-add or neither; otherwise under 1% of them,
+    // all of bases 5 and up, differ in their last bit). A caller can map them
+    // to normals as R does (qnorm()).
+    void fill_uniforms(double* e, const uint64_t n0) const {
+        if (S <= 0 || K_w <= 0) return;
         const uint64_t span = static_cast<uint64_t>(S) - 1;  // last index n0 + span
         const bool odometer = n0 <= HALTON_ODOMETER_MAX &&
                               span <= HALTON_ODOMETER_MAX - n0;
@@ -355,8 +373,6 @@ struct HaltonGen {
             default: uniforms_from_digits<0>(e, k, n0);
             }
         }
-        const size_t n_eta = static_cast<size_t>(K_w) * static_cast<size_t>(S);
-        for (size_t j = 0; j < n_eta; ++j) e[j] = inv_normal_cdf(e[j]);
     }
 
     // Fill eta_i: write K_w × S standard-normal draws into eta_i for individual i (1-based).
@@ -372,7 +388,7 @@ struct HaltonGen {
     }
 
 private:
-    // Pass-1 helpers of fill_block(), which establishes their preconditions.
+    // Pass-1 helpers of fill_uniforms(), which establishes their preconditions.
 
     // Uniforms of dimension k for indices n0, ..., n0 + S - 1, written to
     // e[s * K_w + k], each from its own digits as in scrambled_halton_uniform().

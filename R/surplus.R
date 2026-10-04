@@ -176,9 +176,7 @@ logsum.choicer_mxl <- function(object, newdata = NULL, ...) {
     include_outside_option = object$include_outside_option,
     gen_seed               = gp$gen_seed,
     gen_scramble           = gp$gen_scramble,
-    gen_S                  = gp$gen_S,
-    draw_block             = gp$draw_block,
-    chunk_size             = gp$chunk_size
+    gen_S                  = gp$gen_S
   ))
 }
 

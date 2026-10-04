@@ -37,7 +37,8 @@ double halton_inv_normal_cdf(double p) {
 //'
 //' Returns an n x dim matrix using global indices 1..n (one row per index,
 //' one column per dimension). For scramble=0 (compat mode) the result
-//' reproduces randtoolbox::halton(n, dim, normal=FALSE) exactly.
+//' reproduces randtoolbox::halton(n, dim, normal=FALSE) (bit for bit where both
+//' are compiled with the same floating-point contraction).
 //'
 //' @param n Number of Halton points (rows).
 //' @param dim Number of dimensions (columns).
@@ -134,6 +135,27 @@ arma::mat halton_fill_block(double n0, int S, int K_w, double seed, int scramble
     HaltonGen gen(static_cast<uint64_t>(seed), S, K_w, scramble);
     arma::mat out(K_w, S);
     gen.fill_block(out.memptr(), start);
+    return out;
+}
+
+//' Block of uniforms from HaltonGen::fill_uniforms (pass 1 of fill_block)
+//'
+//' The uniforms the MXL prediction kernels map to normals with R's qnorm()
+//' for store-mode draws on the fly (gen_scramble = 2, identity permutations).
+//'
+//' @param n0 First global Halton index of the block, as for halton_fill_block.
+//' @param S Number of draws (columns).
+//' @param K_w Number of random-coefficient dimensions (rows).
+//' @param seed Master seed, as for halton_fill_block.
+//' @param scramble 0 = identity (compat), 1 = position-wise digit permutation.
+//' @return K_w x S arma::mat; column s holds the uniforms of index n0 + s.
+//' @noRd
+// [[Rcpp::export]]
+arma::mat halton_fill_uniforms(double n0, int S, int K_w, double seed, int scramble) {
+    const uint64_t start = halton_block_start(n0, S, K_w, seed);
+    HaltonGen gen(static_cast<uint64_t>(seed), S, K_w, scramble);
+    arma::mat out(K_w, S);
+    gen.fill_uniforms(out.memptr(), start);
     return out;
 }
 

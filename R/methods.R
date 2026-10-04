@@ -1141,8 +1141,8 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
     N_draws <- d$N
   }
 
-  # One block of draws per choice situation of `d`: generated on the fly, or
-  # the stored Halton blocks (in chunks above the cube budget)
+  # One block of draws per choice situation of `d`, formed on the fly (the
+  # store-mode points too, up to 128 random coefficients)
   gp <- .mxl_pred_draws(object$draws_info, N_draws, "predict()")
 
   args <- list(
@@ -1159,9 +1159,7 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
     include_outside_option = object$include_outside_option,
     gen_seed               = gp$gen_seed,
     gen_scramble           = gp$gen_scramble,
-    gen_S                  = gp$gen_S,
-    draw_block             = gp$draw_block,
-    chunk_size             = gp$chunk_size
+    gen_S                  = gp$gen_S
   )
 
   if (type == "probabilities") {
@@ -1509,8 +1507,7 @@ elasticities.choicer_mxl <- function(object, elast_var,
     rc_mean = object$rc_mean,
     use_asc = object$use_asc,
     include_outside_option = object$include_outside_option,
-    gen_seed = gp_el$gen_seed, gen_scramble = gp_el$gen_scramble, gen_S = gp_el$gen_S,
-    draw_block = gp_el$draw_block, chunk_size = gp_el$chunk_size
+    gen_seed = gp_el$gen_seed, gen_scramble = gp_el$gen_scramble, gen_S = gp_el$gen_S
   )
 
   label_matrix(mat, object$alt_mapping)
@@ -1590,8 +1587,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,
     include_outside_option = object$include_outside_option,
-    gen_seed = gp_dr$gen_seed, gen_scramble = gp_dr$gen_scramble, gen_S = gp_dr$gen_S,
-    draw_block = gp_dr$draw_block, chunk_size = gp_dr$chunk_size
+    gen_seed = gp_dr$gen_seed, gen_scramble = gp_dr$gen_scramble, gen_S = gp_dr$gen_S
   )
 
   label_matrix(mat, object$alt_mapping)
@@ -1611,12 +1607,13 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' @param tol Convergence tolerance (default 1e-8).
 #' @param max_iter Maximum iterations (default 1000).
 #' @param ... Additional arguments (ignored).
-#' @details With stored draws (\code{draws = "store"}) whose cube of one block
-#'   per choice situation would exceed 1 GiB, every iteration of the
-#'   contraction regenerates the draws a chunk of choice situations at a time,
-#'   on one thread, at a cost comparable to building the cube once; a message says
-#'   so. A fit with \code{draws = "generate"} forms its draws on the fly, in
-#'   parallel.
+#' @details The contraction integrates each choice situation over the same
+#'   draws as \code{predict()} (for a cross-sectional fit, the estimation
+#'   draws; a panel fit's estimation draws are per decision maker), formed
+#'   again at every iteration, in parallel. With stored draws
+#'   (\code{draws = "store"}) they are the points of the cube
+#'   \code{\link{get_halton_normals}} would build, formed without it (with
+#'   more than 128 random coefficients, the cube itself).
 #' @returns Converged delta (ASC) vector.
 #' @examples
 #' \donttest{
@@ -1643,19 +1640,6 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
   pm <- object$param_map
   N <- length(d$M)
   gp_blp <- .mxl_pred_draws(object$draws_info, N, "blp()")
-  if (!is.null(gp_blp$draw_block)) {
-    di <- object$draws_info
-    message(sprintf(paste0(
-      "blp(): the Halton draws of the %s choice situations would take %s, ",
-      "more than the %s of draws that post-estimation holds at once, so every ",
-      "iteration of the contraction regenerates them on one thread, a chunk of ",
-      "situations at a time, at a cost comparable to building them once. A ",
-      "fit with draws = \"generate\" forms its draws on the fly, in parallel ",
-      "(with scramble = \"none\", the same Halton points)."),
-      format(N, big.mark = ",", scientific = FALSE),
-      .format_bytes(8 * as.numeric(di$K_w) * di$S * N),
-      .format_bytes(.mxl_cube_budget())))
-  }
 
   beta <- object$coefficients[pm$beta]
   mu <- if (!is.null(pm$mu)) object$coefficients[pm$mu] else rep(0, object$draws_info$K_w)
@@ -1674,7 +1658,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  mxl_blp_contraction_chunked(
+  mxl_blp_contraction(
     delta = delta_init,
     target_shares = target_shares,
     X = d$X,
@@ -1694,9 +1678,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     max_iter = max_iter,
     gen_seed = gp_blp$gen_seed,
     gen_scramble = gp_blp$gen_scramble,
-    gen_S = gp_blp$gen_S,
-    draw_block = gp_blp$draw_block,
-    chunk_size = gp_blp$chunk_size
+    gen_S = gp_blp$gen_S
   )
 }
 

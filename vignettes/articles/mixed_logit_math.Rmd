@@ -1034,10 +1034,12 @@ The implementation parallelizes over individuals using OpenMP:
    block of units at a time with `halton(start = )`, which returns exactly those points.
    Store mode needs $US \le 2^{31} - 1$, the largest starting index `halton()` accepts.
    The prediction family (`predict()`, `elasticities()`, `diversion_ratios()`, `blp()`,
-   `logsum()`, `consumer_surplus()`, and `gof()` through `predict()`) regenerates one block
-   per choice situation, so for a panel fit $N$ replaces $U$ there. The fitted
-   object retains only `draws_info` metadata and post-estimation regenerates the cube (the
-   prediction family in chunks above 1 GiB, §5.5); it does not retain the cube itself.
+   `logsum()`, `consumer_surplus()`, and `gof()` through `predict()`) integrates over one
+   block per choice situation instead ($N$ blocks for a panel fit, not $U$), which it forms
+   on the fly from the same points of the sequence (§5.5), with no limit on $NS$ for up to
+   128 random coefficients. The
+   fitted object retains only `draws_info` metadata, not the cube; the estimation-type
+   functions (`vcov(type = )`, `wesml_vcov()`, `conditional_tastes()`) rebuild it.
    This mode is deterministic and has no seed or scramble.
    In `draws = "generate"`, `HaltonGen` computes the radical inverse on demand.
    `scramble = "none"` uses identity permutations and is tested against the
@@ -1095,18 +1097,22 @@ The implementation parallelizes over individuals using OpenMP:
   decision makers under `person_col`, choice situations otherwise). Generate-mode kernels
   receive an empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
 - Prediction kernels read one block per choice situation: situation $i$ gets points
-  $(i-1)S+1,\ldots,iS$ of the Halton sequence. When that $K_w\times S\times N$ cube would
-  exceed 1 GiB, the store-mode prediction-type functions (`predict()`, `logsum()`,
-  `elasticities()`, `diversion_ratios()`, `blp()`, and through them `consumer_surplus()`
-  and `gof()`) pass instead a $K_w\times S\times 0$ cube (which gives $K_w$ and $S$), a
-  function `draw_block(start, n)` returning points `start`, ..., `start + n - 1`, and
-  `chunk_size`; the kernel fills a buffer with a chunk of situations' blocks at a time,
-  between parallel regions. `randtoolbox::halton(start = )` reproduces any slice of the
-  sequence bit for bit, so the chunks hold the cube's draws, and each thread's sums carry
-  over from chunk to chunk. Results therefore equal the whole cube's bit for bit: per
-  situation at any thread count, and sums over situations at one thread (at more threads
-  their rounding depends on the order in which threads take the situations, as it always
-  did).
+  $(i-1)S+1,\ldots,iS$ of the Halton sequence. With stored draws the prediction-type
+  functions (`predict()`, `logsum()`, `elasticities()`, `diversion_ratios()`, `blp()`, and
+  through them `consumer_surplus()` and `gof()`) never build that $K_w\times S\times N$
+  cube: they pass an empty placeholder and `gen_scramble = 2`, and each thread forms its
+  situation's block on the fly from `HaltonGen`'s identity-permutation uniforms, which
+  are `randtoolbox::halton()`'s points, mapped to normals by R's `qnorm()`
+  (`R::qnorm`, libR's own `qnorm5`), as `get_halton_normals()` maps them. The draws, and
+  so the results, are the cube's bit for bit (per situation at any thread count, and sums
+  over situations at one thread; at more threads their rounding depends on the order in
+  which threads take the situations, as it always did) where `randtoolbox` and choicer
+  are compiled with the same floating-point contraction: both add each digit's term
+  $d_j b^{-(j+1)}$ to the radical inverse in the same order, and agree bit for bit when
+  both fuse those multiply-adds or neither does, as on CRAN's platforms. Otherwise under
+  1% of the uniforms, all of bases 5 and up, differ in their last bit. The on-the-fly
+  generator covers up to 128 random coefficients; beyond them the functions build the
+  cube.
 
 ---
 
@@ -1322,14 +1328,14 @@ inside target and predicted shares but does not verify that the full target sums
    `max_iter`, the kernel prints a warning and returns the last completed iterate.
 
 The public `blp.choicer_mxl()` method resolves the fitted draw metadata through
-`.mxl_pred_draws()`: store-mode fits regenerate the plain-Halton cube, or above 1 GiB its
-chunks at every iteration (§5.5), while generate-mode fits pass the original seed,
+`.mxl_pred_draws()`: store-mode fits have the kernel form the plain-Halton points on the
+fly at every iteration (§5.5), while generate-mode fits pass the original seed,
 permutation mode, and $S$ to the contraction kernel. Share inversion therefore draws from
 the same deterministic Halton sequence as the fit, one block per choice situation (for a
 cross-sectional fit, the estimation draws themselves; a panel fit's estimation draws are
 per decision maker instead, §5.5).
 
-*Code reference: [mxlogit.cpp:mxl_blp_contraction, mxl_blp_contraction_chunked](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
+*Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 

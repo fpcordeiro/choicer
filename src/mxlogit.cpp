@@ -2,7 +2,6 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "halton.h"
-#include <chrono>
 #include <cstring>
 #include <memory>
 
@@ -256,6 +255,12 @@ struct MxlUnitData {
       if (K_w > HALTON_N_PRIMES) {
         Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or "
                    "extend the primes table.");
+      }
+      // The store-mode points (2) are the prediction kernels' alone: here they
+      // would be the identity points through HaltonGen's own inverse CDF.
+      if (gen_scramble != 0 && gen_scramble != 1) {
+        Rcpp::stop("gen_scramble must be 0 or 1 when gen_seed >= 0; got %d.",
+                   gen_scramble);
       }
     } else {
       // eta_draws holds one K_w x S draw block per likelihood unit.
@@ -636,7 +641,8 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise
+//'   digit permutations; other values are an error.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param Ti Optional integer vector with the number of choice situations of
 //'   each decision maker (panel likelihood); situations must be sorted by
@@ -845,7 +851,8 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise
+//'   digit permutations; other values are an error.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param Ti Optional integer vector with the number of choice situations of
 //'   each decision maker (panel likelihood); situations must be sorted by
@@ -1303,7 +1310,8 @@ arma::mat mxl_hessian_parallel(
 //'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
 //'   on the fly from this seed.
 //' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise
+//'   digit permutations; other values are an error.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param Ti Optional integer vector with the number of choice situations of
 //'   each decision maker (panel likelihood); situations must be sorted by
@@ -1526,19 +1534,22 @@ Rcpp::List mxl_conditional_tastes_parallel(
 //
 // The prediction kernels integrate each choice situation over the population
 // taste distribution with its own K_w x S block of draws: situation t reads
-// cube slice t (store mode) or Halton block t + 1 (generate mode), in a panel
-// as in the cross-section (predictions are unconditional). A kernel validates
+// slice t of a given cube or forms Halton block t + 1, in a panel as in the
+// cross-section (predictions are unconditional). A kernel validates
 // its inputs and lays out the stacked design on the primary thread (the
 // alternative codes are read in place, row offsets are 64-bit), forms the base
 // utilities once and allocates every thread's buffers there, then loops over
 // the situations in parallel without allocating.
 //
-// Store-mode draws can also come in chunks of situations (draw_block): the
-// primary thread fills a buffer with a chunk's slices of the cube from R,
-// between parallel regions, so that a prediction never holds the whole cube.
-// The slices are the cube's, bit for bit, and each thread's accumulators
-// carry over from chunk to chunk, so chunked results are those of the whole
-// cube, sums over situations included at one thread.
+// Store-mode fits pass no cube either: with gen_scramble = 2
+// (MXL_STORE_POINTS) a kernel forms each situation's block on the fly from
+// the generator's identity-permutation uniforms, randtoolbox::halton()'s
+// points, mapped to normals by R's qnorm(), as get_halton_normals() maps
+// them. The draws are the cube's, bit for bit, where randtoolbox and choicer
+// are compiled with the same floating-point contraction (see
+// HaltonGen::fill_uniforms()); otherwise some uniforms differ in their last
+// bit, which moves those draws by at most a few parts in 10^9 (in the tails,
+// through qnorm()'s slope).
 //
 // Every result is bitwise that of the per-situation Armadillo code this
 // replaced, with BLAS libraries whose results do not depend on operand
@@ -1607,131 +1618,50 @@ inline Rcpp::NumericVector mxl_col_result(const mxl_off n) {
   return x;
 }
 
-// Where situation t's K_w x S draws come from: Halton block t + 1, formed on
-// the fly (generate mode), or slice t - c0 of the store-mode draws in memory,
-// which hold situations [c0, c1): the whole cube, or the chunk the primary
-// thread last copied into buf from draw_block(). It loads them between
-// parallel regions (load()); they are read-only inside.
+// The gen_scramble value of store-mode draws formed on the fly.
+constexpr int MXL_STORE_POINTS = 2;
+
+// Where situation t's K_w x S draws come from: slice t of a cube in memory,
+// or Halton block t + 1, formed on the fly. On the fly, the generator's
+// uniforms go through its own inverse normal CDF (generate mode, gen_scramble
+// 0 or 1), or, for store-mode points (MXL_STORE_POINTS), its
+// identity-permutation uniforms go through R's qnorm(). The threads may call
+// R::qnorm, as bayes_samplers.h does: Rf_qnorm5 keeps no state, allocates
+// nothing and never reaches R's warning or error machinery (its one
+// diagnostic, for p outside [0, 1], is an ME_DOMAIN warning that Rmath
+// suppresses), and the uniforms lie in (0, 1). Rmath functions that can warn
+// (ME_RANGE, ME_PRECISION) would not be safe there.
 struct MxlPredDraws {
   int K_w = 0, S = 0;
-  bool generate = false;
-  HaltonGen gen;                 // generate mode
-  const double* cube = nullptr;  // store mode: the draws of situations [c0, c1)
-  mxl_off c0 = 0, c1 = 0;
-  // Store-mode draws in chunks of `chunk` situations: draw_block(start, n)
-  // returns points start, ..., start + n - 1 (1-based) of the K_w-dimensional
-  // Halton sequence as standard normals, randtoolbox::halton()'s n x K_w
-  // matrix (a vector when K_w = 1), copied into buf.
-  bool chunked = false;
-  SEXP draw_block = R_NilValue;
-  mxl_off chunk = 0;
-  std::unique_ptr<double[]> buf;
-  std::size_t since_gc = 0;  // values copied since this code last collected
-  double draw_secs = 0;      // the time they took
-  double gc_secs = 0;        // what that collection took
-
-  // Make the draws of situations [first, c1) available and return c1 > first:
-  // all of them (the generator or the whole cube), or the next chunk.
-  mxl_off load(const mxl_off first, const mxl_off N);
+  bool generate = false;   // formed on the fly
+  bool r_qnorm = false;    // store-mode points: identity uniforms, R's qnorm()
+  HaltonGen gen;
+  const double* cube = nullptr;  // a given cube: every situation's draws
 
   // Write situation t's draws (column-major K_w x S) to eta.
   void fill(double* eta, const mxl_off t) const {
-    if (generate) {
-      gen.fill_block(eta, static_cast<uint64_t>(t) * static_cast<uint64_t>(S) + 1);
+    const std::size_t n = static_cast<std::size_t>(K_w) * static_cast<std::size_t>(S);
+    if (!generate) {
+      if (n > 0) {
+        std::memcpy(eta, cube + static_cast<std::size_t>(t) * n,
+                    n * sizeof(double));
+      }
       return;
     }
-    const std::size_t n = static_cast<std::size_t>(K_w) * static_cast<std::size_t>(S);
-    if (n > 0) {
-      std::memcpy(eta, cube + static_cast<std::size_t>(t - c0) * n,
-                  n * sizeof(double));
+    const uint64_t n0 = static_cast<uint64_t>(t) * static_cast<uint64_t>(S) + 1;
+    if (!r_qnorm) {
+      gen.fill_block(eta, n0);
+      return;
     }
+    gen.fill_uniforms(eta, n0);
+    for (std::size_t j = 0; j < n; ++j) eta[j] = R::qnorm(eta[j], 0.0, 1.0, 1, 0);
   }
 };
 
-// Values a chunk asks draw_block() for at a time: whole situations, about
-// 2^22 values (at least one situation), the blocks in which
-// get_halton_normals() asks randtoolbox::halton() for the cube.
-constexpr std::size_t MXL_DRAW_BLOCK_VALUES = std::size_t(1) << 22;
-
-// randtoolbox::halton() leaves about 3.5 times its block of draws as garbage
-// (its uniforms, the logical vectors of its range check, and the normals once
-// copied here), which R collects only when its own trigger fires, gigabytes
-// above a heap that holds the design. The chunks therefore collect (R_gc())
-// once at least 2^24 values of draws (128 MiB) have been copied and their
-// drawing took at least MXL_DRAW_GC_RATIO times what the last collection
-// took. A full collection visits every live R object: 15 ms in a session of a
-// few large vectors, which leaves the garbage near half a GiB, half a second
-// with 10^7 character ids resident. After its first collection, which a call
-// makes at the floor whatever it costs, collecting costs at most about
-// 1/MXL_DRAW_GC_RATIO of the drawing time.
-constexpr std::size_t MXL_DRAW_GC_VALUES = std::size_t(1) << 24;
-constexpr double MXL_DRAW_GC_RATIO = 20.0;
-
-inline double mxl_seconds_since(const std::chrono::steady_clock::time_point t0) {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-      .count();
-}
-
-inline mxl_off MxlPredDraws::load(const mxl_off first, const mxl_off N) {
-  const std::size_t per =
-      static_cast<std::size_t>(K_w) * static_cast<std::size_t>(S);
-  if (!chunked || per == 0) {
-    c0 = 0;
-    c1 = N;
-    return N;
-  }
-  const mxl_off last = std::min(N, first + chunk);
-  if (first == c0 && last == c1) return last;  // loaded already: one chunk
-  c0 = c1 = 0;  // buf holds no chunk until this one is complete
-  Rcpp::checkUserInterrupt();
-  Rcpp::Function block_fun(draw_block);
-  const mxl_off units =
-      std::max<mxl_off>(1, static_cast<mxl_off>(MXL_DRAW_BLOCK_VALUES / per));
-  for (mxl_off u0 = first; u0 < last; u0 += units) {
-    const std::size_t n = static_cast<std::size_t>(std::min(units, last - u0)) *
-                          static_cast<std::size_t>(S);  // points
-    const auto t0 = std::chrono::steady_clock::now();
-    {
-      const double start = static_cast<double>(u0 * S + 1);  // 1-based point
-      Rcpp::RObject h = block_fun(start, static_cast<double>(n));
-      if (TYPEOF(h) != REALSXP ||
-          static_cast<std::size_t>(Rf_xlength(h)) != n * K_w) {
-        Rcpp::stop("draw_block(start, n) must return n points of %d "
-                   "coordinates as doubles: %.0f values for start = %.0f and "
-                   "n = %.0f; got %s of length %.0f.", K_w,
-                   static_cast<double>(n * K_w), start, static_cast<double>(n),
-                   Rf_type2char(TYPEOF(h)), static_cast<double>(Rf_xlength(h)));
-      }
-      // Point p, coordinate k is h[p + k n]; a situation's draws are K_w x S,
-      // column-major, so the block's are h's transpose, as the cube holds them
-      const double* hp = REAL(h);
-      double* dst = buf.get() + static_cast<std::size_t>(u0 - first) * per;
-      for (std::size_t q = 0; q < n; ++q) {
-        for (int k = 0; k < K_w; ++k) dst[q * K_w + k] = hp[q + k * n];
-      }
-    }  // h released: the collection below can free it
-    since_gc += n * K_w;
-    draw_secs += mxl_seconds_since(t0);
-    if (since_gc >= MXL_DRAW_GC_VALUES &&
-        draw_secs >= MXL_DRAW_GC_RATIO * gc_secs) {
-      const auto g0 = std::chrono::steady_clock::now();
-      R_gc();
-      gc_secs = mxl_seconds_since(g0);
-      since_gc = 0;
-      draw_secs = 0;
-    }
-  }
-  cube = buf.get();
-  c0 = first;
-  c1 = last;
-  return last;
-}
-
 // What the per-situation routine reads, shared by all threads: the stacked
 // design and its layout, the parameters, the base utilities and the draws.
-// A kernel fills it on the primary thread in the order of its own checks.
-// Its only SEXP, the draws' draw_block, is called by the primary thread
-// alone, between parallel regions (MxlPredDraws::load()).
+// A kernel fills it on the primary thread in the order of its own checks;
+// it holds no SEXP.
 struct MxlPredData {
   const arma::mat& X;
   const arma::mat& W;               // row-aligned with X, or J x K_w
@@ -1751,32 +1681,36 @@ struct MxlPredData {
   MxlPredData& operator=(const MxlPredData&) = delete;
 };
 
-// Generate-mode checks of a prediction kernel, before its layout.
-inline void mxl_pred_check_generate(const int gen_S, const int K_w) {
+// Checks of a prediction kernel's draws formed on the fly, before its layout.
+inline void mxl_pred_check_generate(const int gen_S, const int K_w,
+                                    const int gen_scramble) {
   if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
   if (K_w > HALTON_N_PRIMES) {
     Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or "
                "extend the primes table.");
+  }
+  if (gen_scramble < 0 || gen_scramble > MXL_STORE_POINTS) {
+    Rcpp::stop("gen_scramble must be 0, 1 or 2 when gen_seed >= 0; got %d.",
+               gen_scramble);
   }
 }
 
 // The layout of a prediction kernel and its checks, in the order of the code
 // this replaced: the situations, the alternative codes and the ASCs' coverage
 // of them (choice_layout_build(), which names NA and negative codes, where
-// the old cast to an unsigned index reported an arbitrary value), then in
-// store mode the cube's dimensions (only K_w when draw_block supplies the
-// slices: the cube is then K_w x S x 0), then W's rows. Generate mode checks
-// W's rows too (it used to stop at an Armadillo bounds error).
+// the old cast to an unsigned index reported an arbitrary value), then the
+// dimensions of a given cube (cube: no draws formed on the fly), then W's
+// rows. Draws formed on the fly check W's rows too (generate mode used to
+// stop at an Armadillo bounds error).
 inline void mxl_pred_layout(MxlPredData& pd, const Rcpp::IntegerVector& alt_idx,
                             const Rcpp::IntegerVector& M,
-                            const arma::cube& eta_draws, const int gen_seed,
-                            SEXP draw_block, const bool use_asc,
-                            const arma::vec& delta, const arma::vec* weights) {
+                            const arma::cube& eta_draws, const bool cube,
+                            const bool use_asc, const arma::vec& delta,
+                            const arma::vec* weights) {
   pd.lay = choice_layout_build(pd.X, alt_idx, M, use_asc, delta, weights);
   const ChoiceLayout& lay = pd.lay;
-  if (gen_seed < 0) {
-    if (Rf_isNull(draw_block) &&
-        static_cast<mxl_off>(eta_draws.n_slices) != lay.N) {
+  if (cube) {
+    if (static_cast<mxl_off>(eta_draws.n_slices) != lay.N) {
       Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
                  eta_draws.n_slices, lay.N);
     }
@@ -1793,50 +1727,13 @@ inline void mxl_pred_layout(MxlPredData& pd, const Rcpp::IntegerVector& alt_idx,
   }
 }
 
-// Store-mode draws in chunks of chunk_size situations from draw_block, and
-// the buffer of a chunk, allocated here on the primary thread.
-inline void mxl_pred_chunks(MxlPredDraws& dr, const mxl_off N, SEXP draw_block,
-                            const double chunk_size) {
-  if (!Rf_isFunction(draw_block)) {
-    Rcpp::stop("draw_block must be NULL or a function.");
-  }
-  if (!(chunk_size >= 1.0) || chunk_size != std::floor(chunk_size)) {
-    Rcpp::stop("chunk_size must be a positive whole number when draw_block "
-               "is given.");
-  }
-  dr.chunked = true;
-  dr.draw_block = draw_block;
-  dr.chunk = chunk_size >= static_cast<double>(N)
-                 ? N
-                 : static_cast<mxl_off>(chunk_size);
-  const std::size_t per =
-      static_cast<std::size_t>(dr.K_w) * static_cast<std::size_t>(dr.S);
-  if (dr.chunk > 0 &&
-      per > std::numeric_limits<std::size_t>::max() /
-                static_cast<std::size_t>(dr.chunk)) {
-    Rcpp::stop("A chunk of %.0f choice situations of %d x %d draws is more "
-               "than the address space can hold.",
-               static_cast<double>(dr.chunk), dr.K_w, dr.S);
-  }
-  const std::size_t n = static_cast<std::size_t>(dr.chunk) * per;
-  try {
-    dr.buf.reset(n > 0 ? new double[n] : nullptr);
-  } catch (const std::bad_alloc&) {
-    Rcpp::stop("Not enough memory for a chunk of the stored draws: %.2f GB "
-               "(%.0f choice situations of %d x %d draws).",
-               sizeof(double) * static_cast<double>(n) / 1e9,
-               static_cast<double>(dr.chunk), dr.K_w, dr.S);
-  }
-}
-
 // The parameters, flags and draw source of a prediction kernel, after its
 // checks.
 inline void mxl_pred_setup(MxlPredData& pd, const arma::vec& mu_final,
                            const arma::mat& L, const arma::vec& delta,
                            const bool use_asc, const bool include_outside_option,
                            const arma::cube& eta_draws, const int gen_seed,
-                           const int gen_scramble, const int gen_S,
-                           SEXP draw_block, const double chunk_size) {
+                           const int gen_scramble, const int gen_S) {
   pd.mu_final = mu_final;
   pd.L = L;
   pd.delta = delta;
@@ -1849,12 +1746,11 @@ inline void mxl_pred_setup(MxlPredData& pd, const arma::vec& mu_final,
   pd.draws.S = pd.S;
   pd.draws.generate = gen_seed >= 0;
   if (pd.draws.generate) {
+    pd.draws.r_qnorm = gen_scramble == MXL_STORE_POINTS;
     pd.draws.gen = HaltonGen(static_cast<uint64_t>(gen_seed), pd.S, pd.K_w,
-                             gen_scramble);
-  } else if (Rf_isNull(draw_block)) {
-    pd.draws.cube = eta_draws.memptr();
+                             pd.draws.r_qnorm ? 0 : gen_scramble);
   } else {
-    mxl_pred_chunks(pd.draws, pd.lay.N, draw_block, chunk_size);
+    pd.draws.cube = eta_draws.memptr();
   }
 }
 
@@ -1930,27 +1826,22 @@ inline std::vector<MxlPredScratch> mxl_pred_scratch(const MxlPredData& pd,
 }
 
 // Run body(t, sc) for every situation t, in parallel, each thread with its
-// own scratch: chunk by chunk of the draw source (a single chunk unless the
-// store-mode draws come in chunks), each chunk one parallel region, so the
-// primary thread loads a chunk's draws between regions.
+// own scratch.
 template <typename Body>
-inline void mxl_pred_run(MxlPredData& pd, std::vector<MxlPredScratch>& scratch,
-                         Body body) {
+inline void mxl_pred_run(const MxlPredData& pd,
+                         std::vector<MxlPredScratch>& scratch, Body body) {
   const int n_threads = static_cast<int>(scratch.size());
-  for (mxl_off c0 = 0; c0 < pd.lay.N;) {
-    const mxl_off c1 = pd.draws.load(c0, pd.lay.N);
-    if (c1 <= c0) Rcpp::stop("Internal error: the draws made no progress.");
+  const mxl_off N = pd.lay.N;
+  if (N == 0) return;
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
-    {
-      MxlPredScratch& sc = scratch[mxl_thread_num()];
+  {
+    MxlPredScratch& sc = scratch[mxl_thread_num()];
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
-      for (mxl_off t = c0; t < c1; ++t) body(t, sc);
-    }
-    c0 = c1;
+    for (mxl_off t = 0; t < N; ++t) body(t, sc);
   }
 }
 
@@ -2048,7 +1939,7 @@ inline void mxl_pred_zero(MxlPredAcc& acc, const std::size_t n) {
 // the accumulators added up, over the sum of the weights. The additions into
 // local_shares are the statements of the code this replaced (see the top of
 // this section).
-inline arma::vec mxl_pred_shares(MxlPredData& pd, const arma::vec& weights,
+inline arma::vec mxl_pred_shares(const MxlPredData& pd, const arma::vec& weights,
                                  const double weight_sum, const int num_alts,
                                  std::vector<MxlPredScratch>& scratch,
                                  MxlPredAcc& acc) {
@@ -2139,23 +2030,18 @@ inline void mxl_pred_x_k(const MxlPredData& pd, const mxl_off t,
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether the outside option is present
-//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-//'   on the fly from this seed.
-//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+//'   \code{gen_scramble}), with this master seed for the digit permutations of
+//'   \code{gen_scramble = 1}.
+//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+//'   identity permutations (plain Halton) through the generator's inverse normal
+//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+//'   permutations through R's \code{qnorm()}, the store-mode draws of
+//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+//'   randtoolbox and choicer are compiled with the same floating-point
+//'   contraction).
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-//' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-//'   vector of \code{n K_w} values in that column-major order is read). The
-//'   kernel then reads the draws of \code{chunk_size} choice situations at a
-//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-//'   \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, a positive whole
-//'   number, used with \code{draw_block}.
 //' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 //'   simulated mean of the deterministic + W*gamma component), and, when
 //'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
@@ -2173,9 +2059,7 @@ Rcpp::List mxl_predict(
     const bool rc_mean = false,
     const bool use_asc = true,
     const bool include_outside_option = false,
-    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::Function> draw_block = R_NilValue,
-    const double chunk_size = 0
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   // Parse theta into parameter blocks (shared helper; validates theta), then
   // the inputs and their layout, on the primary thread
@@ -2183,13 +2067,13 @@ Rcpp::List mxl_predict(
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
   const bool generate = gen_seed >= 0;
-  if (generate) mxl_pred_check_generate(gen_S, W.n_cols);
+  if (generate) mxl_pred_check_generate(gen_S, W.n_cols, gen_scramble);
   MxlPredData pd(X, W, rc_dist);
-  mxl_pred_layout(pd, alt_idx, M, eta_draws, gen_seed, draw_block.get(),
-                  use_asc, par.delta, nullptr);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  nullptr);
   mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
-                 gen_S, draw_block.get(), chunk_size);
+                 gen_S);
   const ChoiceLayout& lay = pd.lay;
   const std::size_t max_m = static_cast<std::size_t>(lay.max_m);
   std::vector<MxlPredScratch> scratch =
@@ -2277,23 +2161,18 @@ Rcpp::List mxl_predict(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether the outside option is present
-//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-//'   on the fly from this seed.
-//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+//'   \code{gen_scramble}), with this master seed for the digit permutations of
+//'   \code{gen_scramble = 1}.
+//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+//'   identity permutations (plain Halton) through the generator's inverse normal
+//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+//'   permutations through R's \code{qnorm()}, the store-mode draws of
+//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+//'   randtoolbox and choicer are compiled with the same floating-point
+//'   contraction).
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-//' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-//'   vector of \code{n K_w} values in that column-major order is read). The
-//'   kernel then reads the draws of \code{chunk_size} choice situations at a
-//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-//'   \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, a positive whole
-//'   number, used with \code{draw_block}.
 //' @returns Vector of length N with the simulated expected logsum per choice
 //'   situation.
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -2323,22 +2202,20 @@ Rcpp::NumericVector mxl_logsum(const arma::vec &theta, const arma::mat &X, const
                      const arma::cube &eta_draws, const arma::uvec &rc_dist,
                      const bool rc_correlation = true, const bool rc_mean = false,
                      const bool use_asc = true, const bool include_outside_option = false,
-                     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-                     const Rcpp::Nullable<Rcpp::Function> draw_block = R_NilValue,
-                     const double chunk_size = 0) {
+                     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0) {
   // Parse theta into parameter blocks (shared helper; validates theta), then
   // the inputs and their layout, on the primary thread
   const MxlParams par = parse_mxl_theta(theta, X.n_cols, W.n_cols, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
   const bool generate = gen_seed >= 0;
-  if (generate) mxl_pred_check_generate(gen_S, W.n_cols);
+  if (generate) mxl_pred_check_generate(gen_S, W.n_cols, gen_scramble);
   MxlPredData pd(X, W, rc_dist);
-  mxl_pred_layout(pd, alt_idx, M, eta_draws, gen_seed, draw_block.get(),
-                  use_asc, par.delta, nullptr);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  nullptr);
   mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
-                 gen_S, draw_block.get(), chunk_size);
+                 gen_S);
   const ChoiceLayout& lay = pd.lay;
 
   std::vector<MxlPredScratch> scratch =
@@ -2391,23 +2268,18 @@ Rcpp::NumericVector mxl_logsum(const arma::vec &theta, const arma::mat &X, const
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
-//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-//'   on the fly from this seed.
-//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+//'   \code{gen_scramble}), with this master seed for the digit permutations of
+//'   \code{gen_scramble = 1}.
+//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+//'   identity permutations (plain Halton) through the generator's inverse normal
+//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+//'   permutations through R's \code{qnorm()}, the store-mode draws of
+//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+//'   randtoolbox and choicer are compiled with the same floating-point
+//'   contraction).
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-//' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-//'   vector of \code{n K_w} values in that column-major order is read). The
-//'   kernel then reads the draws of \code{chunk_size} choice situations at a
-//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-//'   \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, a positive whole
-//'   number, used with \code{draw_block}.
 //' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 //' @keywords internal
 // [[Rcpp::export]]
@@ -2424,9 +2296,7 @@ arma::vec mxl_predict_shares(
     const bool rc_mean = false,
     const bool use_asc = true,
     const bool include_outside_option = false,
-    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::Function> draw_block = R_NilValue,
-    const double chunk_size = 0
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   // Parse theta into parameter blocks (shared helper; validates theta), then
   // the inputs and their layout, on the primary thread
@@ -2434,13 +2304,13 @@ arma::vec mxl_predict_shares(
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
   const bool generate = gen_seed >= 0;
-  if (generate) mxl_pred_check_generate(gen_S, W.n_cols);
+  if (generate) mxl_pred_check_generate(gen_S, W.n_cols, gen_scramble);
   MxlPredData pd(X, W, rc_dist);
-  mxl_pred_layout(pd, alt_idx, M, eta_draws, gen_seed, draw_block.get(),
-                  use_asc, par.delta, &weights);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  &weights);
   mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
-                 gen_S, draw_block.get(), chunk_size);
+                 gen_S);
   const ChoiceLayout& lay = pd.lay;
 
   // Number of alternatives for the output
@@ -2486,23 +2356,18 @@ arma::vec mxl_predict_shares(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
-//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-//'   on the fly from this seed.
-//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+//'   \code{gen_scramble}), with this master seed for the digit permutations of
+//'   \code{gen_scramble = 1}.
+//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+//'   identity permutations (plain Halton) through the generator's inverse normal
+//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+//'   permutations through R's \code{qnorm()}, the store-mode draws of
+//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+//'   randtoolbox and choicer are compiled with the same floating-point
+//'   contraction).
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-//' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-//'   vector of \code{n K_w} values in that column-major order is read). The
-//'   kernel then reads the draws of \code{chunk_size} choice situations at a
-//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-//'   \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, a positive whole
-//'   number, used with \code{draw_block}.
 //' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 //' @keywords internal
 // [[Rcpp::export]]
@@ -2521,9 +2386,7 @@ arma::mat mxl_diversion_ratios_parallel(
     const bool rc_mean = false,
     const bool use_asc = true,
     const bool include_outside_option = false,
-    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::Function> draw_block = R_NilValue,
-    const double chunk_size = 0
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   // Attribute-based diversion ratio (simulated):
   //   DR(k, j) = E_i[ w_i * (1/S) sum_s beta_{ik}^s * P_ij(s) * P_ik(s) ]
@@ -2570,13 +2433,13 @@ arma::mat mxl_diversion_ratios_parallel(
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
   const bool generate = gen_seed >= 0;
-  if (generate) mxl_pred_check_generate(gen_S, K_w);
+  if (generate) mxl_pred_check_generate(gen_S, K_w, gen_scramble);
   MxlPredData pd(X, W, rc_dist);
-  mxl_pred_layout(pd, alt_idx, M, eta_draws, gen_seed, draw_block.get(),
-                  use_asc, par.delta, &weights);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  &weights);
   mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
-                 gen_S, draw_block.get(), chunk_size);
+                 gen_S);
   const ChoiceLayout& lay = pd.lay;
   const double beta_k = is_random_coef ? 0.0 : par.beta(var_idx);
   const arma::vec& mu_final = par.mu_final;
@@ -2704,8 +2567,7 @@ arma::mat mxl_diversion_ratios_parallel(
   return DR;
 }
 
-// The BLP contraction behind mxl_blp_contraction() and, with the store-mode
-// draws in chunks (draw_block, chunk_size), mxl_blp_contraction_chunked().
+// The BLP contraction behind mxl_blp_contraction().
 static arma::vec mxl_blp_run(
     const arma::vec& delta,
     const arma::vec& target_shares,
@@ -2726,9 +2588,7 @@ static arma::vec mxl_blp_run(
     const int max_iter,
     const int gen_seed,
     const int gen_scramble,
-    const int gen_S,
-    SEXP draw_block,
-    const double chunk_size
+    const int gen_S
 ) {
   const int K_w = W.n_cols;
 
@@ -2736,10 +2596,10 @@ static arma::vec mxl_blp_run(
   // ASC-coverage check is skipped here (use_asc = false, empty delta).
   check_rc_dist_length(rc_dist, K_w);
   const bool generate = gen_seed >= 0;
-  if (generate) mxl_pred_check_generate(gen_S, K_w);
+  if (generate) mxl_pred_check_generate(gen_S, K_w, gen_scramble);
   MxlPredData pd(X, W, rc_dist);
-  mxl_pred_layout(pd, alt_idx, M, eta_draws, gen_seed, draw_block,
-                  /*use_asc=*/false, arma::vec(), &weights);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, /*use_asc=*/false,
+                  arma::vec(), &weights);
 
   // Build L matrix
   arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
@@ -2797,7 +2657,7 @@ static arma::vec mxl_blp_run(
   // adds the current ASCs row by row.
   mxl_pred_setup(pd, mu_final, L, delta_current, /*use_asc=*/true,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
-                 gen_S, draw_block, chunk_size);
+                 gen_S);
   const double weight_sum = shares_denominator(weights);
   const int n_threads = mxl_pred_threads(pd.lay.N);
   std::vector<MxlPredScratch> scratch = mxl_pred_scratch(
@@ -2894,11 +2754,17 @@ static arma::vec mxl_blp_run(
 //' @param include_outside_option whether outside option is included
 //' @param tol convergence tolerance (default 1e-8)
 //' @param max_iter maximum iterations (default 1000)
-//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-//'   on the fly from this seed.
-//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations, \code{1} = seeded position-wise digit permutations.
+//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+//'   \code{gen_scramble}), with this master seed for the digit permutations of
+//'   \code{gen_scramble = 1}.
+//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+//'   identity permutations (plain Halton) through the generator's inverse normal
+//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+//'   permutations through R's \code{qnorm()}, the store-mode draws of
+//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+//'   randtoolbox and choicer are compiled with the same floating-point
+//'   contraction). Other values are an error.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @returns vector with converged delta (ASC) values
 //' @examples
@@ -2947,43 +2813,7 @@ arma::vec mxl_blp_contraction(
   return mxl_blp_run(delta, target_shares, X, W, beta, mu, L_params, alt_idx,
                      M, weights, eta_draws, rc_dist, rc_correlation, rc_mean,
                      include_outside_option, tol, max_iter, gen_seed,
-                     gen_scramble, gen_S, R_NilValue, 0.0);
-}
-
-//' BLP contraction with store-mode draws in chunks
-//'
-//' mxl_blp_contraction() with the chunked draw source of the prediction
-//' kernels: draw_block and chunk_size as in mxl_predict(). blp() calls it.
-//' @noRd
-// [[Rcpp::export]]
-arma::vec mxl_blp_contraction_chunked(
-    const arma::vec& delta,
-    const arma::vec& target_shares,
-    const arma::mat& X,
-    const arma::mat& W,
-    const arma::vec& beta,
-    const arma::vec& mu,
-    const arma::vec& L_params,
-    const Rcpp::IntegerVector& alt_idx,
-    const Rcpp::IntegerVector& M,
-    const arma::vec& weights,
-    const arma::cube& eta_draws,
-    const arma::uvec& rc_dist,
-    const bool rc_correlation = true,
-    const bool rc_mean = false,
-    const bool include_outside_option = false,
-    const double tol = 1e-8,
-    const int max_iter = 1000,
-    const int gen_seed = -1,
-    const int gen_scramble = 1,
-    const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::Function> draw_block = R_NilValue,
-    const double chunk_size = 0
-) {
-  return mxl_blp_run(delta, target_shares, X, W, beta, mu, L_params, alt_idx,
-                     M, weights, eta_draws, rc_dist, rc_correlation, rc_mean,
-                     include_outside_option, tol, max_iter, gen_seed,
-                     gen_scramble, gen_S, draw_block.get(), chunk_size);
+                     gen_scramble, gen_S);
 }
 
 //' Compute aggregate elasticities for mixed logit model
@@ -3008,23 +2838,18 @@ arma::vec mxl_blp_contraction_chunked(
 //' @param rc_mean whether mu parameters are estimated
 //' @param use_asc whether ASCs are included
 //' @param include_outside_option whether outside option is included
-//' @param gen_seed Integer master seed for the on-the-fly Halton generator. \code{< 0}
-//'   (default) uses the materialized \code{eta_draws} cube; \code{>= 0} generates draws
-//'   on the fly from this seed.
-//' @param gen_scramble Integer scramble mode for on-the-fly generation: \code{0} =
-//'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
+//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
+//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
+//'   \code{gen_scramble}), with this master seed for the digit permutations of
+//'   \code{gen_scramble = 1}.
+//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
+//'   identity permutations (plain Halton) through the generator's inverse normal
+//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
+//'   permutations through R's \code{qnorm()}, the store-mode draws of
+//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
+//'   randtoolbox and choicer are compiled with the same floating-point
+//'   contraction).
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-//' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
-//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
-//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
-//'   vector of \code{n K_w} values in that column-major order is read). The
-//'   kernel then reads the draws of \code{chunk_size} choice situations at a
-//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
-//'   \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, a positive whole
-//'   number, used with \code{draw_block}.
 //' @returns J x J matrix of aggregate elasticities
 //' @examples
 //' \donttest{
@@ -3062,9 +2887,7 @@ arma::mat mxl_elasticities_parallel(
     const bool rc_mean = false,
     const bool use_asc = true,
     const bool include_outside_option = false,
-    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
-    const Rcpp::Nullable<Rcpp::Function> draw_block = R_NilValue,
-    const double chunk_size = 0
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
   (void)choice_idx;  // unused, kept for API consistency
 
@@ -3094,13 +2917,13 @@ arma::mat mxl_elasticities_parallel(
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
   const bool generate = gen_seed >= 0;
-  if (generate) mxl_pred_check_generate(gen_S, K_w);
+  if (generate) mxl_pred_check_generate(gen_S, K_w, gen_scramble);
   MxlPredData pd(X, W, rc_dist);
-  mxl_pred_layout(pd, alt_idx, M, eta_draws, gen_seed, draw_block.get(),
-                  use_asc, par.delta, &weights);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  &weights);
   mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
-                 gen_S, draw_block.get(), chunk_size);
+                 gen_S);
   const ChoiceLayout& lay = pd.lay;
   const double beta_k = is_random_coef ? 0.0 : par.beta(var_idx);
   const arma::vec& mu_final = par.mu_final;

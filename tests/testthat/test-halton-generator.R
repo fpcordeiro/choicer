@@ -87,13 +87,15 @@ test_that("inv_normal_cdf handles edge-case sentinels without NaN", {
 })
 
 # ---------------------------------------------------------------------------
-# 3. compat mode (scramble=0): exact match to randtoolbox::halton
+# 3. compat mode (scramble=0): randtoolbox::halton's points (bit for bit
+#    where both are compiled with the same floating-point contraction; the
+#    tolerance covers builds that differ, test-mxl-predict-store-points.R)
 # ---------------------------------------------------------------------------
 
-test_that("halton_generate_uniform (scramble=0) matches randtoolbox exactly", {
+test_that("halton_generate_uniform (scramble=0) matches randtoolbox", {
   skip_if_not_installed("randtoolbox")
 
-  tol <- 1e-12  # expect exact floating-point match (same algorithm)
+  tol <- 1e-12  # the same algorithm: equal up to the last bit
 
   # Dims 1..10, n = 100
   for (d in 1:10) {
