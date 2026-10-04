@@ -245,7 +245,12 @@
 #'   \code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
 #'   statistics) regenerate one block per choice situation, so for them the
 #'   number of choice situations replaces \eqn{U} (see
-#'   \code{\link{get_halton_normals}}). \code{"generate"}
+#'   \code{\link{get_halton_normals}}); when that cube would exceed 1 GiB, they
+#'   regenerate it a chunk of choice situations at a time instead of holding it
+#'   whole (\code{blp()} at every iteration of its contraction), with the same
+#'   draws, and so the same results (sums over choice situations at one thread;
+#'   at more, they vary in their last bits with the threads' order, as they
+#'   always did). \code{"generate"}
 #'   computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 #'   cube; recommended for memory-constrained or large-N settings. With
 #'   \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
@@ -1246,6 +1251,10 @@ prepare_mxl_data <- function(
 #' \eqn{2^{31} - 1} points (\eqn{S \times N}), the largest starting index
 #' \code{halton(start = )} accepts; \code{draws = "generate"} in
 #' \code{\link{run_mxlogit}} has no such limit and never materializes the cube.
+#' \code{predict()}, \code{logsum()}, \code{consumer_surplus()},
+#' \code{elasticities()}, \code{diversion_ratios()}, \code{blp()} and
+#' \code{gof()} on a store-mode fit read the same points a chunk of choice
+#' situations at a time when their cube would exceed 1 GiB.
 #'
 #' @param S Number of draws per draw unit
 #' @param N number of draw units: choice situations, or decision makers for a
@@ -1265,14 +1274,30 @@ get_halton_normals <- function(S, N, K_w) {
   if (bad(N)) stop("`N` must be a single positive whole number.")
   if (bad(K_w)) stop("`K_w` must be a single positive whole number.")
   n_points <- as.numeric(S) * N
-  if (n_points > .Machine$integer.max) {
-    stop("A store-mode draw cube needs S * N = ",
+  if (n_points > .Machine$integer.max) stop(.halton_points_msg(n_points))
+  .halton_cube(S, N, K_w)
+}
+
+#' The error for store-mode draws past randtoolbox's largest start
+#' @param n_points S * N.
+#' @noRd
+.halton_points_msg <- function(n_points) {
+  paste0("A store-mode draw cube needs S * N = ",
          format(n_points, big.mark = ",", scientific = FALSE),
          " points of the Halton sequence, more than 2^31 - 1, the largest ",
          "starting index randtoolbox::halton(start = ) accepts. Refit with ",
          "run_mxlogit(draws = \"generate\").")
-  }
-  .halton_cube(S, N, K_w)
+}
+
+#' Points start, ..., start + n - 1 of the Halton sequence, as normals
+#'
+#' `randtoolbox::halton()`'s n x K_w matrix (a vector when K_w = 1).
+#' `halton(start = )` (randtoolbox >= 1.31.0) reproduces any slice of the
+#' sequence bit for bit, so every way of cutting it into calls gives the same
+#' draws.
+#' @noRd
+.halton_points <- function(start, n, K_w) {
+  randtoolbox::halton(n = n, dim = K_w, normal = TRUE, start = start)
 }
 
 #' Fill the store-mode Halton cube a block of draw units at a time
@@ -1297,8 +1322,7 @@ get_halton_normals <- function(S, N, K_w) {
     i1 <- min(N, i0 + units_per_block - 1)
     # (S * (i1 - i0 + 1)) x K_w, or a vector when K_w = 1; its transpose is
     # eta[, , i0:i1] in memory order either way.
-    h <- randtoolbox::halton(n = S * (i1 - i0 + 1), dim = K_w, normal = TRUE,
-                             start = (i0 - 1) * S + 1)
+    h <- .halton_points((i0 - 1) * S + 1, S * (i1 - i0 + 1), K_w)
     eta[, , i0:i1] <- t(h)
     i0 <- i1 + 1
   }
@@ -1340,13 +1364,14 @@ get_halton_normals <- function(S, N, K_w) {
 #'
 #' When the fitted object used generate mode, returns an empty placeholder cube
 #' plus the three gen_* integers. When in store mode, materialises the Halton
-#' cube from the stored metadata.
+#' cube from the stored metadata. The estimation-type sites (Hessian, scores,
+#' conditional tastes) use it; the prediction sites use .mxl_pred_draws(),
+#' which works in chunks above a memory budget.
 #'
 #' @param draws_info List from a fitted choicer_mxl object.
-#' @param N Number of draw blocks. Prediction sites keep the default, one block
-#'   per choice situation; estimation-type sites (Hessian, scores, conditional
-#'   tastes) pass the number of likelihood units, `length(.unit_first(d))`,
-#'   which is the number of decision makers for a panel fit.
+#' @param N Number of draw blocks: the number of likelihood units,
+#'   `length(.unit_first(d))`, which is the number of decision makers for a
+#'   panel fit.
 #' @noRd
 .mxl_gen_params <- function(draws_info, N = draws_info$N) {
   mode <- draws_info$mode %||% "store"
@@ -1367,4 +1392,65 @@ get_halton_normals <- function(S, N, K_w) {
       gen_S        = 0L
     )
   }
+}
+
+#' Bytes as a size in binary units (1 GiB = 2^30 bytes), for messages
+#' @noRd
+.format_bytes <- function(bytes) {
+  format(structure(bytes, class = "object_size"), units = "auto",
+         standard = "IEC", digits = 2L)
+}
+
+#' Byte budget of a store-mode prediction's draws
+#'
+#' Above it, store-mode post-estimation (`predict()`, `logsum()`,
+#' `elasticities()`, `diversion_ratios()`, `blp()` and the functions built on
+#' them) regenerates the draws a chunk of choice situations at a time instead
+#' of building the K_w x S x N cube. 1 GiB; a function so that tests can lower
+#' it with `local_mocked_bindings()`.
+#' @noRd
+.mxl_cube_budget <- function() 2^30
+
+#' Draw arguments of an MXL prediction kernel
+#'
+#' Generate mode: an empty cube and the generator's seed, scramble and S.
+#' Store mode: the K_w x S x N Halton cube of the N choice situations, one
+#' block of S draws each, as [get_halton_normals()] builds it; or, when that
+#' cube would take more than `.mxl_cube_budget()` bytes, an empty K_w x S x 0
+#' cube, which gives K_w and S, a function `draw_block(start, n)` returning
+#' points start, ..., start + n - 1 of the sequence, and `chunk_size`, the
+#' situations per chunk. The kernel then fills a buffer of at most the budget
+#' with a chunk's draws at a time, which are the cube's, bit for bit.
+#'
+#' @param draws_info The fit's draw metadata.
+#' @param N Number of choice situations.
+#' @param what The calling function, named in the error when `draws_info` is
+#'   missing.
+#' @returns List with `eta_draws`, `gen_seed`, `gen_scramble`, `gen_S`,
+#'   `draw_block` (NULL unless chunked) and `chunk_size` (0 unless chunked).
+#' @noRd
+.mxl_pred_draws <- function(draws_info, N, what) {
+  if (is.null(draws_info)) {
+    stop(what, " requires draws_info from a fitted MXL model.", call. = FALSE)
+  }
+  if ((draws_info$mode %||% "store") == "generate") {
+    return(c(.mxl_gen_params(draws_info), list(draw_block = NULL, chunk_size = 0)))
+  }
+  K_w <- draws_info$K_w
+  S <- draws_info$S
+  out <- list(gen_seed = -1L, gen_scramble = 1L, gen_S = 0L,
+              draw_block = NULL, chunk_size = 0)
+  per_situation <- 8 * as.numeric(K_w) * S
+  if (per_situation * N <= .mxl_cube_budget()) {
+    out$eta_draws <- get_halton_normals(S, N, K_w)
+    return(out)
+  }
+  n_points <- as.numeric(S) * N
+  if (n_points > .Machine$integer.max) {
+    stop(.halton_points_msg(n_points), call. = FALSE)
+  }
+  out$eta_draws <- array(0, dim = c(K_w, S, 0L))
+  out$draw_block <- function(start, n) .halton_points(start, n, K_w)
+  out$chunk_size <- max(1, floor(.mxl_cube_budget() / per_situation))
+  out
 }

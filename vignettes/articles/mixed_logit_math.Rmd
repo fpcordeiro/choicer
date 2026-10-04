@@ -1093,6 +1093,16 @@ The implementation parallelizes over individuals using OpenMP:
 - Stored draws have dimensions $K_w\times S\times U$, one block per likelihood unit ($U$
   decision makers under `person_col`, choice situations otherwise). Generate-mode kernels
   receive an empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
+- Prediction kernels read one block per choice situation, situation $i$'s being points
+  $(i-1)S+1,\ldots,iS$ of the Halton sequence. When that $K_w\times S\times N$ cube would
+  exceed 1 GiB, the store-mode post-estimation functions pass instead a $K_w\times S\times 0$
+  cube (which gives $K_w$ and $S$), a function `draw_block(start, n)` returning points
+  `start`, ..., `start + n - 1`, and `chunk_size`; the kernel fills a buffer with a chunk of
+  situations' blocks at a time, between parallel regions. `randtoolbox::halton(start = )`
+  reproduces any slice of the sequence bit for bit, so the chunks hold the cube's draws,
+  and each thread's sums carry over from chunk to chunk: results are the cube's, sums over
+  situations at one thread (at more, their rounding depends on the threads' order, as it
+  always did).
 
 ---
 
@@ -1308,9 +1318,10 @@ inside target and predicted shares but does not verify that the full target sums
    `max_iter`, the kernel prints a warning and returns the last completed iterate.
 
 The public `blp.choicer_mxl()` method resolves the fitted draw metadata through
-`.mxl_gen_params()`: store-mode fits regenerate the materialized plain-Halton cube, while
-generate-mode fits pass the original seed, permutation mode, and $S$ to the contraction
-kernel. Share inversion therefore uses the same deterministic integration rule as the fit.
+`.mxl_pred_draws()`: store-mode fits regenerate the plain-Halton cube, or above 1 GiB its
+chunks at every iteration (§5.5), while generate-mode fits pass the original seed,
+permutation mode, and $S$ to the contraction kernel. Share inversion therefore uses the
+same deterministic integration rule as the fit.
 
 *Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 

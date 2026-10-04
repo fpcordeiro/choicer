@@ -1131,7 +1131,7 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
            "Refit with keep_data = TRUE.")
     }
     d <- object[["data"]]
-    N_draws <- object$draws_info$N
+    N_draws <- length(d$M)
   } else {
     if (is.null(object$draws_info)) {
       stop("Prediction with newdata requires stored draw metadata ",
@@ -1141,26 +1141,9 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
     N_draws <- d$N
   }
 
-  # Resolve draws: in generate mode use empty placeholder + gen params.
-  # Note: newdata with a different N is handled automatically by the C++ generator
-  # (which uses (i-1)*S+s+1 regardless of N); for store mode we regenerate for N_draws.
-  mode_pred <- (object$draws_info$mode) %||% "store"
-  if (mode_pred == "store") {
-    eta_draws        <- get_halton_normals(
-      S   = object$draws_info$S,
-      N   = N_draws,
-      K_w = object$draws_info$K_w
-    )
-    gen_seed_arg     <- -1L
-    gen_scramble_arg <- 1L
-    gen_S_arg        <- 0L
-  } else {
-    eta_draws        <- array(0, dim = c(object$draws_info$K_w, 0L, 0L))
-    gen_seed_arg     <- as.integer(object$draws_info$seed)
-    gen_scramble_arg <- if (object$draws_info$scramble %in%
-                             c("permuted", "owen")) 1L else 0L
-    gen_S_arg        <- as.integer(object$draws_info$S)
-  }
+  # One block of draws per choice situation of `d`: generated on the fly, or
+  # the stored Halton blocks (in chunks above the cube budget)
+  gp <- .mxl_pred_draws(object$draws_info, N_draws, "predict()")
 
   args <- list(
     theta                  = object$coefficients,
@@ -1168,15 +1151,17 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
     W                      = d$W,
     alt_idx                = d$alt_idx,
     M                      = d$M,
-    eta_draws              = eta_draws,
+    eta_draws              = gp$eta_draws,
     rc_dist                = object$rc_dist,
     rc_correlation         = object$rc_correlation,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,
     include_outside_option = object$include_outside_option,
-    gen_seed               = gen_seed_arg,
-    gen_scramble           = gen_scramble_arg,
-    gen_S                  = gen_S_arg
+    gen_seed               = gp$gen_seed,
+    gen_scramble           = gp$gen_scramble,
+    gen_S                  = gp$gen_S,
+    draw_block             = gp$draw_block,
+    chunk_size             = gp$chunk_size
   )
 
   if (type == "probabilities") {
@@ -1506,7 +1491,7 @@ elasticities.choicer_mxl <- function(object, elast_var,
   col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
   idx <- resolve_var_index(elast_var, col_names)
 
-  gp_el <- .mxl_gen_params(object$draws_info)
+  gp_el <- .mxl_pred_draws(object$draws_info, length(d$M), "elasticities()")
 
   mat <- mxl_elasticities_parallel(
     theta = object$coefficients,
@@ -1524,7 +1509,8 @@ elasticities.choicer_mxl <- function(object, elast_var,
     rc_mean = object$rc_mean,
     use_asc = object$use_asc,
     include_outside_option = object$include_outside_option,
-    gen_seed = gp_el$gen_seed, gen_scramble = gp_el$gen_scramble, gen_S = gp_el$gen_S
+    gen_seed = gp_el$gen_seed, gen_scramble = gp_el$gen_scramble, gen_S = gp_el$gen_S,
+    draw_block = gp_el$draw_block, chunk_size = gp_el$chunk_size
   )
 
   label_matrix(mat, object$alt_mapping)
@@ -1586,7 +1572,8 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
   col_names <- if (is_random_coef) colnames(d$W) else colnames(d$X)
   idx <- resolve_var_index(wrt_var, col_names)
 
-  gp_dr <- .mxl_gen_params(object$draws_info)
+  gp_dr <- .mxl_pred_draws(object$draws_info, length(d$M),
+                           "diversion_ratios()")
 
   mat <- mxl_diversion_ratios_parallel(
     theta                  = object$coefficients,
@@ -1603,7 +1590,8 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,
     include_outside_option = object$include_outside_option,
-    gen_seed = gp_dr$gen_seed, gen_scramble = gp_dr$gen_scramble, gen_S = gp_dr$gen_S
+    gen_seed = gp_dr$gen_seed, gen_scramble = gp_dr$gen_scramble, gen_S = gp_dr$gen_S,
+    draw_block = gp_dr$draw_block, chunk_size = gp_dr$chunk_size
   )
 
   label_matrix(mat, object$alt_mapping)
@@ -1647,6 +1635,19 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
   }
   d <- object[["data"]]
   pm <- object$param_map
+  N <- length(d$M)
+  gp_blp <- .mxl_pred_draws(object$draws_info, N, "blp()")
+  if (!is.null(gp_blp$draw_block)) {
+    di <- object$draws_info
+    message(sprintf(paste0(
+      "blp(): the stored draws of the %s choice situations take %s, more than ",
+      "the %s a prediction holds at once, so each iteration of the ",
+      "contraction regenerates them, a chunk of situations at a time. A fit ",
+      "with draws = \"generate\" forms them on the fly instead."),
+      format(N, big.mark = ",", scientific = FALSE),
+      .format_bytes(8 * as.numeric(di$K_w) * di$S * N),
+      .format_bytes(.mxl_cube_budget())))
+  }
 
   beta <- object$coefficients[pm$beta]
   mu <- if (!is.null(pm$mu)) object$coefficients[pm$mu] else rep(0, object$draws_info$K_w)
@@ -1665,9 +1666,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  gp_blp <- .mxl_gen_params(object$draws_info)
-
-  mxl_blp_contraction(
+  mxl_blp_contraction_chunked(
     delta = delta_init,
     target_shares = target_shares,
     X = d$X,
@@ -1687,7 +1686,9 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     max_iter = max_iter,
     gen_seed = gp_blp$gen_seed,
     gen_scramble = gp_blp$gen_scramble,
-    gen_S = gp_blp$gen_S
+    gen_S = gp_blp$gen_S,
+    draw_block = gp_blp$draw_block,
+    chunk_size = gp_blp$chunk_size
   )
 }
 

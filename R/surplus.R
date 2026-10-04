@@ -160,20 +160,7 @@ logsum.choicer_mxl <- function(object, newdata = NULL, ...) {
 #' MXL logsum from resolved kernel inputs (regenerates the Halton draws or uses generator)
 #' @noRd
 .logsum_mxl_core <- function(object, d) {
-  # Resolve draw mode: store or generate.
-  mode_ls <- (object$draws_info$mode) %||% "store"
-  if (mode_ls == "store") {
-    eta_draws        <- get_halton_normals(object$draws_info$S, d$N, object$draws_info$K_w)
-    gen_seed_arg     <- -1L
-    gen_scramble_arg <- 1L
-    gen_S_arg        <- 0L
-  } else {
-    eta_draws        <- array(0, dim = c(object$draws_info$K_w, 0L, 0L))
-    gen_seed_arg     <- as.integer(object$draws_info$seed)
-    gen_scramble_arg <- if (object$draws_info$scramble %in%
-                             c("permuted", "owen")) 1L else 0L
-    gen_S_arg        <- as.integer(object$draws_info$S)
-  }
+  gp <- .mxl_pred_draws(object$draws_info, d$N, "logsum()")
 
   as.numeric(mxl_logsum(
     theta                  = object$coefficients,
@@ -181,15 +168,17 @@ logsum.choicer_mxl <- function(object, newdata = NULL, ...) {
     W                      = d$W,
     alt_idx                = d$alt_idx,
     M                      = d$M,
-    eta_draws              = eta_draws,
+    eta_draws              = gp$eta_draws,
     rc_dist                = object$rc_dist,
     rc_correlation         = object$rc_correlation,
     rc_mean                = object$rc_mean,
     use_asc                = object$use_asc,
     include_outside_option = object$include_outside_option,
-    gen_seed               = gen_seed_arg,
-    gen_scramble           = gen_scramble_arg,
-    gen_S                  = gen_S_arg
+    gen_seed               = gp$gen_seed,
+    gen_scramble           = gp$gen_scramble,
+    gen_S                  = gp$gen_S,
+    draw_block             = gp$draw_block,
+    chunk_size             = gp$chunk_size
   ))
 }
 

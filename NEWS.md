@@ -218,6 +218,28 @@
     (0.04-0.77 GB at eleven, mostly the threads' accumulators, which the old
     code allocated too) in 28 to 501 allocations, instead of 1.9-2.4 GB
     in 190,000 to 290,000.
+- With stored draws (`draws = "store"`, the default), `predict()`, `logsum()`,
+  `consumer_surplus()`, `elasticities()`, `diversion_ratios()`, `blp()`,
+  `gof()` and the fit statistics of `summary()` integrate each choice
+  situation over its own block of Halton draws, and used to build the blocks
+  of all N situations as one K_w x S x N cube on every call (for a panel fit
+  too: predictions are unconditional, one block per situation). When that cube
+  would exceed 1 GiB, they now regenerate it a chunk of choice situations at a
+  time, into a buffer of at most 1 GiB (or one situation's draws, if larger),
+  instead of holding it whole, and collect R's garbage as they go. The chunks
+  hold the same points of the sequence (`randtoolbox::halton(start = )`
+  reproduces any slice of it bit for bit), so results are those of the whole
+  cube, bit for bit, as above. On the census design at 98 million rows (2.45
+  million choice situations, whose cube takes 5.9 GB), a store-mode prediction
+  of choice probabilities took 31 s instead of 58 s, and its working memory
+  peaked at 3.3 GB (the 1.6 GB of probabilities it returns included) instead
+  of 14.4 GB (medians of three alternated runs at eleven threads). `blp()`,
+  which used to build the cube once per call, now regenerates its chunks at
+  every iteration of the contraction, which costs about one construction of
+  the cube per iteration (the regeneration runs on one thread; on the census
+  design three iterations took 124 s instead of 113 s, and peaked at 2.5 GB
+  instead of 10.6 GB), and says so in a message; a fit with
+  `draws = "generate"` holds no cube at all.
 - The same kernels now treat malformed alternative codes, which only a
   direct call can supply, in a defined way: a missing or negative code is
   reported as such, where it went through an undefined conversion (read as

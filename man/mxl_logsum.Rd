@@ -18,7 +18,9 @@ mxl_logsum(
   include_outside_option = FALSE,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L
+  gen_S = 0L,
+  draw_block = NULL,
+  chunk_size = 0
 )
 }
 \arguments{
@@ -52,6 +54,17 @@ on the fly from this seed.}
 identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
+
+\item{draw_block}{\code{NULL}, or in store mode a function of
+\code{(start, n)} returning points \code{start, ..., start + n - 1} of
+the \eqn{K_w}-dimensional Halton sequence as standard normals, the
+\code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
+normal = TRUE, start = start)}. The kernel then reads the draws of
+\code{chunk_size} choice situations at a time, and \code{eta_draws}, a
+\code{K_w x S x 0} array, gives only \code{K_w} and \code{S}.}
+
+\item{chunk_size}{Choice situations per chunk of draws, used with
+\code{draw_block}.}
 }
 \value{
 Vector of length N with the simulated expected logsum per choice
