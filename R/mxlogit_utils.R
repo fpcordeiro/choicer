@@ -118,7 +118,8 @@
 #'   (\code{length(input_data$Ti)}), and the number of choice situations
 #'   otherwise. Required for the advanced workflow; auto-generated from
 #'   \code{S} in the convenience workflow. Post-hoc methods
-#'   (\code{vcov(fit, type = )}, \code{\link{conditional_tastes}}, prediction)
+#'   (\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
+#'   \code{\link{conditional_tastes}}, prediction)
 #'   regenerate Halton draws with \code{\link{get_halton_normals}} from the
 #'   recorded draw count, so build \code{eta_draws} with it for them to
 #'   reproduce the estimation draws.
@@ -250,7 +251,10 @@
 #'   whole (\code{blp()} at every iteration of its contraction), with the same
 #'   draws, and so the same results (sums over choice situations at one thread;
 #'   at more, they vary in their last bits with the threads' order, as they
-#'   always did). \code{"generate"}
+#'   always did). \code{run_mxlogit()} itself warns, before it builds the
+#'   estimation cube, when that cube would exceed 1 GiB: it is held for the
+#'   whole fit, and \code{vcov(type = )}, \code{\link{wesml_vcov}} and
+#'   \code{\link{conditional_tastes}} rebuild it whole. \code{"generate"}
 #'   computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 #'   cube; recommended for memory-constrained or large-N settings. With
 #'   \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
@@ -515,6 +519,7 @@ run_mxlogit <- function(
       # One K_w x S draw block per likelihood unit: per decision maker with
       # person_col, per choice situation otherwise.
       n_units <- length(.unit_first(input_data))
+      .warn_store_cube(S, n_units, K_w, !is.null(input_data$Ti))
       eta_draws <- get_halton_normals(S, n_units, K_w)
     } else {
       # generate mode: no cube ever materialized; empty placeholder
@@ -1267,16 +1272,25 @@ prepare_mxl_data <- function(
 #' @importFrom randtoolbox halton
 #' @export
 get_halton_normals <- function(S, N, K_w) {
-  bad <- function(x) {
-    !is.numeric(x) || length(x) != 1L || !is.finite(x) || x < 1 || x != round(x)
-  }
-  if (bad(S)) stop("`S` must be a single positive whole number.")
-  if (bad(N)) stop("`N` must be a single positive whole number.")
-  if (bad(K_w)) stop("`K_w` must be a single positive whole number.")
-  n_points <- as.numeric(S) * N
-  if (n_points > .Machine$integer.max) stop(.halton_points_msg(n_points))
+  if (!.whole_number(S)) stop("`S` must be a single positive whole number.")
+  if (!.whole_number(N)) stop("`N` must be a single positive whole number.")
+  if (!.whole_number(K_w)) stop("`K_w` must be a single positive whole number.")
+  if (!.halton_points_ok(S, N)) stop(.halton_points_msg(as.numeric(S) * N))
   .halton_cube(S, N, K_w)
 }
+
+#' A single positive whole number, as get_halton_normals() takes S, N, K_w
+#' @noRd
+.whole_number <- function(x) {
+  is.numeric(x) && length(x) == 1L && is.finite(x) && x >= 1 && x == round(x)
+}
+
+#' Whether S * N points of the Halton sequence are within randtoolbox's reach
+#'
+#' `randtoolbox::halton(start = )` takes an int start, so store-mode draws
+#' reach at most 2^31 - 1 points.
+#' @noRd
+.halton_points_ok <- function(S, N) as.numeric(S) * N <= .Machine$integer.max
 
 #' The error for store-mode draws past randtoolbox's largest start
 #' @param n_points S * N.
@@ -1401,13 +1415,49 @@ get_halton_normals <- function(S, N, K_w) {
          standard = "IEC", digits = 2L)
 }
 
+#' Warn before a store-mode fit builds a draw cube above the budget
+#'
+#' The cube is held for the whole fit, and the estimation-type post-estimation
+#' functions rebuild it; generate mode stores none. Called only where
+#' get_halton_normals() will build it: above 2^31 - 1 points it stops instead.
+#'
+#' @param S,n_units,K_w Draws per unit, likelihood units, random coefficients.
+#' @param panel Whether the units are decision makers (`person_col`).
+#' @noRd
+.warn_store_cube <- function(S, n_units, K_w, panel) {
+  # get_halton_normals() reports invalid arguments, and stops past 2^31 - 1
+  # points
+  if (!.whole_number(S) || !.whole_number(n_units) || !.whole_number(K_w) ||
+      !.halton_points_ok(S, n_units)) {
+    return(invisible())
+  }
+  bytes <- 8 * as.numeric(K_w) * S * n_units
+  if (bytes <= .mxl_cube_budget()) return(invisible())
+  big <- function(x) format(x, big.mark = ",", scientific = FALSE)
+  # immediate.: the fit that follows can take hours, or run out of memory
+  # (unless the user ignores warnings, options(warn = -1), which it would
+  # override)
+  warning(sprintf(paste0(
+    "draws = \"store\" will hold %s of Halton draws (%s %s x %s %s x %d ",
+    "random %s) for the whole fit, and vcov(type = ), wesml_vcov() and ",
+    "conditional_tastes() rebuild them. draws = \"generate\" forms the draws ",
+    "on the fly and stores none (scramble = \"none\" keeps these Halton ",
+    "points)."),
+    .format_bytes(bytes), big(n_units),
+    if (panel) "decision makers" else "choice situations", big(S),
+    ngettext(S, "draw", "draws"), K_w,
+    ngettext(K_w, "coefficient", "coefficients")),
+    call. = FALSE, immediate. = !isTRUE(getOption("warn") < 0))
+}
+
 #' Byte budget of a store-mode prediction's draws
 #'
 #' Above it, store-mode post-estimation (`predict()`, `logsum()`,
 #' `elasticities()`, `diversion_ratios()`, `blp()` and the functions built on
 #' them) regenerates the draws a chunk of choice situations at a time instead
-#' of building the K_w x S x N cube. 1 GiB; a function so that tests can lower
-#' it with `local_mocked_bindings()`.
+#' of building the K_w x S x N cube, and `run_mxlogit()` warns before it builds
+#' an estimation cube larger than it (`.warn_store_cube()`). 1 GiB; a function
+#' so that tests can lower it with `local_mocked_bindings()`.
 #' @noRd
 .mxl_cube_budget <- function() 2^30
 
@@ -1445,9 +1495,8 @@ get_halton_normals <- function(S, N, K_w) {
     out$eta_draws <- get_halton_normals(S, N, K_w)
     return(out)
   }
-  n_points <- as.numeric(S) * N
-  if (n_points > .Machine$integer.max) {
-    stop(.halton_points_msg(n_points), call. = FALSE)
+  if (!.halton_points_ok(S, N)) {
+    stop(.halton_points_msg(as.numeric(S) * N), call. = FALSE)
   }
   out$eta_draws <- array(0, dim = c(K_w, S, 0L))
   out$draw_block <- function(start, n) .halton_points(start, n, K_w)

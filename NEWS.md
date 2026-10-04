@@ -218,6 +218,14 @@
     (0.04-0.77 GB at eleven, mostly the threads' accumulators, which the old
     code allocated too) in 28 to 501 allocations, instead of 1.9-2.4 GB
     in 190,000 to 290,000.
+- The same kernels now treat malformed alternative codes, which only a
+  direct call can supply, in a defined way: a missing or negative code is
+  reported as such, where it went through an undefined conversion (read as
+  0 on ARM processors, as too large on x86-64), and a code beyond the
+  integer range becomes `NA`, with R's warning. With draws generated on the
+  fly, an alternative-level `W` with fewer rows than the largest
+  alternative code is now reported as with stored draws, where it stopped
+  at an Armadillo bounds error.
 - With stored draws (`draws = "store"`, the default), `predict()`, `logsum()`,
   `consumer_surplus()`, `elasticities()`, `diversion_ratios()`, `blp()`,
   `gof()` and the fit statistics of `summary()` integrate each choice
@@ -233,21 +241,24 @@
   million choice situations, whose cube takes 5.9 GB), a store-mode prediction
   of choice probabilities took 31 s instead of 58 s, and its working memory
   peaked at 3.3 GB (the 1.6 GB of probabilities it returns included) instead
-  of 14.4 GB (medians of three alternated runs at eleven threads). `blp()`,
-  which used to build the cube once per call, now regenerates its chunks at
-  every iteration of the contraction, which costs about one construction of
-  the cube per iteration (the regeneration runs on one thread; on the census
-  design three iterations took 124 s instead of 113 s, and peaked at 2.5 GB
-  instead of 10.6 GB), and says so in a message; a fit with
-  `draws = "generate"` holds no cube at all.
-- The same kernels now treat malformed alternative codes, which only a
-  direct call can supply, in a defined way: a missing or negative code is
-  reported as such, where it went through an undefined conversion (read as
-  0 on ARM processors, as too large on x86-64), and a code beyond the
-  integer range becomes `NA`, with R's warning. With draws generated on the
-  fly, an alternative-level `W` with fewer rows than the largest
-  alternative code is now reported as with stored draws, where it stopped
-  at an Armadillo bounds error.
+  of 14.4 GB; on the claims-like panel at 85 million rows (1.5 million choice
+  situations, whose cube takes 3.6 GB), 21 s instead of 27 s and 3.0 GB
+  instead of 12.2 GB (medians of three alternated runs at eleven threads).
+  `blp()`, which used to build the cube once per call, now regenerates its
+  chunks at every iteration of the contraction, which costs about one
+  construction of the cube per iteration (the regeneration runs on one
+  thread): at eleven threads, three iterations took 124 s instead of 113 s on
+  the census design and 84 s instead of 47 s on the claims-like panel, and
+  peaked at 2.5 GB instead of 10.6 GB and at 2.4 GB instead of 9.2 GB,
+  respectively. It says so in a message; a fit with `draws = "generate"` holds
+  no cube at all.
+- `run_mxlogit(draws = "store")` (the convenience workflow) now warns, before
+  it builds the draws, when they would take more than 1 GiB (K_w x S x U
+  values, for the U decision makers of a panel fit or the choice situations of
+  a cross-section): the cube is held for the whole fit, and `vcov(type = )`,
+  `wesml_vcov()` and `conditional_tastes()` rebuild it whole.
+  `draws = "generate"` stores none; with `scramble = "none"` it uses the same
+  Halton points. The fit itself is unchanged.
 
 ## Data preparation at population scale
 

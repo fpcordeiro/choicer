@@ -66,7 +66,8 @@ when \code{input_data} was prepared with \code{person_col}
 (\code{length(input_data$Ti)}), and the number of choice situations
 otherwise. Required for the advanced workflow; auto-generated from
 \code{S} in the convenience workflow. Post-hoc methods
-(\code{vcov(fit, type = )}, \code{\link{conditional_tastes}}, prediction)
+(\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
+\code{\link{conditional_tastes}}, prediction)
 regenerate Halton draws with \code{\link{get_halton_normals}} from the
 recorded draw count, so build \code{eta_draws} with it for them to
 reproduce the estimation draws.}
@@ -190,7 +191,10 @@ regenerate it a chunk of choice situations at a time instead of holding it
 whole (\code{blp()} at every iteration of its contraction), with the same
 draws, and so the same results (sums over choice situations at one thread;
 at more, they vary in their last bits with the threads' order, as they
-always did). \code{"generate"}
+always did). \code{run_mxlogit()} itself warns, before it builds the
+estimation cube, when that cube would exceed 1 GiB: it is held for the
+whole fit, and \code{vcov(type = )}, \code{\link{wesml_vcov}} and
+\code{\link{conditional_tastes}} rebuild it whole. \code{"generate"}
 computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 cube; recommended for memory-constrained or large-N settings. With
 \code{scramble = "permuted"}, each base-\eqn{b} digit position in each

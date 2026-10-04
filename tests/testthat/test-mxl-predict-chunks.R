@@ -308,3 +308,90 @@ test_that("the budget decides between the cube and chunks", {
                "elasticities() requires draws_info from a fitted MXL model.",
                fixed = TRUE)
 })
+
+# --- Large store-mode fits -----------------------------------------------------
+
+# A fitted object without its wall-clock fields
+mxc_strip <- function(x) {
+  if (is.list(x) && !is.data.frame(x)) {
+    if (!is.null(names(x))) {
+      x <- x[!names(x) %in% c("elapsed_time", "elapsed", "time_elapsed")]
+    }
+    x[] <- lapply(x, mxc_strip)
+  }
+  x
+}
+
+# Long-format data: N choice situations of J alternatives, T per decision maker
+mxc_long <- function(seed, N, J = 4L, T = 1L) {
+  set.seed(seed)
+  dt <- data.table::data.table(id = rep(seq_len(N), each = J),
+                               alt = rep(seq_len(J), N),
+                               person = rep(seq_len(N / T), each = J * T))
+  dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N), w2 = rnorm(.N))]
+  dt[, choice := 0L]
+  dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+  dt
+}
+
+test_that("a store-mode fit above the cube budget warns, then fits as before", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)  # fits at one thread are bit-reproducible
+  dt <- mxc_long(150, 60L)
+  args <- list(data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+               covariate_cols = "x1", random_var_cols = c("w1", "w2"), S = 20L,
+               control = list(maxeval = 20L))
+  fit <- function(...) {
+    a <- args
+    v <- list(...)
+    a[names(v)] <- v
+    suppressMessages(do.call(run_mxlogit, a))
+  }
+  expect_no_warning(plain <- fit(), message = "Halton draws")
+  local_mocked_bindings(.mxl_cube_budget = function() 1000)
+  # 8 x 2 x 20 x 60 = 19,200 bytes
+  expect_warning(
+    warned <- fit(),
+    paste0("draws = \"store\" will hold 18.75 KiB of Halton draws (60 choice ",
+           "situations x 20 draws x 2 random coefficients) for the whole fit, ",
+           "and vcov(type = ), wesml_vcov() and conditional_tastes() rebuild ",
+           "them. draws = \"generate\" forms the draws on the fly and stores ",
+           "none (scramble = \"none\" keeps these Halton points)."),
+    fixed = TRUE)
+  expect_identical(mxc_strip(warned), mxc_strip(plain))
+  # A panel fit's draws are per decision maker
+  expect_warning(
+    fit(data = mxc_long(151, 60L, T = 3L), person_col = "person"),
+    "6.25 KiB of Halton draws (20 decision makers x 20 draws",
+    fixed = TRUE)
+  # An invalid S is still reported by get_halton_normals()
+  expect_error(fit(S = NA), "`S` must be a single positive whole number.",
+               fixed = TRUE)
+  expect_error(fit(S = 2.5), "`S` must be a single positive whole number.",
+               fixed = TRUE)
+  # Generate mode and the advanced workflow build no cube of their own
+  expect_no_warning(fit(draws = "generate", seed = 1L), message = "Halton draws")
+  d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", c("w1", "w2"))
+  expect_no_warning(
+    suppressMessages(run_mxlogit(input_data = d,
+                                 eta_draws = get_halton_normals(20L, d$N, 2L),
+                                 control = list(maxeval = 20L))),
+    message = "Halton draws")
+})
+
+test_that("the store-mode warning starts past the budget and leaves the stop", {
+  expect_warning(
+    choicer:::.warn_store_cube(100, 2e6, 3L, panel = TRUE),
+    "will hold 4.47 GiB of Halton draws (2,000,000 decision makers x 100 draws x 3",
+    fixed = TRUE)
+  expect_silent(choicer:::.warn_store_cube(100, 1e6, 1L, panel = FALSE))
+  # Exactly 1 GiB is within the budget; one more situation is not
+  expect_silent(choicer:::.warn_store_cube(1, 2^27, 1L, panel = FALSE))
+  expect_warning(choicer:::.warn_store_cube(1, 2^27 + 1, 1L, panel = FALSE),
+                 "(134,217,729 choice situations x 1 draw x 1 random coefficient)",
+                 fixed = TRUE)
+  # The most points get_halton_normals() builds warn; past them it stops
+  expect_warning(choicer:::.warn_store_cube(1, 2^31 - 1, 1L, panel = FALSE),
+                 "16 GiB of Halton draws", fixed = TRUE)
+  expect_silent(choicer:::.warn_store_cube(100, 3e7, 2L, panel = FALSE))
+})
