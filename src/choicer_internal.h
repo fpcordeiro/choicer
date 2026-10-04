@@ -24,9 +24,10 @@
 //   * data-shape validation (X/W/alt_idx/M/eta/weights consistency), called
 //     by every exported entry point: in the layout builders (MNL:
 //     choice_layout_build below; NL: nl_layout_build; MXL estimation:
-//     mxl_layout_build; MXL predictions and log-sums: mxl_pred_layout) and,
-//     for the MXL shares, BLP, elasticity and diversion kernels, which still
-//     take arma::uvec indices, in the validate_*_inputs helpers.
+//     mxl_layout_build; MXL predictions, log-sums, shares and BLP:
+//     mxl_pred_layout) and, for the MXL elasticity and diversion kernels,
+//     which still take arma::uvec indices, in the validate_*_inputs
+//     helpers.
 // Every check is O(1) or a single O(rows) integer scan — negligible next to
 // one likelihood evaluation — and turns what would otherwise be an obscure
 // Armadillo bounds error (or silently wrong output) into an actionable

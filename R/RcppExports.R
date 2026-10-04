@@ -1064,9 +1064,8 @@ mxl_logsum <- function(theta, X, W, alt_idx, M, eta_draws, rc_dist, rc_correlati
 
 #' Predicted aggregate market shares for Mixed Logit
 #'
-#' Exported wrapper around the internal `mxl_predict_shares_internal`. Parses
-#' `theta` using the standard parameter ordering and returns the simulated
-#' weighted-average market shares.
+#' Parses `theta` using the standard parameter ordering and returns the
+#' simulated weighted-average market shares.
 #'
 #' @param theta parameter vector (beta, \[mu\], L, delta)
 #' @param X design matrix for fixed coefficients; sum(M_i) x K_x

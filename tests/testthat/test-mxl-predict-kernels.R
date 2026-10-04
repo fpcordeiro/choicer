@@ -26,7 +26,7 @@ mxp_data <- function(seed, M, J, K_x = 2L, K_w = 2L, S = 5L, ioo = FALSE,
   eta <- get_halton_normals(S, N, K_w)
   list(theta = theta, X = X, W = W, alt_idx = alt_idx, M = as.integer(M),
        eta = eta, rc_dist = rc_dist, rc_corr = rc_corr, rc_mean = rc_mean,
-       use_asc = use_asc, ioo = ioo, weights = runif(N, 0.5, 2))
+       use_asc = use_asc, ioo = ioo, weights = runif(N, 0.5, 2), J = J)
 }
 
 mxp_predict <- function(d, ...) {
@@ -36,6 +36,23 @@ mxp_predict <- function(d, ...) {
 mxp_logsum <- function(d, ...) {
   choicer:::mxl_logsum(d$theta, d$X, d$W, d$alt_idx, d$M, d$eta, d$rc_dist,
                        d$rc_corr, d$rc_mean, d$use_asc, d$ioo, ...)
+}
+mxp_shares <- function(d, ...) {
+  choicer:::mxl_predict_shares(d$theta, d$X, d$W, d$alt_idx, d$M, d$weights,
+                               d$eta, d$rc_dist, d$rc_corr, d$rc_mean,
+                               d$use_asc, d$ioo, ...)
+}
+# BLP inversion from `delta0` towards `target`, at the design's beta, mu and L
+mxp_blp <- function(d, target, delta0, beta = NULL, ...) {
+  K_x <- ncol(d$X); K_w <- ncol(d$W)
+  pos <- K_x + (if (d$rc_mean) K_w else 0L)
+  L_size <- if (d$rc_corr) K_w * (K_w + 1L) / 2L else K_w
+  if (is.null(beta)) beta <- d$theta[seq_len(K_x)]
+  mu <- if (d$rc_mean) d$theta[K_x + seq_len(K_w)] else rep(0, K_w)
+  mxl_blp_contraction(delta0, target, d$X, d$W, beta, mu,
+                      d$theta[pos + seq_len(L_size)], d$alt_idx, d$M,
+                      d$weights, d$eta, d$rc_dist, d$rc_corr, d$rc_mean,
+                      d$ioo, ...)
 }
 
 # The generate-mode draws of situation t (1-based): Halton block t, indices
@@ -106,6 +123,23 @@ mxp_oracle <- function(d, eta = d$eta) {
   list(prob = prob, util = util, prob_out = prob_out, logsum = ls)
 }
 
+# The oracle's weighted shares: one per alternative code up to the largest
+# (all J with ASCs), the outside option first when present
+mxp_shares_oracle <- function(d, eta = d$eta) {
+  o <- mxp_oracle(d, eta)
+  J_in <- if (d$use_asc) d$J else max(d$alt_idx)
+  sh <- numeric(J_in + d$ioo)
+  ends <- cumsum(d$M); starts <- ends - d$M + 1L
+  for (t in seq_along(d$M)) {
+    if (d$ioo) sh[1] <- sh[1] + d$weights[t] * o$prob_out[t]
+    for (r in starts[t]:ends[t]) {
+      j <- d$alt_idx[r] + d$ioo
+      sh[j] <- sh[j] + d$weights[t] * o$prob[r]
+    }
+  }
+  sh / sum(d$weights)
+}
+
 mxp_expect_oracle <- function(d, gen = NULL) {
   if (is.null(gen)) {
     p <- mxp_predict(d)
@@ -125,11 +159,22 @@ mxp_expect_oracle <- function(d, gen = NULL) {
     expect_equal(as.numeric(p$choice_prob_outside), o$prob_out, tolerance = 1e-12)
   }
   expect_equal(as.numeric(ls), o$logsum, tolerance = 1e-12)
+  if (is.null(gen)) {
+    expect_equal(as.numeric(mxp_shares(d)), mxp_shares_oracle(d),
+                 tolerance = 1e-12)
+  } else {
+    expect_equal(
+      as.numeric(mxp_shares(d, gen_seed = gen$seed, gen_scramble = gen$scramble,
+                            gen_S = gen$S)),
+      mxp_shares_oracle(d, mxp_gen_cube(length(d$M), gen$S, ncol(d$W),
+                                        gen$seed, gen$scramble)),
+      tolerance = 1e-12)
+  }
 }
 
 # --- Values ------------------------------------------------------------------
 
-test_that("mxl_predict and mxl_logsum match a brute-force oracle", {
+test_that("predictions, log-sums and shares match a brute-force oracle", {
   set.seed(1)
   M <- sample(1:5, 12, replace = TRUE)
   for (ioo in c(FALSE, TRUE)) {
@@ -162,6 +207,25 @@ test_that("tiny designs and a single draw match the oracle", {
   mxp_expect_oracle(d)
 })
 
+test_that("the BLP contraction inverts the simulated shares", {
+  set.seed(4)
+  M <- sample(2:5, 40, replace = TRUE)
+  for (ioo in c(FALSE, TRUE)) {
+    for (gen in c(FALSE, TRUE)) {
+      w_type <- if (gen) "alt" else "row"
+      d <- mxp_data(15 + ioo, M, J = 5L, K_w = 2L, ioo = ioo, w_type = w_type,
+                    rc_dist = c(1L, 0L), rc_corr = TRUE)
+      g <- if (gen) list(gen_seed = 9L, gen_scramble = 1L, gen_S = 5L) else list()
+      target <- as.numeric(do.call(mxp_shares, c(list(d), g)))
+      n_free <- if (ioo) 5L else 4L
+      delta <- if (ioo) d$theta[length(d$theta) - n_free + seq_len(n_free)] else
+        c(0, d$theta[length(d$theta) - n_free + seq_len(n_free)])
+      est <- do.call(mxp_blp, c(list(d, target, rep(0, 5L), tol = 1e-13), g))
+      expect_equal(as.numeric(est), delta, tolerance = 1e-8)
+    }
+  }
+})
+
 test_that("a situation's predictions do not depend on the thread count", {
   set.seed(2)
   d <- mxp_data(50, sample(2:20, 300, replace = TRUE), J = 25L, K_w = 3L,
@@ -176,6 +240,12 @@ test_that("a situation's predictions do not depend on the thread count", {
   expect_identical(mxp_logsum(d), l1)
   expect_identical(gen(mxp_predict), gp1)
   expect_identical(gen(mxp_logsum), gl1)
+  # Shares add situations up in each thread, so only the rounding of the sum
+  # depends on the thread count
+  set_num_threads(1L)
+  s1 <- mxp_shares(d)
+  set_num_threads(2L)
+  expect_equal(mxp_shares(d), s1, tolerance = 1e-13)
 })
 
 test_that("double-typed alternative codes give the integer result", {
@@ -184,6 +254,11 @@ test_that("double-typed alternative codes give the integer result", {
   dd$alt_idx <- as.double(d$alt_idx)
   expect_identical(mxp_predict(dd), mxp_predict(d))
   expect_identical(mxp_logsum(dd), mxp_logsum(d))
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)  # one thread: sums over situations in a fixed order
+  expect_identical(mxp_shares(dd), mxp_shares(d))
+  target <- as.numeric(mxp_shares(d))
+  expect_identical(mxp_blp(dd, target, rep(0, 4L)), mxp_blp(d, target, rep(0, 4L)))
 })
 
 test_that("predictions return n x 1 matrices and leave their inputs alone", {
@@ -215,7 +290,8 @@ test_that("predictions with no choice situations are empty", {
 
 test_that("prediction kernels report malformed alternative codes", {
   d <- mxp_data(90, c(2L, 3L, 4L, 2L), J = 4L)
-  for (k in list(mxp_predict, mxp_logsum)) {
+  blp_k <- function(d, ...) mxp_blp(d, rep(0.25, 4L), rep(0, 4L), ...)
+  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_k)) {
     for (gen in c(FALSE, TRUE)) {
       call_k <- function(alt) {
         d$alt_idx <- alt
@@ -234,16 +310,19 @@ test_that("prediction kernels report malformed alternative codes", {
         expect_error(call_k(replace(as.double(d$alt_idx), 3L, 3e9)),
                      "(found NA)", fixed = TRUE),
         "NAs introduced by coercion to integer range")
-      expect_error(call_k(replace(d$alt_idx, 3L, 5L)),
-                   "Theta's delta (ASC) block implies 4 alternatives but alt_idx references alternative 5.",
-                   fixed = TRUE)
+      if (!identical(k, blp_k)) {  # BLP sizes its ASCs from the codes
+        expect_error(call_k(replace(d$alt_idx, 3L, 5L)),
+                     "Theta's delta (ASC) block implies 4 alternatives but alt_idx references alternative 5.",
+                     fixed = TRUE)
+      }
     }
   }
 })
 
 test_that("prediction kernels check the design, the draws and W", {
   d <- mxp_data(91, c(2L, 3L, 4L, 2L), J = 4L)
-  for (k in list(mxp_predict, mxp_logsum)) {
+  blp_k <- function(d, ...) mxp_blp(d, rep(0.25, 4L), rep(0, 4L), ...)
+  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_k)) {
     e <- d; e$M[2] <- 0L
     expect_error(k(e), "M must be positive for every individual (M[2] = 0).",
                  fixed = TRUE)
@@ -258,8 +337,10 @@ test_that("prediction kernels check the design, the draws and W", {
     e <- d; e$eta <- get_halton_normals(5L, 4L, 3L)
     expect_error(k(e), "eta_draws 1st dimension (3) does not match K_w (2)",
                  fixed = TRUE)
-    e <- d; e$theta <- e$theta[1:3]
-    expect_error(k(e), "Theta vector too short")
+    if (!identical(k, blp_k)) {
+      e <- d; e$theta <- e$theta[1:3]
+      expect_error(k(e), "Theta vector too short")
+    }
     # An alternative-level W must cover every code, in both draw modes
     e <- d; e$W <- matrix(1, 3L, 2L)
     msg <- "W must be row-aligned with X (11 rows) or contain one row per global alternative (at least 4 rows); got 3 rows."
@@ -271,8 +352,44 @@ test_that("prediction kernels check the design, the draws and W", {
   }
   # Generated draws have one Halton base per random coefficient, up to 128
   wide <- mxp_data(92, c(2L, 3L), J = 3L, K_w = 129L, S = 1L)
-  for (k in list(mxp_predict, mxp_logsum)) {
+  blp_w <- function(d, ...) mxp_blp(d, rep(1 / 3, 3L), rep(0, 3L), ...)
+  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_w)) {
     expect_error(k(wide, gen_seed = 1L, gen_scramble = 1L, gen_S = 2L),
                  "K_w exceeds the primes table size (128)", fixed = TRUE)
   }
+})
+
+test_that("shares and the BLP contraction keep their order of checks", {
+  d <- mxp_data(93, c(2L, 3L, 4L, 2L), J = 4L)
+  target <- rep(0.25, 4L)
+  expect_error(mxp_blp(d, rep(0.2, 5L), rep(0, 4L)),
+               "target_shares must have length 4", fixed = TRUE)
+  expect_error(mxp_blp(d, target, rep(0, 6L)),
+               "delta must have length 4 (full) or 3 (free, with baseline omitted).",
+               fixed = TRUE)
+  # The weights are checked before X beta is formed: a beta of the wrong
+  # length stops there only when the weights are fine
+  e <- d; e$weights[] <- 0
+  expect_error(mxp_blp(e, target, rep(0, 4L), beta = c(0.1, 0.2, 0.3)),
+               "Sum of weights must be positive", fixed = TRUE)
+  expect_error(mxp_blp(d, target, rep(0, 4L), beta = c(0.1, 0.2, 0.3)),
+               "incompatible matrix dimensions", fixed = TRUE)
+  expect_error(mxp_shares(e), "Sum of weights must be positive", fixed = TRUE)
+  # Without ASCs the largest code numbers the shares, and an empty design
+  # keeps Armadillo's error
+  n <- mxp_data(94, rep(5L, 6), J = 7L, use_asc = FALSE, codes = 3:7)
+  expect_length(mxp_shares(n), 7L)
+  expect_identical(as.numeric(mxp_shares(n))[1:2], c(0, 0))
+  n$X <- n$X[0, , drop = FALSE]; n$W <- n$W[0, , drop = FALSE]
+  n$alt_idx <- integer(0); n$M <- integer(0); n$weights <- numeric(0)
+  n$eta <- n$eta[, , 0, drop = FALSE]
+  expect_error(mxp_shares(n), "max(): object has no elements", fixed = TRUE)
+  expect_error(mxp_blp(n, numeric(0), numeric(0)),
+               "max(): object has no elements", fixed = TRUE)
+  # The largest code, 2^31 - 1, plus the outside option overflows an int
+  big <- mxp_data(95, rep(3L, 4), J = 5L, use_asc = FALSE, ioo = TRUE)
+  big$alt_idx[2] <- .Machine$integer.max
+  expect_error(mxp_shares(big),
+               "alt_idx references alternative 2147483647, which with the outside option is more alternatives than an int can count.",
+               fixed = TRUE)
 })
