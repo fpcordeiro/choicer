@@ -37,12 +37,13 @@ Converged delta (ASC) vector.
 BLP contraction mapping for mixed logit model
 }
 \details{
-With stored draws (\code{draws = "store"}) whose cube of one block
-per choice situation would exceed 1 GiB, every iteration of the
-contraction regenerates the draws a chunk of choice situations at a time,
-on one thread, at a cost comparable to building the cube once; a message says
-so. A fit with \code{draws = "generate"} forms its draws on the fly, in
-parallel.
+The contraction integrates each choice situation over the same
+draws as \code{predict()} (for a cross-sectional fit, the estimation
+draws; a panel fit's estimation draws are per decision maker), formed
+again at every iteration, in parallel. With stored draws
+(\code{draws = "store"}) they are the points of the cube
+\code{\link{get_halton_normals}} would build, formed without it (with
+more than 128 random coefficients, the cube itself).
 }
 \examples{
 \donttest{

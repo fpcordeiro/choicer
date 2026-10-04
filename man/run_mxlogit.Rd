@@ -184,18 +184,20 @@ behavior, exact reproducibility). It supports at most \eqn{2^{31} - 1}
 points (\eqn{S \times U}). \code{predict()}, \code{logsum()},
 \code{consumer_surplus()}, \code{elasticities()},
 \code{diversion_ratios()}, \code{blp()} and \code{gof()} (hence
-\code{summary()}'s fit statistics) regenerate one block per choice
-situation, so for them the number of choice situations replaces \eqn{U},
-in that limit too (see \code{\link{get_halton_normals}}). When that cube
-would exceed 1 GiB, they regenerate it a chunk of choice situations at a
-time instead of holding it whole. The draws are the same, and so are the
-results: exactly per choice situation, and for sums over choice situations
-(shares, elasticities, diversion ratios) exactly at one thread; at more
-threads such sums vary in their last bits with the threads' order, as they
-always did. \code{blp()} regenerates the chunks at every iteration of its
-contraction, at a cost comparable to building the cube once per
-iteration.
-In the convenience workflow, \code{run_mxlogit()} warns before it builds
+\code{summary()}'s fit statistics) integrate over one block per choice
+situation instead (see \code{\link{get_halton_normals}}). With up to 128
+random coefficients they form each block on the fly, in parallel, from
+the points \code{get_halton_normals(S, N, K_w)} would hold for the
+\eqn{N} choice situations, mapped by R's \code{qnorm()}, so they never
+hold that cube and have no limit on the number of points; with more,
+they build the cube. Their draws, and so their results, are the cube's,
+bit for bit where randtoolbox and choicer are compiled with the same
+floating-point contraction, as on CRAN's platforms (otherwise some of the
+underlying uniforms differ in their last bit, which moves those draws by
+at most a few parts in \eqn{10^9}, in the far tails); sums over choice
+situations are bit for bit at one thread, and at more threads vary in
+their last bits with the threads' order, as they always did. In the
+convenience workflow, \code{run_mxlogit()} warns before it builds
 an estimation cube above 1 GiB: the cube is held while the model is
 fitted, and \code{vcov(type = )}, \code{\link{wesml_vcov}} and
 \code{\link{conditional_tastes}} rebuild it whole. \code{"generate"}
@@ -217,7 +219,10 @@ RNG at call time (so \code{set.seed()} governs reproducibility). Ignored when
 \code{"none"} for plain Halton (identity permutations). The historical value
 \code{"owen"} is accepted with a deprecation warning as an alias for
 \code{"permuted"}; the implementation is not Owen's nested-uniform scramble.
-\code{"none"} reproduces the randtoolbox sequence exactly. Simulation-draw
+\code{"none"} uses the points of the randtoolbox sequence, mapped to
+normals by choicer's own inverse normal CDF, which is within about
+\eqn{10^{-14}} of \code{qnorm()}: its draws agree with store mode's to
+that precision, not bit for bit. Simulation-draw
 sensitivity should be assessed by increasing \code{S} and, for
 \code{"permuted"}, varying \code{seed}. Used only when
 \code{draws = "generate"}.}

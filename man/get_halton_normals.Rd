@@ -29,12 +29,13 @@ never holds a second copy of the sequence. Store mode supports at most
 \eqn{2^{31} - 1} points (\eqn{S \times N}), the largest starting index
 \code{halton(start = )} accepts; \code{draws = "generate"} in
 \code{\link{run_mxlogit}} has no such limit and never materializes the cube.
-Above 1 GiB of draws, \code{predict()}, \code{logsum()},
-\code{consumer_surplus()}, \code{elasticities()},
-\code{diversion_ratios()}, \code{blp()} and \code{gof()} on a store-mode
-fit do not build their cube with this function: they draw the same points
-from \code{halton(start = )} a chunk of choice situations at a time. The
-limit of \eqn{2^{31} - 1} points applies to them too.
+\code{predict()}, \code{logsum()}, \code{consumer_surplus()},
+\code{elasticities()}, \code{diversion_ratios()}, \code{blp()} and
+\code{gof()} on a store-mode fit with up to 128 random coefficients do not
+build their cube (one block per choice situation) with this function: they
+form the same draws on the fly, from the same uniforms mapped by R's
+\code{qnorm()} (bit for bit where randtoolbox and choicer are compiled
+with the same floating-point contraction, as on CRAN's platforms).
 }
 \examples{
 draws <- get_halton_normals(S = 50, N = 10, K_w = 2)

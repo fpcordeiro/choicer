@@ -198,9 +198,9 @@
   more threads such sums vary in their last bits with the order in which the
   threads take the situations, as before. With other BLAS libraries, results
   may differ from earlier versions' in their last bits.
-  - Measured on the kernels themselves, given the draws (stored draws built
-    beforehand; below 1 GiB, as here, `predict()` and the other methods also
-    build them whole, as before), on a synthetic school-census design of 9.8
+  - Measured on the kernels themselves, given the draws (stored draws as a
+    cube built beforehand, which the kernels still accept; the methods now
+    form them on the fly, below), on a synthetic school-census design of 9.8
     million rows (245,000 choice situations of 10 to 100 schools, three random
     coefficients, `S = 100`), at one and eleven threads, with draws generated
     on the fly and, in parentheses, stored (medians of three alternated runs).
@@ -239,39 +239,43 @@
   `gof()` (and so the fit statistics of `summary()`) integrate each choice
   situation over its own block of Halton draws, and used to build the blocks
   of all N situations as one `K_w x S x N` cube on every call (for a panel fit
-  too: predictions are unconditional, one block per situation). When that cube
-  would exceed 1 GiB (2^30 bytes, about 1.07 GB), they now regenerate it a
-  chunk of choice situations at a time, into a buffer of at most 1 GiB (or one
-  situation's draws, if larger), instead of holding it whole, and collect R's
-  garbage as they go. The chunks hold the same points of the sequence
-  (`randtoolbox::halton(start = )` reproduces any slice of it bit for bit), so
-  results equal the whole cube's bit for bit: per choice situation at any
-  number of threads, and sums over situations at one thread. Together with the
-  kernel changes above, on the census design at 98 million rows (2.45 million
-  choice situations, whose cube takes 5.9 GB), `predict()` of choice
-  probabilities with stored draws took 31 s instead of 58 s, and its working
-  memory peaked at 3.3 GB (the 1.6 GB of probabilities and mean utilities it
-  returns included) instead of 14.4 GB; on the claims-like panel at 85 million
-  rows (1.5 million choice situations, whose cube takes 3.6 GB), 21 s instead
-  of 27 s and 3.0 GB instead of 12.2 GB (medians of three alternated runs at
-  eleven threads). Store mode's limit of 2^31 - 1 points (`S` times the number
-  of choice situations) still applies to these functions. A panel fit's
-  estimation draws count decision makers instead, so a panel fit can stay
-  within that limit at estimation and still exceed it here, where these
-  functions stop and ask for a refit with `draws = "generate"`.
-- Above 1 GiB of draws, `blp()` regenerates the chunks at every iteration of
-  the contraction, where it used to build the cube once per call. Each
-  iteration now also redraws the cube's points, on one thread while the others
-  wait, so the cost grows with the number of iterations the contraction needs:
-  at eleven threads, each evaluation of the shares (one per iteration, and one
-  before the first) took about 30 s instead of 14-20 s on the census design
-  and about 21 s instead of 7-8 s on the claims-like panel, to which the old
-  code added one construction of the cube per call (about 30-45 s and 15-20 s;
-  slopes between one and seven iterations, two runs each). Its working memory
-  peaked at 2.5 GB instead of 10.6 GB on the census design and at 2.4 GB
-  instead of 9.2 GB on the claims-like panel. `blp()` says so in a message. A
-  fit with `draws = "generate"` holds no cube; it forms each situation's draws
-  on the fly, in parallel, at every iteration.
+  too: predictions are unconditional, one block per situation). They now form
+  each situation's block on the fly, in the thread that simulates the
+  situation, and hold no cube. choicer's own Halton generator, without its
+  digit permutations, computes the points of `randtoolbox::halton()` digit by
+  digit as randtoolbox does, and R's `qnorm()` maps them to normal draws as
+  `get_halton_normals()` does. The draws, and so the results, are the cube's
+  bit for bit where randtoolbox and choicer are compiled with the same
+  floating-point contraction, as on CRAN's platforms: per choice situation at
+  any number of threads, and sums over situations at one thread. Otherwise
+  some of the uniforms differ in their last bit, which moves those draws by at
+  most a few parts in 10^9, in the far tails. Together with the kernel changes
+  above, on the census design at 98 million rows (2.45 million choice
+  situations, whose cube takes 5.9 GB), `predict()` of choice probabilities
+  with stored draws took 9.0 s instead of 76 s, moved 1.6 GB through the heap
+  in 2,431 allocations instead of 151 GB in 24 million, and its working memory
+  peaked at 1.6 GB, the probabilities and mean utilities it returns, instead
+  of 14.4 GB; on the claims-like panel at 85 million rows (1.5 million choice
+  situations, whose cube takes 3.6 GB), 6.4 s instead of 24 s and 1.4 GB
+  instead of 12.2 GB (medians of three alternated runs at eleven threads,
+  under background load). Without the cube these functions no longer stop past
+  store mode's 2^31 - 1 points (`S` times the number of choice situations),
+  which a panel fit could reach here although its estimation draws, one block
+  per decision maker, stayed within them. With more than 128 random
+  coefficients (the generator's table of primes) they build the cube, as
+  before.
+- `blp()` on a store-mode fit used to build the cube once per call and read it
+  at every iteration of the contraction; it now forms the draws on the fly at
+  every iteration, in parallel, as `predict()` does. At eleven threads, each
+  evaluation of the shares (one per iteration, and one before the first) took
+  about 8.5 s on the census design and 6.2 s on the claims-like panel, against
+  8.3 s and 7.1 s before, when `blp()` also spent about 60 s and 20 s building
+  the cube once per call (slopes between one and seven iterations, single runs
+  under background load); its working memory peaked at 0.8 GB instead of
+  12.1 GB, and at 0.7 GB instead of 10.9 GB. The exported
+  `mxl_blp_contraction()` accepts `gen_scramble = 2` for these store-mode
+  points formed on the fly, and now rejects other codes than 0, 1 and 2,
+  which it treated as 0.
 - `run_mxlogit(draws = "store")` (the convenience workflow) now warns, before
   it builds its draws, when they would take more than 1 GiB (`8 * K_w * S * U`
   bytes, for the U decision makers of a panel fit or the choice situations of
