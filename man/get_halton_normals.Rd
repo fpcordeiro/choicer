@@ -29,6 +29,10 @@ never holds a second copy of the sequence. Store mode supports at most
 \eqn{2^{31} - 1} points (\eqn{S \times N}), the largest starting index
 \code{halton(start = )} accepts; \code{draws = "generate"} in
 \code{\link{run_mxlogit}} has no such limit and never materializes the cube.
+\code{predict()}, \code{logsum()}, \code{consumer_surplus()},
+\code{elasticities()}, \code{diversion_ratios()}, \code{blp()} and
+\code{gof()} on a store-mode fit read the same points a chunk of choice
+situations at a time when their cube would exceed 1 GiB.
 }
 \examples{
 draws <- get_halton_normals(S = 50, N = 10, K_w = 2)

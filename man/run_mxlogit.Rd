@@ -185,7 +185,12 @@ points (\eqn{S \times U}); \code{predict()}, \code{elasticities()},
 \code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
 statistics) regenerate one block per choice situation, so for them the
 number of choice situations replaces \eqn{U} (see
-\code{\link{get_halton_normals}}). \code{"generate"}
+\code{\link{get_halton_normals}}); when that cube would exceed 1 GiB, they
+regenerate it a chunk of choice situations at a time instead of holding it
+whole (\code{blp()} at every iteration of its contraction), with the same
+draws, and so the same results (sums over choice situations at one thread;
+at more, they vary in their last bits with the threads' order, as they
+always did). \code{"generate"}
 computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 cube; recommended for memory-constrained or large-N settings. With
 \code{scramble = "permuted"}, each base-\eqn{b} digit position in each
