@@ -272,7 +272,7 @@ test_that("store-mode methods give the same results in chunks", {
       {
         expect_identical(mxc_methods(fx$fit, fx$cf), whole)
         expect_message(d2 <- blp(fx$fit, target_shares = target),
-                       "regenerates them, a chunk of situations at a time",
+                       "regenerates them on one thread, a chunk of situations at a time",
                        fixed = TRUE)
         expect_identical(d2, delta)
       },
@@ -353,10 +353,10 @@ test_that("a store-mode fit above the cube budget warns, then fits as before", {
   expect_warning(
     warned <- fit(),
     paste0("draws = \"store\" will hold 18.75 KiB of Halton draws (60 choice ",
-           "situations x 20 draws x 2 random coefficients) for the whole fit, ",
-           "and vcov(type = ), wesml_vcov() and conditional_tastes() rebuild ",
-           "them. draws = \"generate\" forms the draws on the fly and stores ",
-           "none (scramble = \"none\" keeps these Halton points)."),
+           "situations x 20 draws x 2 random coefficients) while the model is ",
+           "fitted, and vcov(type = ), wesml_vcov() and conditional_tastes() ",
+           "rebuild them whole. draws = \"generate\" forms the draws on the fly ",
+           "and stores none (with scramble = \"none\", the same Halton points)."),
     fixed = TRUE)
   expect_identical(mxc_strip(warned), mxc_strip(plain))
   # A panel fit's draws are per decision maker

@@ -68,8 +68,8 @@ otherwise. Required for the advanced workflow; auto-generated from
 \code{S} in the convenience workflow. Post-hoc methods
 (\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
 \code{\link{conditional_tastes}}, prediction)
-regenerate Halton draws with \code{\link{get_halton_normals}} from the
-recorded draw count, so build \code{eta_draws} with it for them to
+regenerate the Halton draws \code{\link{get_halton_normals}} builds from
+the recorded draw count, so build \code{eta_draws} with it for them to
 reproduce the estimation draws.}
 
 \item{S}{Integer number of Halton draws per decision maker, or per choice
@@ -181,19 +181,23 @@ each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.}
 (\eqn{8 K_w S U} bytes), one block per likelihood unit (\code{U} decision
 makers with \code{person_col}, choice situations otherwise; existing
 behavior, exact reproducibility). It supports at most \eqn{2^{31} - 1}
-points (\eqn{S \times U}); \code{predict()}, \code{elasticities()},
-\code{diversion_ratios()}, \code{blp()}, \code{logsum()},
-\code{consumer_surplus()} and \code{gof()} (hence \code{summary()}'s fit
-statistics) regenerate one block per choice situation, so for them the
-number of choice situations replaces \eqn{U} (see
-\code{\link{get_halton_normals}}); when that cube would exceed 1 GiB, they
-regenerate it a chunk of choice situations at a time instead of holding it
-whole (\code{blp()} at every iteration of its contraction), with the same
-draws, and so the same results (sums over choice situations at one thread;
-at more, they vary in their last bits with the threads' order, as they
-always did). \code{run_mxlogit()} itself warns, before it builds the
-estimation cube, when that cube would exceed 1 GiB: it is held for the
-whole fit, and \code{vcov(type = )}, \code{\link{wesml_vcov}} and
+points (\eqn{S \times U}). \code{predict()}, \code{logsum()},
+\code{consumer_surplus()}, \code{elasticities()},
+\code{diversion_ratios()}, \code{blp()} and \code{gof()} (hence
+\code{summary()}'s fit statistics) regenerate one block per choice
+situation, so for them the number of choice situations replaces \eqn{U},
+in that limit too (see \code{\link{get_halton_normals}}). When that cube
+would exceed 1 GiB, they regenerate it a chunk of choice situations at a
+time instead of holding it whole. The draws are the same, and so are the
+results: exactly per choice situation, and for sums over choice situations
+(shares, elasticities, diversion ratios) exactly at one thread; at more
+threads such sums vary in their last bits with the threads' order, as they
+always did. \code{blp()} regenerates the chunks at every iteration of its
+contraction, at a cost comparable to building the cube once per
+iteration.
+In the convenience workflow, \code{run_mxlogit()} warns before it builds
+an estimation cube above 1 GiB: the cube is held while the model is
+fitted, and \code{vcov(type = )}, \code{\link{wesml_vcov}} and
 \code{\link{conditional_tastes}} rebuild it whole. \code{"generate"}
 computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)
 cube; recommended for memory-constrained or large-N settings. With

@@ -1611,6 +1611,12 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' @param tol Convergence tolerance (default 1e-8).
 #' @param max_iter Maximum iterations (default 1000).
 #' @param ... Additional arguments (ignored).
+#' @details With stored draws (\code{draws = "store"}) whose cube of one block
+#'   per choice situation would exceed 1 GiB, every iteration of the
+#'   contraction regenerates the draws a chunk of choice situations at a time,
+#'   on one thread, at a cost comparable to building the cube once; a message says
+#'   so. A fit with \code{draws = "generate"} forms its draws on the fly, in
+#'   parallel.
 #' @returns Converged delta (ASC) vector.
 #' @examples
 #' \donttest{
@@ -1640,11 +1646,12 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
   if (!is.null(gp_blp$draw_block)) {
     di <- object$draws_info
     message(sprintf(paste0(
-      "blp(): the stored draws of the %s choice situations take %s, more than ",
-      "the %s a prediction holds at once, so each iteration of the ",
-      "contraction regenerates them, a chunk of situations at a time. A fit ",
-      "with draws = \"generate\" forms its draws on the fly instead ",
-      "(scramble = \"none\" keeps these Halton points)."),
+      "blp(): the Halton draws of the %s choice situations would take %s, ",
+      "more than the %s of draws that post-estimation holds at once, so every ",
+      "iteration of the contraction regenerates them on one thread, a chunk of ",
+      "situations at a time, at a cost comparable to building them once. A ",
+      "fit with draws = \"generate\" forms its draws on the fly, in parallel ",
+      "(with scramble = \"none\", the same Halton points)."),
       format(N, big.mark = ",", scientific = FALSE),
       .format_bytes(8 * as.numeric(di$K_w) * di$S * N),
       .format_bytes(.mxl_cube_budget())))

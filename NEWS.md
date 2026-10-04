@@ -48,7 +48,8 @@
   - Apart from the corrections below, default (cross-sectional) behavior is
     unchanged up to floating-point reassociation (<= 1e-10 relative in the
     estimation kernels, measured on the reference battery of test
-    configurations); prediction kernels are bit-identical.
+    configurations); prediction kernels are bit-identical (see also "Mixed
+    logit — prediction at population scale").
   - New input guards: a non-`NULL` empty `Ti` is an error, and a
     primary-thread memory check now stops when a single decision maker
     stacks so many alternative rows (tens of millions) that its design rows
@@ -160,17 +161,17 @@
   and 50% for the gradient and 51% and 64% for the contraction).
   Estimates, standard errors, predictions and every post-estimation
   quantity are unchanged, bit for bit.
-- The same kernels now treat malformed index vectors, which only a
-  hand-built `input_data` list or a direct call can supply, in a defined
-  way. A missing or negative alternative code is reported as such, where it
-  went through an undefined conversion (and read as 0 on ARM processors),
-  and a missing nest code always as an invalid one; a missing or negative
-  choice is an error, where on ARM, with an outside option, it counted as
-  choosing that option; and an index beyond the integer range becomes `NA`,
-  with R's warning. `blp_contraction()` and `nl_blp_contraction()` given no
-  choice situations and an empty `delta` now stop at their check of the
-  weights, where they read past the empty vector or, with an outside
-  option, failed an Armadillo bounds check.
+- The same kernels now treat malformed index vectors, which only a hand-built
+  `input_data` list or a direct call can supply, in a defined way. A missing
+  or negative alternative code is reported as such, where it went through an
+  undefined conversion (and read as 0 on ARM processors), and a missing nest
+  code always as an invalid one; a missing or negative choice is an error,
+  where on ARM, with an outside option, it counted as choosing that option;
+  and an index beyond the integer range becomes `NA`, with R's warning, and is
+  then treated as a missing one. `blp_contraction()` and
+  `nl_blp_contraction()` given no choice situations and an empty `delta` now
+  stop at their check of the weights, where they read past the empty vector
+  or, with an outside option, failed an Armadillo bounds check.
 
 ## Mixed logit — prediction at population scale
 
@@ -182,83 +183,105 @@
   thread. They used to copy the codes twice on every call and allocate about
   ten objects per choice situation, among them its rows-by-draws matrix of
   random utilities and, for the log-sums, a temporary at every draw; with
-  stored draws, they also gave each situation's draws a matrix header created
-  under a lock shared by all threads. The BLP contraction also forms `X beta`
-  and `W mu` once instead of at every iteration. With the reference BLAS or
-  OpenBLAS, results are unchanged, bit for bit: a choice situation's
-  predictions and log-sum at any number of threads, and sums over situations
-  (shares, elasticities, diversion ratios, the contraction's shares) at one
-  thread; at more, such sums vary in their last bits with the order in which
-  the threads take the situations, as before. The working arrays, among them
+  stored draws, the threads also took turns at a lock shared by all of them
+  for every situation's draws. The BLP contraction also forms `X beta` and
+  `W mu` once instead of at every iteration. The working arrays, among them
   the alternative-by-alternative accumulators of elasticities and diversion
   ratios, are allocated before the parallel loop, so running out of memory now
-  stops with an R error that says how much each thread needs, instead of
-  possibly aborting R from inside the loop.
-  - On a synthetic school-census design of 9.8 million rows (245,000 choice
-    situations of 10 to 100 schools, three random coefficients, `S = 100`), a
-    prediction of choice probabilities moved 0.16 GB through the heap in 51
-    allocations instead of 11.8 GB in 2.2 million, and took 16% less time at
-    one thread and 20% less at eleven (23% and 39% with stored draws); the
-    log-sums moved 0.08 GB in 19 allocations instead of 18.8 GB in 22 million,
-    and took 27% and 26% less time (65% and 90% with stored draws); shares
-    took 14% and 16% less time (20% and 36%) and moved 0.08 GB in 49
-    allocations instead of 11.4 GB in 2.0 million; and five iterations of the
-    BLP contraction took 14% and 17% less (17% and 29%) and moved 0.08 GB
-    instead of 67.5 GB (medians of three alternated runs). On a claims-like
-    panel of similar size the gains were 14-27% for the probabilities, 24-44%
-    for the log-sums and 12-23% for the shares and the contraction.
+  stops with an R error that says how much each thread needs and suggests
+  fewer threads, instead of possibly aborting R from inside the loop. Results
+  are unchanged, bit for bit, with a BLAS whose results do not depend on where
+  its operands sit in memory, such as the reference BLAS or OpenBLAS. That
+  holds for each choice situation's probabilities, mean utilities and log-sum
+  at any number of threads, and for sums over situations (shares,
+  elasticities, diversion ratios, and so BLP inversions) at one thread; at
+  more threads such sums vary in their last bits with the order in which the
+  threads take the situations, as before. With other BLAS libraries, results
+  may differ from earlier versions' in their last bits.
+  - Measured on the kernels themselves, given the draws (stored draws built
+    beforehand; below 1 GiB, as here, `predict()` and the other methods also
+    build them whole, as before), on a synthetic school-census design of 9.8
+    million rows (245,000 choice situations of 10 to 100 schools, three random
+    coefficients, `S = 100`), at one and eleven threads, with draws generated
+    on the fly and, in parentheses, stored (medians of three alternated runs).
+    Probabilities took 16% and 20% less time (23% and 39%) and moved 0.16 GB
+    through the heap in 51 allocations instead of 11.8 GB in 2.2 million.
+    Log-sums took 27% and 26% less time (65% and 90%) and moved 0.08 GB in 19
+    allocations instead of 18.8 GB in 22 million. Shares took 14% and 16% less
+    time (20% and 36%) and moved 0.08 GB in 49 allocations instead of 11.4 GB
+    in 2.0 million. Five iterations of the BLP contraction took 14% and 17%
+    less time (17% and 29%) and moved 0.08 GB instead of 67.5 GB. On a
+    claims-like panel of similar size, the same kernels took 14-27% less time
+    for the probabilities, 24-44% less for the log-sums and 12-23% less for
+    the shares and the contraction.
   - Elasticities and diversion ratios spend most of their time on the per-draw
-    products of probabilities, which did not change. On the census design at a
-    tenth of that size (0.98 million rows, 24,560 choice situations),
-    diversion ratios took 13-18% less time and elasticities 4-11% less, at one
-    and eleven threads, with stored and generated draws (medians of three
-    alternated runs); on the claims-like panel at 1.06 million rows, diversion
-    ratios took 10-25% less and elasticities between 4% less and 0.3% more
-    (four runs). Both moved 0.02-0.23 GB through the heap at one thread
-    (0.04-0.77 GB at eleven, mostly the threads' accumulators, which the old
-    code allocated too) in 28 to 501 allocations, instead of 1.9-2.4 GB
-    in 190,000 to 290,000.
-- The same kernels now treat malformed alternative codes, which only a
-  direct call can supply, in a defined way: a missing or negative code is
-  reported as such, where it went through an undefined conversion (read as
-  0 on ARM processors, as too large on x86-64), and a code beyond the
-  integer range becomes `NA`, with R's warning. With draws generated on the
-  fly, an alternative-level `W` with fewer rows than the largest
-  alternative code is now reported as with stored draws, where it stopped
-  at an Armadillo bounds error.
+    products of probabilities, which did not change. Measured the same way on
+    the census design at a tenth of that size (0.98 million rows, 24,560
+    choice situations), diversion ratios took 13-18% less time and
+    elasticities 4-11% less, at one and eleven threads, with stored and
+    generated draws (medians of three alternated runs); on the claims-like
+    panel at 1.06 million rows, diversion ratios took 10-25% less and
+    elasticities between 4% less and 0.3% more (medians of four alternated
+    runs). Both moved 0.02-0.23 GB through the heap at one thread (0.04-0.77
+    GB at eleven, mostly the threads' accumulators, which the old code
+    allocated too) in 28 to 501 allocations, instead of 1.9-2.4 GB in 190,000
+    to 290,000.
+- The same kernels now treat malformed alternative codes, which only a direct
+  call can supply, in a defined way: a missing or negative code is reported as
+  such, where it went through an undefined conversion (read as 0 on ARM
+  processors, rejected as too large on x86-64), and a code beyond the integer
+  range becomes `NA`, with R's warning, and is then treated as a missing one.
+  With draws generated on the fly, an alternative-level `W` with fewer rows
+  than the largest alternative code is now reported as with stored draws,
+  where it stopped at an Armadillo bounds error.
 - With stored draws (`draws = "store"`, the default), `predict()`, `logsum()`,
-  `consumer_surplus()`, `elasticities()`, `diversion_ratios()`, `blp()`,
-  `gof()` and the fit statistics of `summary()` integrate each choice
+  `consumer_surplus()`, `elasticities()`, `diversion_ratios()`, `blp()` and
+  `gof()` (and so the fit statistics of `summary()`) integrate each choice
   situation over its own block of Halton draws, and used to build the blocks
-  of all N situations as one K_w x S x N cube on every call (for a panel fit
+  of all N situations as one `K_w x S x N` cube on every call (for a panel fit
   too: predictions are unconditional, one block per situation). When that cube
-  would exceed 1 GiB, they now regenerate it a chunk of choice situations at a
-  time, into a buffer of at most 1 GiB (or one situation's draws, if larger),
-  instead of holding it whole, and collect R's garbage as they go. The chunks
-  hold the same points of the sequence (`randtoolbox::halton(start = )`
-  reproduces any slice of it bit for bit), so results are those of the whole
-  cube, bit for bit, as above. On the census design at 98 million rows (2.45
-  million choice situations, whose cube takes 5.9 GB), a store-mode prediction
-  of choice probabilities took 31 s instead of 58 s, and its working memory
-  peaked at 3.3 GB (the 1.6 GB of probabilities it returns included) instead
-  of 14.4 GB; on the claims-like panel at 85 million rows (1.5 million choice
-  situations, whose cube takes 3.6 GB), 21 s instead of 27 s and 3.0 GB
-  instead of 12.2 GB (medians of three alternated runs at eleven threads).
-  `blp()`, which used to build the cube once per call, now regenerates its
-  chunks at every iteration of the contraction, which costs about one
-  construction of the cube per iteration (the regeneration runs on one
-  thread): at eleven threads, three iterations took 124 s instead of 113 s on
-  the census design and 84 s instead of 47 s on the claims-like panel, and
-  peaked at 2.5 GB instead of 10.6 GB and at 2.4 GB instead of 9.2 GB,
-  respectively. It says so in a message; a fit with `draws = "generate"` holds
-  no cube at all.
+  would exceed 1 GiB (2^30 bytes, about 1.07 GB), they now regenerate it a
+  chunk of choice situations at a time, into a buffer of at most 1 GiB (or one
+  situation's draws, if larger), instead of holding it whole, and collect R's
+  garbage as they go. The chunks hold the same points of the sequence
+  (`randtoolbox::halton(start = )` reproduces any slice of it bit for bit), so
+  results equal the whole cube's bit for bit: per choice situation at any
+  number of threads, and sums over situations at one thread. Together with the
+  kernel changes above, on the census design at 98 million rows (2.45 million
+  choice situations, whose cube takes 5.9 GB), `predict()` of choice
+  probabilities with stored draws took 31 s instead of 58 s, and its working
+  memory peaked at 3.3 GB (the 1.6 GB of probabilities and mean utilities it
+  returns included) instead of 14.4 GB; on the claims-like panel at 85 million
+  rows (1.5 million choice situations, whose cube takes 3.6 GB), 21 s instead
+  of 27 s and 3.0 GB instead of 12.2 GB (medians of three alternated runs at
+  eleven threads). Store mode's limit of 2^31 - 1 points (`S` times the number
+  of choice situations) still applies to these functions. A panel fit's
+  estimation draws count decision makers instead, so a panel fit can stay
+  within that limit at estimation and still exceed it here, where these
+  functions stop and ask for a refit with `draws = "generate"`.
+- Above 1 GiB of draws, `blp()` regenerates the chunks at every iteration of
+  the contraction, where it used to build the cube once per call. Each
+  iteration now also redraws the cube's points, on one thread while the others
+  wait, so the cost grows with the number of iterations the contraction needs:
+  at eleven threads, each evaluation of the shares (one per iteration, and one
+  before the first) took about 30 s instead of 14-20 s on the census design
+  and about 21 s instead of 7-8 s on the claims-like panel, to which the old
+  code added one construction of the cube per call (about 30-45 s and 15-20 s;
+  slopes between one and seven iterations, two runs each). Its working memory
+  peaked at 2.5 GB instead of 10.6 GB on the census design and at 2.4 GB
+  instead of 9.2 GB on the claims-like panel. `blp()` says so in a message. A
+  fit with `draws = "generate"` holds no cube; it forms each situation's draws
+  on the fly, in parallel, at every iteration.
 - `run_mxlogit(draws = "store")` (the convenience workflow) now warns, before
-  it builds the draws, when they would take more than 1 GiB (K_w x S x U
-  values, for the U decision makers of a panel fit or the choice situations of
-  a cross-section): the cube is held for the whole fit, and `vcov(type = )`,
-  `wesml_vcov()` and `conditional_tastes()` rebuild it whole.
-  `draws = "generate"` stores none; with `scramble = "none"` it uses the same
-  Halton points. The fit itself is unchanged.
+  it builds its draws, when they would take more than 1 GiB (`8 * K_w * S * U`
+  bytes, for the U decision makers of a panel fit or the choice situations of
+  a cross-section): the cube is held while the model is fitted, and
+  `vcov(type = )`, `wesml_vcov()` and `conditional_tastes()` rebuild it whole.
+  `draws = "generate"` stores no draws; with `scramble = "none"` it uses the
+  same Halton points, so its likelihood is store mode's up to rounding error
+  and its estimates agree to the optimizer's tolerance. The warning does not
+  change the fit; under `options(warn = 2)`, which turns warnings into errors,
+  such fits now stop before estimating.
 
 ## Data preparation at population scale
 
