@@ -85,6 +85,12 @@ Finds the ASC (delta) parameters such that predicted market shares
 match target shares, using the contraction mapping of Berry, Levinsohn,
 and Pakes (1995).
 }
+\details{
+With \code{gen_seed >= 0} the draws are formed again at every
+evaluation of the shares. \code{\link{blp}()} on a fitted model runs the
+same contraction but keeps them across iterations within its
+\code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}).
+}
 \examples{
 \donttest{
 library(data.table)

@@ -1210,6 +1210,10 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #'   randtoolbox and choicer are compiled with the same floating-point
 #'   contraction). Other values are an error.
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
+#' @details With \code{gen_seed >= 0} the draws are formed again at every
+#'   evaluation of the shares. \code{\link{blp}()} on a fitted model runs the
+#'   same contraction but keeps them across iterations within its
+#'   \code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}).
 #' @returns vector with converged delta (ASC) values
 #' @examples
 #' \donttest{
@@ -1233,6 +1237,24 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' @export
 mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
     .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S)
+}
+
+#' BLP contraction for blp(): mxl_blp_contraction(), keeping the draws
+#'
+#' The contraction of mxl_blp_contraction(), which, when the draws are formed
+#' on the fly (gen_seed >= 0) and all situations' Gamma = L eta together take
+#' at most cache_bytes bytes (8 K_w S N), keeps them from the first
+#' evaluation of the shares on, instead of forming them at every evaluation.
+#' The result is the same.
+#'
+#' @inheritParams mxl_blp_contraction
+#' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
+#' @return List: delta (as mxl_blp_contraction() returns it); kept, whether
+#'   the cache was allocated; passes, the evaluations of the shares; and
+#'   reads, the situations those evaluations read from the cache.
+#' @noRd
+mxl_blp_contraction_cached <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S, cache_bytes) {
+    .Call(`_choicer_mxl_blp_contraction_cached`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S, cache_bytes)
 }
 
 #' Compute aggregate elasticities for mixed logit model
