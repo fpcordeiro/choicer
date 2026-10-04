@@ -94,11 +94,3 @@ void set_num_threads(int n_threads) {
   Rcpp::warning("This installation was not compiled with OpenMP support.");
 #endif
 }
-
-Rcpp::IntegerVector compute_prefix_sum(const Rcpp::IntegerVector& M) {
-  int N = M.size();
-  Rcpp::IntegerVector S(N + 1);
-  S[0] = 0;
-  std::partial_sum(M.begin(), M.end(), S.begin() + 1);
-  return S;
-}

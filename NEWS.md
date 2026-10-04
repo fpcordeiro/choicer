@@ -175,30 +175,49 @@
 ## Mixed logit — prediction at population scale
 
 - The mixed logit kernels behind `predict()` (probabilities and shares),
-  `logsum()`, `blp()` and the exported `mxl_blp_contraction()` (and so
-  `consumer_surplus()`, `gof()` and the fit statistics of `summary()`) now
-  read the stacked design's alternative codes in place and simulate each
-  choice situation in buffers allocated once per thread. They used to copy
-  the codes twice on every call and allocate about ten objects per choice
-  situation, among them its rows-by-draws matrix of random utilities and,
-  for the log-sums, a temporary at every draw; with stored draws, they also
-  gave each situation's draws a matrix header created under a lock shared
-  by all threads. The BLP contraction also forms `X beta` and `W mu` once
-  instead of at every iteration. On a synthetic school-census design of 9.8
-  million rows (245,000 choice situations of 10 to 100 schools, three
-  random coefficients, `S = 100`), a prediction of choice probabilities
-  moved 0.16 GB through the heap in 51 allocations instead of 11.8 GB in
-  2.2 million, and took 16% less time at one thread and 20% less at eleven
-  (23% and 39% with stored draws); the log-sums moved 0.08 GB in 19
-  allocations instead of 18.8 GB in 22 million, and took 27% and 26% less
-  time (65% and 90% with stored draws); shares took 14% and 16% less time
-  (20% and 36%) and moved 0.08 GB in 49 allocations instead of 11.4 GB in
-  2.0 million; and five iterations of the BLP contraction took 14% and 17%
-  less (17% and 29%) and moved 0.08 GB instead of 67.5 GB (medians of three
-  alternated runs). On a claims-like panel of similar size the gains were
-  14-27% for the probabilities, 24-44% for the log-sums and 12-23% for the
-  shares and the contraction. Predictions, log-sums, shares and BLP
-  inversions are unchanged, bit for bit.
+  `logsum()`, `elasticities()`, `diversion_ratios()`, `blp()` and the exported
+  `mxl_blp_contraction()` (and so `consumer_surplus()`, `gof()` and the fit
+  statistics of `summary()`) now read the stacked design's alternative codes
+  in place and simulate each choice situation in buffers allocated once per
+  thread. They used to copy the codes twice on every call and allocate about
+  ten objects per choice situation, among them its rows-by-draws matrix of
+  random utilities and, for the log-sums, a temporary at every draw; with
+  stored draws, they also gave each situation's draws a matrix header created
+  under a lock shared by all threads. The BLP contraction also forms `X beta`
+  and `W mu` once instead of at every iteration. With the reference BLAS or
+  OpenBLAS, results are unchanged, bit for bit: a choice situation's
+  predictions and log-sum at any number of threads, and sums over situations
+  (shares, elasticities, diversion ratios, the contraction's shares) at one
+  thread; at more, such sums vary in their last bits with the order in which
+  the threads take the situations, as before. The working arrays, among them
+  the alternative-by-alternative accumulators of elasticities and diversion
+  ratios, are allocated before the parallel loop, so running out of memory now
+  stops with an R error that says how much each thread needs, instead of
+  possibly aborting R from inside the loop.
+  - On a synthetic school-census design of 9.8 million rows (245,000 choice
+    situations of 10 to 100 schools, three random coefficients, `S = 100`), a
+    prediction of choice probabilities moved 0.16 GB through the heap in 51
+    allocations instead of 11.8 GB in 2.2 million, and took 16% less time at
+    one thread and 20% less at eleven (23% and 39% with stored draws); the
+    log-sums moved 0.08 GB in 19 allocations instead of 18.8 GB in 22 million,
+    and took 27% and 26% less time (65% and 90% with stored draws); shares
+    took 14% and 16% less time (20% and 36%) and moved 0.08 GB in 49
+    allocations instead of 11.4 GB in 2.0 million; and five iterations of the
+    BLP contraction took 14% and 17% less (17% and 29%) and moved 0.08 GB
+    instead of 67.5 GB (medians of three alternated runs). On a claims-like
+    panel of similar size the gains were 14-27% for the probabilities, 24-44%
+    for the log-sums and 12-23% for the shares and the contraction.
+  - Elasticities and diversion ratios spend most of their time on the per-draw
+    products of probabilities, which did not change. On the census design at a
+    tenth of that size (0.98 million rows, 24,560 choice situations),
+    diversion ratios took 13-18% less time and elasticities 4-11% less, at one
+    and eleven threads, with stored and generated draws (medians of three
+    alternated runs); on the claims-like panel at 1.06 million rows, diversion
+    ratios took 10-25% less and elasticities between 4% less and 0.3% more
+    (four runs). Both moved 0.02-0.23 GB through the heap at one thread
+    (0.04-0.77 GB at eleven, mostly the threads' accumulators, which the old
+    code allocated too) in 28 to 501 allocations, instead of 1.9-2.4 GB
+    in 190,000 to 290,000.
 - The same kernels now treat malformed alternative codes, which only a
   direct call can supply, in a defined way: a missing or negative code is
   reported as such, where it went through an undefined conversion (read as
@@ -662,10 +681,7 @@ unless it says otherwise.
   score matrix behind `vcov(type = "robust")`, `vcov(type = "cluster")` and
   `wesml_vcov()` or the output of `conditional_tastes()`, are allocated
   where Armadillo stopped with "requested size is too large". Below 2^32
-  values, results are unchanged, bit for bit. The mixed logit functions for
-  elasticities and diversion ratios, which still copy their index vectors,
-  now use 8 more bytes per row of the design for those copies (and, with
-  stored draws, 16 more per choice situation).
+  values, results are unchanged, bit for bit.
 
 # choicer 0.2.1
 

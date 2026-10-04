@@ -1082,10 +1082,11 @@ The implementation parallelizes over individuals using OpenMP:
 
 ### 5.5 Data Layout
 
-- $X$ has $\sum_iM_i$ rows and is sliced by prefix sums into situation blocks.
+- $X$ has $\sum_iM_i$ rows; situation $i$ occupies rows
+  $\sum_{i'<i}M_{i'}+1,\ldots,\sum_{i'\le i}M_{i'}$ (64-bit offsets in the kernels).
 - $W$ may be row-aligned with $X$ or have one row per global inside alternative; the
-  internal `make_W_i()` either slices the situation block or gathers rows by the global
-  1-based `alt_idx`. The convenience R workflow constructs the row-aligned form.
+  kernels either read the situation's block of rows or gather rows by the global 1-based
+  `alt_idx`. The convenience R workflow constructs the row-aligned form.
 - `choice_idx` is a 1-based local row position within each situation block, or 0 for an
   implicit outside choice. `alt_idx` is instead the global alternative ID used to gather
   ASCs and alternative-level $W$ rows.

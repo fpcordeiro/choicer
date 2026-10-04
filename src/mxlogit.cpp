@@ -113,11 +113,10 @@ struct MxlLayout : ChoiceLayout {
   }
 };
 
-// Build and validate the layout, with the messages of mxl_unit_offsets() and
-// validate_choice_data(), in that order, followed by the choices' check; the
-// delta, draw and W checks follow in MxlUnitData, in validate_mxl_inputs()'s
-// order. Situations are sorted by decision maker; Ti = NULL makes every
-// situation its own unit (the cross-section).
+// Build and validate the layout: the units (Ti), the situations and the
+// alternative codes (ChoiceLayout's checks), then the choices; the delta,
+// draw and W checks follow in MxlUnitData. Situations are sorted by decision
+// maker; Ti = NULL makes every situation its own unit (the cross-section).
 // The Ti checks mirror hmnl_gibbs (src/hmnlogit.cpp): at least one
 // respondent, every Ti positive, and sum(Ti) equal to the number of choice
 // situations.
@@ -1550,11 +1549,14 @@ Rcpp::List mxl_conditional_tastes_parallel(
 //   * the draw loops use stable_softmax_n() and max_shifted_lse_n()
 //     (Armadillo's operations in Armadillo's order) and element-wise sums;
 //   * every statement that adds a product to an accumulator is kept as it
-//     was, an Armadillo operator() whose bounds check sits between the
-//     multiplication and the addition, so each compiler decides to fuse them
-//     into one multiply-add exactly as it did (GCC does not fuse across the
-//     check, clang fuses the statement); written with [], .at() or a raw
-//     pointer, such a statement changes results under GCC with FMA.
+//     was, its Armadillo operator() calls (and their bounds checks)
+//     included, so each compiler fuses the same statements into multiply-adds
+//     as before: clang contracts each such statement as it parses it, and
+//     GCC decides after optimizing, from the code around the statement
+//     (g++-16 fuses the same statements here as in the code this replaced,
+//     at -O2 and -O3, with and without OpenMP). Written with [], .at() or a
+//     raw pointer, such a statement can fuse where it did not, which changes
+//     results under GCC with FMA.
 // ============================================================================
 
 // The team of a prediction kernel's parallel regions, and so the number of
@@ -1662,11 +1664,12 @@ inline void mxl_pred_check_generate(const int gen_S, const int K_w) {
   }
 }
 
-// The layout of a prediction kernel, with the messages of
-// validate_mxl_inputs() and in its order: the situations, the alternative
-// codes and the ASCs' coverage of them (choice_layout_build()), then in store
-// mode the cube's dimensions, then W's rows. Generate mode checks W's rows
-// too (it used to stop at an Armadillo bounds error).
+// The layout of a prediction kernel and its checks, in the order of the code
+// this replaced: the situations, the alternative codes and the ASCs' coverage
+// of them (choice_layout_build(), which names NA and negative codes, where
+// the old cast to an unsigned index reported an arbitrary value), then in
+// store mode the cube's dimensions, then W's rows. Generate mode checks W's
+// rows too (it used to stop at an Armadillo bounds error).
 inline void mxl_pred_layout(MxlPredData& pd, const Rcpp::IntegerVector& alt_idx,
                             const Rcpp::IntegerVector& M,
                             const arma::cube& eta_draws, const bool store,
@@ -1720,9 +1723,9 @@ inline void mxl_pred_setup(MxlPredData& pd, const arma::vec& mu_final,
 
 // The base utilities of every row into `base` (n rows; it may view a
 // kernel's output): X beta, then += W mu_final for a row-aligned W, the
-// expressions compute_base_util_mxl() formed before its ASCs. An
+// expressions the prediction kernels have always formed before the ASCs. An
 // alternative-level W's W mu_final goes to W_mu instead; mxl_pred_load() adds
-// it and then the ASCs row by row, as that function did.
+// it and then the ASCs row by row, in the order they always were.
 inline void mxl_pred_base(MxlPredData& pd, arma::vec& base,
                           const arma::vec& beta) {
   base = pd.X * beta;
@@ -1740,6 +1743,7 @@ inline void mxl_pred_base(MxlPredData& pd, arma::vec& base,
 // per-situation arrays; tid is the thread that uses them.
 struct MxlPredScratch {
   std::unique_ptr<double[]> eta, gamma, W_t, WGamma, bu, v, p, aux;
+  std::unique_ptr<int[]> map;  // local-to-global alternatives (m + 1)
   int tid = 0;
 
   MxlPredScratch(const MxlPredData& pd, const std::size_t n_aux, const int tid_)
@@ -1754,6 +1758,7 @@ struct MxlPredScratch {
     v = mxl_buffer(m + 1);
     p = mxl_buffer(m + 1);
     aux = mxl_buffer(n_aux);
+    map.reset(new int[m + 1 + 32]);  // padded as mxl_buffer()
   }
 };
 
@@ -1771,7 +1776,8 @@ inline std::vector<MxlPredScratch> mxl_pred_scratch(const MxlPredData& pd,
     std::vector<MxlPredScratch>().swap(sc);  // release before reporting
     const double K_w = pd.K_w, S = pd.S, m = static_cast<double>(pd.lay.max_m);
     const double bytes = sizeof(double) * (2.0 * K_w * S + m * (K_w + S + 3.0) +
-                                           static_cast<double>(n_aux));
+                                           static_cast<double>(n_aux)) +
+                         sizeof(int) * m;
     if (n_threads > 1) {
       Rcpp::stop("Not enough memory for the prediction's working arrays: "
                  "%.2f GB per thread for %d threads (the largest choice "
@@ -1957,6 +1963,23 @@ inline arma::vec mxl_pred_shares(MxlPredData& pd, const arma::vec& weights,
     global_shares += arma::vec(a.get(), num_alts, false, true);
   }
   return global_shares / weight_sum;
+}
+
+// The values x_k of the perturbed variable over situation t's choice set, in
+// the slots of its probabilities (the outside option's, 0, first): column
+// var_idx of its rows of W (random coefficient) or of X (fixed).
+inline void mxl_pred_x_k(const MxlPredData& pd, const mxl_off t,
+                         const MxlPredScratch& sc, const int m_i,
+                         const int var_idx, const bool is_random_coef,
+                         arma::vec& x_k_i) {
+  const int o = pd.include_outside_option ? 1 : 0;
+  const mxl_off r0 = pd.lay.row_off[t];
+  const arma::mat W_t(sc.W_t.get(), m_i, pd.K_w, false, true);
+  x_k_i.zeros();
+  for (int a = 0; a < m_i; ++a) {
+    x_k_i.at(o + a) = is_random_coef ? W_t.at(a, var_idx)
+                                     : pd.X.at(r0 + a, var_idx);
+  }
 }
 
 // ============================================================================
@@ -2300,7 +2323,7 @@ arma::mat mxl_diversion_ratios_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const arma::mat& W,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const arma::cube& eta_draws,
@@ -2324,10 +2347,8 @@ arma::mat mxl_diversion_ratios_parallel(
   // multiplying later is biased. See docs/mixed_logit_math.md.
 
   // Basic dimensions
-  const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
 
   // Validate the perturbed variable index. Catch the empty-block cases
   // first (K_x=0 with is_random_coef=FALSE, or K_w=0 with is_random_coef=TRUE)
@@ -2354,160 +2375,129 @@ arma::mat mxl_diversion_ratios_parallel(
     }
   }
 
-  // Parse theta into parameter blocks (shared helper; validates theta)
+  // Parse theta into parameter blocks (shared helper; validates theta), then
+  // the inputs and their layout, on the primary thread
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        &weights);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  const arma::vec& beta = par.beta;
-  const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
+  const bool generate = gen_seed >= 0;
+  if (generate) mxl_pred_check_generate(gen_S, K_w);
+  MxlPredData pd(X, W, rc_dist);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  &weights);
+  mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
+                 include_outside_option, eta_draws, gen_seed, gen_scramble,
+                 gen_S);
+  const ChoiceLayout& lay = pd.lay;
+  const double beta_k = is_random_coef ? 0.0 : par.beta(var_idx);
   const arma::vec& mu_final = par.mu_final;
-  const arma::mat& L = par.L;
-  const arma::vec& delta = par.delta;
-
-  // 0-based alt indices
-  arma::uvec alt_idx0 = alt_idx - 1;
 
   // Total alternatives for output matrix
-  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
+  mxl_pred_check_alternatives(J_total);
 
-  // Prefix sums
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+  // Every thread's buffers (aux: a situation's cross-products and
+  // denominators, sized for the largest choice set) and accumulators, then
+  // the base utilities
+  const int n_threads = mxl_pred_threads(lay.N);
+  const std::size_t n_max = static_cast<std::size_t>(lay.max_m) + 1;
+  std::vector<MxlPredScratch> scratch =
+      mxl_pred_scratch(pd, n_threads, n_max * n_max + n_max);
+  const std::size_t J_n = static_cast<std::size_t>(J_total);
+  MxlPredAcc numerators =
+      mxl_pred_accumulators(scratch, J_n * J_n, "diversion-ratio");
+  MxlPredAcc denominators =
+      mxl_pred_accumulators(scratch, J_n, "diversion-ratio");
+  arma::vec base(lay.n_rows, arma::fill::none);
+  mxl_pred_base(pd, base, par.beta);
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util_mxl(X, W, beta, mu_final,
-                                          alt_idx0, use_asc, delta);
+  mxl_pred_zero(numerators, J_n * J_n);
+  mxl_pred_zero(denominators, J_n);
+  const int S = pd.S;
+  const int o = include_outside_option ? 1 : 0;  // outside option: slot 0
 
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_d = (gen_seed >= 0);
-  HaltonGen halton_gen_d;
-  if (use_generate_d) {
-    halton_gen_d = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
+  // The accumulations below are the statements of the code this replaced, on
+  // Armadillo matrices over the threads' buffers (see mxl_pred_shares()).
+  mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
+    arma::mat local_numerator(numerators[sc.tid].get(), J_total, J_total,
+                              false, true);
+    arma::vec local_denominator(denominators[sc.tid].get(), J_total, false,
+                                true);
+    const int m_i = mxl_pred_load(pd, t, sc);
+    const int num_choices = m_i + o;
+    const double w_i = weights[t];
+    const double* bu = sc.bu.get();
+    double* v = sc.v.get();
+    const arma::mat Gamma_final(sc.gamma.get(), pd.K_w, S, false, true);
 
-  // Global accumulators
-  arma::mat global_numerator = arma::zeros(J_total, J_total);
-  arma::vec global_denominator = arma::zeros(J_total);
+    // Map local indices to global alternative indices
+    int* global_j_map = sc.map.get();
+    fill_global_alt_map(global_j_map, lay.alt + lay.row_off[t], m_i,
+                        include_outside_option);
 
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-  {
-    // Thread-local accumulators
-    arma::mat local_numerator = arma::zeros(J_total, J_total);
-    arma::vec local_denominator = arma::zeros(J_total);
-    arma::mat eta_i_buf_d;
-    arma::mat eta_i_store_d;
+    // Per-individual accumulators (sum across draws, divided by S below)
+    arma::mat ind_num(sc.aux.get(), num_choices, num_choices, false, true);
+    arma::vec ind_den(sc.aux.get() + n_max * n_max, num_choices, false, true);
+    ind_num.zeros();
+    ind_den.zeros();
+    arma::vec P_s(sc.p.get(), num_choices, false, true);
 
-#ifdef _OPENMP
-#pragma omp for schedule(dynamic)
-#endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i = M[i];
-      const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx = S_prefix[i];
-      const int end_idx = start_idx + m_i - 1;
-      const double w_i = weights[i];
-      const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
+    // Loop over draws — cross-products MUST be accumulated INSIDE this loop
+    for (int s = 0; s < S; ++s) {
+      // Realized coefficient on the perturbed variable for this (i, s).
+      // For a fixed coef this is the constant beta_k; for a random coef
+      // it is mu_final(var_idx) + Gamma_final(var_idx, s), already
+      // transformed (exp(.) applied upstream when rc_dist == 1).
+      const double beta_k_eff = is_random_coef
+          ? (mu_final(var_idx) + Gamma_final(var_idx, s))
+          : beta_k;
 
-      arma::mat W_i =
-          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
+      const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m_i;
+      if (o) v[0] = 0.0;
+      for (int a = 0; a < m_i; ++a) v[o + a] = bu[a] + wg[a];
+      stable_softmax_n(v, P_s.memptr(), num_choices);
 
-      // Pre-computed base utility for this individual
-      const arma::vec base_util_i = base_util.subvec(start_idx, end_idx);
-
-      // Map local indices to global alternative indices
-      arma::uvec global_j_map =
-          build_global_alt_map(alt_idx0_i, m_i, include_outside_option);
-
-      // Per-individual accumulators (sum across draws, divided by S below)
-      arma::mat ind_num = arma::zeros(num_choices, num_choices);
-      arma::vec ind_den = arma::zeros(num_choices);
-
-      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat* eta_i_ptr_d;
-      if (use_generate_d) {
-        halton_gen_d.fill_eta_i(eta_i_buf_d, i + 1);
-        eta_i_ptr_d = &eta_i_buf_d;
-      } else {
-        eta_i_store_d = eta_draws.slice(i);
-        eta_i_ptr_d = &eta_i_store_d;
-      }
-      const arma::mat& eta_i_d_ref = *eta_i_ptr_d;
-      arma::mat Gamma_final = batch_gamma_draws(L, eta_i_d_ref, rc_dist);
-
-      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
-      const arma::mat WGamma = W_i * Gamma_final;
-
-      arma::vec V_s(num_choices);
-      arma::vec inside_utils(m_i);
-      arma::vec P_s;
-
-      // Loop over draws — cross-products MUST be accumulated INSIDE this loop
-      for (int s = 0; s < Sdraw; ++s) {
-        const auto gamma_i_s_final = Gamma_final.col(s); // still needed for random coef value
-
-        // Realized coefficient on the perturbed variable for this (i, s).
-        // For a fixed coef this is the constant beta_k; for a random coef
-        // it is mu_final(var_idx) + gamma_i_s_final(var_idx), already
-        // transformed (exp(.) applied upstream when rc_dist == 1).
-        const double beta_k_eff = is_random_coef
-            ? (mu_final(var_idx) + gamma_i_s_final(var_idx))
-            : beta_k;
-
-        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
-        inside_utils = base_util_i + WGamma.col(s);
-        fill_choice_utilities(V_s, inside_utils, num_choices,
-                              include_outside_option);
-
-        // Stable softmax
-        stable_softmax(V_s, P_s);
-
-        // Accumulate cross-products weighted by beta_k_eff inside the draw loop
-        for (int j_local = 0; j_local < num_choices; ++j_local) {
-          const double P_j = P_s(j_local);
-          ind_den(j_local) += beta_k_eff * P_j * (1.0 - P_j);
-          for (int k_local = 0; k_local < num_choices; ++k_local) {
-            if (k_local == j_local) continue;
-            ind_num(k_local, j_local) += beta_k_eff * P_j * P_s(k_local);
-          }
-        }
-      }  // end s loop
-
-      // Average over draws
-      const double S_d = static_cast<double>(Sdraw);
-      ind_num /= S_d;
-      ind_den /= S_d;
-
-      // Scatter individual contribution into thread-local globals
+      // Accumulate cross-products weighted by beta_k_eff inside the draw loop
       for (int j_local = 0; j_local < num_choices; ++j_local) {
-        const int global_j = global_j_map(j_local);
-        local_denominator(global_j) += w_i * ind_den(j_local);
+        const double P_j = P_s(j_local);
+        ind_den(j_local) += beta_k_eff * P_j * (1.0 - P_j);
         for (int k_local = 0; k_local < num_choices; ++k_local) {
           if (k_local == j_local) continue;
-          const int global_k = global_j_map(k_local);
-          local_numerator(global_k, global_j) += w_i * ind_num(k_local, j_local);
+          ind_num(k_local, j_local) += beta_k_eff * P_j * P_s(k_local);
         }
       }
-    }  // end i loop
+    }  // end s loop
 
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_numerator += local_numerator;
-      global_denominator += local_denominator;
+    // Average over draws
+    const double S_d = static_cast<double>(S);
+    ind_num /= S_d;
+    ind_den /= S_d;
+
+    // Scatter individual contribution into thread-local globals
+    for (int j_local = 0; j_local < num_choices; ++j_local) {
+      const int global_j = global_j_map[j_local];
+      local_denominator(global_j) += w_i * ind_den(j_local);
+      for (int k_local = 0; k_local < num_choices; ++k_local) {
+        if (k_local == j_local) continue;
+        const int global_k = global_j_map[k_local];
+        local_numerator(global_k, global_j) += w_i * ind_num(k_local, j_local);
+      }
     }
-  }  // end parallel region
+  });
+
+  // Global accumulators: the threads' added up in thread order
+  arma::mat global_numerator = arma::zeros(J_total, J_total);
+  arma::vec global_denominator = arma::zeros(J_total);
+  for (int i = 0; i < n_threads; ++i) {
+    global_numerator += arma::mat(numerators[i].get(), J_total, J_total, false,
+                                  true);
+    global_denominator += arma::vec(denominators[i].get(), J_total, false, true);
+  }
+  // Free the threads' accumulators and buffers before the ratios' matrix
+  MxlPredAcc().swap(numerators);
+  MxlPredAcc().swap(denominators);
+  std::vector<MxlPredScratch>().swap(scratch);
 
   // Final ratios with numerical guard (denominator can be negative when
   // beta_k_eff is negative, e.g. price; check magnitude, not sign)
@@ -2792,8 +2782,8 @@ arma::mat mxl_elasticities_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const arma::mat& W,
-    const arma::uvec& alt_idx,
-    const arma::uvec& choice_idx,
+    const Rcpp::IntegerVector& alt_idx,
+    SEXP choice_idx,  // unused, kept for API consistency; never converted
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const arma::cube& eta_draws,
@@ -2809,10 +2799,8 @@ arma::mat mxl_elasticities_parallel(
   (void)choice_idx;  // unused, kept for API consistency
 
   // Basic dimensions
-  const int N = M.size();
   const int K_x = X.n_cols;
   const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
 
   // Convert 1-based R index to 0-based C++ index
   const int var_idx = elast_var_idx - 1;
@@ -2830,193 +2818,141 @@ arma::mat mxl_elasticities_parallel(
     }
   }
 
-  // Parse theta into parameter blocks (shared helper; validates theta)
+  // Parse theta into parameter blocks (shared helper; validates theta), then
+  // the inputs and their layout, on the primary thread
   const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        &weights);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  const arma::vec& beta = par.beta;
-  const double beta_k = is_random_coef ? 0.0 : beta(var_idx);
+  const bool generate = gen_seed >= 0;
+  if (generate) mxl_pred_check_generate(gen_S, K_w);
+  MxlPredData pd(X, W, rc_dist);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  &weights);
+  mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
+                 include_outside_option, eta_draws, gen_seed, gen_scramble,
+                 gen_S);
+  const ChoiceLayout& lay = pd.lay;
+  const double beta_k = is_random_coef ? 0.0 : par.beta(var_idx);
   const arma::vec& mu_final = par.mu_final;
-  const arma::mat& L = par.L;
-  const arma::vec& delta = par.delta;
-
-  // Convert to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
 
   // Determine total number of alternatives
-  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
+  mxl_pred_check_alternatives(J_total);
 
-  // Compute prefix sums
-  const Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+  // Every thread's buffers (aux: a situation's elasticity terms, mean
+  // probabilities and x_k, sized for the largest choice set) and
+  // accumulators, then the base utilities
+  const int n_threads = mxl_pred_threads(lay.N);
+  const std::size_t n_max = static_cast<std::size_t>(lay.max_m) + 1;
+  std::vector<MxlPredScratch> scratch =
+      mxl_pred_scratch(pd, n_threads, n_max * n_max + 2 * n_max);
+  const std::size_t J_n = static_cast<std::size_t>(J_total);
+  MxlPredAcc elas = mxl_pred_accumulators(scratch, J_n * J_n, "elasticity");
+  MxlPredAcc total_weight = mxl_pred_accumulators(scratch, 1, "elasticity");
+  arma::vec base(lay.n_rows, arma::fill::none);
+  mxl_pred_base(pd, base, par.beta);
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util_e = compute_base_util_mxl(X, W, beta, mu_final,
-                                          alt_idx0, use_asc, delta);
+  mxl_pred_zero(elas, J_n * J_n);
+  mxl_pred_zero(total_weight, 1);
+  const int S = pd.S;
+  const int o = include_outside_option ? 1 : 0;  // outside option: slot 0
 
-  // Construct on-the-fly generator outside parallel region.
-  const bool use_generate_e = (gen_seed >= 0);
-  HaltonGen halton_gen_e;
-  if (use_generate_e) {
-    halton_gen_e = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
+  // The accumulations below are the statements of the code this replaced, on
+  // Armadillo matrices over the threads' buffers (see mxl_pred_shares()).
+  mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
+    arma::mat local_elas_matrix(elas[sc.tid].get(), J_total, J_total, false,
+                                true);
+    const int m_i = mxl_pred_load(pd, t, sc);
+    const int num_choices = m_i + o;
+    const double w_i = weights[t];
+    const double* bu = sc.bu.get();
+    double* v = sc.v.get();
+    const arma::mat Gamma_final(sc.gamma.get(), pd.K_w, S, false, true);
 
-  // Global accumulators
+    // Map local indices to global alternative indices
+    int* global_j_map = sc.map.get();
+    fill_global_alt_map(global_j_map, lay.alt + lay.row_off[t], m_i,
+                        include_outside_option);
+
+    // Get attribute values for the elasticity variable
+    arma::vec x_k_i(sc.aux.get() + n_max * n_max + n_max, num_choices, false,
+                    true);
+    mxl_pred_x_k(pd, t, sc, m_i, var_idx, is_random_coef, x_k_i);
+
+    // Compute P_bar (average probabilities) and accumulate elasticity terms
+    arma::vec P_bar_i(sc.aux.get() + n_max * n_max, num_choices, false, true);
+    arma::mat elas_accum(sc.aux.get(), num_choices, num_choices, false, true);
+    P_bar_i.zeros();
+    elas_accum.zeros();
+    arma::vec P_s(sc.p.get(), num_choices, false, true);
+
+    for (int s = 0; s < S; ++s) {
+      // Get effective coefficient for this draw
+      double beta_k_eff;
+      if (is_random_coef) {
+        beta_k_eff = mu_final(var_idx) + Gamma_final(var_idx, s);
+      } else {
+        beta_k_eff = beta_k;
+      }
+
+      const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m_i;
+      if (o) v[0] = 0.0;
+      for (int a = 0; a < m_i; ++a) v[o + a] = bu[a] + wg[a];
+      stable_softmax_n(v, P_s.memptr(), num_choices);
+
+      P_bar_i += P_s;
+
+      // Accumulate elasticity terms for this draw
+      for (int j_local = 0; j_local < num_choices; ++j_local) {
+        const double P_j = P_s(j_local);
+
+        for (int m_local = 0; m_local < num_choices; ++m_local) {
+          const double P_m = P_s(m_local);
+          const double x_km = x_k_i(m_local);
+
+          double elas_term;
+          if (j_local == m_local) {
+            // Own-elasticity: beta_k * x_k * P_j * (1 - P_j)
+            elas_term = beta_k_eff * x_km * P_j * (1.0 - P_j);
+          } else {
+            // Cross-elasticity: -beta_k * x_km * P_j * P_m
+            elas_term = -beta_k_eff * x_km * P_j * P_m;
+          }
+
+          elas_accum(j_local, m_local) += elas_term;
+        }
+      }
+    }  // end s loop
+
+    P_bar_i /= static_cast<double>(S);
+    elas_accum /= static_cast<double>(S);
+
+    // Compute final elasticities: E = elas_accum / P_bar
+    // and map to global indices
+    for (int j_local = 0; j_local < num_choices; ++j_local) {
+      const int global_j = global_j_map[j_local];
+      const double P_bar_j = P_bar_i(j_local);
+
+      if (P_bar_j > 1e-12) {  // Avoid division by zero
+        for (int m_local = 0; m_local < num_choices; ++m_local) {
+          const int global_m = global_j_map[m_local];
+          double elasticity = elas_accum(j_local, m_local) / P_bar_j;
+          local_elas_matrix(global_j, global_m) += w_i * elasticity;
+        }
+      }
+    }
+
+    total_weight[sc.tid][0] += w_i;
+  });
+
+  // Global accumulators: the threads' added up in thread order
   arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
   double global_total_weight = 0.0;
-
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-  {
-    // Thread-local accumulators
-    arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
-    double local_total_weight = 0.0;
-    arma::mat eta_i_buf_e;
-    arma::mat eta_i_store_e;
-
-#ifdef _OPENMP
-#pragma omp for schedule(dynamic)
-#endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i = M[i];
-      const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx = S_prefix[i];
-      const int end_idx = start_idx + m_i - 1;
-      const double w_i = weights[i];
-      const auto X_i = X.rows(start_idx, end_idx);
-      const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-
-      arma::mat W_i =
-          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
-
-      // Pre-computed base utility for this individual
-      const arma::vec base_util_i = base_util_e.subvec(start_idx, end_idx);
-
-      // Map local indices to global alternative indices
-      arma::uvec global_j_map =
-          build_global_alt_map(alt_idx0_i, m_i, include_outside_option);
-
-      // Get attribute values for the elasticity variable
-      arma::vec x_k_i = arma::zeros(num_choices);
-      if (is_random_coef) {
-        if (include_outside_option) {
-          x_k_i.subvec(1, num_choices - 1) = W_i.col(var_idx);
-        } else {
-          x_k_i = W_i.col(var_idx);
-        }
-      } else {
-        if (include_outside_option) {
-          x_k_i.subvec(1, num_choices - 1) = X_i.col(var_idx);
-        } else {
-          x_k_i = X_i.col(var_idx);
-        }
-      }
-
-      // Compute P_bar (average probabilities) and accumulate elasticity terms
-      arma::vec P_bar_i = arma::zeros(num_choices);
-      arma::mat elas_accum = arma::zeros(num_choices, num_choices);
-
-      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat* eta_i_ptr_e;
-      if (use_generate_e) {
-        halton_gen_e.fill_eta_i(eta_i_buf_e, i + 1);
-        eta_i_ptr_e = &eta_i_buf_e;
-      } else {
-        eta_i_store_e = eta_draws.slice(i);
-        eta_i_ptr_e = &eta_i_store_e;
-      }
-      const arma::mat& eta_i_e_ref = *eta_i_ptr_e;
-      arma::mat Gamma_final = batch_gamma_draws(L, eta_i_e_ref, rc_dist);
-
-      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
-      const arma::mat WGamma = W_i * Gamma_final;
-
-      arma::vec V_s(num_choices);
-      arma::vec inside_utils(m_i);
-      arma::vec P_s;
-
-      for (int s = 0; s < Sdraw; ++s) {
-        const auto gamma_i_s_final = Gamma_final.col(s); // still needed for random coef value
-
-        // Get effective coefficient for this draw
-        double beta_k_eff;
-        if (is_random_coef) {
-          beta_k_eff = mu_final(var_idx) + gamma_i_s_final(var_idx);
-        } else {
-          beta_k_eff = beta_k;
-        }
-
-        // CHANGE #2: use pre-computed WGamma column instead of W_i * gamma_i_s_final
-        inside_utils = base_util_i + WGamma.col(s);
-        fill_choice_utilities(V_s, inside_utils, num_choices,
-                              include_outside_option);
-
-        // Compute probabilities
-        stable_softmax(V_s, P_s);
-
-        P_bar_i += P_s;
-
-        // Accumulate elasticity terms for this draw
-        for (int j_local = 0; j_local < num_choices; ++j_local) {
-          const double P_j = P_s(j_local);
-
-          for (int m_local = 0; m_local < num_choices; ++m_local) {
-            const double P_m = P_s(m_local);
-            const double x_km = x_k_i(m_local);
-
-            double elas_term;
-            if (j_local == m_local) {
-              // Own-elasticity: beta_k * x_k * P_j * (1 - P_j)
-              elas_term = beta_k_eff * x_km * P_j * (1.0 - P_j);
-            } else {
-              // Cross-elasticity: -beta_k * x_km * P_j * P_m
-              elas_term = -beta_k_eff * x_km * P_j * P_m;
-            }
-
-            elas_accum(j_local, m_local) += elas_term;
-          }
-        }
-      }  // end s loop
-
-      P_bar_i /= static_cast<double>(Sdraw);
-      elas_accum /= static_cast<double>(Sdraw);
-
-      // Compute final elasticities: E = elas_accum / P_bar
-      // and map to global indices
-      for (int j_local = 0; j_local < num_choices; ++j_local) {
-        const int global_j = global_j_map(j_local);
-        const double P_bar_j = P_bar_i(j_local);
-
-        if (P_bar_j > 1e-12) {  // Avoid division by zero
-          for (int m_local = 0; m_local < num_choices; ++m_local) {
-            const int global_m = global_j_map(m_local);
-            double elasticity = elas_accum(j_local, m_local) / P_bar_j;
-            local_elas_matrix(global_j, global_m) += w_i * elasticity;
-          }
-        }
-      }
-
-      local_total_weight += w_i;
-    }  // end i loop
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_elas_matrix += local_elas_matrix;
-      global_total_weight += local_total_weight;
-    }
-  }  // end parallel region
+  for (int i = 0; i < n_threads; ++i) {
+    global_elas_matrix += arma::mat(elas[i].get(), J_total, J_total, false, true);
+    global_total_weight += total_weight[i][0];
+  }
 
   // Compute weighted average
   if (global_total_weight > 1e-10) {

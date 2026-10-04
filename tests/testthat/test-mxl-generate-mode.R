@@ -414,9 +414,9 @@ test_that("generate-mode gradient vs numDeriv: corr, rc_mean=TRUE, log-normal", 
 })
 
 # NIT-2: outside-option cells (include_outside_option=TRUE)
-# Exercises validate_choice_data (bypassed path in generate mode), the
-# outside-option utility branch in fill_choice_utilities / stable_softmax,
-# and DiffW assembly under generate mode.
+# Exercises the layout checks in generate mode (validate_choices()), the
+# outside-option utility slot of the softmax, and DiffW assembly under
+# generate mode.
 
 test_that("generate-mode gradient vs numDeriv: uncorr, rc_mean=FALSE, normal, outside_option=TRUE", {
   skip_if_not_installed("numDeriv")
