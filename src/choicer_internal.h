@@ -22,12 +22,9 @@
 //   * theta-block validation (lengths, K > 0, lambda > 0) inside the theta
 //     parsers, so no entry point can parse an inconsistent theta;
 //   * data-shape validation (X/W/alt_idx/M/eta/weights consistency), called
-//     by every exported entry point: in the layout builders (MNL:
+//     by every exported entry point, in the layout builders (MNL:
 //     choice_layout_build below; NL: nl_layout_build; MXL estimation:
-//     mxl_layout_build; MXL predictions, log-sums, shares and BLP:
-//     mxl_pred_layout) and, for the MXL elasticity and diversion kernels,
-//     which still take arma::uvec indices, in the validate_*_inputs
-//     helpers.
+//     mxl_layout_build; MXL prediction: mxl_pred_layout).
 // Every check is O(1) or a single O(rows) integer scan — negligible next to
 // one likelihood evaluation — and turns what would otherwise be an obscure
 // Armadillo bounds error (or silently wrong output) into an actionable
@@ -38,102 +35,7 @@
 arma::mat build_L_mat(const arma::vec& L_params, const int K_w,
                       const bool rc_correlation);
 
-// ----------------------------------------------------------------------------
-// Data-shape validation shared by all exported entry points.
-// `delta` is the *full padded* ASC vector returned by the theta parsers; its
-// coverage of alt_idx is only checked when use_asc. `weights` / `choice_idx`
-// are optional: pass nullptr when the entry point does not take them (or,
-// for choice_idx, does not use them).
-// ----------------------------------------------------------------------------
-inline void validate_choice_data(const arma::mat& X, const arma::uvec& alt_idx,
-                                 const Rcpp::IntegerVector& M,
-                                 const bool use_asc, const arma::vec& delta,
-                                 const arma::vec* weights = nullptr,
-                                 const arma::uvec* choice_idx = nullptr) {
-  const int N = M.size();
-  long long total_rows = 0;
-  for (int i = 0; i < N; ++i) {
-    if (M[i] <= 0) {
-      Rcpp::stop("M must be positive for every individual (M[%d] = %d).",
-                 i + 1, M[i]);
-    }
-    total_rows += M[i];
-  }
-  if (total_rows != static_cast<long long>(X.n_rows)) {
-    Rcpp::stop("X has %d rows but sum(M) is %d.",
-               static_cast<int>(X.n_rows), static_cast<int>(total_rows));
-  }
-  if (alt_idx.n_elem != X.n_rows) {
-    Rcpp::stop("alt_idx length (%d) does not match the number of rows of X (%d).",
-               static_cast<int>(alt_idx.n_elem), static_cast<int>(X.n_rows));
-  }
-  if (weights && static_cast<int>(weights->n_elem) != N) {
-    Rcpp::stop("weights length (%d) does not match N (%d)",
-               weights->n_elem, N);
-  }
-  if (choice_idx && static_cast<int>(choice_idx->n_elem) != N) {
-    Rcpp::stop("choice_idx length (%d) does not match N (%d)",
-               static_cast<int>(choice_idx->n_elem), N);
-  }
-  if (alt_idx.n_elem > 0) {
-    if (alt_idx.min() < 1) {
-      Rcpp::stop("alt_idx must use 1-based alternative indices (found %d).",
-                 static_cast<int>(alt_idx.min()));
-    }
-    // The double-to-unsigned cast that built alt_idx is undefined for NA and
-    // negative values: x86-64 reads NA as 0 and a negative value as 2^32
-    // minus its magnitude under a 32-bit arma::uword, and both as 2^63 or
-    // more under the 64-bit one; ARM reads both as 0, which the check above
-    // reports.
-    const arma::uword a_max = alt_idx.max();
-    constexpr arma::uword int_max = std::numeric_limits<int>::max();
-    if (a_max > int_max) {
-      Rcpp::stop("alt_idx must use 1-based alternative indices below 2^31 "
-                 "(found NA, a negative value or a larger one).");
-    }
-    if (use_asc && delta.n_elem < a_max) {
-      Rcpp::stop("Theta's delta (ASC) block implies %d alternatives but "
-                 "alt_idx references alternative %d.",
-                 static_cast<int>(delta.n_elem), static_cast<int>(a_max));
-    }
-  }
-}
-
-// eta_draws holds one K_w x S draw block per likelihood unit: per choice
-// situation in the cross-section (n_units < 0, the default), per decision
-// maker in a panel (n_units = number of decision makers).
-inline void validate_mxl_inputs(const arma::mat& X, const arma::mat& W,
-                                const arma::uvec& alt_idx,
-                                const Rcpp::IntegerVector& M,
-                                const arma::cube& eta_draws,
-                                const bool use_asc, const arma::vec& delta,
-                                const arma::vec* weights = nullptr,
-                                const arma::uvec* choice_idx = nullptr,
-                                const int n_units = -1) {
-  validate_choice_data(X, alt_idx, M, use_asc, delta, weights, choice_idx);
-  const int N = M.size();
-  const int K_w = W.n_cols;
-  if (n_units < 0 && static_cast<int>(eta_draws.n_slices) != N) {
-    Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
-               eta_draws.n_slices, N);
-  }
-  if (n_units >= 0 && static_cast<int>(eta_draws.n_slices) != n_units) {
-    Rcpp::stop("eta_draws 3rd dimension (%d) does not match the number of "
-               "decision makers (%d)", eta_draws.n_slices, n_units);
-  }
-  if (static_cast<int>(eta_draws.n_rows) != K_w) {
-    Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
-               eta_draws.n_rows, K_w);
-  }
-  if (W.n_rows != X.n_rows && alt_idx.n_elem > 0 &&
-      W.n_rows < alt_idx.max()) {
-    Rcpp::stop("W must be row-aligned with X (%d rows) or contain one row per "
-               "global alternative (at least %d rows); got %d rows.",
-               static_cast<int>(X.n_rows), static_cast<int>(alt_idx.max()),
-               static_cast<int>(W.n_rows));
-  }
-}
-
+// rc_dist has one entry per random coefficient.
 inline void check_rc_dist_length(const arma::uvec& rc_dist, const int K_w) {
   if (static_cast<int>(rc_dist.n_elem) != K_w) {
     Rcpp::stop("rc_dist must be a vector of length K_w (%d)", K_w);
@@ -189,9 +91,8 @@ struct AltCodes0 {
 
 // The situations: row offsets, summed in 64 bits, and the largest choice set;
 // then the design's height and the lengths of alt_idx, weights and
-// choice_idx, with validate_choice_data()'s messages in its order. Pass
-// nullptr for weights or choice_idx where the kernel takes none, or (MNL)
-// where validate_choice_data() was not given them.
+// choice_idx, in that order. Pass nullptr for weights or choice_idx where the
+// kernel takes none or does not check them.
 inline void choice_layout_situations(ChoiceLayout& lay, const arma::mat& X,
                                      const Rcpp::IntegerVector& alt_idx,
                                      const Rcpp::IntegerVector& M,
@@ -276,9 +177,9 @@ inline void validate_choices(const ChoiceLayout& lay,
   }
 }
 
-// The layout of the MNL kernels, with validate_choice_data()'s checks in its
-// order and with its messages: the situations, the alternative codes, and
-// the delta block's coverage of them. choice_idx is only length-checked here
+// The layout of the MNL kernels (and the core of the NL and MXL prediction
+// layouts): the situations, the alternative codes, and the delta block's
+// coverage of them, in that order. choice_idx is only length-checked here
 // and kept for validate_choices(): pass nullptr where the kernel takes no
 // choices or does not check them.
 inline ChoiceLayout choice_layout_build(
@@ -484,9 +385,8 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
 
 // ----------------------------------------------------------------------------
 // Base utility, pre-computed for all stacked rows with single BLAS calls:
-// base_util = X*beta (+ W*mu_final) (+ delta scattered by alternative).
-// The MXL overload handles both W layouts: row-aligned with X
-// (sum(M) x K_w) or one row per global alternative (J x K_w).
+// base_util = X*beta (+ delta scattered by alternative). (The MXL prediction
+// kernels form theirs in mxl_pred_base(), mxlogit.cpp.)
 //
 // The MNL and NL forms read the alternative codes in place: X * beta in a
 // single BLAS call, then each row's ASC added to its base utility, the one
@@ -517,45 +417,12 @@ inline arma::vec compute_base_util(const arma::mat& X, const arma::vec& beta,
   return base_util;
 }
 
-inline arma::vec compute_base_util_mxl(const arma::mat& X, const arma::mat& W,
-                                       const arma::vec& beta,
-                                       const arma::vec& mu_final,
-                                       const arma::uvec& alt_idx0,
-                                       const bool use_asc,
-                                       const arma::vec& delta) {
-  arma::vec base_util = X * beta;
-  if (static_cast<int>(W.n_rows) == static_cast<int>(X.n_rows)) {
-    base_util += W * mu_final;
-  } else {
-    arma::vec W_mu = W * mu_final;
-    base_util += W_mu.elem(alt_idx0);
-  }
-  if (use_asc) base_util += delta.elem(alt_idx0);
-  return base_util;
-}
-
-// ----------------------------------------------------------------------------
-// Per-individual slice of the random-coefficient design matrix W:
-// row-aligned with X -> contiguous row block; alt-level W -> gather rows by
-// this individual's alternative indices. Templated on the index type so both
-// zero-copy subviews and materialized uvec indices forward without copies.
-// ----------------------------------------------------------------------------
-template <typename IdxT>
-inline arma::mat make_W_i(const arma::mat& W, const arma::uword x_n_rows,
-                          const arma::uword start_idx,
-                          const arma::uword end_idx,
-                          const IdxT& alt_idx0_i) {
-  if (W.n_rows == x_n_rows)            // row-aligned with X
-    return W.rows(start_idx, end_idx); // m_i x K_w
-  return W.rows(alt_idx0_i);           // global alt-level W
-}
-
 // ----------------------------------------------------------------------------
 // Batched Cholesky draws: Gamma_final = L * eta_i in a single dgemm, then the
-// log-normal transform applied row-wise where rc_dist == 1. Optional outputs
-// Dgamma1/Dgamma2 receive the first/second derivative of the transform
-// (ones/zeros for normal coefficients, exp(L*eta) rows for log-normal).
-// The _into form writes into a caller-owned (reused) Gamma_final.
+// log-normal transform applied row-wise where rc_dist == 1, into a
+// caller-owned (reused) Gamma_final. Optional outputs Dgamma1/Dgamma2 receive
+// the first/second derivative of the transform (ones/zeros for normal
+// coefficients, exp(L*eta) rows for log-normal).
 // ----------------------------------------------------------------------------
 inline void batch_gamma_draws_into(arma::mat& Gamma_final, const arma::mat& L,
                                    const arma::mat& eta_i,
@@ -574,15 +441,6 @@ inline void batch_gamma_draws_into(arma::mat& Gamma_final, const arma::mat& L,
       if (Dgamma2) Dgamma2->row(k) = Gamma_final.row(k);
     }
   }
-}
-
-inline arma::mat batch_gamma_draws(const arma::mat& L, const arma::mat& eta_i,
-                                   const arma::uvec& rc_dist,
-                                   arma::mat* Dgamma1 = nullptr,
-                                   arma::mat* Dgamma2 = nullptr) {
-  arma::mat Gamma_final;
-  batch_gamma_draws_into(Gamma_final, L, eta_i, rc_dist, Dgamma1, Dgamma2);
-  return Gamma_final;
 }
 
 // ----------------------------------------------------------------------------
@@ -843,26 +701,11 @@ inline void scatter_delta_grad(arma::vec& g, const int delta_start,
 
 // ----------------------------------------------------------------------------
 // Map local choice-set indices to global alternative indices for the
-// J_total x J_total output matrices (elasticities, diversion ratios).
+// J_total x J_total output matrices (elasticities, diversion ratios), from
+// the 1-based codes of a situation's m rows, into a caller-owned buffer of at
+// least m + 1 entries (one per thread, sized once from the layout's max_m).
 // Full variant: index 0 = outside option, inside alts shifted by +1.
-// Inside variant (NL): m_i-length map over inside alternatives only.
 // ----------------------------------------------------------------------------
-inline arma::uvec build_global_alt_map(const arma::uvec& alt_idx0_i,
-                                       const int m_i,
-                                       const bool include_outside_option) {
-  arma::uvec global_j_map(include_outside_option ? m_i + 1 : m_i);
-  if (include_outside_option) {
-    global_j_map[0] = 0;                       // outside option = global index 0
-    global_j_map.subvec(1, m_i) = alt_idx0_i + 1; // inside alts are 1...J
-  } else {
-    global_j_map = alt_idx0_i;                 // no outside option: 0...J-1
-  }
-  return global_j_map;
-}
-
-// build_global_alt_map() from the 1-based codes of a situation's m rows, into
-// a caller-owned buffer of at least m + 1 entries (one per thread, sized once
-// from the layout's max_m).
 inline void fill_global_alt_map(int* map, const int* alt, const int m,
                                 const bool include_outside_option) {
   if (include_outside_option) {
@@ -884,17 +727,11 @@ inline void fill_global_alt_map_inside(int* map, const int* alt, const int m,
 
 // ----------------------------------------------------------------------------
 // Output-matrix dimensions: number of inside alternatives and total
-// alternatives (including the outside option when present). arma::max is only
-// evaluated when !use_asc, as in every historical copy.
+// alternatives (including the outside option when present). Without ASCs the
+// inside alternatives are numbered by the largest code; with no codes this
+// keeps the std::logic_error "max(): object has no elements" that
+// arma::max() of the codes threw.
 // ----------------------------------------------------------------------------
-inline int compute_J_inside(const bool use_asc, const arma::vec& delta,
-                            const arma::uvec& alt_idx0) {
-  return use_asc ? static_cast<int>(delta.n_elem)
-                 : (static_cast<int>(arma::max(alt_idx0)) + 1);
-}
-
-// The same from the layout. arma::max() of an empty alt_idx0 threw
-// std::logic_error "max(): object has no elements", which is kept.
 inline int compute_J_inside(const bool use_asc, const arma::vec& delta,
                             const ChoiceLayout& lay) {
   if (use_asc) return static_cast<int>(delta.n_elem);

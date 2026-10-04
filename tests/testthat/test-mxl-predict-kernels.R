@@ -42,6 +42,18 @@ mxp_shares <- function(d, ...) {
                                d$eta, d$rc_dist, d$rc_corr, d$rc_mean,
                                d$use_asc, d$ioo, ...)
 }
+mxp_elas <- function(d, var, random, ...) {
+  choicer:::mxl_elasticities_parallel(d$theta, d$X, d$W, d$alt_idx,
+                                      rep(1L, length(d$M)), d$M, d$weights,
+                                      d$eta, d$rc_dist, var, random, d$rc_corr,
+                                      d$rc_mean, d$use_asc, d$ioo, ...)
+}
+mxp_dr <- function(d, var, random, ...) {
+  choicer:::mxl_diversion_ratios_parallel(d$theta, d$X, d$W, d$alt_idx, d$M,
+                                          d$weights, d$eta, d$rc_dist, var,
+                                          random, d$rc_corr, d$rc_mean,
+                                          d$use_asc, d$ioo, ...)
+}
 # BLP inversion from `delta0` towards `target`, at the design's beta, mu and L
 mxp_blp <- function(d, target, delta0, beta = NULL, ...) {
   K_x <- ncol(d$X); K_w <- ncol(d$W)
@@ -140,6 +152,78 @@ mxp_shares_oracle <- function(d, eta = d$eta) {
   sh / sum(d$weights)
 }
 
+# Brute-force aggregate elasticities and diversion ratios with respect to
+# variable `var` of X (fixed) or W (random): per situation and draw, the
+# realized coefficient b (beta_var, or mu~_var + gamma_var), the
+# probabilities P (outside option first when present) and the variable's
+# values x (0 for the outside option); then
+#   E_t(j, m) = mean_s b x_m P_j (1{j = m} - P_m) / mean_s P_j
+#   DR(k, j)  = sum_t w_t mean_s b P_j P_k / sum_t w_t mean_s b P_j (1 - P_j)
+# on the alternatives' global slots, E averaged with the weights.
+mxp_elas_dr_oracle <- function(d, var, random, eta = d$eta) {
+  X <- d$X; W <- d$W; K_x <- ncol(X); K_w <- ncol(W); th <- d$theta
+  beta <- th[seq_len(K_x)]; pos <- K_x
+  mu <- rep(0, K_w)
+  if (d$rc_mean) {
+    mu <- th[pos + seq_len(K_w)]
+    pos <- pos + K_w
+  }
+  mu_f <- ifelse(d$rc_dist == 1L & d$rc_mean, exp(mu), mu)
+  L <- matrix(0, K_w, K_w)
+  if (d$rc_corr) {
+    for (i in seq_len(K_w)) for (j in seq_len(i)) {
+      pos <- pos + 1L
+      L[i, j] <- if (i == j) exp(th[pos]) else th[pos]
+    }
+  } else {
+    diag(L) <- exp(th[pos + seq_len(K_w)])
+    pos <- pos + K_w
+  }
+  delta <- if (!d$use_asc) NULL else if (d$ioo) th[-seq_len(pos)] else
+    c(0, th[-seq_len(pos)])
+  alt_level <- nrow(W) != nrow(X)
+  J_in <- if (d$use_asc) d$J else max(d$alt_idx)
+  J_tot <- J_in + d$ioo
+  E <- num <- matrix(0, J_tot, J_tot)
+  den <- numeric(J_tot)
+  ends <- cumsum(d$M); starts <- ends - d$M + 1L
+  S <- dim(eta)[2]
+  for (t in seq_along(d$M)) {
+    r <- starts[t]:ends[t]
+    W_t <- if (alt_level) W[d$alt_idx[r], , drop = FALSE] else W[r, , drop = FALSE]
+    base <- drop(X[r, , drop = FALSE] %*% beta)
+    if (d$use_asc) base <- base + delta[d$alt_idx[r]]
+    g_slot <- c(if (d$ioo) 1L, d$alt_idx[r] + d$ioo)
+    x <- c(if (d$ioo) 0, if (random) W_t[, var] else X[r, var])
+    n <- length(g_slot)
+    acc_E <- matrix(0, n, n); acc_P <- numeric(n)
+    acc_num <- matrix(0, n, n); acc_den <- numeric(n)
+    for (s in seq_len(S)) {
+      g <- drop(L %*% eta[, s, t])
+      g[d$rc_dist == 1L] <- exp(g[d$rc_dist == 1L])
+      V <- base + drop(W_t %*% (mu_f + g))
+      V_all <- if (d$ioo) c(0, V) else V
+      P <- exp(V_all - max(V_all)); P <- P / sum(P)
+      b <- if (random) mu_f[var] + g[var] else beta[var]
+      acc_P <- acc_P + P
+      acc_E <- acc_E + b * outer(P, x) * (diag(n) - matrix(P, n, n, byrow = TRUE))
+      acc_den <- acc_den + b * P * (1 - P)
+      acc_num <- acc_num + b * outer(P, P)   # [j, k] = b P_j P_k
+    }
+    P_bar <- acc_P / S
+    E_t <- (acc_E / S) / P_bar
+    E_t[P_bar <= 1e-12, ] <- 0
+    E[g_slot, g_slot] <- E[g_slot, g_slot] + d$weights[t] * E_t
+    nk <- t(acc_num / S); diag(nk) <- 0   # [k, j]
+    num[g_slot, g_slot] <- num[g_slot, g_slot] + d$weights[t] * nk
+    den[g_slot] <- den[g_slot] + d$weights[t] * acc_den / S
+  }
+  DR <- sweep(num, 2, den, "/")
+  DR[, abs(den) <= 1e-15] <- 0
+  diag(DR) <- 0
+  list(elas = E / sum(d$weights), dr = DR)
+}
+
 mxp_expect_oracle <- function(d, gen = NULL) {
   if (is.null(gen)) {
     p <- mxp_predict(d)
@@ -172,6 +256,16 @@ mxp_expect_oracle <- function(d, gen = NULL) {
   }
 }
 
+# Elasticities and diversion ratios with respect to the first fixed and the
+# first random coefficient, against the oracle
+mxp_expect_elas_dr_oracle <- function(d) {
+  for (random in c(FALSE, TRUE)) {
+    o <- mxp_elas_dr_oracle(d, 1L, random)
+    expect_equal(unname(mxp_elas(d, 1L, random)), o$elas, tolerance = 1e-12)
+    expect_equal(unname(mxp_dr(d, 1L, random)), o$dr, tolerance = 1e-12)
+  }
+}
+
 # --- Values ------------------------------------------------------------------
 
 test_that("predictions, log-sums and shares match a brute-force oracle", {
@@ -189,6 +283,8 @@ test_that("predictions, log-sums and shares match a brute-force oracle", {
   d <- mxp_data(20, rep(3L, 9), J = 6L, K_w = 3L, use_asc = FALSE,
                 rc_mean = FALSE, codes = 3:6)
   mxp_expect_oracle(d)
+  d$ioo <- TRUE
+  mxp_expect_oracle(d)
 })
 
 test_that("tiny designs and a single draw match the oracle", {
@@ -198,13 +294,16 @@ test_that("tiny designs and a single draw match the oracle", {
     for (K_x in unique(c(n, 2L))) {
       d <- mxp_data(30 + n, n, J = 5L, K_x = K_x, K_w = 1L)
       mxp_expect_oracle(d)
+      mxp_expect_elas_dr_oracle(d)
     }
   }
   d <- mxp_data(40, c(1L, 4L, 2L), J = 4L, S = 1L, ioo = TRUE)
   mxp_expect_oracle(d)
+  mxp_expect_elas_dr_oracle(d)
   # m = K_w = S = 3 in every situation: every product is a tiny square one
   d <- mxp_data(42, rep(3L, 6), J = 3L, K_w = 3L, S = 3L, rc_corr = TRUE)
   mxp_expect_oracle(d)
+  mxp_expect_elas_dr_oracle(d)
 })
 
 test_that("the BLP contraction inverts the simulated shares", {
@@ -243,9 +342,11 @@ test_that("a situation's predictions do not depend on the thread count", {
   # Shares add situations up in each thread, so only the rounding of the sum
   # depends on the thread count
   set_num_threads(1L)
-  s1 <- mxp_shares(d)
+  s1 <- mxp_shares(d); e1 <- mxp_elas(d, 2L, TRUE); r1 <- mxp_dr(d, 1L, FALSE)
   set_num_threads(2L)
   expect_equal(mxp_shares(d), s1, tolerance = 1e-13)
+  expect_equal(mxp_elas(d, 2L, TRUE), e1, tolerance = 1e-13)
+  expect_equal(mxp_dr(d, 1L, FALSE), r1, tolerance = 1e-13)
 })
 
 test_that("double-typed alternative codes give the integer result", {
@@ -259,6 +360,8 @@ test_that("double-typed alternative codes give the integer result", {
   expect_identical(mxp_shares(dd), mxp_shares(d))
   target <- as.numeric(mxp_shares(d))
   expect_identical(mxp_blp(dd, target, rep(0, 4L)), mxp_blp(d, target, rep(0, 4L)))
+  expect_identical(mxp_elas(dd, 1L, TRUE), mxp_elas(d, 1L, TRUE))
+  expect_identical(mxp_dr(dd, 2L, FALSE), mxp_dr(d, 2L, FALSE))
 })
 
 test_that("predictions return n x 1 matrices and leave their inputs alone", {
@@ -291,7 +394,9 @@ test_that("predictions with no choice situations are empty", {
 test_that("prediction kernels report malformed alternative codes", {
   d <- mxp_data(90, c(2L, 3L, 4L, 2L), J = 4L)
   blp_k <- function(d, ...) mxp_blp(d, rep(0.25, 4L), rep(0, 4L), ...)
-  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_k)) {
+  elas_k <- function(d, ...) mxp_elas(d, 1L, TRUE, ...)
+  dr_k <- function(d, ...) mxp_dr(d, 2L, FALSE, ...)
+  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_k, elas_k, dr_k)) {
     for (gen in c(FALSE, TRUE)) {
       call_k <- function(alt) {
         d$alt_idx <- alt
@@ -322,7 +427,9 @@ test_that("prediction kernels report malformed alternative codes", {
 test_that("prediction kernels check the design, the draws and W", {
   d <- mxp_data(91, c(2L, 3L, 4L, 2L), J = 4L)
   blp_k <- function(d, ...) mxp_blp(d, rep(0.25, 4L), rep(0, 4L), ...)
-  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_k)) {
+  elas_k <- function(d, ...) mxp_elas(d, 1L, TRUE, ...)
+  dr_k <- function(d, ...) mxp_dr(d, 2L, FALSE, ...)
+  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_k, elas_k, dr_k)) {
     e <- d; e$M[2] <- 0L
     expect_error(k(e), "M must be positive for every individual (M[2] = 0).",
                  fixed = TRUE)
@@ -353,7 +460,9 @@ test_that("prediction kernels check the design, the draws and W", {
   # Generated draws have one Halton base per random coefficient, up to 128
   wide <- mxp_data(92, c(2L, 3L), J = 3L, K_w = 129L, S = 1L)
   blp_w <- function(d, ...) mxp_blp(d, rep(1 / 3, 3L), rep(0, 3L), ...)
-  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_w)) {
+  elas_w <- function(d, ...) mxp_elas(d, 1L, FALSE, ...)
+  dr_w <- function(d, ...) mxp_dr(d, 1L, TRUE, ...)
+  for (k in list(mxp_predict, mxp_logsum, mxp_shares, blp_w, elas_w, dr_w)) {
     expect_error(k(wide, gen_seed = 1L, gen_scramble = 1L, gen_S = 2L),
                  "K_w exceeds the primes table size (128)", fixed = TRUE)
   }
@@ -389,7 +498,93 @@ test_that("shares and the BLP contraction keep their order of checks", {
   # The largest code, 2^31 - 1, plus the outside option overflows an int
   big <- mxp_data(95, rep(3L, 4), J = 5L, use_asc = FALSE, ioo = TRUE)
   big$alt_idx[2] <- .Machine$integer.max
-  expect_error(mxp_shares(big),
-               "alt_idx references alternative 2147483647, which with the outside option is more alternatives than an int can count.",
+  msg <- "alt_idx references alternative 2147483647, which with the outside option is more alternatives than an int can count."
+  expect_error(mxp_shares(big), msg, fixed = TRUE)
+  expect_error(mxp_elas(big, 1L, FALSE), msg, fixed = TRUE)
+  expect_error(mxp_dr(big, 1L, TRUE), msg, fixed = TRUE)
+})
+
+test_that("elasticities and diversion ratios match a brute-force oracle", {
+  set.seed(6)
+  M <- sample(2:5, 15, replace = TRUE)
+  for (ioo in c(FALSE, TRUE)) {
+    for (w_type in c("row", "alt")) {
+      d <- mxp_data(25 + ioo, M, J = 5L, K_w = 2L, ioo = ioo, w_type = w_type,
+                    rc_dist = c(0L, 1L), rc_corr = TRUE)
+      for (random in c(FALSE, TRUE)) {
+        var <- if (random) 2L else 1L
+        o <- mxp_elas_dr_oracle(d, var, random)
+        expect_equal(unname(mxp_elas(d, var, random)), o$elas, tolerance = 1e-12)
+        expect_equal(unname(mxp_dr(d, var, random)), o$dr, tolerance = 1e-12)
+        g <- mxp_gen_cube(length(d$M), 6L, 2L, 21L, 1L)
+        og <- mxp_elas_dr_oracle(d, var, random, eta = g)
+        expect_equal(unname(mxp_elas(d, var, random, gen_seed = 21L,
+                                     gen_scramble = 1L, gen_S = 6L)),
+                     og$elas, tolerance = 1e-12)
+        expect_equal(unname(mxp_dr(d, var, random, gen_seed = 21L,
+                                   gen_scramble = 1L, gen_S = 6L)),
+                     og$dr, tolerance = 1e-12)
+      }
+    }
+  }
+  # Without ASCs or random-coefficient means, and with codes starting at 3
+  d <- mxp_data(20, rep(3L, 9), J = 6L, K_w = 3L, use_asc = FALSE,
+                rc_mean = FALSE, codes = 3:6)
+  mxp_expect_elas_dr_oracle(d)
+  d$ioo <- TRUE
+  mxp_expect_elas_dr_oracle(d)
+})
+
+test_that("elasticities and diversion ratios of no situations or of one", {
+  d <- mxp_data(97, c(2L, 3L), J = 3L, ioo = TRUE)
+  e <- d
+  e$X <- e$X[0, , drop = FALSE]; e$W <- e$W[0, , drop = FALSE]
+  e$alt_idx <- integer(0); e$M <- integer(0); e$weights <- numeric(0)
+  e$eta <- e$eta[, , 0, drop = FALSE]
+  # With ASCs the alternatives are known: zero matrices over all of them
+  expect_identical(mxp_elas(e, 1L, FALSE), matrix(0, 4L, 4L))
+  expect_identical(mxp_dr(e, 1L, TRUE), matrix(0, 4L, 4L))
+  # Without, the largest code numbers them, and there is none
+  e$use_asc <- FALSE
+  e$theta <- e$theta[seq_len(ncol(e$X) + 2L * ncol(e$W))]
+  expect_error(mxp_elas(e, 1L, FALSE), "max(): object has no elements",
                fixed = TRUE)
+  expect_error(mxp_dr(e, 1L, TRUE), "max(): object has no elements",
+               fixed = TRUE)
+  # One situation runs on two threads, one of them idle; its accumulators add
+  # zeros
+  o <- d
+  o$X <- o$X[1:2, , drop = FALSE]; o$W <- o$W[1:2, , drop = FALSE]
+  o$alt_idx <- o$alt_idx[1:2]; o$M <- o$M[1]; o$weights <- o$weights[1]
+  o$eta <- o$eta[, , 1, drop = FALSE]
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  e1 <- mxp_elas(o, 1L, FALSE); r1 <- mxp_dr(o, 2L, TRUE); s1 <- mxp_shares(o)
+  set_num_threads(2L)
+  expect_identical(mxp_elas(o, 1L, FALSE), e1)
+  expect_identical(mxp_dr(o, 2L, TRUE), r1)
+  expect_identical(mxp_shares(o), s1)
+})
+
+test_that("elasticities and diversion ratios check their variable first", {
+  d <- mxp_data(96, c(2L, 3L, 4L), J = 4L)
+  expect_error(mxp_elas(d, 3L, FALSE),
+               "elast_var_idx (3) is out of bounds for X matrix (K_x=2).", fixed = TRUE)
+  expect_error(mxp_dr(d, 0L, TRUE),
+               "elast_var_idx (0) is out of bounds for W matrix (K_w=2).", fixed = TRUE)
+  e <- d; e$theta <- e$theta[1:2]  # a short theta is reported only afterwards
+  expect_error(mxp_elas(e, 3L, FALSE), "out of bounds for X matrix", fixed = TRUE)
+  e <- d; e$X <- e$X[, 0, drop = FALSE]
+  expect_error(mxp_dr(e, 1L, FALSE),
+               "the model has no fixed coefficients (K_x = 0)", fixed = TRUE)
+  # The unused choice_idx is never converted (one thread: sums over
+  # situations in a fixed order)
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  expect_identical(
+    choicer:::mxl_elasticities_parallel(d$theta, d$X, d$W, d$alt_idx, NULL,
+                                        d$M, d$weights, d$eta, d$rc_dist, 1L,
+                                        FALSE, d$rc_corr, d$rc_mean, d$use_asc,
+                                        d$ioo),
+    mxp_elas(d, 1L, FALSE))
 })

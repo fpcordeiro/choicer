@@ -24,9 +24,6 @@
 #  define CHOICER_OMP_MASKED _Pragma("omp master")
 #endif
 
-// Function Declarations ------------------------------------------------------
-Rcpp::IntegerVector compute_prefix_sum(const Rcpp::IntegerVector& M);
-
 // Inline Function Definitions ------------------------------------------------
 inline double logSumExp(const arma::vec& x) {
   if (x.n_elem == 0) {
