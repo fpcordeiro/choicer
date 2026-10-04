@@ -1606,14 +1606,31 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   uses the estimated ASCs from the fitted model.
 #' @param tol Convergence tolerance (default 1e-8).
 #' @param max_iter Maximum iterations (default 1000).
+#' @param keep_draws_bytes Most memory, in bytes, that the contraction may use
+#'   to keep the draws across its iterations; it does not change the returned
+#'   delta. When the draws are formed on the fly and those of all \eqn{N}
+#'   choice situations take at most this much (\eqn{8 K_w S N} bytes for
+#'   \eqn{K_w} random coefficients and \eqn{S} draws), the first evaluation of
+#'   the shares forms them and the later iterations reuse them, which saves up
+#'   to about a quarter of each iteration on large designs; above it, every
+#'   iteration forms them again. The default, \code{2^32} (4 GiB), covers up to
+#'   about 1.8 million choice situations at \eqn{K_w = 3} and \eqn{S = 100};
+#'   \code{0} never keeps the draws, and \code{Inf} keeps them whenever they
+#'   are formed on the fly and can be allocated. The memory is taken per
+#'   call, on top of the fit's data (parallel workers each take their own).
+#'   Where memory is committed only when used (Linux, macOS, and containers
+#'   or batch jobs with memory limits), a budget above the memory actually
+#'   free can end the R session rather than fall back: lower it, or use
+#'   \code{0}, when memory is tight.
 #' @param ... Additional arguments (ignored).
 #' @details The contraction integrates each choice situation over the same
 #'   draws as \code{predict()} (for a cross-sectional fit, the estimation
-#'   draws; a panel fit's estimation draws are per decision maker), formed
-#'   again at every iteration, in parallel. With stored draws
-#'   (\code{draws = "store"}) they are the points of the cube
-#'   \code{\link{get_halton_normals}} would build, formed without it (with
-#'   more than 128 random coefficients, the cube itself).
+#'   draws; a panel fit's estimation draws are per decision maker), formed on
+#'   the fly, in parallel, and kept across iterations within
+#'   \code{keep_draws_bytes}. With stored draws (\code{draws = "store"}) they
+#'   are the points of the cube \code{\link{get_halton_normals}} would build,
+#'   formed without it; with more than 128 random coefficients, the cube
+#'   itself, read at every iteration (and nothing more is kept).
 #' @returns Converged delta (ASC) vector.
 #' @examples
 #' \donttest{
@@ -1632,7 +1649,14 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' }
 #' @export
 blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
-                            tol = 1e-8, max_iter = 1000, ...) {
+                            tol = 1e-8, max_iter = 1000,
+                            keep_draws_bytes = 2^32, ...) {
+  keep_draws_bytes <- .int64_to_double(keep_draws_bytes, "keep_draws_bytes")
+  if (!is.numeric(keep_draws_bytes) || length(keep_draws_bytes) != 1L ||
+      is.na(keep_draws_bytes) || keep_draws_bytes < 0) {
+    stop("`keep_draws_bytes` must be a single non-negative number of bytes ",
+         "(0 never keeps the draws).", call. = FALSE)
+  }
   if (is.null(object[["data"]])) {
     stop("blp() requires stored data. Refit with keep_data = TRUE.")
   }
@@ -1658,7 +1682,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  mxl_blp_contraction(
+  mxl_blp_contraction_cached(
     delta = delta_init,
     target_shares = target_shares,
     X = d$X,
@@ -1678,8 +1702,9 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     max_iter = max_iter,
     gen_seed = gp_blp$gen_seed,
     gen_scramble = gp_blp$gen_scramble,
-    gen_S = gp_blp$gen_S
-  )
+    gen_S = gp_blp$gen_S,
+    cache_bytes = keep_draws_bytes
+  )$delta
 }
 
 # --- predict: NL -------------------------------------------------------------

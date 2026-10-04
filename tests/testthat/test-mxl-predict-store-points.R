@@ -6,8 +6,9 @@
 # bit where randtoolbox and choicer are compiled with the same floating-point
 # contraction (as on CRAN's platforms); otherwise some uniforms differ in
 # their last bit, so the kernel tests compare against a cube of choicer's own
-# uniforms. run_mxlogit() warns before it builds an estimation cube above
-# .mxl_cube_budget() (1 GiB).
+# uniforms. blp() keeps the draws it forms on the fly across its iterations,
+# within its keep_draws_bytes. run_mxlogit() warns before it builds an
+# estimation cube above .mxl_cube_budget() (1 GiB).
 
 # --- Generator -------------------------------------------------------------------
 
@@ -226,14 +227,18 @@ test_that("store-mode methods form their draws on the fly, as the cube's", {
   }
   for (person in c(FALSE, TRUE)) {
     fx <- mxc_fit(person)
-    # A cube of the same draws
+    # A cube of the same draws. blp() inverts the counterfactual's shares, so
+    # that it iterates (the fit's own shares stop it at its first check)
     with_mocked_bindings(
       {
         whole <- mxc_methods(fx$fit, fx$cf)
-        target <- as.numeric(whole$shares)
+        target <- as.numeric(predict(fx$fit, newdata = fx$cf, type = "shares"))
         delta <- blp(fx$fit, target_shares = target)
       },
       .mxl_pred_draws = cube_draws)
+    expect_output(start <- blp(fx$fit, target_shares = target, max_iter = 0L),
+                  "Maximum iterations reached", fixed = TRUE)
+    expect_false(identical(delta, start))
     # On the fly: no site may build the cube
     with_mocked_bindings(
       {
@@ -313,6 +318,143 @@ test_that("draw codes and draw metadata are checked", {
   expect_error(choicer:::.mxl_pred_draws(utils::modifyList(info, list(K_w = NULL)),
                                          5L, "predict()"),
                "`K_w` must be a single positive whole number.", fixed = TRUE)
+})
+
+# --- Draws kept across blp()'s iterations ----------------------------------------
+
+# mxl_blp_contraction_cached() on `d`, the draws formed on the fly by `gen`,
+# kept within `budget` bytes, and mxl_blp_contraction(), which keeps nothing
+mxc_blp_kept <- function(d, gen, budget, max_iter = 1000L) {
+  K_w <- d$K_w
+  target <- as.numeric(mxc_call("shares", d))
+  args <- list(rep(0, d$J), target, d$X, d$W, d$theta[1:2],
+               d$theta[2L + seq_len(K_w)],
+               d$theta[2L + K_w + seq_len(K_w * (K_w + 1L) / 2L)],
+               d$alt_idx, d$M, d$weights, array(0, dim = c(K_w, 0L, 0L)),
+               d$rc_dist, rc_correlation = TRUE, rc_mean = TRUE,
+               include_outside_option = d$ioo, tol = 1e-8, max_iter = max_iter)
+  list(formed = do.call(mxl_blp_contraction, c(args, gen)),
+       kept = do.call(choicer:::mxl_blp_contraction_cached,
+                      c(args, gen, cache_bytes = budget)))
+}
+
+test_that("draws kept across blp()'s iterations give the same deltas", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  gens <- list(points = list(gen_seed = 0L, gen_scramble = 2L),
+               permuted = list(gen_seed = 9L, gen_scramble = 1L),
+               plain = list(gen_seed = 9L, gen_scramble = 0L))
+  # Every evaluation of the shares after the first reads all N situations'
+  # draws from the cache
+  read_all <- function(r, d) {
+    expect_true(r$kept)
+    expect_gt(r$passes, 2)
+    expect_identical(r$reads, d$N * (r$passes - 1))
+  }
+  for (ioo in c(FALSE, TRUE)) {
+    for (w_type in c("row", "alt")) {
+      d <- mxc_data(160 + ioo, 23L, ioo = ioo, w_type = w_type)
+      for (g in names(gens)) {
+        r <- mxc_blp_kept(d, c(gens[[g]], gen_S = d$S), Inf)
+        lab <- sprintf("%s, ioo %d, W %s", g, ioo, w_type)
+        read_all(r$kept, d)
+        expect_identical(r$kept$delta, r$formed, label = lab)
+      }
+    }
+  }
+  # One draw, and one coefficient
+  for (d in list(mxc_data(162, 9L, S = 1L), mxc_data(163, 9L, K_w = 1L))) {
+    r <- mxc_blp_kept(d, list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S), Inf)
+    read_all(r$kept, d)
+    expect_identical(r$kept$delta, r$formed)
+  }
+  # max_iter = 0 leaves no later evaluation, so nothing is kept
+  d <- mxc_data(164, 9L)
+  expect_output(
+    r <- mxc_blp_kept(d, list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S),
+                      Inf, max_iter = 0L),
+    "Maximum iterations reached without convergence", fixed = TRUE)
+  expect_false(r$kept$kept)
+  expect_identical(c(r$kept$passes, r$kept$reads), c(1, 0))
+  expect_identical(r$kept$delta, r$formed)
+  # At two threads, the sums over situations to rounding
+  set_num_threads(2L)
+  d <- mxc_data(165, 23L)
+  r <- mxc_blp_kept(d, list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S), Inf)
+  read_all(r$kept, d)
+  expect_equal(r$kept$delta, r$formed, tolerance = 1e-12)
+})
+
+test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  d <- mxc_data(170, 23L)
+  gen <- list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S)
+  bytes <- 8 * d$K_w * d$S * d$N
+  for (b in list(list(bytes, TRUE), list(bytes - 1, FALSE), list(0, FALSE),
+                 list(NaN, FALSE), list(-Inf, FALSE))) {
+    r <- mxc_blp_kept(d, gen, b[[1]])
+    lab <- format(b[[1]])
+    expect_identical(r$kept$kept, b[[2]], label = lab)
+    expect_identical(r$kept$reads,
+                     if (b[[2]]) d$N * (r$kept$passes - 1) else 0, label = lab)
+    expect_identical(r$kept$delta, r$formed)
+  }
+  # A cube is read at every pass, not copied
+  K_w <- d$K_w
+  target <- as.numeric(mxc_call("shares", d))
+  r <- choicer:::mxl_blp_contraction_cached(
+    rep(0, d$J), target, d$X, d$W, d$theta[1:2], d$theta[2L + seq_len(K_w)],
+    d$theta[2L + K_w + seq_len(K_w * (K_w + 1L) / 2L)], d$alt_idx, d$M,
+    d$weights, d$eta, d$rc_dist, TRUE, TRUE, d$ioo, 1e-8, 1000L, -1L, 1L, 0L,
+    Inf)
+  expect_false(r$kept)
+  expect_identical(r$reads, 0)
+  expect_identical(r$delta, mxc_call("blp", d))
+
+  # blp() passes keep_draws_bytes, by default 4 GiB; a counterfactual target
+  # makes it iterate
+  real <- choicer:::mxl_blp_contraction_cached
+  seen <- NULL
+  spy <- function(...) {
+    r <- real(...)
+    seen <<- rbind(seen, data.frame(budget = list(...)$cache_bytes,
+                                    kept = r$kept, passes = r$passes,
+                                    reads = r$reads))
+    r
+  }
+  for (draws in c("store", "generate")) {
+    fx <- mxc_fit(draws = draws)
+    fit <- fx$fit
+    N <- length(fit$data$M)
+    target <- as.numeric(predict(fit, newdata = fx$cf, type = "shares"))
+    seen <- NULL
+    with_mocked_bindings(
+      {
+        delta <- blp(fit, target_shares = target)
+        expect_identical(blp(fit, target_shares = target, keep_draws_bytes = 0),
+                         delta)
+      },
+      mxl_blp_contraction_cached = spy)
+    expect_identical(seen$budget, c(2^32, 0), label = draws)
+    expect_identical(seen$kept, c(TRUE, FALSE), label = draws)
+    expect_identical(seen$passes[1], seen$passes[2])
+    expect_gt(seen$passes[1], 2)
+    expect_identical(seen$reads, c(N * (seen$passes[1] - 1), 0), label = draws)
+  }
+  # An integer64 budget is read as its value, not its bits
+  skip_if_not_installed("bit64")
+  seen <- NULL
+  with_mocked_bindings(
+    blp(fit, target_shares = target, keep_draws_bytes = bit64::as.integer64(2^33)),
+    mxl_blp_contraction_cached = spy)
+  expect_identical(seen$budget, 2^33)
+  expect_true(seen$kept)
+  for (bad in list(-1, NA_real_, c(1, 2), "1", NULL)) {
+    expect_error(blp(fit, target_shares = target, keep_draws_bytes = bad),
+                 "`keep_draws_bytes` must be a single non-negative number of bytes",
+                 fixed = TRUE)
+  }
 })
 
 # --- Large store-mode fits -----------------------------------------------------

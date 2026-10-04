@@ -196,9 +196,11 @@ floating-point contraction, as on CRAN's platforms (otherwise some of the
 underlying uniforms differ in their last bit, which moves those draws by
 at most a few parts in \eqn{10^9}, in the far tails); sums over choice
 situations are bit for bit at one thread, and at more threads vary in
-their last bits with the threads' order, as they always did. In the
-convenience workflow, \code{run_mxlogit()} warns before it builds
-an estimation cube above 1 GiB: the cube is held while the model is
+their last bits with the threads' order, as they always did.
+\code{blp()} may keep the draws it forms across its iterations, within
+its \code{keep_draws_bytes} (4 GiB by default), with either storage
+mode. In the convenience workflow, \code{run_mxlogit()} warns before it
+builds an estimation cube above 1 GiB: the cube is held while the model is
 fitted, and \code{vcov(type = )}, \code{\link{wesml_vcov}} and
 \code{\link{conditional_tastes}} rebuild it whole. \code{"generate"}
 computes each unit's draws on-the-fly in C++ from a stored seed, eliminating the O(U)

@@ -10,6 +10,7 @@
   delta_init = NULL,
   tol = 1e-08,
   max_iter = 1000,
+  keep_draws_bytes = 2^32,
   ...
 )
 }
@@ -28,6 +29,23 @@ uses the estimated ASCs from the fitted model.}
 
 \item{max_iter}{Maximum iterations (default 1000).}
 
+\item{keep_draws_bytes}{Most memory, in bytes, that the contraction may use
+to keep the draws across its iterations; it does not change the returned
+delta. When the draws are formed on the fly and those of all \eqn{N}
+choice situations take at most this much (\eqn{8 K_w S N} bytes for
+\eqn{K_w} random coefficients and \eqn{S} draws), the first evaluation of
+the shares forms them and the later iterations reuse them, which saves up
+to about a quarter of each iteration on large designs; above it, every
+iteration forms them again. The default, \code{2^32} (4 GiB), covers up to
+about 1.8 million choice situations at \eqn{K_w = 3} and \eqn{S = 100};
+\code{0} never keeps the draws, and \code{Inf} keeps them whenever they
+are formed on the fly and can be allocated. The memory is taken per
+call, on top of the fit's data (parallel workers each take their own).
+Where memory is committed only when used (Linux, macOS, and containers
+or batch jobs with memory limits), a budget above the memory actually
+free can end the R session rather than fall back: lower it, or use
+\code{0}, when memory is tight.}
+
 \item{...}{Additional arguments (ignored).}
 }
 \value{
@@ -39,11 +57,12 @@ BLP contraction mapping for mixed logit model
 \details{
 The contraction integrates each choice situation over the same
 draws as \code{predict()} (for a cross-sectional fit, the estimation
-draws; a panel fit's estimation draws are per decision maker), formed
-again at every iteration, in parallel. With stored draws
-(\code{draws = "store"}) they are the points of the cube
-\code{\link{get_halton_normals}} would build, formed without it (with
-more than 128 random coefficients, the cube itself).
+draws; a panel fit's estimation draws are per decision maker), formed on
+the fly, in parallel, and kept across iterations within
+\code{keep_draws_bytes}. With stored draws (\code{draws = "store"}) they
+are the points of the cube \code{\link{get_halton_normals}} would build,
+formed without it; with more than 128 random coefficients, the cube
+itself, read at every iteration (and nothing more is kept).
 }
 \examples{
 \donttest{

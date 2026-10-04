@@ -276,6 +276,25 @@
   `mxl_blp_contraction()` accepts `gen_scramble = 2` for these store-mode
   points formed on the fly, and now rejects other codes than 0, 1 and 2,
   which it treated as 0.
+- `blp()` gains `keep_draws_bytes`, the most memory it may use to keep the
+  draws across the iterations of its contraction (default `2^32` bytes,
+  4 GiB). When the draws of all N choice situations take at most that
+  (`8 * K_w * S * N` bytes), the first evaluation of the shares forms them, in
+  parallel, and the later ones reuse them; above it, every iteration forms
+  them again, as before. `0` never keeps them, and `Inf` keeps them whenever
+  they are formed on the fly and can be allocated; the deltas are the same
+  either way. The memory is taken per call, and where it is committed only
+  when used (Linux, macOS, containers and batch jobs with memory limits), a
+  budget above the memory actually free can end the R session rather than fall
+  back. At eleven threads, keeping them took each evaluation of the shares
+  from 8.5 s to 7.2 s on the census design with stored draws and from 9.4 s to
+  6.9 s with generated draws (9.1 s before this release; its 5.9 GB of draws
+  are above the default, so these runs used `keep_draws_bytes = Inf`), and on
+  the claims-like panel, whose 3.6 GB are within the default, from 6.4 s to
+  5.2 s with stored draws and from 7.0 s to 5.6 s with generated draws (8.4 s
+  before); single runs under background load, two alternated ones for the
+  claims-like panel's stored draws. Working memory then holds the draws: it
+  peaked at 6.7 GB and 4.3 GB.
 - `run_mxlogit(draws = "store")` (the convenience workflow) now warns, before
   it builds its draws, when they would take more than 1 GiB (`8 * K_w * S * U`
   bytes, for the U decision makers of a panel fit or the choice situations of

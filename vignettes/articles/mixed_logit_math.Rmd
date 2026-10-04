@@ -1100,7 +1100,8 @@ The implementation parallelizes over individuals using OpenMP:
   $(i-1)S+1,\ldots,iS$ of the Halton sequence. With stored draws the prediction-type
   functions (`predict()`, `logsum()`, `elasticities()`, `diversion_ratios()`, `blp()`, and
   through them `consumer_surplus()` and `gof()`) never build that $K_w\times S\times N$
-  cube: they pass an empty placeholder and `gen_scramble = 2`, and each thread forms its
+  cube (though `blp()` may keep the draws across its iterations, §8.4): they pass an empty
+  placeholder and `gen_scramble = 2`, and each thread forms its
   situation's block on the fly from `HaltonGen`'s identity-permutation uniforms, which
   are `randtoolbox::halton()`'s points, mapped to normals by R's `qnorm()`
   (`R::qnorm`, libR's own `qnorm5`), as `get_halton_normals()` maps them. The draws, and
@@ -1329,11 +1330,19 @@ inside target and predicted shares but does not verify that the full target sums
 
 The public `blp.choicer_mxl()` method resolves the fitted draw metadata through
 `.mxl_pred_draws()`: store-mode fits have the kernel form the plain-Halton points on the
-fly at every iteration (§5.5), while generate-mode fits pass the original seed,
-permutation mode, and $S$ to the contraction kernel. Share inversion therefore draws from
-the same deterministic Halton sequence as the fit, one block per choice situation (for a
-cross-sectional fit, the estimation draws themselves; a panel fit's estimation draws are
-per decision maker instead, §5.5).
+fly (§5.5), while generate-mode fits pass the original seed, permutation mode, and $S$ to
+the contraction kernel. Share inversion therefore draws from the same deterministic
+Halton sequence as the fit, one block per choice situation (for a cross-sectional fit,
+the estimation draws themselves; a panel fit's estimation draws are per decision maker
+instead, §5.5). Neither the draws nor $L$ change across iterations, so `blp()` (through
+the internal `mxl_blp_contraction_cached()`) keeps each situation's $\Gamma_i = L\eta_i$,
+with its log-normal rows exponentiated, from the first evaluation of the shares on, when
+the draws are formed on the fly (stored draws with up to 128 random coefficients, or
+generated ones), the $N$ blocks take at most `keep_draws_bytes` ($8K_wSN$ bytes; 4 GiB by
+default) and the allocation succeeds; otherwise every evaluation forms them again. The
+kept blocks are the values each evaluation would compute, so the shares, and the
+returned $\delta$, are the same either way. The exported `mxl_blp_contraction()` keeps
+nothing.
 
 *Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
