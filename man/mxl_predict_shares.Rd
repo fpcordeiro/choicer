@@ -60,8 +60,7 @@ identity permutations (plain Halton, compat), \code{1} = seeded position-wise di
 Vector of length J (or J+1 with outside option) of predicted shares.
 }
 \description{
-Exported wrapper around the internal \code{mxl_predict_shares_internal}. Parses
-\code{theta} using the standard parameter ordering and returns the simulated
-weighted-average market shares.
+Parses \code{theta} using the standard parameter ordering and returns the
+simulated weighted-average market shares.
 }
 \keyword{internal}

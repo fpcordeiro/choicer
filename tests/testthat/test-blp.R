@@ -203,9 +203,8 @@ test_that("mxl_blp_contraction returns finite values", {
 })
 
 test_that("mxl_blp_contraction stops on alternative codes past the int range", {
-  # Its arma::uvec index argument casts each double to an unsigned integer:
-  # past 2^31 - 1 (and, on x86-64, for NA or a negative code) the value is
-  # out of range for the int counts formed from it
+  # Its integer alternative codes are read in place: a double beyond the
+  # integer range becomes NA, with R's warning, and is reported as such
   dt <- create_small_mxl_data()
   inputs <- prepare_mxl_data(
     dt, "id", "alt", "choice", "x1", c("w1", "w2"),
@@ -213,17 +212,19 @@ test_that("mxl_blp_contraction stops on alternative codes past the int range", {
   )
   J <- nrow(inputs$alt_mapping)
   K_w <- ncol(inputs$W)
-  expect_error(
-    mxl_blp_contraction(
-      delta = rep(0, J), target_shares = rep(1 / J, J), X = inputs$X,
-      W = inputs$W, beta = 0.3, mu = rep(0, K_w),
-      L_params = c(log(0.5), log(0.4)),
-      alt_idx = replace(as.double(inputs$alt_idx), 5L, 3e9), M = inputs$M,
-      weights = inputs$weights,
-      eta_draws = get_halton_normals(25, inputs$N, K_w),
-      rc_dist = rep(0L, K_w), rc_correlation = FALSE, rc_mean = FALSE,
-      include_outside_option = FALSE),
-    "alt_idx must use 1-based alternative indices below 2^31", fixed = TRUE)
+  expect_warning(
+    expect_error(
+      mxl_blp_contraction(
+        delta = rep(0, J), target_shares = rep(1 / J, J), X = inputs$X,
+        W = inputs$W, beta = 0.3, mu = rep(0, K_w),
+        L_params = c(log(0.5), log(0.4)),
+        alt_idx = replace(as.double(inputs$alt_idx), 5L, 3e9), M = inputs$M,
+        weights = inputs$weights,
+        eta_draws = get_halton_normals(25, inputs$N, K_w),
+        rc_dist = rep(0L, K_w), rc_correlation = FALSE, rc_mean = FALSE,
+        include_outside_option = FALSE),
+      "alt_idx must use 1-based alternative indices (found NA).", fixed = TRUE),
+    "NAs introduced by coercion to integer range")
 })
 
 test_that("blp_contraction respects convergence tolerance", {

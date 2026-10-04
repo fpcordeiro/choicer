@@ -1534,10 +1534,11 @@ Rcpp::List mxl_conditional_tastes_parallel(
 // the situations in parallel without allocating.
 //
 // Every result is bitwise that of the per-situation Armadillo code this
-// replaced at the same thread count (choicer's own per-situation work does not
-// depend on it; a multithreaded BLAS may split the base product, as before),
-// with BLAS libraries whose results do not depend on operand addresses, such
-// as the reference BLAS and OpenBLAS:
+// replaced, with BLAS libraries whose results do not depend on operand
+// addresses, such as the reference BLAS and OpenBLAS: per-situation outputs at
+// any thread count (a multithreaded BLAS may split the base product, as
+// before), sums over situations at one thread (at more, the situations reach
+// the threads in a varying order, as before):
 //   * the base utilities are the same full products, X beta, then
 //     += W mu_final for a row-aligned W (one dgemv with beta = 1 into
 //     X beta), with an alternative-level W's W mu_final and then the ASCs
@@ -1547,7 +1548,13 @@ Rcpp::List mxl_conditional_tastes_parallel(
 //     code for tiny matrices, from the shapes alone), and the draws reach them
 //     through a copy into a thread buffer, as they did;
 //   * the draw loops use stable_softmax_n() and max_shifted_lse_n()
-//     (Armadillo's operations in Armadillo's order) and element-wise sums.
+//     (Armadillo's operations in Armadillo's order) and element-wise sums;
+//   * every statement that adds a product to an accumulator is kept as it
+//     was, an Armadillo operator() whose bounds check sits between the
+//     multiplication and the addition, so each compiler decides to fuse them
+//     into one multiply-add exactly as it did (GCC does not fuse across the
+//     check, clang fuses the statement); written with [], .at() or a raw
+//     pointer, such a statement changes results under GCC with FMA.
 // ============================================================================
 
 // The team of a prediction kernel's parallel regions, and so the number of
@@ -1840,139 +1847,121 @@ inline int mxl_pred_load(const MxlPredData& pd, const mxl_off t,
   return m;
 }
 
+// Per-thread accumulators of a kernel that sums over situations: n doubles
+// per scratch set, in padded buffers allocated on the primary thread and not
+// initialized (mxl_pred_zero() zeros them); running out of memory is an R
+// error saying how much each needs. Each thread adds into its own through an
+// Armadillo view, whose operator() keeps the bounds check of the code this
+// replaced, and the kernel adds them up in thread order afterwards, which at
+// one thread is the single addition the critical section used to make.
+using MxlPredAcc = std::vector<std::unique_ptr<double[]>>;
+
+inline MxlPredAcc mxl_pred_accumulators(const std::vector<MxlPredScratch>& scratch,
+                                        const std::size_t n, const char* what) {
+  const int n_threads = static_cast<int>(scratch.size());
+  MxlPredAcc acc;
+  try {
+    acc.reserve(n_threads);
+    for (int i = 0; i < n_threads; ++i) acc.push_back(mxl_buffer(n));
+  } catch (const std::bad_alloc&) {
+    MxlPredAcc().swap(acc);  // release before reporting
+    const double gb = sizeof(double) * static_cast<double>(n) / 1e9;
+    if (n_threads > 1) {
+      Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB per "
+                 "thread for %d threads. Run fewer threads with "
+                 "set_num_threads().", what, gb, n_threads);
+    }
+    Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB.", what, gb);
+  }
+  return acc;
+}
+
+// The count of alternatives the accumulators index: compute_J_total() wraps
+// the largest code, 2^31 - 1, plus the outside option to a negative int (it
+// used to reach Armadillo's allocation as an enormous size).
+inline void mxl_pred_check_alternatives(const int J_total) {
+  if (J_total <= 0) {
+    Rcpp::stop("alt_idx references alternative %d, which with the outside "
+               "option is more alternatives than an int can count.",
+               std::numeric_limits<int>::max());
+  }
+}
+
+// Zero the accumulators, thread i zeroing accumulator i (schedule(static)),
+// so that it touches first the memory it will add to.
+inline void mxl_pred_zero(MxlPredAcc& acc, const std::size_t n) {
+  const int n_threads = static_cast<int>(acc.size());
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(n_threads)
+#endif
+  for (int i = 0; i < n_threads; ++i) {
+    std::fill(acc[i].get(), acc[i].get() + n, 0.0);
+  }
+}
+
+// Simulated market shares over num_alts alternatives: each situation's
+// probabilities, averaged over draws, weighted and added by alternative into
+// its thread's accumulator (the outside option in slot 0 when present), then
+// the accumulators added up, over the sum of the weights. The additions into
+// local_shares are the statements of the code this replaced (see the top of
+// this section).
+inline arma::vec mxl_pred_shares(MxlPredData& pd, const arma::vec& weights,
+                                 const double weight_sum, const int num_alts,
+                                 std::vector<MxlPredScratch>& scratch,
+                                 MxlPredAcc& acc) {
+  if (acc.size() != scratch.size()) {
+    Rcpp::stop("Internal error: one accumulator per scratch set expected.");
+  }
+  mxl_pred_zero(acc, num_alts);
+  const int S = pd.S;
+  const bool include_outside_option = pd.include_outside_option;
+  const int o = include_outside_option ? 1 : 0;  // outside option: slot 0
+
+  mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
+    arma::vec local_shares(acc[sc.tid].get(), num_alts, false, true);
+    const int m_i = mxl_pred_load(pd, t, sc);
+    const int num_choices = m_i + o;
+    const double w_i = weights[t];
+    const AltCodes0 alt0{pd.lay.alt + pd.lay.row_off[t]};
+    const double* bu = sc.bu.get();
+    double* v = sc.v.get();
+    double* p = sc.p.get();
+
+    // Accumulate probabilities over draws
+    arma::vec P_bar_i(sc.aux.get(), num_choices, false, true);
+    P_bar_i.zeros();
+    for (int s = 0; s < S; ++s) {
+      const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m_i;
+      if (o) v[0] = 0.0;
+      for (int a = 0; a < m_i; ++a) v[o + a] = bu[a] + wg[a];
+      stable_softmax_n(v, p, num_choices);
+      for (int j = 0; j < num_choices; ++j) P_bar_i[j] += p[j];
+    }
+    P_bar_i /= static_cast<double>(S);
+
+    // Accumulate shares by alternative
+    if (include_outside_option) {
+      local_shares(0) += w_i * P_bar_i(0);
+    }
+    for (int a = 0; a < m_i; ++a) {
+      if (include_outside_option) {
+        local_shares(alt0[a] + 1) += w_i * P_bar_i(a + 1);
+      } else {
+        local_shares(alt0[a]) += w_i * P_bar_i(a);
+      }
+    }
+  });
+
+  arma::vec global_shares = arma::zeros(num_alts);
+  for (const std::unique_ptr<double[]>& a : acc) {
+    global_shares += arma::vec(a.get(), num_alts, false, true);
+  }
+  return global_shares / weight_sum;
+}
+
 // ============================================================================
 // Mixed Logit: Share Prediction and BLP Contraction
 // ============================================================================
-
-// Internal function for computing simulated market shares
-arma::vec mxl_predict_shares_internal(
-    const arma::mat& X,
-    const arma::mat& W,
-    const arma::vec& beta,
-    const arma::vec& mu_final,         // Transformed mu (exp(mu) for log-normal)
-    const arma::mat& L,                // Cholesky factor
-    const arma::uvec& alt_idx0,        // 0-based indexing
-    const Rcpp::IntegerVector& M,
-    const Rcpp::IntegerVector& S_prefix,
-    const arma::vec& weights,
-    const arma::vec& delta,            // Full J-element delta
-    const arma::cube& eta_draws,
-    const arma::uvec& rc_dist,
-    const int num_alts,
-    const bool use_asc,
-    const bool include_outside_option,
-    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
-) {
-  const int N = M.size();
-  const int K_w = W.n_cols;
-  const int Sdraw = (gen_seed >= 0) ? gen_S : static_cast<int>(eta_draws.n_cols);
-  // C++ runtime guards for generate mode
-  if (gen_seed >= 0 && gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-  if (gen_seed >= 0 && K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-
-  const bool use_generate_s = (gen_seed >= 0);
-  HaltonGen halton_gen_s;
-  if (use_generate_s) {
-    halton_gen_s = HaltonGen(static_cast<uint64_t>(gen_seed), Sdraw, K_w, gen_scramble);
-  }
-
-  const double weight_sum = arma::accu(weights);
-
-  if (weight_sum <= 0) {
-    Rcpp::stop("Error: Sum of weights must be positive.");
-  }
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util_s = compute_base_util_mxl(X, W, beta, mu_final,
-                                          alt_idx0, use_asc, delta);
-
-  // Initialize global accumulator for predicted shares
-  arma::vec global_shares = arma::zeros(num_alts);
-
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-  {
-    // Thread-local accumulator
-    arma::vec local_shares = arma::zeros(num_alts);
-    arma::mat eta_i_buf_s;    // generate mode scratch
-    arma::mat eta_i_store_s;  // cube mode materialised slice
-
-#ifdef _OPENMP
-#pragma omp for schedule(dynamic)
-#endif
-    for (int i = 0; i < N; ++i) {
-      const int m_i = M[i];
-      const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const int start_idx = S_prefix[i];
-      const int end_idx = start_idx + m_i - 1;
-      const double w_i = weights[i];
-      const arma::uvec alt_idx0_i = alt_idx0.subvec(start_idx, end_idx);
-
-      arma::mat W_i =
-          make_W_i(W, X.n_rows, start_idx, end_idx, alt_idx0_i);
-
-      // Pre-computed base utility for this individual
-      const arma::vec base_util_i = base_util_s.subvec(start_idx, end_idx);
-
-      // Accumulate probabilities over draws
-      arma::vec P_bar_i = arma::zeros(num_choices);
-
-      // --- Batch Cholesky: compute L * eta for all draws in one dgemm ---
-      const arma::mat* eta_i_ptr_s;
-      if (use_generate_s) {
-        halton_gen_s.fill_eta_i(eta_i_buf_s, i + 1);
-        eta_i_ptr_s = &eta_i_buf_s;
-      } else {
-        eta_i_store_s = eta_draws.slice(i);
-        eta_i_ptr_s = &eta_i_store_s;
-      }
-      const arma::mat& eta_i_s_ref = *eta_i_ptr_s;
-      arma::mat Gamma_final = batch_gamma_draws(L, eta_i_s_ref, rc_dist);
-
-      // Batch W_i * Gamma_final into a single dgemm (m_i x Sdraw)
-      const arma::mat WGamma = W_i * Gamma_final;
-
-      arma::vec V_s(num_choices);
-      arma::vec inside_utils(m_i);
-      arma::vec P_s;
-
-      for (int s = 0; s < Sdraw; ++s) {
-        inside_utils = base_util_i + WGamma.col(s);
-        fill_choice_utilities(V_s, inside_utils, num_choices,
-                              include_outside_option);
-
-        // Compute probabilities with numerical stability
-        stable_softmax(V_s, P_s);
-
-        P_bar_i += P_s;
-      }  // end s loop
-
-      P_bar_i /= static_cast<double>(Sdraw);
-
-      // Accumulate shares by alternative
-      if (include_outside_option) {
-        local_shares(0) += w_i * P_bar_i(0);
-      }
-      for (int a = 0; a < m_i; ++a) {
-        if (include_outside_option) {
-          local_shares(alt_idx0_i(a) + 1) += w_i * P_bar_i(a + 1);
-        } else {
-          local_shares(alt_idx0_i(a)) += w_i * P_bar_i(a);
-        }
-      }
-    }  // end i loop
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_shares += local_shares;
-    }
-  }  // end parallel region
-
-  return global_shares / weight_sum;
-}
 
 //' Per-observation simulated choice probabilities for Mixed Logit
 //'
@@ -2201,9 +2190,8 @@ Rcpp::NumericVector mxl_logsum(const arma::vec &theta, const arma::mat &X, const
 
 //' Predicted aggregate market shares for Mixed Logit
 //'
-//' Exported wrapper around the internal `mxl_predict_shares_internal`. Parses
-//' `theta` using the standard parameter ordering and returns the simulated
-//' weighted-average market shares.
+//' Parses `theta` using the standard parameter ordering and returns the
+//' simulated weighted-average market shares.
 //'
 //' @param theta parameter vector (beta, \[mu\], L, delta)
 //' @param X design matrix for fixed coefficients; sum(M_i) x K_x
@@ -2230,7 +2218,7 @@ arma::vec mxl_predict_shares(
     const arma::vec& theta,
     const arma::mat& X,
     const arma::mat& W,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const arma::cube& eta_draws,
@@ -2241,41 +2229,34 @@ arma::vec mxl_predict_shares(
     const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0
 ) {
-  // Basic dimensions
-  const int K_x = X.n_cols;
-  const int K_w = W.n_cols;
-
-  // Parse theta into parameter blocks (shared helper; validates theta)
-  const MxlParams par = parse_mxl_theta(theta, K_x, K_w, rc_dist,
+  // Parse theta into parameter blocks (shared helper; validates theta), then
+  // the inputs and their layout, on the primary thread
+  const MxlParams par = parse_mxl_theta(theta, X.n_cols, W.n_cols, rc_dist,
                                         rc_correlation, rc_mean, use_asc,
                                         include_outside_option);
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws, use_asc, par.delta,
-                        &weights);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, use_asc, par.delta, &weights);
-    check_rc_dist_length(rc_dist, K_w);
-  }
-  const arma::vec& beta = par.beta;
-  const arma::vec& mu_final = par.mu_final;
-  const arma::mat& L = par.L;
-  const arma::vec& delta = par.delta;
-
-  // 0-based indexing and prefix sums
-  arma::uvec alt_idx0 = alt_idx - 1;
-  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
+  const bool generate = gen_seed >= 0;
+  if (generate) mxl_pred_check_generate(gen_S, W.n_cols);
+  MxlPredData pd(X, W, rc_dist);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, use_asc, par.delta,
+                  &weights);
+  mxl_pred_setup(pd, par.mu_final, par.L, par.delta, use_asc,
+                 include_outside_option, eta_draws, gen_seed, gen_scramble,
+                 gen_S);
+  const ChoiceLayout& lay = pd.lay;
 
   // Number of alternatives for the output
-  const int J_inside = compute_J_inside(use_asc, delta, alt_idx0);
+  const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int num_alts = compute_J_total(J_inside, include_outside_option);
+  const double weight_sum = shares_denominator(weights);
+  mxl_pred_check_alternatives(num_alts);
 
-  return mxl_predict_shares_internal(
-    X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
-    delta, eta_draws, rc_dist, num_alts, use_asc, include_outside_option,
-    gen_seed, gen_scramble, gen_S
-  );
+  const int n_threads = mxl_pred_threads(lay.N);
+  std::vector<MxlPredScratch> scratch = mxl_pred_scratch(
+      pd, n_threads, static_cast<std::size_t>(lay.max_m) + 1);
+  MxlPredAcc acc = mxl_pred_accumulators(scratch, num_alts, "shares");
+  arma::vec base(lay.n_rows, arma::fill::none);
+  mxl_pred_base(pd, base, par.beta);
+  return mxl_pred_shares(pd, weights, weight_sum, num_alts, scratch, acc);
 }
 
 //' Diversion ratios for Mixed Logit (simulated, derivative-based)
@@ -2603,7 +2584,7 @@ arma::vec mxl_blp_contraction(
     const arma::vec& beta,
     const arma::vec& mu,
     const arma::vec& L_params,
-    const arma::uvec& alt_idx,
+    const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const arma::cube& eta_draws,
@@ -2618,21 +2599,15 @@ arma::vec mxl_blp_contraction(
     const int gen_S = 0
 ) {
   const int K_w = W.n_cols;
-  const bool use_asc = true;
 
   // delta is harmonized to cover every referenced alternative below, so the
   // ASC-coverage check is skipped here (use_asc = false, empty delta).
   check_rc_dist_length(rc_dist, K_w);
-  if (gen_seed < 0) {
-    validate_mxl_inputs(X, W, alt_idx, M, eta_draws,
-                        /*use_asc=*/false, arma::vec(), &weights);
-  } else {
-    if (gen_S <= 0) Rcpp::stop("gen_S must be positive when gen_seed >= 0");
-    if (K_w > HALTON_N_PRIMES) Rcpp::stop("K_w exceeds the primes table size (128); reduce K_w or extend the primes table.");
-    validate_choice_data(X, alt_idx, M, /*use_asc=*/false, arma::vec(),
-                         &weights);
-    check_rc_dist_length(rc_dist, K_w);
-  }
+  const bool generate = gen_seed >= 0;
+  if (generate) mxl_pred_check_generate(gen_S, K_w);
+  MxlPredData pd(X, W, rc_dist);
+  mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, /*use_asc=*/false,
+                  arma::vec(), &weights);
 
   // Build L matrix
   arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
@@ -2647,20 +2622,14 @@ arma::vec mxl_blp_contraction(
     }
   }
 
-  // Convert to 0-based indexing
-  arma::uvec alt_idx0 = alt_idx - 1;
-
-  // Deduce number of alternatives from data
-  const int J_inside = static_cast<int>(arma::max(alt_idx0)) + 1;  // inside options
-  const int num_alts = include_outside_option ? (J_inside + 1) : J_inside;  // total options incl. outside
+  // Deduce number of alternatives from data: the largest code
+  const int J_inside = compute_J_inside(false, arma::vec(), pd.lay);      // inside options
+  const int num_alts = compute_J_total(J_inside, include_outside_option); // total options incl. outside
 
   // Validate target shares length
   if (static_cast<int>(target_shares.n_elem) != num_alts) {
     Rcpp::stop("Error: target_shares must have length %d (total alternatives, incl. outside if present).", num_alts);
   }
-
-  // Compute prefix sums
-  Rcpp::IntegerVector S_prefix = compute_prefix_sum(M);
 
   // ---------------------------------------------------------------------------
   // Harmonize delta input:
@@ -2690,12 +2659,27 @@ arma::vec mxl_blp_contraction(
     delta_current -= delta_current(0);
   }
 
+  // The shares at a delta. X beta (+ W mu_final) is formed once, after the
+  // check of the weights, where the shares function formed it at every call
+  // (so a beta or mu of the wrong length stops at the same point); each pass
+  // adds the current ASCs row by row.
+  mxl_pred_setup(pd, mu_final, L, delta_current, /*use_asc=*/true,
+                 include_outside_option, eta_draws, gen_seed, gen_scramble,
+                 gen_S);
+  const double weight_sum = shares_denominator(weights);
+  const int n_threads = mxl_pred_threads(pd.lay.N);
+  std::vector<MxlPredScratch> scratch = mxl_pred_scratch(
+      pd, n_threads, static_cast<std::size_t>(pd.lay.max_m) + 1);
+  MxlPredAcc acc = mxl_pred_accumulators(scratch, num_alts, "shares");
+  arma::vec base(pd.lay.n_rows, arma::fill::none);
+  mxl_pred_base(pd, base, beta);
+  auto shares_at = [&](const arma::vec& d) {
+    pd.delta = d;
+    return mxl_pred_shares(pd, weights, weight_sum, num_alts, scratch, acc);
+  };
+
   // Compute initial predicted shares
-  arma::vec shares_pred = mxl_predict_shares_internal(
-    X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
-    delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option,
-    gen_seed, gen_scramble, gen_S
-  );
+  arma::vec shares_pred = shares_at(delta_current);
 
   // Work with inside shares only for the contraction step
   arma::vec shares_pred_inside = include_outside_option
@@ -2737,11 +2721,7 @@ arma::vec mxl_blp_contraction(
     }
 
     delta_current = delta_new;
-    shares_pred = mxl_predict_shares_internal(
-      X, W, beta, mu_final, L, alt_idx0, M, S_prefix, weights,
-      delta_current, eta_draws, rc_dist, num_alts, use_asc, include_outside_option,
-      gen_seed, gen_scramble, gen_S
-    );
+    shares_pred = shares_at(delta_current);
 
     shares_pred_inside = include_outside_option
                          ? shares_pred.subvec(1, num_alts - 1)
