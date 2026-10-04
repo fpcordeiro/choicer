@@ -2146,14 +2146,16 @@ inline void mxl_pred_x_k(const MxlPredData& pd, const mxl_off t,
 //'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1} of
-//'   the \eqn{K_w}-dimensional Halton sequence as standard normals, the
-//'   \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)}. The kernel then reads the draws of
-//'   \code{chunk_size} choice situations at a time, and \code{eta_draws}, a
-//'   \code{K_w x S x 0} array, gives only \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, used with
-//'   \code{draw_block}.
+//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
+//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
+//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
+//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
+//'   vector of \code{n K_w} values in that column-major order is read). The
+//'   kernel then reads the draws of \code{chunk_size} choice situations at a
+//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
+//'   \code{K_w} and \code{S}.
+//' @param chunk_size Choice situations per chunk of draws, a positive whole
+//'   number, used with \code{draw_block}.
 //' @returns List with `choice_prob` (length sum(M)), `utility` (length sum(M),
 //'   simulated mean of the deterministic + W*gamma component), and, when
 //'   `include_outside_option = TRUE`, `choice_prob_outside` (length N).
@@ -2282,14 +2284,16 @@ Rcpp::List mxl_predict(
 //'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1} of
-//'   the \eqn{K_w}-dimensional Halton sequence as standard normals, the
-//'   \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)}. The kernel then reads the draws of
-//'   \code{chunk_size} choice situations at a time, and \code{eta_draws}, a
-//'   \code{K_w x S x 0} array, gives only \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, used with
-//'   \code{draw_block}.
+//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
+//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
+//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
+//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
+//'   vector of \code{n K_w} values in that column-major order is read). The
+//'   kernel then reads the draws of \code{chunk_size} choice situations at a
+//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
+//'   \code{K_w} and \code{S}.
+//' @param chunk_size Choice situations per chunk of draws, a positive whole
+//'   number, used with \code{draw_block}.
 //' @returns Vector of length N with the simulated expected logsum per choice
 //'   situation.
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
@@ -2394,14 +2398,16 @@ Rcpp::NumericVector mxl_logsum(const arma::vec &theta, const arma::mat &X, const
 //'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1} of
-//'   the \eqn{K_w}-dimensional Halton sequence as standard normals, the
-//'   \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)}. The kernel then reads the draws of
-//'   \code{chunk_size} choice situations at a time, and \code{eta_draws}, a
-//'   \code{K_w x S x 0} array, gives only \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, used with
-//'   \code{draw_block}.
+//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
+//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
+//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
+//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
+//'   vector of \code{n K_w} values in that column-major order is read). The
+//'   kernel then reads the draws of \code{chunk_size} choice situations at a
+//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
+//'   \code{K_w} and \code{S}.
+//' @param chunk_size Choice situations per chunk of draws, a positive whole
+//'   number, used with \code{draw_block}.
 //' @returns Vector of length J (or J+1 with outside option) of predicted shares.
 //' @keywords internal
 // [[Rcpp::export]]
@@ -2487,14 +2493,16 @@ arma::vec mxl_predict_shares(
 //'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1} of
-//'   the \eqn{K_w}-dimensional Halton sequence as standard normals, the
-//'   \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)}. The kernel then reads the draws of
-//'   \code{chunk_size} choice situations at a time, and \code{eta_draws}, a
-//'   \code{K_w x S x 0} array, gives only \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, used with
-//'   \code{draw_block}.
+//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
+//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
+//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
+//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
+//'   vector of \code{n K_w} values in that column-major order is read). The
+//'   kernel then reads the draws of \code{chunk_size} choice situations at a
+//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
+//'   \code{K_w} and \code{S}.
+//' @param chunk_size Choice situations per chunk of draws, a positive whole
+//'   number, used with \code{draw_block}.
 //' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 //' @keywords internal
 // [[Rcpp::export]]
@@ -3007,14 +3015,16 @@ arma::vec mxl_blp_contraction_chunked(
 //'   identity permutations (plain Halton, compat), \code{1} = seeded position-wise digit permutations.
 //' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
 //' @param draw_block \code{NULL}, or in store mode a function of
-//'   \code{(start, n)} returning points \code{start, ..., start + n - 1} of
-//'   the \eqn{K_w}-dimensional Halton sequence as standard normals, the
-//'   \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
-//'   normal = TRUE, start = start)}. The kernel then reads the draws of
-//'   \code{chunk_size} choice situations at a time, and \code{eta_draws}, a
-//'   \code{K_w x S x 0} array, gives only \code{K_w} and \code{S}.
-//' @param chunk_size Choice situations per chunk of draws, used with
-//'   \code{draw_block}.
+//'   \code{(start, n)} returning points \code{start, ..., start + n - 1}
+//'   (1-based) of the \eqn{K_w}-dimensional Halton sequence as standard
+//'   normals, the \code{n x K_w} matrix of \code{randtoolbox::halton(n, K_w,
+//'   normal = TRUE, start = start)} (a vector when \code{K_w = 1}; any double
+//'   vector of \code{n K_w} values in that column-major order is read). The
+//'   kernel then reads the draws of \code{chunk_size} choice situations at a
+//'   time, and \code{eta_draws}, a \code{K_w x S x 0} array, gives only
+//'   \code{K_w} and \code{S}.
+//' @param chunk_size Choice situations per chunk of draws, a positive whole
+//'   number, used with \code{draw_block}.
 //' @returns J x J matrix of aggregate elasticities
 //' @examples
 //' \donttest{

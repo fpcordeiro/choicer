@@ -1036,8 +1036,9 @@ The implementation parallelizes over individuals using OpenMP:
    The prediction family (`predict()`, `elasticities()`, `diversion_ratios()`, `blp()`,
    `logsum()`, `consumer_surplus()`, and `gof()` through `predict()`) regenerates one block
    per choice situation, so for a panel fit $N$ replaces $U$ there. The fitted
-   object retains only `draws_info` metadata and post-estimation regenerates the cube; it
-   does not retain the cube itself. This mode is deterministic and has no seed or scramble.
+   object retains only `draws_info` metadata and post-estimation regenerates the cube (the
+   prediction family in chunks above 1 GiB, §5.5); it does not retain the cube itself.
+   This mode is deterministic and has no seed or scramble.
    In `draws = "generate"`, `HaltonGen` computes the radical inverse on demand.
    `scramble = "none"` uses identity permutations and is tested against the
    `randtoolbox` sequence. `scramble = "permuted"` (the default) constructs one
@@ -1093,16 +1094,19 @@ The implementation parallelizes over individuals using OpenMP:
 - Stored draws have dimensions $K_w\times S\times U$, one block per likelihood unit ($U$
   decision makers under `person_col`, choice situations otherwise). Generate-mode kernels
   receive an empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
-- Prediction kernels read one block per choice situation, situation $i$'s being points
+- Prediction kernels read one block per choice situation: situation $i$ gets points
   $(i-1)S+1,\ldots,iS$ of the Halton sequence. When that $K_w\times S\times N$ cube would
-  exceed 1 GiB, the store-mode post-estimation functions pass instead a $K_w\times S\times 0$
-  cube (which gives $K_w$ and $S$), a function `draw_block(start, n)` returning points
-  `start`, ..., `start + n - 1`, and `chunk_size`; the kernel fills a buffer with a chunk of
-  situations' blocks at a time, between parallel regions. `randtoolbox::halton(start = )`
-  reproduces any slice of the sequence bit for bit, so the chunks hold the cube's draws,
-  and each thread's sums carry over from chunk to chunk: results are the cube's, sums over
-  situations at one thread (at more, their rounding depends on the threads' order, as it
-  always did).
+  exceed 1 GiB, the store-mode prediction-type functions (`predict()`, `logsum()`,
+  `elasticities()`, `diversion_ratios()`, `blp()`, and through them `consumer_surplus()`
+  and `gof()`) pass instead a $K_w\times S\times 0$ cube (which gives $K_w$ and $S$), a
+  function `draw_block(start, n)` returning points `start`, ..., `start + n - 1`, and
+  `chunk_size`; the kernel fills a buffer with a chunk of situations' blocks at a time,
+  between parallel regions. `randtoolbox::halton(start = )` reproduces any slice of the
+  sequence bit for bit, so the chunks hold the cube's draws, and each thread's sums carry
+  over from chunk to chunk. Results therefore equal the whole cube's bit for bit: per
+  situation at any thread count, and sums over situations at one thread (at more threads
+  their rounding depends on the order in which threads take the situations, as it always
+  did).
 
 ---
 
@@ -1320,10 +1324,12 @@ inside target and predicted shares but does not verify that the full target sums
 The public `blp.choicer_mxl()` method resolves the fitted draw metadata through
 `.mxl_pred_draws()`: store-mode fits regenerate the plain-Halton cube, or above 1 GiB its
 chunks at every iteration (§5.5), while generate-mode fits pass the original seed,
-permutation mode, and $S$ to the contraction kernel. Share inversion therefore uses the
-same deterministic integration rule as the fit.
+permutation mode, and $S$ to the contraction kernel. Share inversion therefore draws from
+the same deterministic Halton sequence as the fit, one block per choice situation (for a
+cross-sectional fit, the estimation draws themselves; a panel fit's estimation draws are
+per decision maker instead, §5.5).
 
-*Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
+*Code reference: [mxlogit.cpp:mxl_blp_contraction, mxl_blp_contraction_chunked](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
 
 ---
 
@@ -1523,7 +1529,7 @@ $$
 \frac{1}{S} \sum_{s=1}^{S} \log \sum_{j \in C_i} \exp\big(V_{ij}^s\big)
 $$
 
-simulated over the same deterministic Halton draws used in estimation (regenerated from the stored draw metadata), with the outside option contributing $\exp(0)$ in each draw's sum when present, and the max-subtraction trick applied per draw.
+simulated over the fit's Halton sequence, one block per choice situation (regenerated from the stored draw metadata; for a cross-sectional fit, the estimation draws themselves; a panel fit's estimation draws are per decision maker instead), with the outside option contributing $\exp(0)$ in each draw's sum when present, and the max-subtraction trick applied per draw.
 
 **Order of operations matters.** The log-sum-exp function is convex, so by Jensen's inequality
 
