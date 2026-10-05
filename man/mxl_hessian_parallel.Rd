@@ -22,7 +22,8 @@ mxl_hessian_parallel(
   gen_scramble = 1L,
   gen_S = 0L,
   Ti = NULL,
-  draw_batch = 0L
+  draw_batch = 0L,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -73,6 +74,15 @@ decision maker. NULL (default): every choice situation is its own unit
 \item{draw_batch}{Integer; \code{0} (default) forms each decision maker's
 draws in batches sized to a per-thread memory budget, a positive value
 caps the number of draws per batch (for tests).}
+
+\item{acc_bytes}{Bytes for the threads' private upper triangles (2 GiB by
+default). While the triangles of the T threads in use, T n_params
+(n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+or for a NaN or negative value, the threads add into the result (the
+continuous parameters' rows through smaller private buffers, the ASC
+block atomically). One thread adds into the result whatever the value.
+The two ways differ by rounding only; \code{0} forces the shared result
+(for tests).}
 }
 \value{
 Hessian evaluated at input arguments
