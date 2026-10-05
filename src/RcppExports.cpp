@@ -313,6 +313,15 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// test_physical_memory
+double test_physical_memory();
+RcppExport SEXP _choicer_test_physical_memory() {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    rcpp_result_gen = Rcpp::wrap(test_physical_memory());
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -1223,6 +1232,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_test_arma_word_bytes", (DL_FUNC) &_choicer_test_arma_word_bytes, 0},
     {"_choicer_test_arma_view_n_elem", (DL_FUNC) &_choicer_test_arma_view_n_elem, 0},
     {"_choicer_test_mxl_acc", (DL_FUNC) &_choicer_test_mxl_acc, 4},
+    {"_choicer_test_physical_memory", (DL_FUNC) &_choicer_test_physical_memory, 0},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},
     {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 7},

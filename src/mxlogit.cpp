@@ -3,10 +3,12 @@
 #include "choicer_internal.h"
 #include "halton.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 // Reconstruct lower-triangular choleski factor L from L_params
@@ -324,6 +326,19 @@ struct MxlUnitData {
   }
   MxlUnitData(const MxlUnitData&) = delete;
   MxlUnitData& operator=(const MxlUnitData&) = delete;
+
+  // Bytes of one thread's unit scratch (MxlUnitScratch) at most: the largest
+  // unit's rows (X_u, W_u, the base utilities, d_bar and a batch of one
+  // draw), the draw batches (MXL_BATCH_BYTES), one situation's utilities and
+  // probabilities (V, P) and the K_w x S and S-long pieces.
+  double scratch_bytes() const {
+    const double K_w = W.n_cols;
+    return sizeof(double) *
+               (static_cast<double>(lay.max_unit_rows) * (X.n_cols + K_w + 4.0) +
+                2.0 * (static_cast<double>(lay.max_m) + 1.0) +
+                S * (6.0 * K_w + 4.0)) +
+           MXL_BATCH_BYTES;
+  }
 };
 
 // Thread-private state of the unit in hand; declare it inside the parallel
@@ -629,6 +644,120 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
   }
 }
 
+// ============================================================================
+// Threads and per-thread buffers (estimation and prediction kernels)
+// ============================================================================
+
+// The team of a kernel's parallel regions, and so the number of scratch sets
+// or accumulators it allocates: OpenMP's next team, within the thread limit,
+// and at most one thread per work item (likelihood unit or choice situation),
+// but two for a single item, so that the region stays active and, as before,
+// an OpenMP-built BLAS runs the item's products single-threaded.
+inline int mxl_team_threads(const mxl_off n_items) {
+#ifdef _OPENMP
+  mxl_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
+#else
+  mxl_off n = 1;
+#endif
+  n = std::min(n, std::max<mxl_off>(n_items, 2));
+  return static_cast<int>(std::max<mxl_off>(n, 1));
+}
+
+inline int mxl_thread_num() {
+#ifdef _OPENMP
+  return omp_get_thread_num();
+#else
+  return 0;
+#endif
+}
+
+// An uninitialized array of n doubles, the thread that uses it touching it
+// first, with 128 bytes of padding (a cache line on Apple silicon, two on
+// x86-64) so that no two threads' buffers share one.
+inline std::unique_ptr<double[]> mxl_buffer(const std::size_t n) {
+  return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
+}
+
+// ============================================================================
+// Memory guard
+//
+// An estimation kernel allocates scratch for each of its threads and buffers
+// they share. Before it does, it compares an upper estimate of the total with
+// the memory available: options(choicer.max_memory), in bytes, when set (a
+// container's or a job's limit can be below the machine's; Inf lifts the
+// check), otherwise the machine's physical memory (no check when it cannot be
+// read). Running out inside a parallel region would terminate R; the guard
+// stops with an error naming how many threads fit instead. Threads are never
+// capped silently. Read on the primary thread.
+// ============================================================================
+
+// The limit in bytes (0: none known) and where it comes from.
+inline double mxl_memory_limit(const char*& source) {
+  static SEXP name = Rf_install("choicer.max_memory");
+  SEXP opt = Rf_GetOption1(name);
+  if (!Rf_isNull(opt)) {
+    double v = NA_REAL;
+    if (Rf_length(opt) == 1 && TYPEOF(opt) == REALSXP &&
+        Rf_inherits(opt, "integer64")) {
+      std::int64_t b;  // bit64's storage; its NA is the smallest int64
+      std::memcpy(&b, REAL(opt), sizeof(b));
+      if (b != std::numeric_limits<std::int64_t>::min()) v = static_cast<double>(b);
+    } else if ((Rf_isReal(opt) || Rf_isInteger(opt)) && Rf_length(opt) == 1) {
+      v = Rf_asReal(opt);
+    }
+    if (!(v > 0)) {
+      Rcpp::stop("options(choicer.max_memory =) must be a positive number of "
+                 "bytes (Inf to lift the memory check).");
+    }
+    source = "options(choicer.max_memory)";
+    return v;
+  }
+  static const double physical = choicer_physical_memory();
+  source = "physical memory";
+  return physical;
+}
+
+// "12.34 GB", "567.8 MB" or "89 kB", the unit chosen after rounding.
+inline std::string mxl_bytes_str(const double bytes) {
+  char buf[64];
+  if (bytes >= 999.95e6) {
+    std::snprintf(buf, sizeof(buf), "%.2f GB", bytes / 1e9);
+  } else if (bytes >= 999.5e3) {
+    std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1e6);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%.0f kB", bytes / 1e3);
+  }
+  return buf;
+}
+
+// Stop when a call on T threads would take more than the limit: per_thread
+// bytes for each thread plus shared(t) bytes with t threads. The total need
+// not fall with t (below the accumulators' switch the per-thread triangles
+// return), so the message names the largest t that fits, not a range.
+template <typename Shared>
+inline void mxl_check_memory(const char* what, const int T,
+                             const double per_thread, const Shared& shared) {
+  const char* source = "";
+  const double limit = mxl_memory_limit(source);
+  if (!(limit > 0) || std::isinf(limit)) return;
+  const auto total = [&](const int t) { return t * per_thread + shared(t); };
+  if (total(T) <= limit) return;
+  int fit = T - 1;
+  while (fit >= 1 && total(fit) > limit) --fit;
+  if (fit >= 1) {
+    Rcpp::stop("The %s needs about %s with %d threads (%s per thread and %s "
+               "shared), more than the %s of %s. Use set_num_threads(%d), or "
+               "raise options(choicer.max_memory =).",
+               what, mxl_bytes_str(total(T)), T, mxl_bytes_str(per_thread),
+               mxl_bytes_str(shared(T)), mxl_bytes_str(limit), source, fit);
+  }
+  Rcpp::stop("The %s needs about %s even with one thread (%s per thread and %s "
+             "shared), more than the %s of %s. The estimate is an upper bound: "
+             "options(choicer.max_memory = Inf) lifts the check.",
+             what, mxl_bytes_str(total(1)), mxl_bytes_str(per_thread),
+             mxl_bytes_str(shared(1)), mxl_bytes_str(limit), source);
+}
+
 //' Log-likelihood and gradient for Mixed Logit
 //'
 //' Computes the log-likelihood and its gradient for the Mixed Logit model using
@@ -713,6 +842,9 @@ Rcpp::List mxl_loglik_gradient_parallel(
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
   const double log_S = std::log(static_cast<double>(ud.S));
+  mxl_check_memory("gradient", mxl_team_threads(lay.U),
+                   ud.scratch_bytes() + 16.0 * n_params,
+                   [&](const int) { return 16.0 * n_params; });
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -842,40 +974,6 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 }
 
 // ============================================================================
-// Threads and per-thread buffers (estimation and prediction kernels)
-// ============================================================================
-
-// The team of a kernel's parallel regions, and so the number of scratch sets
-// or accumulators it allocates: OpenMP's next team, within the thread limit,
-// and at most one thread per work item (likelihood unit or choice situation),
-// but two for a single item, so that the region stays active and, as before,
-// an OpenMP-built BLAS runs the item's products single-threaded.
-inline int mxl_team_threads(const mxl_off n_items) {
-#ifdef _OPENMP
-  mxl_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
-#else
-  mxl_off n = 1;
-#endif
-  n = std::min(n, std::max<mxl_off>(n_items, 2));
-  return static_cast<int>(std::max<mxl_off>(n, 1));
-}
-
-inline int mxl_thread_num() {
-#ifdef _OPENMP
-  return omp_get_thread_num();
-#else
-  return 0;
-#endif
-}
-
-// An uninitialized array of n doubles, the thread that uses it touching it
-// first, with 128 bytes of padding (a cache line on Apple silicon, two on
-// x86-64) so that no two threads' buffers share one.
-inline std::unique_ptr<double[]> mxl_buffer(const std::size_t n) {
-  return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
-}
-
-// ============================================================================
 // Compact derivative blocks
 //
 // A unit's score and Hessian are nonzero only on the continuous parameters
@@ -939,6 +1037,15 @@ struct MxlUnitMap {
     return i < K_c ? i : K_c + sit_slot[i - K_c];
   }
 };
+
+// Bytes of one thread's MxlUnitMap.
+inline double mxl_map_bytes(const MxlUnitData& ud) {
+  const double J_d = ud.n_params - ud.par.idx_delta_start;
+  const double R = static_cast<double>(ud.lay.max_unit_rows);
+  const double m = static_cast<double>(ud.lay.max_m);
+  const double a = std::min(J_d, R);
+  return sizeof(int) * (J_d + 2.0 * a + std::min(J_d, m) + R + m + 160.0) + 256.0;
+}
 
 // Every thread's maps, each in its own allocation, on the primary thread.
 using MxlUnitMaps = std::vector<std::unique_ptr<MxlUnitMap>>;
@@ -1376,6 +1483,34 @@ inline void mxl_apply_nonfinite(MxlSymAcc& acc,
   }
 }
 
+// Bytes of the derivative kernels' result and of the threads' private
+// accumulators with t threads (MxlSymAcc).
+inline double mxl_acc_need(const mxl_off n, const int K_c, const int t,
+                           const double acc_bytes) {
+  const double result = sizeof(double) * static_cast<double>(n) * static_cast<double>(n);
+  if (t <= 1) return result;
+  const mxl_off s = mxl_acc_rows(n, K_c, t, acc_bytes);
+  return result + sizeof(double) * t * static_cast<double>(mxl_acc_col_off(n, s));
+}
+
+// Bytes of one thread's Hessian buffers at the largest block, m = K_c + a
+// local parameters (a free ASCs, at most min(J_d, rows)): opg_pz and the
+// products (m x m), the stashes G and F (m x S), the K_c x a blocks, the K_c x
+// K_c pieces and the non-finite records; and, for a unit split into draw
+// batches, pass 2's rows of one situation, W_t (m_t x K_w) and W_t Gamma
+// (m_t x S), which the batch budget does not bound.
+inline double mxl_hessian_unit_bytes(const MxlUnitData& ud) {
+  const double K_c = ud.par.idx_delta_start;
+  const double J_d = ud.n_params - K_c;
+  const double a = std::min(J_d, static_cast<double>(ud.lay.max_unit_rows));
+  const double m = K_c + a;
+  const double m_t = static_cast<double>(ud.lay.max_m);
+  return sizeof(double) * (2.0 * m * m + 2.0 * m * ud.S + 2.0 * K_c * a +
+                           8.0 * K_c * K_c + 8.0 * m +
+                           m_t * (ud.S + ud.W.n_cols)) +
+         5.0 * ud.n_params;
+}
+
 // Add w_u H_u, the unit's m_u x m_u Hessian block (exactly symmetric), into
 // the accumulator's upper triangle; each term is formed as Armadillo's
 // element-wise update formed it (see mxl_hessian_parallel()).
@@ -1511,6 +1646,10 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
   // The result and the threads' accumulators, slot maps and non-finite
   // records, all allocated here on the primary thread.
   const int n_threads = mxl_team_threads(lay.U);
+  mxl_check_memory("Hessian", n_threads,
+                   ud.scratch_bytes() + mxl_map_bytes(ud) +
+                       mxl_hessian_unit_bytes(ud),
+                   [&](const int t) { return mxl_acc_need(n_params, Kc, t, acc_bytes); });
   MxlSymAcc acc(n_params, n_threads, Kc, "Hessian", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
   std::vector<MxlNonFinite> nonfinite = mxl_nonfinite(n_params, n_threads);
@@ -2033,6 +2172,9 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
   // The result and the threads' accumulators and slot maps, allocated here
   // on the primary thread.
   const int n_threads = mxl_team_threads(lay.U);
+  mxl_check_memory("BHHH matrix", n_threads,
+                   ud.scratch_bytes() + mxl_map_bytes(ud) + 16.0 * n_params,
+                   [&](const int t) { return mxl_acc_need(n_params, K_c, t, acc_bytes); });
   MxlSymAcc acc(n_params, n_threads, K_c, "BHHH", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
 
@@ -2138,6 +2280,10 @@ arma::mat mxl_scores_parallel(
                bytes / 1073741824.0, lay.U, n_params, max_bytes / 1073741824.0);
   }
 
+  mxl_check_memory("score matrix", mxl_team_threads(lay.U),
+                   ud.scratch_bytes() + 8.0 * n_params,
+                   [&](const int) { return 2.0 * bytes; });  // and its copy into R
+
   // Output: one row per likelihood unit (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
   arma::mat scores(lay.U, n_params);
@@ -2228,6 +2374,16 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
     }
     G = std::max(G, cl[u]);
   }
+
+  // Per thread: its cluster sum (n doubles, flags and indices) and its share
+  // of the chunks' cut parts (two per chunk, four chunks per thread).
+  mxl_check_memory("cluster meat", mxl_team_threads(U),
+                   ud.scratch_bytes() + mxl_map_bytes(ud) +
+                       (8.0 + 8 * 13.0 + 13.0) * n_params,
+                   [&](const int t) {
+                     return mxl_acc_need(n_params, K_c, t, acc_bytes) +
+                            8.0 * (static_cast<double>(U) + 2.0 * G);
+                   });
 
   // Units sorted by cluster: order[off[g - 1], off[g]) holds cluster g's
   // units in increasing order.
@@ -2377,6 +2533,12 @@ Rcpp::List mxl_conditional_tastes_parallel(
   const MxlLayout& lay = ud.lay;
   const arma::vec& mu_final = ud.par.mu_final;
   const double na = NA_REAL; // read on the master thread
+
+  mxl_check_memory("conditional tastes", mxl_team_threads(lay.U),
+                   ud.scratch_bytes() + sizeof(double) * 2.0 * W.n_cols * ud.S,
+                   [&](const int) {  // the outputs and their copies into R
+                     return sizeof(double) * 4.0 * W.n_cols * static_cast<double>(lay.U);
+                   });
 
   // Output: one column per likelihood unit (disjoint writes, no reduction).
   arma::mat taste_mean(W.n_cols, lay.U);

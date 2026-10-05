@@ -82,6 +82,19 @@ void get_num_threads() {
 
 //' Set the number of OpenMP threads used by choicer
 //'
+//' @details Each thread of the mixed logit's estimation routines (the
+//'   log-likelihood and gradient, the Hessian, the BHHH matrix, the
+//'   clustered and robust variances and the conditional tastes) needs its
+//'   own working memory, besides what they share. Before allocating it, they
+//'   compare an upper estimate of the call's total with the machine's total
+//'   physical memory and, when it would not fit, stop with an error that
+//'   gives the number of threads that fits; they do not lower the thread
+//'   count to make it fit. Memory already in use (the data, store-mode
+//'   draws, other processes) is not counted, so passing the check does not
+//'   promise that the call fits. `options(choicer.max_memory = <bytes>)` sets
+//'   the limit instead, for a container or a cluster job with less memory
+//'   than the machine, and `Inf` lifts the check.
+//'
 //' @param n_threads Positive integer number of threads.
 //' @return Invisibly returns `NULL`.
 //' @export
