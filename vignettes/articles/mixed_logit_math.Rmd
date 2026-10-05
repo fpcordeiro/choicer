@@ -536,7 +536,7 @@ unit in one batch computes exactly the unbatched values. The $L$ block cannot co
 through $\bar d_n$ alone: its per-draw derivative couples the residuals with that draw's
 $\eta_{ns}$ (§3.4.3), so the draw sum has to happen
 *after* that coupling; each batch writes its columns of $W_n'\,\texttt{DiffW}$
-($K_w \times S$, small whatever $R_n$ is), and `mxl_unit_score()` then forms
+($K_w \times S$, small whatever $R_n$ is), and `mxl_unit_score_cont()` then forms
 $A = \bigl((W_n' \,\texttt{DiffW} \odot D\gamma_1)\,\mathrm{diag}(\omega_n)\bigr)\,\eta_n'$
 ($K_w \times K_w$; a situation-stacked `dgemm` for the inner product, then a draw-block
 `dgemm` against $\eta_n'$), and reads $\ell_{pq}$'s score off
@@ -544,9 +544,12 @@ $\partial L_{pq}/\partial \ell_{pq} \cdot A(p, q)$. (The Hessian, §4.5, needs a
 per-situation loop because its outer-product terms cannot be pre-summed across situations
 before being squared.)
 
-*Code reference: `mxl_unit_simulate()`, `mxl_unit_score()` in
+*Code reference: `mxl_unit_simulate()`, `mxl_unit_score_cont()` (the continuous block,
+with the $A$ collapse), `mxl_unit_score()` and `mxl_unit_score_local()` (the delta block,
+over every parameter or the unit's own, §4.4.6) in
 [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp), shared
-by `mxl_loglik_gradient_parallel`, `mxl_bhhh_parallel` and `mxl_scores_parallel`.*
+by `mxl_loglik_gradient_parallel`, `mxl_scores_parallel`, `mxl_bhhh_parallel` and
+`mxl_cluster_meat_parallel`.*
 
 ---
 
@@ -660,15 +663,17 @@ $\mu$--$L$ cross derivative.
 
 ### 4.4 Implementation Tricks in `mxl_hessian_parallel`
 
-The four subsections below describe the computational restructuring used by
+The subsections below describe the computational restructuring used by
 `mxl_hessian_parallel`. They cover (i) a block decomposition of the score
 vector and Hessian terms, (ii) buffer accumulation that eliminates the per-draw dense
-matrix allocation, (iii) BLAS-3 batching of two outer-product sums, and (iv) the symmetry
-strategy used for final assembly.
+matrix allocation, (iii) BLAS-3 batching of two outer-product sums, (iv) the symmetry
+strategy used for final assembly, and (v) the compact block of the parameters a unit's
+likelihood involves, in which (i)–(iv) run, and how the blocks are accumulated into the
+result.
 
 A reader who has never seen the C++ can understand what the function does and why the
-result is numerically equivalent to the per-draw naive form (§4.1–4.2) from the following
-four sections alone.
+result is numerically equivalent to the per-draw naive form (§4.1–4.2) from these
+sections alone.
 
 #### 4.4.1 Parameter Block Layout and Score Vector Decomposition
 
@@ -734,8 +739,9 @@ distinct sub-blocks:
 | `buf_Pzz_dd` | $J_d$-vector | $\sum_s P_{is}\,\mathrm{sum\_Pzz}_{dd,s}$ | Diagonal only |
 | `buf_diff_HV_cc` | $K_c \times K_c$ | $\sum_s P_{is}\,\mathrm{sum\_diff\_HV}_{s}$ | Symmetric; cc block only ($H_V$ has no delta rows) |
 
-All four buffers are thread-private scratch allocated once per thread outside the
-$N$-loop and zeroed at the start of each individual $i$.
+All four buffers are thread-private scratch, zeroed at the start of each individual $i$.
+In the code the cd and dd buffers hold only the constants that $i$'s likelihood involves
+(§4.4.6), so they grow only to the largest such block their thread meets.
 
 #### 4.4.3 BLAS-3 Batching of Outer-Product Sums — Identities A and B
 
@@ -871,18 +877,57 @@ Louis-identity assembly:
 $$
 H_i = \mathrm{hess\_t1},
 \qquad
-\mathrm{local\_hess} \mathrel{+}= w_i H_i.
+\text{result} \mathrel{+}= w_i H_i \quad \text{(upper triangle, §4.4.6)}.
 $$
 
-**Symmetry strategy.** The Hessian $H_i$ is symmetric. The current code uses a
-full-matrix approach: `buf_Pzz_cc` and `buf_diff_HV_cc` are accumulated as full symmetric
-matrices (the existing per-alternative loop writes both $(r, p)$ and $(p, r)$ positions
-for off-diagonal $L$-$L$ entries in `sum_diff_H_V_cc`, and this is retained unchanged),
-and $G G^\top$ is formed in full. An alternative upper-triangle-only
-strategy — accumulating only the upper triangle in the cc buffers and mirroring once
-before the OpenMP critical merge — would halve the work for those buffers. It was deferred
-because the asymmetric cd block requires explicit transposition regardless, and the
-full-matrix path is simpler to audit.
+**Symmetry strategy.** $H_i$ is exactly symmetric in floating point, not only in exact
+arithmetic: $G G^\top$ and $F_t F_t^\top$ are symmetric products, `buf_Pzz_cc` and
+`buf_diff_HV_cc` are accumulated as full symmetric matrices (the per-alternative loop
+writes both $(r, p)$ and $(p, r)$ for off-diagonal $L$-$L$ entries in `sum_diff_H_V_cc`),
+and the dc block is written as the transpose of the cd block. So only the upper triangle
+of $w_i H_i$ is added into the result, which is mirrored once after the parallel region
+(§4.4.6); the mirror is the sum the lower triangle would have accumulated.
+
+#### 4.4.6 Compact Blocks and Accumulation
+
+A likelihood unit's score and Hessian are zero outside the continuous block and the
+constants of the alternatives the unit faced (unit $u$: a decision maker, or a choice
+situation in the cross-section, §1.6). Let $J_{d,u}$ be the number of free ASCs among the
+alternatives in $u$'s choice situations (the normalized reference has none without an
+outside option, and the outside option has none), and $J_{d,t} \le J_{d,u}$ the number in
+situation $t$. Everything in §4.4.1–§4.4.5 runs in $u$'s **compact block** of
+$K_c + J_{d,u}$ local parameters, the continuous parameters first and then $u$'s free ASCs
+in increasing global order, so that each $J_d$-sized piece there is restricted to the
+constants $u$'s likelihood involves. Each situation has its own slots as well: the
+per-situation, per-draw pieces (`sum_Pzz_cd`, `sum_Pzz_dd`, $F_t$) are formed on its
+$K_c + J_{d,t}$ parameters and added into $u$'s slots, and an alternative listed twice in a
+situation adds into one slot, as the dense scatter did. The product $G G^\top$ then costs
+$O(S\,(K_c+J_{d,u})^2)$ per unit and each $F_t F_t^\top$ costs $O(S\,(K_c+J_{d,t})^2)$ per
+situation, instead of $O(S\,n_\text{params}^2)$: on a school-census design with 2,620
+parameters, a student's likelihood involves 59 of them on average.
+
+$w_u H_u$ is added into the $n_\text{params} \times n_\text{params}$ result at its global
+indices, upper triangle only (§4.4.5). With one thread the blocks are added into the
+result itself. With several, each thread adds into its own packed upper triangle while
+the threads' triangles, $n_\text{params}(n_\text{params}+1)/2$ doubles each, fit in 2 GiB
+together (up to about 7,000 parameters at eleven threads), and the triangles are added up
+in thread order. Above that the threads share the result: each keeps private only the
+rows of the $K_c$ continuous parameters, which every unit touches, and adds the ASC block
+atomically. The two differ only in the order of the additions. Per-thread triangles are
+kept where they fit because they need no atomic additions: at census scale with eleven
+threads, the clustered meat of 200,000 students in 2,000 clusters (§9.5) took 1.37 s with
+them and 1.82 s with a shared result, and the BHHH matrix of 200,000 students 1.23 s and
+1.32 s; the Hessian took the same time either way, and only with two draws, where
+accumulation dominates, was the shared result faster (the BHHH matrix in 0.47 s against
+0.52 s). The BHHH kernel's rank-one updates $w_u g_u g_u^\top$ (§4.1's score) use the
+same blocks and accumulators, and the cluster meat's update with each cluster's summed
+weighted scores (§9.5) the union of its units' blocks.
+
+Non-finite terms spread as the dense products spread them: a non-finite row of $F_t$ or
+of the centered $G$ makes the rows and columns of the parameters concerned `NaN` in the
+result ($0 \cdot \mathrm{NaN}$), and a non-finite weight makes every entry outside the
+unit's block `NaN` ($w \cdot 0$; `NA` for a missing weight), or, with several such units,
+every entry outside the intersection of their blocks.
 
 ### 4.5 Panel Hessian: the Louis (1982) Identity and Its Two-Pass Assembly
 
@@ -927,7 +972,8 @@ therefore runs two passes per unit, sharing the same draw loop that computes $\o
     summed within or across situations.
   - **Identity B** (`F_stash`, the $\mathrm{sum\_Pz}\,\mathrm{sum\_Pz}^\top$ term): column
     $s$ is *overwritten* each situation with $\sqrt{\omega_{ns}}\,\mathrm{sum\_Pz}_{nts}$,
-    and `opg_pz += F_stash * F_stash.t()` runs once *per situation*, immediately after that
+    and $F_t F_t^\top$, formed on the situation's slots (§4.4.6), is added into `opg_pz`
+    once *per situation*, immediately after that
     situation's $S$-loop — situations' outer products are added, never combined before
     squaring: $\sum_t F_t F_t^\top = \sum_t \sum_s \omega_{ns}\,\mathrm{sum\_Pz}_{nts}\,
     \mathrm{sum\_Pz}_{nts}^\top$.
@@ -947,9 +993,9 @@ therefore runs two passes per unit, sharing the same draw loop that computes $\o
 
 Final assembly mirrors §4.4.5's block-by-block combination (`hess_t1 = opg_pz - buf_Pzz +
 buf_diff_HV`, cc/cd/dc/dd), whose centered Identity A already carries the Louis identity's
-$-\bar g_n \bar g_n^\top$, and closes with `local_hess += w_n * hess_t1` — no $/\hat P_n$
-step, because $\omega_{ns}$ is already a normalized weight (§2.6), unlike the raw $P_{is}$
-that §4.4.5's single-situation formula divides by. Setting $T_n \equiv 1$ collapses pass 2 to a single
+$-\bar g_n \bar g_n^\top$, and closes by adding the upper triangle of $w_n\,$`hess_t1` into
+the result (§4.4.6) — no $/\hat P_n$ step, because $\omega_{ns}$ is already a normalized
+weight (§2.6), as in §4.4.5. Setting $T_n \equiv 1$ collapses pass 2 to a single
 situation per unit: `F_stash` (holding $\sqrt{\omega_{ns}}\,\mathrm{sum\_Pz}_{nts}$) and
 `G_stash` (holding $\sqrt{\omega_{ns}}\, g_{nts}$) remain different vectors, but with only
 one situation to loop over, F's per-situation *overwrite* and G's cross-situation
@@ -1008,10 +1054,17 @@ $$
 
 ### 5.3 OpenMP Parallelization
 
-The implementation parallelizes over individuals using OpenMP:
-- Each thread maintains local accumulators for log-likelihood and gradient/Hessian
-- Thread results are combined using `#pragma omp critical` sections
-- Dynamic scheduling is used for load balancing: `#pragma omp for schedule(dynamic)`
+The implementation parallelizes over likelihood units (§1.6) using OpenMP, with dynamic
+scheduling for load balancing (`#pragma omp for schedule(dynamic)`):
+- The log-likelihood and gradient keep thread-local accumulators, combined in a
+  `#pragma omp critical` section.
+- The Hessian and BHHH kernels add each unit's compact block, and the cluster meat each
+  cluster's, into per-thread packed upper triangles, added up in thread order after the
+  parallel region, or into a shared result when those would exceed 2 GiB (§4.4.6).
+- Before allocating, each estimation kernel compares an upper estimate of its working
+  memory, per thread and shared, with the machine's physical memory (or
+  `options(choicer.max_memory)`), and stops with an error naming the number of threads
+  that would fit instead of running out of memory inside the parallel region.
 
 ### 5.4 Practical Notes
 
@@ -1431,25 +1484,33 @@ conditional-maximum-likelihood alternative.
 
 ### 9.5 Implementation and Cluster-Robust Extension
 
-The common post-estimation path computes the $N\times p$ matrix $S$ of weight-free scores
-with `mxl_scores_parallel`, using the fit's stored or generated draw metadata, and forms
+The variance routes never form the $U\times n_\text{params}$ matrix $S$ of the units'
+weight-free scores: two million decision makers by 2,620 parameters would take 42 GB.
+With the bread $A=\texttt{mxl\_hessian\_parallel}(\widehat\theta;w)$, the robust meat is
+the BHHH
+kernel with squared weights, summed over each unit's compact block (§4.4.6),
 
 $$
-A=\texttt{mxl\_hessian\_parallel}(\widehat\theta;w),
-\qquad B=(\operatorname{diag}(w)S)^T(\operatorname{diag}(w)S).
+B=\sum_i w_i^2 s_i s_i^T=\texttt{mxl\_bhhh\_parallel}(\widehat\theta;w^2),
 $$
 
-The eager fit-time path is algebraically identical and can obtain the meat from the BHHH
-kernel with `weights = w^2`. The matrices are combined as $V = A^{-1} B A^{-1}$. For
-clusters $g(i)$, the alternative meat is
+and `vcov(type = "bhhh")` is the same kernel with weights $w$. The matrices are combined
+as $V = A^{-1} B A^{-1}$, and one set of draws, stored or generated from the fit's draw
+metadata, serves both. For clusters $g(i)$, the meat
 
 $$
 B_{\mathrm{cluster}}=\sum_g
 \left(\sum_{i:g(i)=g}w_is_i\right)
-\left(\sum_{i:g(i)=g}w_is_i\right)^T,
+\left(\sum_{i:g(i)=g}w_is_i\right)^T
 $$
 
-with no finite-cluster correction. Clustering changes inference, not the estimand of
+is `mxl_cluster_meat_parallel`: the units are sorted by cluster and cut into chunks of
+similar numbers of rows, about four per thread; each cluster's weighted scores are summed over the
+parameters they touch, and a cluster that a chunk boundary cuts is summed in parts, added
+after the parallel region, so a few large clusters still keep every thread busy. There is
+no finite-cluster correction. `mxl_scores_parallel` (internal; no variance route of the
+mixed logit calls it) still returns $S$ for small problems and refuses a matrix above
+2 GiB. Clustering changes inference, not the estimand of
 whichever likelihood was fit (§1.6): cross-sectional by default, or the panel likelihood
 of §2.6 under `person_col`, where cluster labels must nest decision makers. It is only
 §9.1–§9.2's WESML weighting that is defined solely for the cross-sectional likelihood:
@@ -1466,7 +1527,7 @@ for any stored `vcov`. User-facing entry points: `wesml_weights()` and
 `sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
 estimates with the robust variance; `wesml_vcov()` returns it post hoc.
 
-*Code reference: `mxl_scores_parallel()` / `mxl_bhhh_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, and `.assemble_score_vcov()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mxl_bhhh_parallel()`, `mxl_cluster_meat_parallel()` and `mxl_scores_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `compute_sandwich_vcov()`, `.assemble_score_vcov()`, `.mxl_score_meat()` and (MNL, NL) `.score_meat()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 

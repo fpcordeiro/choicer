@@ -2078,10 +2078,13 @@ inline void mxl_bhhh_add_dense(const MxlSymAcc& acc, double* buf,
 //' \eqn{s_i} is the score of likelihood unit i (gradient of its simulated
 //' log-likelihood \eqn{\log \bar{P}_i}; a decision maker when Ti is supplied,
 //' a choice situation otherwise).
-//' This outer product of gradients (OPG) estimator provides an alternative to
-//' the analytical Hessian for standard error computation that scales to large
-//' problems where the analytical Hessian is infeasible (e.g., many alternatives
-//' or simulation draws).
+//' This outer product of gradients (OPG) estimator is an alternative to the
+//' analytical Hessian for standard errors. It needs no second derivatives, and
+//' so costs less. Like the Hessian, it forms each unit's contribution only over
+//' the parameters that unit's likelihood involves (beta, mu, L and the free
+//' ASCs of the alternatives the unit faced), so the work per unit does not grow
+//' with the number of alternatives; the n_params x n_params result and the
+//' threads' accumulators do (see acc_bytes).
 //'
 //' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
 //' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x

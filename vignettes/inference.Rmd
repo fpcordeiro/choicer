@@ -83,7 +83,7 @@ summary(fit)
 ```
 
 How much did it matter? `vcov(fit, type = )` recomputes any of the four
-estimators from the stored per-situation scores:
+estimators from the data stored with the fit:
 
 ```{r compare}
 se_of <- function(V) sqrt(diag(V))

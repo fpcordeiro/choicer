@@ -956,10 +956,13 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' \eqn{s_i} is the score of likelihood unit i (gradient of its simulated
 #' log-likelihood \eqn{\log \bar{P}_i}; a decision maker when Ti is supplied,
 #' a choice situation otherwise).
-#' This outer product of gradients (OPG) estimator provides an alternative to
-#' the analytical Hessian for standard error computation that scales to large
-#' problems where the analytical Hessian is infeasible (e.g., many alternatives
-#' or simulation draws).
+#' This outer product of gradients (OPG) estimator is an alternative to the
+#' analytical Hessian for standard errors. It needs no second derivatives, and
+#' so costs less. Like the Hessian, it forms each unit's contribution only over
+#' the parameters that unit's likelihood involves (beta, mu, L and the free
+#' ASCs of the alternatives the unit faced), so the work per unit does not grow
+#' with the number of alternatives; the n_params x n_params result and the
+#' threads' accumulators do (see acc_bytes).
 #'
 #' @param theta vector collecting model parameters (beta, mu, L, delta (ASCs))
 #' @param X design matrix for covariates with fixed coefficients; sum(M_i) x K_x
@@ -1760,18 +1763,23 @@ get_num_threads <- function() {
 
 #' Set the number of OpenMP threads used by choicer
 #'
-#' @details Each thread of the mixed logit's estimation routines (the
-#'   log-likelihood and gradient, the Hessian, the BHHH matrix, the
-#'   clustered and robust variances and the conditional tastes) needs its
-#'   own working memory, besides what they share. Before allocating it, they
-#'   compare an upper estimate of the call's total with the machine's total
-#'   physical memory and, when it would not fit, stop with an error that
-#'   gives the number of threads that fits; they do not lower the thread
-#'   count to make it fit. Memory already in use (the data, store-mode
-#'   draws, other processes) is not counted, so passing the check does not
-#'   promise that the call fits. `options(choicer.max_memory = <bytes>)` sets
-#'   the limit instead, for a container or a cluster job with less memory
-#'   than the machine, and `Inf` lifts the check.
+#' @details The setting applies to every choicer kernel run afterwards in the
+#'   session (it calls `omp_set_num_threads()`); [thread_info()] reports it.
+#'   Each thread of the mixed logit's compiled routines (behind the
+#'   log-likelihood and its gradient, the Hessian, the BHHH matrix, the robust
+#'   and clustered meats and the conditional tastes) needs its own working
+#'   memory, besides what they share. Before allocating it, they compare an
+#'   upper estimate of the call's total with the machine's total physical
+#'   memory and, when it would not fit, stop with an error that gives the
+#'   number of threads that fits; they do not lower the thread count to make
+#'   it fit. Memory already in use (the data, store-mode draws, other
+#'   processes) is not counted, nor is the inversion in R of the resulting
+#'   matrices, so passing the check does not promise that the call fits;
+#'   where the physical memory cannot be read and the option is unset, there
+#'   is no check.
+#'   `options(choicer.max_memory = <bytes>)` sets the limit instead, for a
+#'   container or a cluster job with less memory than the machine, and `Inf`
+#'   lifts the check.
 #'
 #' @param n_threads Positive integer number of threads.
 #' @return Invisibly returns `NULL`.
