@@ -31,8 +31,8 @@ test_that("every kernel stops before allocating more than choicer.max_memory", {
   }
   # Inf lifts the check, and a large limit does not bind: the results are
   # those without the option (one thread, so that they repeat bit for bit)
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(1L)
   options(choicer.max_memory = NULL)
   ref <- lapply(setNames(mxlp_kernels, mxlp_kernels), function(k) mxlp_call(k, fx))
   for (lim in list(Inf, 1e15)) {
@@ -88,8 +88,8 @@ test_that("the Hessian counts a split unit's per-situation draws", {
 test_that("the memory error gives the number of threads that fits", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(2L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(2L)
   # 1,000 alternatives: the BHHH's result (8 MB) and each thread's triangle
   # (4 MB) are a large part of the estimate, so two threads need about twice
   # what one does
@@ -100,7 +100,7 @@ test_that("the memory error gives the number of threads that fits", {
   on.exit(options(old), add = TRUE)
   expect_error(mxlp_call("bhhh", fx),
                "with 2 threads .* Use set_num_threads\\(1\\), or raise")
-  set_num_threads(1L)
+  mxlp_threads(1L)
   B <- mxlp_call("bhhh", fx)
   options(choicer.max_memory = NULL)
   expect_identical(B, mxlp_call("bhhh", fx))

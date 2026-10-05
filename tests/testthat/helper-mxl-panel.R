@@ -500,6 +500,13 @@ mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
   do.call(fn, args)
 }
 
+# Set the kernels' threads where OpenMP runs; without it every kernel runs on
+# one thread and set_num_threads() only warns.
+mxlp_threads <- function(n) {
+  if (isTRUE(thread_info()$openmp_enabled)) set_num_threads(n)
+  invisible(NULL)
+}
+
 # Flatten a kernel result (matrix or list of arrays) to one numeric vector.
 mxlp_flat <- function(x) {
   if (!is.list(x)) return(as.numeric(x))
