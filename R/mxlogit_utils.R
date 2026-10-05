@@ -170,12 +170,18 @@
 #'   \code{input_data} with a \code{cluster} field). Use \code{"sandwich"} for
 #'   valid inference under choice-based / WESML weighting, where the
 #'   inverse-Hessian and ordinary BHHH are invalid; it reduces to the usual
-#'   robust variance under uniform weights. BHHH scales better to large
-#'   problems (many alternatives or simulation draws) but may underestimate
-#'   standard errors in finite samples or away from the optimum. Any of these
-#'   can also be recomputed post hoc via \code{vcov(fit, type = )}. Without
-#'   \code{person_col}, clustering repairs the inference, not the likelihood:
-#'   the cross-sectional likelihood still treats each choice situation as an
+#'   robust variance under uniform weights. BHHH needs no second derivatives
+#'   and so costs less than the Hessian. For both, the work per decision maker
+#'   involves only the parameters that enter that decision maker's likelihood
+#'   (the fixed coefficients, the random coefficients' means and Cholesky
+#'   factor, and the constants of the alternatives they faced), so it does not
+#'   grow with the number of alternatives in the data; the
+#'   parameters-by-parameters matrix and its inversion do. BHHH may
+#'   underestimate standard errors in finite samples or away from the
+#'   optimum. Any of these variances can also be recomputed post hoc via
+#'   \code{vcov(fit, type = )}. Without \code{person_col}, clustering repairs
+#'   the inference, not the likelihood: the cross-sectional likelihood still
+#'   treats each choice situation as an
 #'   independent draw from the mixing distribution, and on panel data is a
 #'   less efficient composite likelihood for the same taste distribution.
 #'   With \code{person_col} the likelihood unit is the decision maker, so

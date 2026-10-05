@@ -306,95 +306,103 @@
   change the fit; under `options(warn = 2)`, which turns warnings into errors,
   such fits now stop before estimating.
 
-## Mixed logit — Hessian, BHHH and clustered variances at population scale
+## Mixed logit — Hessian, variances and memory at population scale
 
 - The analytical Hessian of the mixed logit (behind `run_mxlogit()`'s
-  default standard errors, the bread of `se_method = "sandwich"` and
-  `"cluster"`, `vcov(type = )` and `wesml_vcov()`) now works, for each
-  decision maker, on the parameters its likelihood depends on: the
-  coefficients, the means and the Cholesky factor of the random
+  default standard errors, `vcov(type = "hessian")`, and the bread of the
+  robust, WESML and clustered variances) now works, for each decision maker,
+  only on the parameters that decision maker's likelihood involves: the
+  fixed coefficients, the means and Cholesky factor of the random
   coefficients, and the constants of the alternatives that decision maker
   faced; each choice situation's terms involve its own alternatives'
   constants only. It used to carry every alternative's constant through
   every decision maker, so that with thousands of alternatives most of its
-  work multiplied zeros. On a synthetic school-census design with 2,620
-  parameters (2,602 schools, 10 to 100 per choice set, three correlated
-  random coefficients, `S = 100`), where a student's block holds 59 of the
+  work multiplied zeros; the gain is largest where each decision maker faces
+  a small share of the alternatives. On a synthetic school-census design with
+  2,620 parameters (2,602 schools, 10 to 100 per choice set, most students
+  with one choice set and some with up to three, three correlated random
+  coefficients, `S = 100`), where a student's likelihood involves 59 of the
   2,620 parameters on average, the Hessian for 2,000 students took 0.35 s
   instead of 24.8 s at eleven threads (1.9 s instead of 101 s at one), and
-  for 20,000 students 3.2 s instead of 228 s. On a claims-like panel with 500
-  hospitals (518 parameters, 20 to 200 hospitals per choice set, up to 500
-  visits per patient) it took 3.4 s instead of 7.1 s for 1,500 patients and
-  26 s instead of 55 s for 15,000 (medians of three alternated runs under
-  background load). Peak working memory for the census Hessian fell from
-  1.9 GB to 0.4 GB: the threads no longer hold matrices of size parameters by
-  parameters per decision maker, only one accumulator each, allocated before
-  the parallel loop, so that running out of memory stops with an R error
-  that says how much each thread needs and suggests fewer threads. Results
-  change by floating-point rounding only: at most 3.5e-15 relative on our
-  reference battery of kernel configurations, where most Hessians, and every
-  one on designs with many alternatives, are unchanged bit for bit. As
-  before, a decision maker whose utilities overflow is left out, and a
-  non-finite term of a decision maker's Hessian (an overflowing utility at a
-  draw of zero weight) makes the rows and columns of the parameters
-  concerned `NaN`.
+  for 20,000 students 3.2 s instead of 228 s; its peak working memory fell
+  from 1.9 GB to 0.4 GB. On a claims-like panel with 500 hospitals (518
+  parameters, 20 to 200 hospitals per choice set, up to 500 visits per
+  patient) it took 3.4 s instead of 7.1 s for 1,500 patients and 26 s
+  instead of 55 s for 15,000 (medians of three alternated runs under
+  background load): a patient's visits involve about 60 of the hospitals on
+  average, and the work on each visit's alternatives, which this change
+  leaves as it was, now dominates.
 - The BHHH (outer product of gradients) matrix of the mixed logit (behind
-  `se_method = "bhhh"`, and, with squared weights, the meat of
-  `se_method = "sandwich"`) now adds each decision maker's rank-one update
-  over the same block: the coefficients, the random coefficients' means and
-  Cholesky factor, and the constants of the alternatives faced. It used to
-  form every decision maker's update over all parameters. Results are
-  unchanged bit for bit on our reference battery, including the rows of
-  `NaN` that a decision maker whose utilities overflow spreads, as before. On
-  the school-census design the BHHH matrix for 20,000 students took 0.15 s
-  instead of 25.1 s at eleven threads, and for 200,000 students 1.4 s
-  instead of 246 s; on the claims-like panel, 15,000 patients took 0.88 s
-  instead of 1.14 s (medians of three alternated runs).
-- Robust and clustered variances of a mixed logit (`vcov(type = "robust")`,
-  `vcov(type = "cluster")`, `wesml_vcov()`, and `se_method = "sandwich"` or
-  `"cluster"` in `run_mxlogit()`) no longer form the matrix of every
-  decision maker's score, one row per decision maker and one column per
-  parameter: 42 GB for 2 million students with 2,620 parameters, held twice
-  while it was weighted. The weighted scores are summed within clusters in
-  C++ instead (a new internal kernel; robust variances use the BHHH kernel
-  with squared weights), and `vcov(type = "bhhh")` uses the BHHH kernel as
-  the fit itself does. On the school-census design with 200,000 students,
-  the meat of the sandwich took 1.4 s and 0.4 GB of working memory instead of
-  12.2 s and 8.4 GB for the robust variance, 1.6 s instead of 4.6 s for 2,000
-  clusters, and 1.1 s instead of 3.2 s for five clusters, whose sums are
-  split across the threads (medians of three alternated runs). These
-  variances also build their store-mode draws once per call instead of
-  twice. Results change by floating-point rounding only (at most 7e-16
-  relative on our reference battery); the estimators, the cluster labels
-  they accept, their checks and messages, and the absence of a small-sample
+  `se_method = "bhhh"`, `vcov(type = "bhhh")` and, with squared weights, the
+  meat of the robust and WESML variances) now adds each decision maker's
+  rank-one update over the same parameters; it used to form every decision
+  maker's update over all of them. On the school-census design the BHHH
+  matrix for 20,000 students took 0.15 s instead of 25.1 s at eleven
+  threads, and for 200,000 students 1.4 s instead of 246 s; on the
+  claims-like panel, 15,000 patients took 0.88 s instead of 1.14 s (medians
+  of three alternated runs).
+- Robust and clustered variances computed after the fit (`vcov(type =
+  "robust")`, `vcov(type = "cluster")`, `wesml_vcov()`) and the clustered
+  variance of `run_mxlogit(se_method = "cluster")` no longer form the matrix
+  of every decision maker's score, one row per decision maker and one column
+  per parameter: 42 GB for 2 million students with 2,620 parameters, held
+  twice while it was weighted. (`se_method = "sandwich"` at fit time already
+  took its meat from the BHHH matrix with squared weights.) The robust meat
+  is now that BHHH matrix, the clustered meat sums the weighted scores
+  within clusters in C++ (a new internal kernel that splits a large
+  cluster's sum across the threads), and `vcov(type = "bhhh")` uses the BHHH
+  kernel as the fit does. On the school-census design with 200,000 students
+  at eleven threads, the meat of the robust variance took 1.4 s and 0.4 GB
+  of working memory instead of 12.2 s and 8.4 GB; the clustered meat 1.6 s
+  instead of 4.6 s with 2,000 clusters and 1.1 s instead of 3.2 s with five
+  (medians of three alternated runs). These variances also build their
+  store-mode draws once per call instead of twice. The cluster labels they
+  accept, their checks and messages, and the absence of a small-sample
   correction are unchanged. The internal score kernel now refuses to form a
   matrix above 2 GiB.
-- With many parameters, the Hessian, the BHHH matrix and the clustered meat
-  of the mixed logit no longer keep one copy of the result per thread. The
-  copies are kept only while together they fit in 2 GiB (up to about 7,000
-  parameters at eleven threads); above that the threads add into the result
-  itself, each keeping private only the rows of the coefficients and of the
-  random coefficients' means and Cholesky factor, which every decision maker
-  touches. On a census-like design with 17,156 parameters, five threads
-  computed the Hessian for 20,000 students in 3.9 s with 2.4 GB of working
-  memory, the result included, instead of 4.2 s with 8.3 GB, and the BHHH
-  matrix in 0.42 s instead of 0.68 s; at eleven threads, where per-thread
-  copies would need 13 GB, they took 2.9 s and 0.38 s in 2.4 GB (medians of
-  three alternated runs). Below the threshold nothing changes; above it, the
-  result differs from the per-thread copies' by floating-point rounding only,
-  as results computed with different numbers of threads always have.
-- Before allocating their working memory, the mixed logit's estimation
-  routines (the log-likelihood and its gradient, the Hessian, the BHHH
-  matrix, the robust and clustered variances and the conditional tastes)
+- With many thousands of alternatives, and so of alternative-specific
+  constants, the Hessian, the BHHH matrix and the clustered meat no longer
+  keep one copy of the result per thread: the copies are kept only while
+  together they fit in 2 GiB (up to about 7,000 parameters at eleven threads,
+  10,000 at five); above that the threads add into the result itself, each
+  keeping private only the rows of the fixed coefficients and of the random
+  coefficients' means and Cholesky factor, which every decision maker touches.
+  On a census-like design with 17,156 parameters, five threads computed the
+  Hessian for 20,000 students in 3.9 s with 2.4 GB of working memory, the
+  result included, where per-thread copies took 4.2 s and 8.3 GB, and the BHHH
+  matrix in 0.42 s where they took 0.68 s (medians of three alternated runs);
+  at eleven threads, where per-thread copies would need 13 GB, the two took
+  2.9 s and 0.38 s in 2.4 GB (medians of three runs), about what the
+  2,620-parameter design takes now: a student's work does not depend on the
+  number of parameters. Inverting a matrix of that size in R, which these
+  times exclude, costs time that grows with the cube of the number of
+  parameters.
+- Before allocating their working memory, the mixed logit's compiled
+  routines (behind the log-likelihood and its gradient, the Hessian, the
+  BHHH matrix, the robust and clustered meats and the conditional tastes)
   compare an upper estimate of it, for the number of threads set, with the
   machine's total physical memory. When it would not fit they stop with an
-  error that says how much they need and how many threads fit; their threads'
-  working memory used to grow until an allocation failed, which terminates R,
-  or until the operating system stopped it. They do not lower the thread count
-  on their own, and memory already in use is not counted.
+  error that says how much they need and how many threads fit; their
+  threads' working memory used to grow until an allocation failed, which
+  terminates R, or until the operating system stopped it. They do not lower
+  the thread count on their own. Memory already in use is not counted, nor
+  is the inversion in R of the resulting parameters-by-parameters matrices.
   `options(choicer.max_memory = <bytes>)` sets the limit instead, such as a
   container's or a cluster job's, and `Inf` lifts the check
-  (`?set_num_threads`).
+  (`?set_num_threads`). Results are unchanged.
+- None of these changes alters an estimator. Standard errors change by
+  floating-point rounding only: on our reference battery the BHHH matrix
+  behind `se_method = "bhhh"` is unchanged bit for bit (`vcov(type =
+  "bhhh")` after the fit, now computed from it, by at most 2e-16), the
+  Hessian differs by at most 3.5e-15 relative (not at all on designs with
+  many alternatives), and the robust and clustered meats by at most 7e-16.
+  As before, at more than one thread, sums over decision makers vary in
+  their last bits with the order in which the threads take them; a decision
+  maker whose utilities overflow is left out of the Hessian and spreads
+  `NaN` over its parameters' rows and columns in the BHHH matrix and the
+  meats; and a non-finite term of a decision maker's Hessian (an
+  overflowing utility at a draw of zero weight) makes the rows and columns
+  of the parameters concerned `NaN`.
 
 ## Data preparation at population scale
 
@@ -847,10 +855,9 @@ unless it says otherwise.
   limit of 2^31 - 1 values. The compiled code now uses Armadillo's 64-bit
   word (`ARMA_64BIT_WORD`), so the kernels read matrices and cubes of any
   size R can hold, and outputs of more than 2^32 - 1 values, such as the
-  score matrix behind `vcov(type = "robust")`, `vcov(type = "cluster")` and
-  `wesml_vcov()` or the output of `conditional_tastes()`, are allocated
-  where Armadillo stopped with "requested size is too large". Below 2^32
-  values, results are unchanged, bit for bit.
+  output of `conditional_tastes()`, are allocated where Armadillo stopped
+  with "requested size is too large". Below 2^32 values, results are
+  unchanged, bit for bit.
 
 # choicer 0.2.1
 
