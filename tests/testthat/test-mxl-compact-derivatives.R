@@ -226,3 +226,116 @@ test_that("non-finite blocks spread over the result as the dense products did", 
   expect_identical(mxlp_call("hessian", fx), H1,
                    label = "skipped unit with an infinite weight")
 })
+
+cdx_unit_weights <- function(fx) {
+  fx$weights[if (is.null(fx$Ti)) seq_len(fx$N) else cumsum(c(1L, fx$Ti[-length(fx$Ti)]))]
+}
+
+# --- BHHH --------------------------------------------------------------------
+
+# Main's dense BHHH update, sum_u w_u s_u s_u', formed entry by entry as the
+# kernel forms it: the product of the two scores, times the weight, added in
+# unit order (0 * NaN and 0 * Inf included).
+cdx_bhhh_ref <- function(S_u, w_u) {
+  Reduce(`+`, lapply(seq_along(w_u), function(v) w_u[v] * outer(S_u[v, ], S_u[v, ])),
+         matrix(0, ncol(S_u), ncol(S_u)))
+}
+
+test_that("the compact BHHH is the weighted cross-product of the unit scores", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  for (fx in cdx_cells()) {
+    w_u <- cdx_unit_weights(fx)
+    for (nt in 1:2) {
+      set_num_threads(nt)
+      S_u <- mxlp_call("scores", fx)
+      B <- mxlp_call("bhhh", fx)
+      expect_identical(B, t(B), label = sprintf("[%s] BHHH symmetric", fx$name))
+      mxlp_expect_close(B, crossprod(sqrt(w_u) * S_u), 1e-12,
+                        sprintf("[%s, %d threads] BHHH vs crossprod(sqrt(w) S)",
+                                fx$name, nt))
+    }
+    mxlp_expect_close(mxlp_call("bhhh", fx, generate = TRUE),
+                      crossprod(sqrt(w_u) * mxlp_call("scores", fx, generate = TRUE)),
+                      1e-12, sprintf("[%s] BHHH vs scores (generate)", fx$name))
+    mxlp_expect_close(mxlp_call("bhhh", fx, draw_batch = 3L),
+                      crossprod(sqrt(w_u) * mxlp_call("scores", fx, draw_batch = 3L)),
+                      1e-12, sprintf("[%s] BHHH vs scores (draw batches)", fx$name))
+  }
+})
+
+test_that("at one thread the BHHH is the dense update bit for bit", {
+  # Each entry is the product of the two scores, times the weight, added in
+  # unit order, rounded at each step as R rounds the reference on every
+  # toolchain (main's update rounded the same way under clang and GCC -O2).
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  for (fx in cdx_cells()) {
+    expect_identical(mxlp_call("bhhh", fx),
+                     cdx_bhhh_ref(mxlp_call("scores", fx), cdx_unit_weights(fx)),
+                     label = sprintf("[%s] BHHH vs the dense update", fx$name))
+  }
+})
+
+test_that("non-finite scores and weights spread over the BHHH as before", {
+  # Patterns of NaN and infinities are those of the dense update.
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  same_pattern <- function(B, ref, what) {
+    expect_identical(is.nan(B), is.nan(ref), label = paste(what, "NaN"))
+    expect_identical(is.infinite(B), is.infinite(ref), label = paste(what, "Inf"))
+    expect_identical(B[is.infinite(B)], ref[is.infinite(ref)],
+                     label = paste(what, "infinities and their signs"))
+    expect_identical(B[is.finite(B)], ref[is.finite(ref)],
+                     label = paste(what, "finite entries"))
+  }
+  # A decision maker whose utilities overflow has a NaN score.
+  fx <- cdx_fixture("overflow", 1014)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- 2L
+  fx$theta[1L] <- 2
+  fx$X[row_off[first[u]] + fx$choice_idx[first[u]], 1L] <- -1e308
+  S_u <- mxlp_call("scores", fx)
+  expect_true(any(is.nan(S_u[u, ])))
+  same_pattern(mxlp_call("bhhh", fx), cdx_bhhh_ref(S_u, cdx_unit_weights(fx)),
+               "overflowed unit")
+
+  # A score entry past the largest double with finite utilities: a covariate
+  # of 1e308 on a non-chosen alternative with a coefficient of 1e-306 in
+  # every situation of a two-situation decision maker, so beta_1's score
+  # overflows to -Inf while the decision maker's other entries stay finite.
+  fx <- cdx_fixture("infinite score", 1023)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- which(fx$Ti >= 2L)[1L]
+  fx$theta[1L] <- 1e-306
+  for (t in first[u] - 1L + seq_len(fx$Ti[u])) {
+    other <- setdiff(seq_len(fx$M[t]), fx$choice_idx[t])[1L]
+    fx$X[row_off[t] + other, 1L] <- 1e308
+  }
+  S_u <- mxlp_call("scores", fx)
+  expect_true(is.infinite(S_u[u, 1L]) && all(is.finite(S_u[u, -1L])))
+  same_pattern(mxlp_call("bhhh", fx), cdx_bhhh_ref(S_u, cdx_unit_weights(fx)),
+               "infinite score")
+
+  # An infinite weight: w * 0 is NaN outside the unit's block, w * s
+  # infinite inside.
+  fx <- cdx_fixture("infinite weight", 1015)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  u <- 4L
+  fx$weights[first[u] - 1L + seq_len(fx$Ti[u])] <- Inf
+  B <- mxlp_call("bhhh", fx)
+  same_pattern(B, cdx_bhhh_ref(mxlp_call("scores", fx), cdx_unit_weights(fx)),
+               "infinite weight")
+  blk <- cdx_block(fx, u)
+  out <- matrix(TRUE, nrow(B), ncol(B))
+  out[blk, blk] <- FALSE
+  expect_true(all(is.nan(B[out])))
+  expect_false(any(is.finite(B[blk, blk])))
+
+  # Missing weights: every entry is missing (NA or NaN, by platform).
+  for (w_bad in c(NA_real_, NaN)) {
+    fx$weights[first[u] - 1L + seq_len(fx$Ti[u])] <- w_bad
+    expect_true(all(is.na(mxlp_call("bhhh", fx))))
+  }
+})

@@ -566,18 +566,20 @@ inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
 
 // Score of the loaded unit, s_u = sum_s omega_s sum_t g_uts, by the BLAS-3
 // collapse of the residuals, from the pieces mxl_unit_simulate(score = true)
-// folded batch by batch. Utilities are linear in beta, mu and the ASC
+// folded batch by batch. mxl_unit_score_cont() writes the continuous blocks
+// (beta, mu, L) into a score the caller has sized and zeroed; the delta block
+// follows, over n_params entries (mxl_unit_score()) or in the unit's compact
+// block (mxl_unit_score_local()). Utilities are linear in beta, mu and the ASC
 // dummies, so those blocks need only d_bar = DiffW omega; the Cholesky block
 // couples the residuals of draw s with eta_s:
 //   beta : X_u' d_bar
 //   mu   : (W_u' d_bar) % dmu_final_dmu                          (rc_mean)
 //   L    : A = ((W_u' DiffW % Dgamma1) diag(omega)) eta_u',  s[L_pq] = dL_pq A(p, q)
 //   delta: d_bar scattered by alternative over the stacked rows
-inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
-                           arma::vec& score) {
+inline void mxl_unit_score_cont(const MxlUnitData& ud, MxlUnitScratch& sc,
+                                arma::vec& score) {
   const MxlParams& par = ud.par;
   const int K_w = ud.W.n_cols;
-  score.zeros(ud.n_params);
 
   // Beta block (X_u loaded by mxl_unit_load)
   score.subvec(par.idx_beta_start, par.idx_mu_start - 1) = sc.X_u.t() * sc.d_bar;
@@ -609,6 +611,15 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
       }
     }
   }
+}
+
+// The whole score: n_params entries, the delta block scattered by
+// alternative over the unit's rows.
+inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
+                           arma::vec& score) {
+  const MxlParams& par = ud.par;
+  score.zeros(ud.n_params);
+  mxl_unit_score_cont(ud, sc, score);
 
   // Delta block (scatter -- irregular alt-index mapping)
   if (ud.use_asc) {
@@ -994,6 +1005,21 @@ inline void mxl_situation_map(const MxlUnitData& ud, const MxlUnitScratch& sc,
 
 inline void mxl_situation_map_clear(MxlUnitMap& mp) {
   for (int q = 0; q < mp.a_t; ++q) mp.sit_of[mp.sit_slot[q]] = -1;
+}
+
+// The loaded unit's score in its compact block (K_c + a_u entries): the
+// continuous blocks as mxl_unit_score() writes them, then each free ASC in
+// its unit slot, the sum over the unit's rows of d_bar in row order, as
+// scatter_delta_grad() adds them into the n_params-vector.
+inline void mxl_unit_score_local(const MxlUnitData& ud, MxlUnitScratch& sc,
+                                 const MxlUnitMap& mp, arma::vec& score) {
+  const int K_c = ud.par.idx_delta_start;
+  score.zeros(K_c + mp.a);
+  mxl_unit_score_cont(ud, sc, score);
+  for (mxl_off i = 0; i < sc.R; ++i) {
+    const int k = mp.row_slot[i];
+    if (k >= 0) score[K_c + k] += 1.0 * sc.d_bar[i];
+  }
 }
 
 // The n x n result of a derivative kernel (Hessian, BHHH, cluster meat): the
@@ -1644,7 +1670,11 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
       //     already subtracts g_bar g_barᵀ. The draw weights are normalized,
       //     so there is no division by the simulated P_u. Add w_u H_u into
       //     the thread's upper triangle (opg_pz is exactly symmetric), the
-      //     product formed first as Armadillo's element-wise update forms it.
+      //     product formed first as Armadillo's element-wise update forms it:
+      //     main's rounding under clang, which contracts within a statement
+      //     only; GCC, which may fuse main's element-wise loop, can round
+      //     these additions differently in the last bit (class T, as are the
+      //     smaller BLAS products).
       for (int j = 0; j < m_u; ++j) {
         const int gj = mp.global(j, Kc);
         for (int i = 0; i <= j; ++i) {
@@ -1735,7 +1765,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat mxl_bhhh_parallel(
+Rcpp::NumericMatrix mxl_bhhh_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
     const Rcpp::IntegerVector &alt_idx,
     const Rcpp::IntegerVector &choice_idx,
@@ -1754,18 +1784,24 @@ arma::mat mxl_bhhh_parallel(
                        "mxl_bhhh_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
+  const int K_c = ud.par.idx_delta_start;
 
-  // Global BHHH accumulator
-  arma::mat global_bhhh = arma::zeros(n_params, n_params);
+  // The result and the threads' accumulators and slot maps, allocated here
+  // on the primary thread.
+  const int n_threads = mxl_team_threads(lay.U);
+  MxlSymAcc acc(n_params, n_threads, "BHHH");
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
-    // Thread-local accumulator and unit scratch
-    arma::mat local_bhhh = arma::zeros(n_params, n_params);
+    const int tid = mxl_thread_num();
+    MxlUnitMap& mp = *maps[tid];
+    double* acc_t = acc.base(tid);
     MxlUnitScratch sc;
-    arma::vec s_u; // score of unit u
+    arma::vec s_u;  // score of unit u in its compact block
+    std::vector<double> col;  // one column of the update, formed before it is added
 
 // Loop over likelihood units in parallel
 #ifdef _OPENMP
@@ -1774,20 +1810,62 @@ arma::mat mxl_bhhh_parallel(
     for (mxl_off u = 0; u < lay.U; ++u) {
       mxl_unit_load(ud, u, sc, 2);
       mxl_unit_simulate(ud, sc, true);
-      mxl_unit_score(ud, sc, s_u);
-      local_bhhh += weights[lay.unit_first(u)] * s_u * s_u.t();
+      mxl_unit_map(ud, sc, mp);
+      mxl_unit_score_local(ud, sc, mp, s_u);
+      const double w_u = weights[lay.unit_first(u)];
+      const int m_u = K_c + mp.a;
+      // w_u s_u s_u' over the compact block, column by column, each entry
+      // formed as main's rank-one update formed it (`local_bhhh +=
+      // w_u * s_u * s_u.t()` is Armadillo's syrk_vec: the product of the two
+      // scores, row operand first, times the weight, then added). A column's
+      // terms are stored before they are added, so that the weight's product
+      // is never fused into the addition, as main's is not under clang or
+      // under GCC at R's default -O2 (bit for bit there; GCC's -O3 loop
+      // vectorizer rounds main's update differently in the last bit, and so
+      // may GCC main's tiny-matrix product for a one-parameter model). Main
+      // added w_u * (0 * s) outside the block, +-0, which changes nothing: no
+      // accumulator, which starts at +0, is ever -0.
+      if (std::isfinite(w_u) && s_u.is_finite()) {
+        col.resize(static_cast<std::size_t>(m_u));
+        double* c = col.data();
+        for (int b = 0; b < m_u; ++b) {
+          const double s_b = s_u[b];
+          for (int a = 0; a <= b; ++a) {
+            const double acc1 = s_u[a] * s_b;
+            c[a] = w_u * acc1;
+          }
+          const int g_b = mp.global(b, K_c);
+          for (int a = 0; a <= b; ++a) acc_t[acc.at(mp.global(a, K_c), g_b)] += c[a];
+        }
+      } else {
+        // A non-finite weight, or a non-finite score (utilities that
+        // overflowed, or a score entry past the largest double with finite
+        // utilities): main's update over every entry, whose 0 * NaN and
+        // 0 * Inf spread it over whole rows and columns. The scores come
+        // from the slot map, zero outside the block.
+        const auto s_of = [&](const int i) -> double {
+          if (i < K_c) return s_u[i];
+          const int k = mp.unit_of[i - K_c];
+          return k >= 0 ? s_u[K_c + k] : 0.0;
+        };
+        col.resize(static_cast<std::size_t>(n_params));
+        double* c = col.data();
+        for (int i = 0; i < n_params; ++i) {
+          const double s_i = s_of(i);
+          for (int k = 0; k <= i; ++k) {
+            const double acc1 = s_of(k) * s_i;
+            c[k] = w_u * acc1;
+          }
+          for (int k = 0; k <= i; ++k) acc_t[acc.at(k, i)] += c[k];
+        }
+      }
+      mxl_unit_map_clear(mp);
     } // end unit loop
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_bhhh += local_bhhh;
-    }
   } // end parallel region
 
   // Return PSD information matrix (same sign convention as negated Hessian).
-  return global_bhhh;
+  acc.finish(false);
+  return acc.result;
 }
 
 // Per-unit score matrix for the mixed logit model (internal).
