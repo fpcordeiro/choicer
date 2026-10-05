@@ -338,6 +338,18 @@
   non-finite term of a decision maker's Hessian (an overflowing utility at a
   draw of zero weight) makes the rows and columns of the parameters
   concerned `NaN`.
+- The BHHH (outer product of gradients) matrix of the mixed logit (behind
+  `se_method = "bhhh"`, and, with squared weights, the meat of
+  `se_method = "sandwich"`) now adds each decision maker's rank-one update
+  over the same block: the coefficients, the random coefficients' means and
+  Cholesky factor, and the constants of the alternatives faced. It used to
+  form every decision maker's update over all parameters. Results are
+  unchanged bit for bit on our reference battery, including the rows of
+  `NaN` that a decision maker whose utilities overflow spreads, as before. On
+  the school-census design the BHHH matrix for 20,000 students took 0.15 s
+  instead of 25.1 s at eleven threads, and for 200,000 students 1.4 s
+  instead of 246 s; on the claims-like panel, 15,000 patients took 0.88 s
+  instead of 1.14 s (medians of three alternated runs).
 
 ## Data preparation at population scale
 
