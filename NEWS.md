@@ -350,6 +350,25 @@
   instead of 25.1 s at eleven threads, and for 200,000 students 1.4 s
   instead of 246 s; on the claims-like panel, 15,000 patients took 0.88 s
   instead of 1.14 s (medians of three alternated runs).
+- Robust and clustered variances of a mixed logit (`vcov(type = "robust")`,
+  `vcov(type = "cluster")`, `wesml_vcov()`, and `se_method = "sandwich"` or
+  `"cluster"` in `run_mxlogit()`) no longer form the matrix of every
+  decision maker's score, one row per decision maker and one column per
+  parameter: 42 GB for 2 million students with 2,620 parameters, held twice
+  while it was weighted. The weighted scores are summed within clusters in
+  C++ instead (a new internal kernel; robust variances use the BHHH kernel
+  with squared weights), and `vcov(type = "bhhh")` uses the BHHH kernel as
+  the fit itself does. On the school-census design with 200,000 students,
+  the meat of the sandwich took 1.4 s and 0.4 GB of working memory instead of
+  12.2 s and 8.4 GB for the robust variance, 1.6 s instead of 4.6 s for 2,000
+  clusters, and 1.1 s instead of 3.2 s for five clusters, whose sums are
+  split across the threads (medians of three alternated runs). These
+  variances also build their store-mode draws once per call instead of
+  twice. Results change by floating-point rounding only (at most 7e-16
+  relative on our reference battery); the estimators, the cluster labels
+  they accept, their checks and messages, and the absence of a small-sample
+  correction are unchanged. The internal score kernel now refuses to form a
+  matrix above 2 GiB.
 
 ## Data preparation at population scale
 

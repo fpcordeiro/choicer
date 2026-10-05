@@ -726,19 +726,22 @@ run_mxlogit <- function(
         Ti = input_data$Ti
       )
     } else {
-      S_scores <- mxl_scores_parallel(
+      # The weighted scores summed within clusters in C++, without the
+      # U x p score matrix.
+      cl_u <- .to_units(input_data$cluster, input_data, "`cluster_col`")
+      .check_cluster_labels(cl_u, length(.unit_first(input_data)))
+      cl_u <- as.character(cl_u)
+      mxl_cluster_meat_parallel(
         theta = theta_hat, X = input_data$X, W = input_data$W,
         alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
-        M = input_data$M, eta_draws = eta_draws,
+        M = input_data$M, weights = input_data$weights,
+        cluster = match(cl_u, unique(cl_u)), eta_draws = eta_draws,
         rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
         use_asc = use_asc,
         include_outside_option = input_data$include_outside_option,
         gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
         Ti = input_data$Ti
       )
-      u <- .unit_first(input_data)
-      .score_meat(S_scores, input_data$weights[u], "cluster",
-                  .to_units(input_data$cluster, input_data, "`cluster_col`"))
     }
     vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {

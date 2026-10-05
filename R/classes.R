@@ -754,8 +754,10 @@ invert_hessian <- function(hess) {
 #' \code{B = sum_i w_i^2 s_i s_i'} is the weight-squared outer product of
 #' per-individual scores — the \code{"robust"} case of the shared
 #' \code{.assemble_score_vcov()} path (\code{crossprod(w * S)} over the
-#' per-unit score matrix). Valid under choice-based / WESML weighting,
-#' where the plain inverse-Hessian is not. Supported for MNL, MXL and NL fits.
+#' per-unit score matrix for MNL and NL; the BHHH kernel with squared weights,
+#' without the score matrix, for MXL). Valid under choice-based / WESML
+#' weighting, where the plain inverse-Hessian is not. Supported for MNL, MXL
+#' and NL fits.
 #'
 #' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
 #'   \code{keep_data = TRUE}.
@@ -826,8 +828,11 @@ compute_scores <- function(object) {
 #' unlike \code{compute_hessian()}, which returns the BHHH matrix for
 #' \code{se_method = "bhhh"} fits.
 #'
+#' @param gp For a mixed logit, the draw arguments of
+#'   \code{.mxl_gen_params()} when the caller has built them already (a
+#'   variance's meat and bread use the same draws); \code{NULL} builds them.
 #' @noRd
-.compute_bread <- function(object) {
+.compute_bread <- function(object, gp = NULL) {
   theta <- object$coefficients
   d <- object[["data"]]
   w <- d$weights
@@ -852,7 +857,9 @@ compute_scores <- function(object) {
       )
     },
     mxl = {
-      gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
+      if (is.null(gp)) {
+        gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
+      }
       mxl_hessian_parallel(
         theta = theta, X = d$X, W = d$W,
         alt_idx = d$alt_idx, choice_idx = d$choice_idx,
@@ -900,23 +907,88 @@ compute_scores <- function(object) {
     bhhh = crossprod(sqrt(w) * S),
     robust = crossprod(w * S),
     cluster = {
-      if (is.null(cluster)) {
-        stop("Clustered standard errors need `cluster`: a vector with one ",
-             "cluster label per choice situation (or fit with `cluster_col=`).",
-             call. = FALSE)
-      }
-      if (length(cluster) != nrow(S)) {
-        stop("`cluster` has length ", length(cluster), " but the model has ",
-             nrow(S), " choice situations. Supply one cluster label per ",
-             "choice situation, aligned with the prepared data ",
-             "(situations sorted by id).", call. = FALSE)
-      }
-      if (anyNA(cluster)) {
-        stop("`cluster` contains missing values.", call. = FALSE)
-      }
+      .check_cluster_labels(cluster, nrow(S))
       crossprod(rowsum(w * S, group = as.character(cluster)))
     },
     stop("Unknown meat type: '", type, "'.")
+  )
+}
+
+#' Check cluster labels, one per likelihood unit
+#'
+#' The checks of the cluster meat, shared by \code{.score_meat()} and the
+#' mixed logit kernels' route.
+#'
+#' @param cluster Cluster labels, one per likelihood unit (or \code{NULL}).
+#' @param n_units Number of likelihood units.
+#' @returns \code{cluster}, invisibly.
+#' @noRd
+.check_cluster_labels <- function(cluster, n_units) {
+  if (is.null(cluster)) {
+    stop("Clustered standard errors need `cluster`: a vector with one ",
+         "cluster label per choice situation (or fit with `cluster_col=`).",
+         call. = FALSE)
+  }
+  if (length(cluster) != n_units) {
+    stop("`cluster` has length ", length(cluster), " but the model has ",
+         n_units, " choice situations. Supply one cluster label per ",
+         "choice situation, aligned with the prepared data ",
+         "(situations sorted by id).", call. = FALSE)
+  }
+  if (anyNA(cluster)) {
+    stop("`cluster` contains missing values.", call. = FALSE)
+  }
+  invisible(cluster)
+}
+
+#' Score-based meat of a mixed logit fit, from the C++ kernels
+#'
+#' The meats of \code{.score_meat()} without the \code{U x p} score matrix
+#' (2 million decision makers by 2,620 parameters is 42 GB): \code{"bhhh"} is
+#' \code{mxl_bhhh_parallel()} with the weights, \code{"robust"} the same
+#' kernel with the squared weights, and \code{"cluster"}
+#' \code{mxl_cluster_meat_parallel()} over the per-unit labels, checked as
+#' \code{.score_meat()} checks them and grouped by \code{as.character()}, as
+#' \code{rowsum()} groups them.
+#'
+#' @param object A fitted \code{choicer_mxl} with stored data.
+#' @param gp Draw arguments from \code{.mxl_gen_params()}.
+#' @param type One of \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
+#' @param cluster Cluster labels, one per likelihood unit
+#'   (\code{type = "cluster"}).
+#' @returns \code{p x p} meat matrix.
+#' @noRd
+.mxl_score_meat <- function(object, gp, type, cluster = NULL) {
+  if (!type %in% c("bhhh", "robust", "cluster")) {
+    stop("Unknown meat type: '", type, "'.")
+  }
+  d <- object[["data"]]
+  theta <- object$coefficients
+  if (identical(type, "cluster")) {
+    .check_cluster_labels(cluster, length(.unit_first(d)))
+    labels <- as.character(cluster)
+    return(mxl_cluster_meat_parallel(
+      theta = theta, X = d$X, W = d$W,
+      alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+      M = d$M, weights = d$weights, cluster = match(labels, unique(labels)),
+      eta_draws = gp$eta_draws,
+      rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+      rc_mean = object$rc_mean, use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option,
+      gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+      Ti = d$Ti
+    ))
+  }
+  mxl_bhhh_parallel(
+    theta = theta, X = d$X, W = d$W,
+    alt_idx = d$alt_idx, choice_idx = d$choice_idx,
+    M = d$M, weights = if (identical(type, "robust")) d$weights^2 else d$weights,
+    eta_draws = gp$eta_draws,
+    rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
+    rc_mean = object$rc_mean, use_asc = object$use_asc,
+    include_outside_option = object$include_outside_option,
+    gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+    Ti = d$Ti
   )
 }
 
@@ -1038,6 +1110,22 @@ compute_scores <- function(object) {
   # Scores, weights and cluster labels are per likelihood unit: choice
   # situations, or decision makers for a panel mixed logit.
   d <- object[["data"]]
+
+  if (identical(object$model, "mxl")) {
+    # The mixed logit's meats come from the C++ kernels, which sum the
+    # scores without forming the U x p score matrix; the meat and the bread
+    # share one set of draws, built once.
+    if (identical(type, "cluster")) {
+      cluster <- .unit_clusters(object, cluster)
+      # before the draws, which in store mode can take gigabytes
+      .check_cluster_labels(cluster, length(.unit_first(d)))
+    }
+    gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
+    B <- .mxl_score_meat(object, gp, type, cluster)
+    if (identical(type, "bhhh")) return(invert_hessian(B))
+    return(.sandwich_combine(.compute_bread(object, gp), B))
+  }
+
   w <- d$weights[.unit_first(d)]
   S <- compute_scores(object)
 
@@ -1045,23 +1133,38 @@ compute_scores <- function(object) {
     return(invert_hessian(.score_meat(S, w, "bhhh")))
   }
 
-  if (identical(type, "cluster")) {
-    if (is.null(cluster)) {
-      # No explicit labels: use the fit-time cluster_col vector, already
-      # collapsed and aligned to the prepared order.
-      cluster <- d$cluster
-      if (is.null(cluster)) {
-        stop("Cluster-robust standard errors need cluster labels: pass ",
-             "`cluster=` (named by choice-situation id) or fit with ",
-             "`cluster_col=`.", call. = FALSE)
-      }
-    } else {
-      # User-supplied labels: guard and realign to the prepared order.
-      cluster <- .resolve_cluster(object, cluster)
-    }
-    # Per situation so far; panel fits need clusters that nest decision makers.
-    cluster <- .to_units(cluster, d, "`cluster`")
-  }
+  if (identical(type, "cluster")) cluster <- .unit_clusters(object, cluster)
   B <- .score_meat(S, w, type, cluster)
   .sandwich_combine(.compute_bread(object), B)
+}
+
+#' Cluster labels of a fit's likelihood units
+#'
+#' The labels \code{vcov(type = "cluster")} uses: the fit-time
+#' \code{cluster_col} labels when \code{cluster} is \code{NULL}, else the
+#' user's labels realigned to the prepared order (\code{.resolve_cluster()});
+#' then one per likelihood unit (\code{.to_units()}: a panel fit's clusters
+#' must nest decision makers).
+#'
+#' @param object A fitted \code{choicer_fit} with stored data.
+#' @param cluster User-supplied labels, or \code{NULL}.
+#' @returns Cluster labels, one per likelihood unit.
+#' @noRd
+.unit_clusters <- function(object, cluster) {
+  d <- object[["data"]]
+  if (is.null(cluster)) {
+    # No explicit labels: use the fit-time cluster_col vector, already
+    # collapsed and aligned to the prepared order.
+    cluster <- d$cluster
+    if (is.null(cluster)) {
+      stop("Cluster-robust standard errors need cluster labels: pass ",
+           "`cluster=` (named by choice-situation id) or fit with ",
+           "`cluster_col=`.", call. = FALSE)
+    }
+  } else {
+    # User-supplied labels: guard and realign to the prepared order.
+    cluster <- .resolve_cluster(object, cluster)
+  }
+  # Per situation so far; panel fits need clusters that nest decision makers.
+  .to_units(cluster, d, "`cluster`")
 }
