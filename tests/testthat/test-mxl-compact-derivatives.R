@@ -145,7 +145,7 @@ test_that("relabeling the alternatives permutes the ASC block of the Hessian", {
 })
 
 test_that("the Hessian is exactly symmetric, linear in the weights and stable across threads", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(mxlp_threads(2L), add = TRUE)
   cells <- cdx_cells()
   for (fx in cells[vapply(cells, function(f) f$name %in% c(
     "xsec", "panel, outside option", "panel, repeated alternative",
@@ -153,13 +153,13 @@ test_that("the Hessian is exactly symmetric, linear in the weights and stable ac
     "xsec, shuffled rows, repeated alternatives"), TRUE)]) {
     for (cfg in list(list(), list(generate = TRUE), list(draw_batch = 3L))) {
       what <- sprintf("[%s%s]", fx$name, if (length(cfg)) paste0(", ", names(cfg)) else "")
-      set_num_threads(2L)
+      mxlp_threads(2L)
       H2 <- do.call(mxlp_call, c(list("hessian", fx), cfg))
       expect_identical(H2, t(H2), label = paste(what, "symmetric"))
       mxlp_expect_close(do.call(mxlp_call, c(list("hessian", fx,
                                                  weights = 2 * fx$weights), cfg)),
                         2 * H2, 1e-12, paste(what, "H(2w) vs 2 H(w)"))
-      set_num_threads(1L)
+      mxlp_threads(1L)
       H1 <- do.call(mxlp_call, c(list("hessian", fx), cfg))
       expect_identical(H1, t(H1), label = paste(what, "symmetric, 1 thread"))
       mxlp_expect_close(H1, H2, 1e-12, paste(what, "1 vs 2 threads"))
@@ -212,8 +212,8 @@ test_that("non-finite blocks spread over the result as the dense products did", 
 
   # A decision maker whose utilities overflow is left out, so its weight,
   # finite or not, spreads nothing (bit for bit at one thread).
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(1L)
   fx <- cdx_fixture("skipped unit", 1022)
   first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
   row_off <- c(0L, cumsum(fx$M))
@@ -242,11 +242,11 @@ cdx_bhhh_ref <- function(S_u, w_u) {
 }
 
 test_that("the compact BHHH is the weighted cross-product of the unit scores", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(mxlp_threads(2L), add = TRUE)
   for (fx in cdx_cells()) {
     w_u <- cdx_unit_weights(fx)
     for (nt in 1:2) {
-      set_num_threads(nt)
+      mxlp_threads(nt)
       S_u <- mxlp_call("scores", fx)
       B <- mxlp_call("bhhh", fx)
       expect_identical(B, t(B), label = sprintf("[%s] BHHH symmetric", fx$name))
@@ -267,8 +267,8 @@ test_that("at one thread the BHHH is the dense update bit for bit", {
   # Each entry is the product of the two scores, times the weight, added in
   # unit order, rounded at each step as R rounds the reference on every
   # toolchain (main's update rounded the same way under clang and GCC -O2).
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(1L)
   for (fx in cdx_cells()) {
     expect_identical(mxlp_call("bhhh", fx),
                      cdx_bhhh_ref(mxlp_call("scores", fx), cdx_unit_weights(fx)),
@@ -278,8 +278,8 @@ test_that("at one thread the BHHH is the dense update bit for bit", {
 
 test_that("non-finite scores and weights spread over the BHHH as before", {
   # Patterns of NaN and infinities are those of the dense update.
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(1L)
   same_pattern <- function(B, ref, what) {
     expect_identical(is.nan(B), is.nan(ref), label = paste(what, "NaN"))
     expect_identical(is.infinite(B), is.infinite(ref), label = paste(what, "Inf"))
@@ -360,7 +360,7 @@ cdx_meat <- function(fx, cl, generate = FALSE, weights = fx$weights) {
 cdx_units <- function(fx) if (is.null(fx$Ti)) fx$N else length(fx$Ti)
 
 test_that("the cluster meat equals crossprod(rowsum(w * S, cluster))", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(mxlp_threads(2L), add = TRUE)
   for (fx in cdx_cells()) {
     U <- cdx_units(fx)
     set.seed(1100)
@@ -371,7 +371,7 @@ test_that("the cluster meat equals crossprod(rowsum(w * S, cluster))", {
     S_u <- mxlp_call("scores", fx)
     w_u <- cdx_unit_weights(fx)
     for (nt in 1:2) {
-      set_num_threads(nt)
+      mxlp_threads(nt)
       for (lb in names(labels)) {
         cl <- labels[[lb]]
         mxlp_expect_close(cdx_meat(fx, cl),
@@ -422,8 +422,8 @@ test_that("a non-finite score spreads over the cluster meat as crossprod() did",
 })
 
 test_that("non-finite weights and scores, and overflowing sums, spread as crossprod() did", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(1L)
   same_pattern <- function(M, ref, what) {
     expect_identical(is.nan(M), is.nan(ref), label = paste(what, "NaN"))
     expect_identical(is.infinite(M), is.infinite(ref), label = paste(what, "Inf"))
@@ -480,18 +480,18 @@ test_that("non-finite weights and scores, and overflowing sums, spread as crossp
 })
 
 test_that("unused codes and skewed units do not change the cluster meat", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(mxlp_threads(2L), add = TRUE)
   fx <- cdx_fixture("codes", 1026, U = 30L)
   set.seed(1103)
   cl <- sample(1:5, 30L, replace = TRUE)
   args <- function(codes) list(fx$theta, fx$X, fx$W, fx$alt_idx, fx$choice_idx,
                                fx$M, fx$weights, codes, fx$eta, fx$rc_dist,
                                fx$rc_correlation, fx$rc_mean, Ti = fx$Ti)
-  set_num_threads(1L)
+  mxlp_threads(1L)
   # codes in the same order, with gaps: the same sort, the same result
   expect_identical(do.call(mxl_cluster_meat_parallel, args(3L * cl + 2L)),
                    do.call(mxl_cluster_meat_parallel, args(cl)))
-  set_num_threads(2L)
+  mxlp_threads(2L)
   # one decision maker holding most rows. Sorted first, it has the first
   # chunk to itself and the next few chunks hold one unit each; sorted last,
   # it leaves the trailing chunks empty
@@ -569,7 +569,7 @@ test_that("the kernels share the result exactly when the triangles exceed acc_by
 
 test_that("a shared result equals the per-thread accumulators' sum", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(mxlp_threads(2L), add = TRUE)
   cells <- cdx_cells()
   for (fx in cells[vapply(cells, function(f) f$name %in% c(
     "xsec, outside option", "panel", "panel, repeated alternative",
@@ -582,12 +582,12 @@ test_that("a shared result equals the per-thread accumulators' sum", {
         kcall <- function(...) {
           mxlp_call(k, fx, generate = gen, cluster = if (k == "meat") cl, ...)
         }
-        set_num_threads(2L)
+        mxlp_threads(2L)
         shared <- kcall(acc_bytes = 0)
         expect_identical(shared, t(shared), label = paste(what, "symmetric"))
         mxlp_expect_close(shared, kcall(), 1e-12, paste(what, "shared vs per-thread"))
         # one thread adds into the result itself, whatever the budget
-        set_num_threads(1L)
+        mxlp_threads(1L)
         expect_identical(kcall(acc_bytes = 0), kcall(), label = paste(what, "one thread"))
       }
     }
@@ -596,8 +596,8 @@ test_that("a shared result equals the per-thread accumulators' sum", {
 
 test_that("non-finite entries spread over a shared result as over per-thread ones", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(2L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  mxlp_threads(2L)
   same_pattern <- function(fx, k, what, cl = NULL) {
     sh <- mxlp_call(k, fx, cluster = cl, acc_bytes = 0)
     ref <- mxlp_call(k, fx, cluster = cl)
