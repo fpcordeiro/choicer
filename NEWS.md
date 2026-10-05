@@ -383,6 +383,18 @@
   three alternated runs). Below the threshold nothing changes; above it, the
   result differs from the per-thread copies' by floating-point rounding only,
   as results computed with different numbers of threads always have.
+- Before allocating their working memory, the mixed logit's estimation
+  routines (the log-likelihood and its gradient, the Hessian, the BHHH
+  matrix, the robust and clustered variances and the conditional tastes)
+  compare an upper estimate of it, for the number of threads set, with the
+  machine's total physical memory. When it would not fit they stop with an
+  error that says how much they need and how many threads fit; their threads'
+  working memory used to grow until an allocation failed, which terminates R,
+  or until the operating system stopped it. They do not lower the thread count
+  on their own, and memory already in use is not counted.
+  `options(choicer.max_memory = <bytes>)` sets the limit instead, such as a
+  container's or a cluster job's, and `Inf` lifts the check
+  (`?set_num_threads`).
 
 ## Data preparation at population scale
 

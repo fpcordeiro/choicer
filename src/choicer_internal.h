@@ -747,6 +747,11 @@ inline int compute_J_total(const int J_inside,
                           (include_outside_option ? 1 : 0));
 }
 
+// The machine's physical memory in bytes, 0 when it cannot be read (the MXL
+// kernels' memory check; src/sysmem.c, in C and without R's headers, which
+// clash with <windows.h>).
+extern "C" double choicer_physical_memory(void);
+
 // ----------------------------------------------------------------------------
 // The MXL derivative kernels' n x n accumulators (MxlSymAcc, mxlogit.cpp):
 // the rows of each column that a thread keeps privately. With T > 1 threads,

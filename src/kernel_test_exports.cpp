@@ -2,8 +2,9 @@
 // helpers for unit testing. These functions are NOT user-facing API; they are
 // @noRd and only exported so that tests can pin the raw-array softmax,
 // log-sum-exp and nested logit probabilities to their Armadillo counterparts
-// bit for bit, check how Armadillo is configured (its index word), and check
-// how the MXL derivative kernels choose and size their accumulators.
+// bit for bit, check how Armadillo is configured (its index word), check
+// how the MXL derivative kernels choose and size their accumulators, and read
+// the physical memory their memory check compares with.
 //
 // DO NOT add any of these to the public documentation or NAMESPACE.
 
@@ -220,4 +221,14 @@ Rcpp::List test_mxl_acc(const double n, const int K_c, const int T,
   }
   return Rcpp::List::create(Rcpp::Named("shared") = shared,
                             Rcpp::Named("col_off") = off);
+}
+
+//' The machine's physical memory in bytes as the mixed logit kernels' memory
+//' check reads it (sysmem.c), 0 when it cannot be read
+//'
+//' @return A double.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+double test_physical_memory() {
+  return choicer_physical_memory();
 }
