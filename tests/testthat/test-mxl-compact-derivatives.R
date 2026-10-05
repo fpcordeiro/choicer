@@ -339,3 +339,306 @@ test_that("non-finite scores and weights spread over the BHHH as before", {
     expect_true(all(is.na(mxlp_call("bhhh", fx))))
   }
 })
+
+# --- Cluster meat -------------------------------------------------------------
+
+# The cluster meat kernel on a fixture, with labels per likelihood unit coded
+# as the R route codes them.
+cdx_meat <- function(fx, cl, generate = FALSE, weights = fx$weights) {
+  lab <- as.character(cl)
+  args <- list(theta = fx$theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
+               choice_idx = fx$choice_idx, M = fx$M, weights = weights,
+               cluster = match(lab, unique(lab)),
+               eta_draws = if (generate) array(0, dim = c(fx$K_w, 0L, 0L)) else fx$eta,
+               rc_dist = fx$rc_dist, rc_correlation = fx$rc_correlation,
+               rc_mean = fx$rc_mean, use_asc = fx$use_asc,
+               include_outside_option = fx$include_outside_option)
+  if (generate) args <- c(args, list(gen_seed = 0L, gen_scramble = 0L, gen_S = fx$S))
+  if (!is.null(fx$Ti)) args$Ti <- fx$Ti
+  do.call(mxl_cluster_meat_parallel, args)
+}
+cdx_units <- function(fx) if (is.null(fx$Ti)) fx$N else length(fx$Ti)
+
+test_that("the cluster meat equals crossprod(rowsum(w * S, cluster))", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  for (fx in cdx_cells()) {
+    U <- cdx_units(fx)
+    set.seed(1100)
+    labels <- list(singletons = seq_len(U), one = rep("a", U),
+                   coarse = sample(1:4, U, replace = TRUE),
+                   two = rep(c(2.5, 1.5), length.out = U),
+                   shuffled = sample(seq_len(U)) * 7L)
+    S_u <- mxlp_call("scores", fx)
+    w_u <- cdx_unit_weights(fx)
+    for (nt in 1:2) {
+      set_num_threads(nt)
+      for (lb in names(labels)) {
+        cl <- labels[[lb]]
+        mxlp_expect_close(cdx_meat(fx, cl),
+                          crossprod(rowsum(w_u * S_u, group = as.character(cl))),
+                          1e-12, sprintf("[%s, %s, %d threads] cluster meat",
+                                         fx$name, lb, nt))
+      }
+      # Singletons: the robust meat, the BHHH kernel with squared weights
+      mxlp_expect_close(cdx_meat(fx, seq_len(U)),
+                        mxlp_call("bhhh", fx, weights = fx$weights^2), 1e-12,
+                        sprintf("[%s, %d threads] singletons vs BHHH(w^2)",
+                                fx$name, nt))
+    }
+    mxlp_expect_close(cdx_meat(fx, labels$coarse, generate = TRUE),
+                      crossprod(rowsum(w_u * mxlp_call("scores", fx, generate = TRUE),
+                                       group = as.character(labels$coarse))),
+                      1e-12, sprintf("[%s] cluster meat (generate)", fx$name))
+  }
+})
+
+test_that("the cluster meat does not depend on how labels are coded or ordered", {
+  fx <- cdx_fixture("codes", 1016, U = 40L)
+  set.seed(1101)
+  cl <- sample(1:6, 40L, replace = TRUE)
+  M1 <- cdx_meat(fx, cl)
+  mxlp_expect_close(cdx_meat(fx, letters[7L - cl]), M1, 1e-12, "relabeled")
+  mxlp_expect_close(cdx_meat(fx, factor(cl, levels = 6:1)), M1, 1e-12, "factor")
+  expect_identical(M1, t(M1))
+  # A cluster cut by every chunk boundary, at many threads' worth of chunks
+  mxlp_expect_close(cdx_meat(fx, rep(1L, 40L)),
+                    tcrossprod(colSums(cdx_unit_weights(fx) * mxlp_call("scores", fx))),
+                    1e-12, "one cluster")
+})
+
+test_that("a non-finite score spreads over the cluster meat as crossprod() did", {
+  fx <- cdx_fixture("overflow", 1017, U = 12L)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- 5L
+  fx$theta[1L] <- 2
+  fx$X[row_off[first[u]] + fx$choice_idx[first[u]], 1L] <- -1e308
+  cl <- rep(1:4, length.out = 12L)
+  S_u <- mxlp_call("scores", fx)
+  ref <- crossprod(rowsum(cdx_unit_weights(fx) * S_u, group = as.character(cl)))
+  M <- cdx_meat(fx, cl)
+  expect_identical(is.nan(M), is.nan(ref))
+  expect_identical(is.finite(M), is.finite(ref))
+})
+
+test_that("non-finite weights and scores, and overflowing sums, spread as crossprod() did", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(1L)
+  same_pattern <- function(M, ref, what) {
+    expect_identical(is.nan(M), is.nan(ref), label = paste(what, "NaN"))
+    expect_identical(is.infinite(M), is.infinite(ref), label = paste(what, "Inf"))
+    expect_identical(M[is.infinite(M)], ref[is.infinite(ref)],
+                     label = paste(what, "infinities and their signs"))
+    expect_equal(M[is.finite(M)], ref[is.finite(ref)], tolerance = 1e-12,
+                 label = paste(what, "finite entries"))
+  }
+  ref_meat <- function(fx, cl, w = fx$weights) {
+    first <- if (is.null(fx$Ti)) seq_len(fx$N) else cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+    crossprod(rowsum(w[first] * mxlp_call("scores", fx), group = as.character(cl)))
+  }
+  fx <- cdx_fixture("weights", 1024, U = 12L)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  cl <- rep(1:4, length.out = 12L)
+  for (w_bad in c(Inf, -Inf)) {
+    w <- fx$weights
+    w[first[5L] - 1L + seq_len(fx$Ti[5L])] <- w_bad
+    same_pattern(cdx_meat(fx, cl, weights = w), ref_meat(fx, cl, w),
+                 sprintf("weight %s", w_bad))
+  }
+  for (w_bad in c(NA_real_, NaN)) {
+    w <- fx$weights
+    w[first[5L] - 1L + seq_len(fx$Ti[5L])] <- w_bad
+    expect_true(all(is.na(cdx_meat(fx, cl, weights = w))))
+  }
+  # An infinite score entry with finite utilities (as in the BHHH test)
+  fx <- cdx_fixture("infinite score", 1023)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- which(fx$Ti >= 2L)[1L]
+  fx$theta[1L] <- 1e-306
+  for (t in first[u] - 1L + seq_len(fx$Ti[u])) {
+    other <- setdiff(seq_len(fx$M[t]), fx$choice_idx[t])[1L]
+    fx$X[row_off[t] + other, 1L] <- 1e308
+  }
+  cl <- rep(1:3, length.out = length(fx$Ti))
+  same_pattern(cdx_meat(fx, cl), ref_meat(fx, cl), "infinite score")
+  # Finite scores whose cluster sum overflows: two cross-sectional units of
+  # one cluster, each with a beta_1 score near -1e308
+  fx <- cdx_fixture("overflowing sum", 1025, panel = FALSE, U = 10L)
+  row_off <- c(0L, cumsum(fx$M))
+  fx$theta[1L] <- 1e-306
+  for (t in 1:2) {
+    other <- setdiff(seq_len(fx$M[t]), fx$choice_idx[t])[1L]
+    fx$X[row_off[t] + other, 1L] <- 1e308
+  }
+  S_u <- mxlp_call("scores", fx)
+  expect_true(all(is.finite(S_u)))
+  cl <- c(1L, 1L, 2:9)
+  ref <- ref_meat(fx, cl)
+  expect_true(any(is.nan(ref)))
+  same_pattern(cdx_meat(fx, cl), ref, "overflowing cluster sum")
+})
+
+test_that("unused codes and skewed units do not change the cluster meat", {
+  on.exit(set_num_threads(2L), add = TRUE)
+  fx <- cdx_fixture("codes", 1026, U = 30L)
+  set.seed(1103)
+  cl <- sample(1:5, 30L, replace = TRUE)
+  args <- function(codes) list(fx$theta, fx$X, fx$W, fx$alt_idx, fx$choice_idx,
+                               fx$M, fx$weights, codes, fx$eta, fx$rc_dist,
+                               fx$rc_correlation, fx$rc_mean, Ti = fx$Ti)
+  set_num_threads(1L)
+  # codes in the same order, with gaps: the same sort, the same result
+  expect_identical(do.call(mxl_cluster_meat_parallel, args(3L * cl + 2L)),
+                   do.call(mxl_cluster_meat_parallel, args(cl)))
+  set_num_threads(2L)
+  # one decision maker holding most rows. Sorted first, it has the first
+  # chunk to itself and the next few chunks hold one unit each; sorted last,
+  # it leaves the trailing chunks empty
+  fy <- cdx_fixture("skewed", 1027, U = 12L, m_range = c(25L, 30L))
+  fy$eta <- get_halton_normals(fy$S, 12L, fy$K_w)
+  n_sit <- sum(fy$Ti)
+  for (Ti in list(c(n_sit - 11L, rep(1L, 11L)), c(rep(1L, 11L), n_sit - 11L))) {
+    fy$Ti <- Ti
+    fy$weights <- rep(stats::runif(12L, 0.5, 2), Ti)
+    w_u <- fy$weights[cumsum(c(1L, Ti[-12L]))]
+    for (cl in list(seq_len(12L), rep(1:2, 6L), rep(1L, 12L))) {
+      mxlp_expect_close(cdx_meat(fy, cl),
+                        crossprod(rowsum(w_u * mxlp_call("scores", fy),
+                                         group = as.character(cl))),
+                        1e-12, "skewed units")
+    }
+  }
+})
+
+test_that("the cluster meat checks its labels after the other inputs", {
+  fx <- cdx_fixture("labels", 1018, U = 6L)
+  expect_error(cdx_meat(fx, 1:5), "cluster length (5) does not match the number of likelihood units (6)",
+               fixed = TRUE)
+  bad <- list(theta = fx$theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
+              choice_idx = fx$choice_idx, M = fx$M, weights = fx$weights,
+              cluster = c(1L, NA, 2L, 2L, 3L, 3L), eta_draws = fx$eta,
+              rc_dist = fx$rc_dist, rc_correlation = fx$rc_correlation,
+              rc_mean = fx$rc_mean, Ti = fx$Ti)
+  expect_error(do.call(mxl_cluster_meat_parallel, bad),
+               "cluster codes must be positive integers (unit 2 has NA).", fixed = TRUE)
+  bad$cluster <- c(1L, 0L, 2L, 2L, 3L, 3L)
+  expect_error(do.call(mxl_cluster_meat_parallel, bad),
+               "cluster codes must be positive integers (unit 2 has 0).", fixed = TRUE)
+  bad$weights <- bad$weights[-1L]
+  expect_error(do.call(mxl_cluster_meat_parallel, bad),
+               "weights length", fixed = TRUE)
+})
+
+test_that("the score matrix refuses to exceed max_bytes", {
+  fx <- cdx_fixture("guard", 1019, U = 5L)
+  expect_error(
+    mxl_scores_parallel(fx$theta, fx$X, fx$W, fx$alt_idx, fx$choice_idx, fx$M,
+                        fx$eta, fx$rc_dist, fx$rc_correlation, fx$rc_mean,
+                        Ti = fx$Ti, max_bytes = 100),
+    "The score matrix would take 0.00 GiB (5 likelihood units x", fixed = TRUE)
+  expect_equal(dim(mxl_scores_parallel(fx$theta, fx$X, fx$W, fx$alt_idx,
+                                       fx$choice_idx, fx$M, fx$eta, fx$rc_dist,
+                                       fx$rc_correlation, fx$rc_mean, Ti = fx$Ti)),
+               c(5L, length(fx$theta)))
+})
+
+# --- The variance routes --------------------------------------------------------
+
+cdx_route_fit <- function(panel, draws, cluster = TRUE, seed = 1102) {
+  sim <- simulate_mxl_data(N = if (panel) 60L else 120L, J = 6L,
+                           T = if (panel) 2L else 1L, beta = c(0.8, -0.5),
+                           Sigma = diag(c(0.6, 0.4)), outside_option = FALSE,
+                           vary_choice_set = TRUE, seed = seed)
+  dt <- data.table::as.data.table(sim$data)
+  set.seed(seed)
+  if (panel) {
+    dt[, grp := pid %% 7L]
+    w_p <- stats::runif(max(dt$pid), 0.5, 2)
+    dt[, w := w_p[pid]]
+  } else {
+    dt[, grp := id %% 9L]
+    w_i <- stats::runif(max(dt$id), 0.5, 2)
+    dt[, w := w_i[id]]
+  }
+  args <- list(data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+               covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"),
+               person_col = if (panel) "pid" else NULL, weights_col = "w",
+               S = 20L, draws = draws, seed = 3L)
+  if (cluster) args <- c(args, list(se_method = "cluster", cluster_col = "grp"))
+  list(fit = suppressMessages(suppressWarnings(do.call(run_mxlogit, args))), dt = dt)
+}
+
+test_that("mixed logit variances never form the score matrix and build their draws once", {
+  skip_on_cran()
+  for (cfg in list(list(panel = TRUE, draws = "store"),
+                   list(panel = FALSE, draws = "generate"))) {
+    what <- sprintf("[%s, %s]", if (cfg$panel) "panel" else "cross-section", cfg$draws)
+    fit <- cdx_route_fit(cfg$panel, cfg$draws)$fit
+    expect_true(is.call(fit$call), label = paste(what, "the fit keeps its call"))
+    # The old route, from the score matrix (non-uniform weights, so that w,
+    # w^2 and sqrt(w) give different meats)
+    d <- fit$data
+    S_u <- choicer:::compute_scores(fit)
+    w_u <- d$weights[choicer:::.unit_first(d)]
+    expect_gt(length(unique(w_u)), 1L)
+    A <- choicer:::.compute_bread(fit)
+    old <- function(B) choicer:::.sandwich_combine(A, B)$vcov
+    cl <- choicer:::.to_units(d$cluster, d, "cluster")
+    ref <- list(
+      robust = old(crossprod(w_u * S_u)),
+      cluster = old(crossprod(rowsum(w_u * S_u, group = as.character(cl)))),
+      bhhh = choicer:::invert_hessian(crossprod(sqrt(w_u) * S_u))$vcov)
+    n_cubes <- 0L
+    with_mocked_bindings({
+      for (type in names(ref)) {
+        n_cubes <- 0L
+        V <- unname(vcov(fit, type = type))
+        expect_equal(n_cubes, if (cfg$draws == "store") 1L else 0L,
+                     label = sprintf("%s draws built for type = %s", what, type))
+        expect_equal(V, unname(ref[[type]]), tolerance = 1e-10,
+                     label = sprintf("%s vcov(type = %s) vs the score-matrix route",
+                                     what, type))
+      }
+      expect_equal(unname(wesml_vcov(fit)), unname(ref$robust), tolerance = 1e-10,
+                   label = paste(what, "wesml_vcov()"))
+    },
+    mxl_scores_parallel = function(...) stop("the score matrix was formed"),
+    get_halton_normals = function(...) {
+      n_cubes <<- n_cubes + 1L
+      choicer:::.halton_cube(...)
+    })
+    expect_equal(unname(fit$vcov), unname(ref$cluster), tolerance = 1e-10,
+                 label = paste(what, "fit-time cluster vcov"))
+  }
+})
+
+test_that("mixed logit cluster labels are checked before any draws are built", {
+  skip_on_cran()
+  rf <- cdx_route_fit(TRUE, "store", cluster = FALSE)
+  fit <- rf$fit
+  dt <- rf$dt
+  expect_error(vcov(fit, type = "cluster"),
+               "Cluster-robust standard errors need cluster labels", fixed = TRUE)
+  ids <- fit$data$situation_ids
+  per_sit <- dt[!duplicated(id), setNames(pid %% 7L, id)]
+  n_cubes <- 0L
+  local_mocked_bindings(get_halton_normals = function(...) {
+    n_cubes <<- n_cubes + 1L
+    choicer:::.halton_cube(...)
+  })
+  bad_na <- per_sit
+  # every situation of the first decision maker (prepared order: by person)
+  bad_na[as.character(ids[seq_len(fit$data$Ti[1L])])] <- NA
+  expect_error(vcov(fit, type = "cluster", cluster = bad_na),
+               "`cluster` contains missing values.", fixed = TRUE)
+  expect_equal(n_cubes, 0L, label = "no draws for labels with an NA")
+  expect_error(suppressWarnings(vcov(fit, type = "cluster",
+                                     cluster = unname(per_sit)[-1L])),
+               "`cluster` has length", fixed = TRUE)
+  varying <- per_sit
+  varying[as.character(ids[1L])] <- 99L  # a decision maker's first situation only
+  expect_error(vcov(fit, type = "cluster", cluster = varying),
+               "must be constant within each decision maker", fixed = TRUE)
+  expect_equal(n_cubes, 0L)
+})

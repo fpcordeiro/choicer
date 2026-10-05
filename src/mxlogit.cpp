@@ -1114,6 +1114,126 @@ struct MxlSymAcc {
   }
 };
 
+// The weighted score sum s_g = sum_{u in g} w_u s_u of the cluster in hand,
+// as a dense n-vector, zero outside the parameters its units touch (its
+// support, the continuous parameters and their free ASCs). One per thread,
+// and one for each part of a cluster a chunk boundary cuts; every vector is
+// allocated on the primary thread, and handing a part over swaps vectors, so
+// nothing allocates inside the parallel region. A unit with a non-finite
+// weight or score makes the sum dense: its weighted score is added over
+// every parameter (w * 0 included) and the update covers every entry, as
+// crossprod() of rowsum(w * S) spread NaN and Inf.
+struct MxlClusterSum {
+  std::vector<double> s;     // n_params, zero outside the support
+  std::vector<char> in;      // support marker
+  std::vector<int> supp;     // support, in the order first touched
+  bool dense = false;        // support is every parameter
+  bool used = false;         // a cut part holds a sum
+  int g = 0;                 // its cluster
+  char pad[128];             // keeps another thread's sum off these lines
+
+  // Each array carries 128 bytes of slack, so that no two threads' arrays
+  // share a cache line.
+  explicit MxlClusterSum(const int n)
+      : s(static_cast<std::size_t>(n) + 16, 0.0),
+        in(static_cast<std::size_t>(n) + 128, 0) {
+    s.resize(static_cast<std::size_t>(n));
+    in.resize(static_cast<std::size_t>(n));
+    supp.reserve(static_cast<std::size_t>(n) + 32);
+  }
+  void touch(const int k) {
+    if (!in[k]) {
+      in[k] = 1;
+      supp.push_back(k);
+    }
+  }
+  // Begin cluster g's sum: the continuous parameters are in every support.
+  void start(const int g_, const int K_c) {
+    g = g_;
+    for (int k = 0; k < K_c; ++k) touch(k);
+  }
+  void make_dense() {
+    if (dense) return;
+    dense = true;
+    for (int k = 0; k < static_cast<int>(s.size()); ++k) touch(k);
+  }
+  // Add w_u s_u (the unit's compact score), each product formed before the
+  // addition, as R's w * S and then rowsum() form it (GCC may contract the
+  // pair into one multiply-add where clang does not; the meat is class T).
+  void add(const MxlUnitMap& mp, const int K_c, const arma::vec& s_u,
+           const double w_u) {
+    const int m_u = static_cast<int>(s_u.n_elem);
+    if (!std::isfinite(w_u) || !s_u.is_finite()) make_dense();
+    if (dense && !std::isfinite(w_u)) {
+      // w_u times every entry of the unit's n-vector score, zeros included
+      // (the block's global indices increase)
+      int i = 0;
+      for (int k = 0; k < static_cast<int>(s.size()); ++k) {
+        double sk = 0.0;
+        if (i < m_u && mp.global(i, K_c) == k) sk = s_u[i++];
+        const double v = w_u * sk;
+        s[k] += v;
+      }
+      return;
+    }
+    for (int i = 0; i < m_u; ++i) {
+      const int k = mp.global(i, K_c);
+      touch(k);
+      const double v = w_u * s_u[i];
+      s[k] += v;
+    }
+  }
+  // Add another part of the same cluster.
+  void merge(const MxlClusterSum& part) {
+    if (part.dense) make_dense();
+    for (const int k : part.supp) {
+      touch(k);
+      s[k] += part.s[k];
+    }
+  }
+  // s_g s_g' over the support into the accumulator's upper triangle. A sum
+  // that overflowed (finite weights and scores can add up past the largest
+  // double) makes it dense first, as crossprod() spread its Inf (Inf * 0).
+  void update(const MxlSymAcc& acc, double* base) {
+    if (!dense && !std::all_of(supp.begin(), supp.end(), [this](const int k) {
+          return std::isfinite(s[k]);
+        }))
+      make_dense();
+    std::sort(supp.begin(), supp.end());
+    const int n = static_cast<int>(supp.size());
+    for (int b = 0; b < n; ++b) {
+      const int g_b = supp[b];
+      const double s_b = s[g_b];
+      for (int a = 0; a <= b; ++a) {
+        const double v = s[supp[a]] * s_b;
+        base[acc.at(supp[a], g_b)] += v;
+      }
+    }
+  }
+  void clear() {
+    for (const int k : supp) {
+      s[k] = 0.0;
+      in[k] = 0;
+    }
+    supp.clear();
+    dense = false;
+    used = false;
+    g = 0;
+  }
+  // Hand this (cut) sum to an empty part: swap the vectors.
+  void hand_to(MxlClusterSum& part) {
+    s.swap(part.s);
+    in.swap(part.in);
+    supp.swap(part.supp);
+    std::swap(dense, part.dense);
+    part.g = g;
+    part.used = true;
+    used = false;
+    dense = false;
+    g = 0;
+  }
+};
+
 // Non-finite blocks. In the dense code a unit's block sat in an n x n matrix
 // of zeros, and two operations spread a non-finite value beyond the block. A
 // row of the score stash F_t or of the centered G holding a NaN or an
@@ -1874,8 +1994,10 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
 // s_u = d ell_u / d theta of likelihood unit u (a decision maker when Ti is
 // supplied, a choice situation otherwise) over the beta, mu, L and delta/ASC
 // blocks. Same per-unit routine as mxl_bhhh_parallel with the outer-product
-// accumulator replaced by a row write; weights are applied on the R side (see
-// .assemble_score_vcov in R/classes.R).
+// accumulator replaced by a row write. The variance routes no longer form
+// it (mxl_bhhh_parallel and mxl_cluster_meat_parallel sum the scores in
+// C++); at census scale it would hold 2 million x 2,620 values (42 GB), so it
+// stops above max_bytes (2 GiB by default) before allocating.
 // [[Rcpp::export]]
 arma::mat mxl_scores_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
@@ -1887,7 +2009,7 @@ arma::mat mxl_scores_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0) {
+    const int draw_batch = 0, const double max_bytes = 2147483648.0) {
   // Inputs, layout and parameters at theta, validated on the primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        nullptr, eta_draws, rc_dist,
@@ -1896,6 +2018,15 @@ arma::mat mxl_scores_parallel(
                        "mxl_scores_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
+  const double bytes = sizeof(double) * static_cast<double>(lay.U) *
+                       static_cast<double>(n_params);
+  if (!(bytes <= max_bytes)) {
+    Rcpp::stop("The score matrix would take %.2f GiB (%d likelihood units x %d "
+               "parameters), more than max_bytes (%.2f GiB). vcov(type = ), "
+               "wesml_vcov() and the fit-time sandwich and cluster variances "
+               "do not form it; pass a larger max_bytes to compute it.",
+               bytes / 1073741824.0, lay.U, n_params, max_bytes / 1073741824.0);
+  }
 
   // Output: one row per likelihood unit (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
@@ -1921,6 +2052,182 @@ arma::mat mxl_scores_parallel(
   } // end parallel region
 
   return scores;
+}
+
+// Cluster-robust meat for the mixed logit model (internal).
+//
+// Returns the n_params x n_params matrix sum_g s_g s_g' with
+// s_g = sum_{u in g} w_u s_u the weighted score of cluster g, s_u the
+// weight-free score of likelihood unit u (a decision maker when Ti is
+// supplied, a choice situation otherwise) and w_u its weight: what
+// crossprod(rowsum(w * S, cluster)) forms from the U x n_params score matrix
+// of mxl_scores_parallel(), without that matrix. `cluster` holds one code per
+// likelihood unit, 1..G (R passes match(as.character(labels), unique(...)),
+// the grouping rowsum() uses); codes need not all occur, but the sort's
+// arrays have G + 1 entries, so G should not be far above the number of
+// units.
+//
+// The units are sorted by cluster (a stable counting sort, so a cluster's
+// units keep their order, as rowsum() adds them) and the sorted sequence is
+// cut into chunks of similar numbers of rows, processed in parallel. Each
+// thread adds the weighted compact scores of a cluster's units into a dense
+// n-vector, recording the parameters they touch (the cluster's support), and
+// adds the cluster's rank-one update over its support into its accumulator
+// once the cluster ends. A cluster cut by a chunk boundary leaves its partial
+// sums in the chunks; they are added in chunk order after the parallel
+// region and the cluster updated then, so one large cluster still spreads
+// over every thread. A cluster with a non-finite weight or score is updated
+// over every parameter, as crossprod() spread its NaN or Inf (0 * NaN,
+// 0 * Inf). Weights are applied here, not on the R side.
+// [[Rcpp::export]]
+Rcpp::NumericMatrix mxl_cluster_meat_parallel(
+    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
+    const Rcpp::IntegerVector &M, const arma::vec &weights,
+    const Rcpp::IntegerVector &cluster,
+    const arma::cube &eta_draws, const arma::uvec &rc_dist,
+    const bool rc_correlation = true, const bool rc_mean = false,
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0) {
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  // as in the other weighted kernels; then the cluster codes.
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_cluster_meat_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
+  const int K_c = ud.par.idx_delta_start;
+  const mxl_off U = lay.U;
+  if (static_cast<mxl_off>(cluster.size()) != U) {
+    Rcpp::stop("cluster length (%d) does not match the number of likelihood "
+               "units (%d).", cluster.size(), U);
+  }
+  const int* cl = cluster.begin();
+  int G = 0;
+  for (mxl_off u = 0; u < U; ++u) {
+    if (cl[u] < 1) {  // NA_INTEGER is negative
+      Rcpp::stop("cluster codes must be positive integers (unit %d has %s).",
+                 u + 1, cl[u] == NA_INTEGER ? "NA" : std::to_string(cl[u]));
+    }
+    G = std::max(G, cl[u]);
+  }
+
+  // Units sorted by cluster: order[off[g - 1], off[g]) holds cluster g's
+  // units in increasing order.
+  std::vector<mxl_off> off(static_cast<std::size_t>(G) + 1, 0);
+  for (mxl_off u = 0; u < U; ++u) ++off[cl[u]];
+  for (int g = 1; g <= G; ++g) off[g] += off[g - 1];
+  std::vector<mxl_off> order(static_cast<std::size_t>(U));
+  {
+    std::vector<mxl_off> next(off.begin(), off.end() - 1);
+    for (mxl_off u = 0; u < U; ++u) order[next[cl[u] - 1]++] = u;
+  }
+
+  // Chunks of the sorted sequence with similar numbers of rows (a unit's
+  // cost grows with its rows): about four per thread.
+  const int n_threads = mxl_team_threads(U);
+  const mxl_off n_chunks = std::max<mxl_off>(
+      1, std::min<mxl_off>(U, 4 * static_cast<mxl_off>(n_threads)));
+  std::vector<mxl_off> chunk(static_cast<std::size_t>(n_chunks) + 1, U);
+  {
+    const double total = static_cast<double>(lay.n_rows);
+    double cum = 0.0;
+    mxl_off c = 1;
+    chunk[0] = 0;
+    for (mxl_off p = 0; p < U && c < n_chunks; ++p) {
+      const mxl_off u = order[p];
+      cum += static_cast<double>(lay.row_off[lay.unit_first(u + 1)] -
+                                 lay.row_off[lay.unit_first(u)]);
+      if (cum >= total * static_cast<double>(c) / static_cast<double>(n_chunks)) {
+        chunk[c++] = p + 1;
+      }
+    }
+    for (; c < n_chunks; ++c) chunk[c] = U;
+  }
+
+  // The result and the threads' accumulators, slot maps and cluster sums,
+  // and the chunks' partial sums of their cut clusters (two per chunk: the
+  // cluster it starts in and the one it ends in), all allocated here on the
+  // primary thread.
+  MxlSymAcc acc(n_params, n_threads, "cluster meat");
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  std::vector<MxlClusterSum> sums;
+  sums.reserve(n_threads);
+  for (int i = 0; i < n_threads; ++i) sums.emplace_back(n_params);
+  std::vector<MxlClusterSum> cut;  // chunk c: 2 c (head), 2 c + 1 (tail)
+  cut.reserve(static_cast<std::size_t>(2 * n_chunks));
+  for (mxl_off i = 0; i < 2 * n_chunks; ++i) cut.emplace_back(n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+  {
+    const int tid = mxl_thread_num();
+    MxlUnitMap& mp = *maps[tid];
+    MxlClusterSum& cs = sums[tid];
+    double* acc_t = acc.base(tid);
+    MxlUnitScratch sc;
+    arma::vec s_u;  // score of unit u in its compact block
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (mxl_off c = 0; c < n_chunks; ++c) {
+      const mxl_off p0 = chunk[c], p1 = chunk[c + 1];
+      for (mxl_off p = p0; p < p1; ++p) {
+        const mxl_off u = order[p];
+        const int g = cl[u];
+        if (p == p0 || cl[order[p - 1]] != g) cs.start(g, K_c);
+        mxl_unit_load(ud, u, sc, 2);
+        mxl_unit_simulate(ud, sc, true);
+        mxl_unit_map(ud, sc, mp);
+        mxl_unit_score_local(ud, sc, mp, s_u);
+        cs.add(mp, K_c, s_u, weights[lay.unit_first(u)]);
+        mxl_unit_map_clear(mp);
+        if (p + 1 == p1 || cl[order[p + 1]] != g) {
+          // The cluster ends here or at the chunk's end: update it, or keep
+          // the part of a cluster the chunk boundary cuts.
+          const bool head = off[g - 1] < p0;   // began before this chunk
+          const bool tail = off[g] > p1;       // continues after it
+          if (!head && !tail) {
+            cs.update(acc, acc_t);
+            cs.clear();
+          } else {
+            cs.hand_to(cut[2 * c + (head ? 0 : 1)]);
+          }
+        }
+      }
+    }
+  } // end parallel region
+
+  // Clusters cut by chunk boundaries: their partial sums in chunk order, then
+  // the rank-one update, into the first thread's accumulator.
+  MxlClusterSum& cs = sums[0];
+  int g_open = 0;
+  for (mxl_off c = 0; c < n_chunks; ++c) {
+    for (int k = 0; k < 2; ++k) {
+      MxlClusterSum& part = cut[2 * c + k];
+      if (!part.used) continue;
+      if (part.g != g_open) {
+        if (g_open > 0) {
+          cs.update(acc, acc.base(0));
+          cs.clear();
+        }
+        cs.start(part.g, K_c);
+        g_open = part.g;
+      }
+      cs.merge(part);
+    }
+  }
+  if (g_open > 0) cs.update(acc, acc.base(0));
+
+  acc.finish(false);
+  return acc.result;
 }
 
 // Conditional tastes of each likelihood unit (internal).

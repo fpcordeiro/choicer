@@ -451,19 +451,29 @@ mxlp_build_cells <- function() {
 
 # --- Kernel calls and comparisons -------------------------------------------
 
-mxlp_kernels <- c("gradient", "hessian", "bhhh", "scores", "tastes")
+mxlp_kernels <- c("gradient", "hessian", "bhhh", "scores", "tastes", "meat")
+mxlp_weighted <- c("gradient", "hessian", "bhhh", "meat")
 
-# Call one of the five MXL panel kernels on a fixture. `Ti = NULL` omits the
+# Call one of the six MXL panel kernels on a fixture. `Ti = NULL` omits the
 # argument (the kernels' cross-sectional default); `generate = TRUE` switches
 # to on-the-fly Halton draws with identity scrambling, which reproduce
 # get_halton_normals() exactly. `draw_batch` forces the kernels to form a
 # unit's draws that many at a time (the default sizes batches by memory).
+# The cluster meat ("meat") gets one cluster per likelihood unit unless
+# `cluster` is given, so it equals the BHHH kernel with squared weights.
 mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
                       Ti = fx[["Ti"]], eta = fx$eta, generate = FALSE,
-                      draw_batch = NULL) {
+                      draw_batch = NULL, cluster = NULL) {
   args <- list(theta = theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
                choice_idx = fx$choice_idx, M = fx$M)
-  if (kernel %in% c("gradient", "hessian", "bhhh")) args$weights <- weights
+  if (kernel %in% mxlp_weighted) args$weights <- weights
+  if (kernel == "meat") {
+    args$cluster <- if (is.null(cluster)) {
+      seq_len(if (is.null(Ti)) length(fx$M) else length(Ti))
+    } else {
+      cluster
+    }
+  }
   args$eta_draws <- if (generate) array(0, dim = c(fx$K_w, 0L, 0L)) else eta
   args <- c(args, list(
     rc_dist = fx$rc_dist, rc_correlation = fx$rc_correlation,
@@ -481,6 +491,7 @@ mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
     bhhh     = mxl_bhhh_parallel,
     scores   = mxl_scores_parallel,
     tastes   = mxl_conditional_tastes_parallel,
+    meat     = mxl_cluster_meat_parallel,
     stop("unknown kernel: ", kernel)
   )
   do.call(fn, args)

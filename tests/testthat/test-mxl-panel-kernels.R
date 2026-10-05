@@ -701,7 +701,8 @@ test_that("input errors give the same message in every kernel and draw mode", {
   kname <- c(gradient = "mxl_loglik_gradient_parallel",
              hessian = "mxl_hessian_parallel", bhhh = "mxl_bhhh_parallel",
              scores = "mxl_scores_parallel",
-             tastes = "mxl_conditional_tastes_parallel")
+             tastes = "mxl_conditional_tastes_parallel",
+             meat = "mxl_cluster_meat_parallel")
   err <- function(k, f, ...) {
     tryCatch({
       mxlp_call(k, f, ...)
@@ -768,7 +769,7 @@ test_that("input errors give the same message in every kernel and draw mode", {
          with_field(fx, "M", c(fx$M[1L] + fx$M[2L], fx$M[-(1:2)])),
          list(Ti = NULL),
          function(k) {
-           if (k %in% c("gradient", "hessian", "bhhh")) {
+           if (k %in% mxlp_weighted) {
              sprintf("weights length (%d) does not match N (%d)", N, N - 1L)
            } else {
              sprintf("choice_idx length (%d) does not match N (%d)", N, N - 1L)
@@ -788,7 +789,7 @@ test_that("input errors give the same message in every kernel and draw mode", {
 
   # Weighted kernels: the weights' length.
   for (gen in c(FALSE, TRUE)) {
-    for (k in c("gradient", "hessian", "bhhh")) {
+    for (k in mxlp_weighted) {
       expect_identical(err(k, fx, weights = fx$weights[-1L], generate = gen),
                        sprintf("weights length (%d) does not match N (%d)",
                                N - 1L, N),
@@ -929,7 +930,7 @@ test_that("panel kernels reject weights that vary within a decision maker", {
   first <- sum(fx$Ti[seq_len(u - 1L)]) + 1L
   w_bad <- fx$weights
   w_bad[first + 1L] <- 1.5 * w_bad[first + 1L]
-  for (k in c("gradient", "hessian", "bhhh")) {
+  for (k in mxlp_weighted) {
     expect_error(mxlp_call(k, fx, weights = w_bad),
                  "constant within each decision maker",
                  label = paste(k, "with a within-unit weight change"))

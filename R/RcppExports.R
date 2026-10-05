@@ -989,8 +989,12 @@ mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_
     .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
-mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
-    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
+mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, max_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, max_bytes)
+}
+
+mxl_cluster_meat_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
+    .Call(`_choicer_mxl_cluster_meat_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }
 
 mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
