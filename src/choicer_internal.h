@@ -747,4 +747,32 @@ inline int compute_J_total(const int J_inside,
                           (include_outside_option ? 1 : 0));
 }
 
+// ----------------------------------------------------------------------------
+// The MXL derivative kernels' n x n accumulators (MxlSymAcc, mxlogit.cpp):
+// the rows of each column that a thread keeps privately. With T > 1 threads,
+// n (its own packed upper triangle) while the T triangles, T n (n + 1) / 2
+// doubles, fit in acc_bytes; above it, or for a NaN or negative acc_bytes,
+// K_c (the continuous parameters' rows, the threads sharing the result).
+// With every parameter continuous the two coincide. One thread adds into the
+// result itself (n).
+// ----------------------------------------------------------------------------
+inline choicer_off mxl_acc_rows(const choicer_off n, const choicer_off K_c,
+                                const int T, const double acc_bytes) {
+  if (T <= 1) return n;
+  const double packed = static_cast<double>(n) * static_cast<double>(n + 1) / 2;
+  return sizeof(double) * static_cast<double>(T) * packed <= acc_bytes
+             ? n
+             : std::min(K_c, n);
+}
+
+// Offset of column j in a thread's private buffer, which packs each column's
+// rows 0..min(s, j + 1) - 1: s = n gives the packed upper triangle, s = K_c
+// the continuous rows of a shared result. The buffer holds
+// mxl_acc_col_off(n, s) doubles, never more than the triangle's.
+inline std::size_t mxl_acc_col_off(const choicer_off j, const choicer_off s) {
+  const std::size_t jj = static_cast<std::size_t>(j);
+  const std::size_t ss = static_cast<std::size_t>(s);
+  return j <= s ? jj * (jj + 1) / 2 : jj * ss - ss * (ss - 1) / 2;
+}
+
 #endif // CHOICER_INTERNAL_HPP

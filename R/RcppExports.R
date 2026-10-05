@@ -409,6 +409,21 @@ test_arma_view_n_elem <- function() {
     .Call(`_choicer_test_arma_view_n_elem`)
 }
 
+#' The MXL derivative kernels' choice of accumulator, as MxlSymAcc makes it:
+#' the rows s = mxl_acc_rows() a thread keeps per column (n, or K_c when the
+#' threads share the result) and its buffer's column offsets
+#' mxl_acc_col_off(j, s), j = 0..n
+#'
+#' @param n,K_c Numbers of parameters and of continuous parameters.
+#' @param T Threads.
+#' @param acc_bytes The kernels' budget for the private triangles.
+#' @return List with \code{shared} (s < n) and the n + 1 offsets (doubles),
+#'   the last one the buffer's length.
+#' @noRd
+test_mxl_acc <- function(n, K_c, T, acc_bytes) {
+    .Call(`_choicer_test_mxl_acc`, n, K_c, T, acc_bytes)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
@@ -890,6 +905,14 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' @param draw_batch Integer; \code{0} (default) forms each decision maker's
 #'   draws in batches sized to a per-thread memory budget, a positive value
 #'   caps the number of draws per batch (for tests).
+#' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+#'   default). While the triangles of the T threads in use, T n_params
+#'   (n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+#'   or for a NaN or negative value, the threads add into the result (the
+#'   continuous parameters' rows through smaller private buffers, the ASC
+#'   block atomically). One thread adds into the result whatever the value.
+#'   The two ways differ by rounding only; \code{0} forces the shared result
+#'   (for tests).
 #' @returns Hessian evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -913,8 +936,8 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' dim(H)
 #' }
 #' @keywords internal
-mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
-    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
+mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
 #' BHHH (outer product of gradients) information matrix for Mixed Logit
@@ -959,6 +982,14 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' @param draw_batch Integer; \code{0} (default) forms each decision maker's
 #'   draws in batches sized to a per-thread memory budget, a positive value
 #'   caps the number of draws per batch (for tests).
+#' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+#'   default). While the triangles of the T threads in use, T n_params
+#'   (n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+#'   or for a NaN or negative value, the threads add into the result (the
+#'   continuous parameters' rows through smaller private buffers, the ASC
+#'   block atomically). One thread adds into the result whatever the value.
+#'   The two ways differ by rounding only; \code{0} forces the shared result
+#'   (for tests).
 #' @returns n_params x n_params PSD matrix representing the observed information
 #'   matrix estimated by the outer product of gradients (same sign convention
 #'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -985,16 +1016,16 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' dim(H)
 #' }
 #' @keywords internal
-mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
-    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
+mxl_bhhh_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_bhhh_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
 mxl_scores_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, max_bytes = 2147483648.0) {
     .Call(`_choicer_mxl_scores_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, max_bytes)
 }
 
-mxl_cluster_meat_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
-    .Call(`_choicer_mxl_cluster_meat_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
+mxl_cluster_meat_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_cluster_meat_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
 mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {

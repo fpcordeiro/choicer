@@ -530,6 +530,140 @@ test_that("the cluster meat checks its labels after the other inputs", {
                "weights length", fixed = TRUE)
 })
 
+# --- Shared accumulator -------------------------------------------------------
+
+# With more than one thread, the kernels add into per-thread packed triangles
+# while T n (n + 1) / 2 doubles fit in acc_bytes (2 GiB by default) and share
+# the result above it: the continuous rows through per-thread buffers, the
+# ASC block with atomic additions. acc_bytes = 0 forces the shared result.
+
+test_that("the kernels share the result exactly when the triangles exceed acc_bytes", {
+  acc <- function(n, K_c, T, bytes) test_mxl_acc(n, K_c, T, bytes)
+  tri <- function(n, T) 8 * T * n * (n + 1) / 2
+  # the T triangles fit at exactly acc_bytes
+  expect_false(acc(100, 5, 4, tri(100, 4))$shared)
+  expect_true(acc(100, 5, 4, tri(100, 4) - 1)$shared)
+  # the default 2 GiB at eleven threads: per-thread up to 6,985 parameters
+  expect_false(acc(6985, 19, 11, 2^31)$shared)
+  expect_true(acc(6986, 19, 11, 2^31)$shared)
+  # NaN, negative and zero budgets share; Inf never does; one thread never
+  for (bytes in c(NaN, -1, 0)) {
+    expect_true(acc(100, 5, 2, bytes)$shared)
+    expect_false(acc(100, 5, 1, bytes)$shared)
+  }
+  expect_false(acc(100, 5, 64, Inf)$shared)
+  # A thread's buffer packs each column's first min(s, j + 1) rows: the
+  # triangle (s = n) or the continuous rows (s = K_c), never longer than the
+  # triangle, and the same when every parameter is continuous.
+  expect_equal(diff(acc(100, 5, 2, Inf)$col_off), 1:100)
+  for (K_c in c(1, 7, 99, 100)) {
+    off <- acc(100, K_c, 2, 0)$col_off
+    expect_equal(diff(off), pmin(K_c, 1:100))
+    expect_lte(off[101L], 100 * 101 / 2)
+  }
+  expect_identical(acc(100, 100, 2, 0)$col_off, acc(100, 100, 2, Inf)$col_off)
+  # offsets past 2^32 doubles, and the continuous rows' length
+  expect_equal(acc(1e5, 19, 2, Inf)$col_off[1e5 + 1], 1e5 * (1e5 + 1) / 2)
+  expect_equal(acc(1e5, 19, 2, 0)$col_off[1e5 + 1], 1e5 * 19 - 19 * 18 / 2)
+})
+
+test_that("a shared result equals the per-thread accumulators' sum", {
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
+  on.exit(set_num_threads(2L), add = TRUE)
+  cells <- cdx_cells()
+  for (fx in cells[vapply(cells, function(f) f$name %in% c(
+    "xsec, outside option", "panel", "panel, repeated alternative",
+    "panel, trailing ASCs", "panel, no ASCs", "one decision maker",
+    "xsec, shuffled rows, repeated alternatives"), TRUE)]) {
+    cl <- (seq_len(cdx_units(fx)) - 1L) %/% 3L + 1L
+    for (k in c("hessian", "bhhh", "meat")) {
+      for (gen in c(FALSE, TRUE)) {
+        what <- sprintf("[%s%s] %s", fx$name, if (gen) ", generate" else "", k)
+        kcall <- function(...) {
+          mxlp_call(k, fx, generate = gen, cluster = if (k == "meat") cl, ...)
+        }
+        set_num_threads(2L)
+        shared <- kcall(acc_bytes = 0)
+        expect_identical(shared, t(shared), label = paste(what, "symmetric"))
+        mxlp_expect_close(shared, kcall(), 1e-12, paste(what, "shared vs per-thread"))
+        # one thread adds into the result itself, whatever the budget
+        set_num_threads(1L)
+        expect_identical(kcall(acc_bytes = 0), kcall(), label = paste(what, "one thread"))
+      }
+    }
+  }
+})
+
+test_that("non-finite entries spread over a shared result as over per-thread ones", {
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
+  on.exit(set_num_threads(2L), add = TRUE)
+  set_num_threads(2L)
+  same_pattern <- function(fx, k, what, cl = NULL) {
+    sh <- mxlp_call(k, fx, cluster = cl, acc_bytes = 0)
+    ref <- mxlp_call(k, fx, cluster = cl)
+    what <- paste(what, k)
+    expect_true(any(!is.finite(ref)), label = paste(what, "has non-finite entries"))
+    expect_identical(is.na(sh), is.na(ref), label = paste(what, "NA"))
+    expect_identical(is.nan(sh), is.nan(ref), label = paste(what, "NaN"))
+    expect_identical(is.infinite(sh), is.infinite(ref), label = paste(what, "Inf"))
+    expect_identical(sh[is.infinite(sh)], ref[is.infinite(ref)],
+                     label = paste(what, "infinities and their signs"))
+    # (a non-finite weight leaves no finite entry)
+    if (any(is.finite(ref))) {
+      mxlp_expect_close(sh[is.finite(ref)], ref[is.finite(ref)], 1e-12,
+                        paste(what, "finite entries"))
+    }
+  }
+  # draws at which a decision maker's choice probability is zero: NaN rows of
+  # the Hessian (as in the non-finite Hessian test above)
+  fx <- cdx_fixture("zero-weight draws", 1012, rc_dist = 0L)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  rows_u <- (row_off[first[3L]] + 1L):row_off[first[3L] + fx$Ti[3L]]
+  fx$W[rows_u, 1L] <- 0
+  fx$W[row_off[first[3L]] + fx$choice_idx[first[3L]], 1L] <- 10
+  fx$eta[1L, 1:5, 3L] <- -1e308
+  same_pattern(fx, "hessian", "zero-weight draws")
+  # utilities that overflow: a NaN score
+  fx <- cdx_fixture("overflow", 1014)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  fx$theta[1L] <- 2
+  fx$X[row_off[first[2L]] + fx$choice_idx[first[2L]], 1L] <- -1e308
+  for (k in c("bhhh", "meat")) same_pattern(fx, k, "overflowed unit", cl = c(1L, 1L, 2:9))
+  # an infinite score entry with finite utilities
+  fx <- cdx_fixture("infinite score", 1023)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- which(fx$Ti >= 2L)[1L]
+  fx$theta[1L] <- 1e-306
+  for (t in first[u] - 1L + seq_len(fx$Ti[u])) {
+    other <- setdiff(seq_len(fx$M[t]), fx$choice_idx[t])[1L]
+    fx$X[row_off[t] + other, 1L] <- 1e308
+  }
+  for (k in c("bhhh", "meat")) {
+    same_pattern(fx, k, "infinite score", cl = rep(1:3, length.out = length(fx$Ti)))
+  }
+  # finite scores whose cluster sum overflows
+  fx <- cdx_fixture("overflowing sum", 1025, panel = FALSE, U = 10L)
+  row_off <- c(0L, cumsum(fx$M))
+  fx$theta[1L] <- 1e-306
+  for (t in 1:2) {
+    other <- setdiff(seq_len(fx$M[t]), fx$choice_idx[t])[1L]
+    fx$X[row_off[t] + other, 1L] <- 1e308
+  }
+  same_pattern(fx, "meat", "overflowing cluster sum", cl = c(1L, 1L, 2:9))
+  # infinite, then missing, weights on one decision maker
+  fx <- cdx_fixture("weights", 1015)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  for (w_bad in c(Inf, NA_real_)) {
+    fx$weights[first[4L] - 1L + seq_len(fx$Ti[4L])] <- w_bad
+    for (k in c("hessian", "bhhh", "meat")) {
+      same_pattern(fx, k, sprintf("weight %s", w_bad), cl = rep(1:5, 2L))
+    }
+  }
+})
+
 test_that("the score matrix refuses to exceed max_bytes", {
   fx <- cdx_fixture("guard", 1019, U = 5L)
   expect_error(

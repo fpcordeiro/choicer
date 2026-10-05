@@ -369,6 +369,20 @@
   they accept, their checks and messages, and the absence of a small-sample
   correction are unchanged. The internal score kernel now refuses to form a
   matrix above 2 GiB.
+- With many parameters, the Hessian, the BHHH matrix and the clustered meat
+  of the mixed logit no longer keep one copy of the result per thread. The
+  copies are kept only while together they fit in 2 GiB (up to about 7,000
+  parameters at eleven threads); above that the threads add into the result
+  itself, each keeping private only the rows of the coefficients and of the
+  random coefficients' means and Cholesky factor, which every decision maker
+  touches. On a census-like design with 17,156 parameters, five threads
+  computed the Hessian for 20,000 students in 3.9 s with 2.4 GB of working
+  memory, the result included, instead of 4.2 s with 8.3 GB, and the BHHH
+  matrix in 0.42 s instead of 0.68 s; at eleven threads, where per-thread
+  copies would need 13 GB, they took 2.9 s and 0.38 s in 2.4 GB (medians of
+  three alternated runs). Below the threshold nothing changes; above it, the
+  result differs from the per-thread copies' by floating-point rounding only,
+  as results computed with different numbers of threads always have.
 
 ## Data preparation at population scale
 

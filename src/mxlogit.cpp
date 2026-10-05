@@ -1026,28 +1026,39 @@ inline void mxl_unit_score_local(const MxlUnitData& ud, MxlUnitScratch& sc,
 // units' compact blocks are added into its upper triangle, which is mirrored
 // at the end (every block is exactly symmetric, so the mirror is the sum the
 // lower triangle would have accumulated). With one thread the blocks go into
-// the result itself; with more, each thread adds into its own packed upper
-// triangle (column j's rows 0..j from j (j + 1) / 2), and the triangles are
-// added up in thread order, starting from +0 as the critical section's
-// addition into a zero matrix did. Everything is allocated here, on the
-// primary thread, so that running out of memory is an R error saying how much
-// each thread needs, not a failure inside a parallel region.
+// the result itself. With more, while the threads' packed upper triangles fit
+// in acc_bytes (mxl_acc_rows(): 2 GiB by default, n of about 7,000 at eleven
+// threads), each thread adds into its own, and the triangles are added up in
+// thread order, starting from +0 as the critical section's addition into a
+// zero matrix did. They are kept where they fit for speed as much as memory:
+// no atomic additions (a clustered meat at census scale took 1.37 s with
+// them, 1.82 s shared). Above it the threads share the result: each keeps
+// private only the rows of the continuous parameters, which every unit
+// touches, packed like the triangle's first K_c rows (mxl_acc_col_off()) and
+// added up in thread order at the end, and adds the ASC block into the result
+// atomically. Threads seldom meet there when units face few alternatives (a
+// unit touches a_u (a_u + 1) / 2 of its (n - K_c) (n - K_c + 1) / 2 entries);
+// a unit with a non-finite score or weight, or a cluster with a wide
+// support, adds over many of them. Everything is allocated here, on the
+// primary thread, so that running out of memory is an R error saying how
+// much each thread needs, not a failure inside a parallel region.
 struct MxlSymAcc {
   const mxl_off n;
   const int T;
+  const mxl_off K_c;
+  const mxl_off s;             // rows a thread keeps per column: n, or K_c
+  const bool shared;           // s < n: the threads add into the result
   Rcpp::NumericMatrix result;  // n x n, zero
   double* out = nullptr;       // its elements
-  std::vector<std::unique_ptr<double[]>> part;  // T > 1: packed triangles
+  std::vector<std::unique_ptr<double[]>> part;  // T > 1: each thread's rows
 
-  static std::size_t packed_len(const mxl_off n) {
-    return static_cast<std::size_t>(n) * static_cast<std::size_t>(n + 1) / 2;
-  }
-
-  MxlSymAcc(const int n_, const int T_, const char* what)
-      : n(n_), T(T_), result(n_, n_) {
+  MxlSymAcc(const int n_, const int T_, const int K_c_, const char* what,
+            const double acc_bytes)
+      : n(n_), T(T_), K_c(K_c_), s(mxl_acc_rows(n_, K_c_, T_, acc_bytes)),
+        shared(s < n), result(n_, n_) {
     out = result.begin();
     if (T > 1) {
-      const std::size_t len = packed_len(n);
+      const std::size_t len = mxl_acc_col_off(n, s);
       try {
         part.reserve(T);
         for (int i = 0; i < T; ++i) part.push_back(mxl_buffer(len));
@@ -1058,7 +1069,7 @@ struct MxlSymAcc {
                    "set_num_threads().", what,
                    sizeof(double) * static_cast<double>(len) / 1e9, T);
       }
-      // Thread i zeros triangle i (schedule(static)), touching first the
+      // Thread i zeros buffer i (schedule(static)), touching first the
       // memory it will add to.
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static) num_threads(T)
@@ -1071,37 +1082,64 @@ struct MxlSymAcc {
   MxlSymAcc(const MxlSymAcc&) = delete;
   MxlSymAcc& operator=(const MxlSymAcc&) = delete;
 
-  // Thread tid's accumulator and the offset of entry (i, j), i <= j.
-  double* base(const int tid) const { return T > 1 ? part[tid].get() : out; }
-  std::size_t at(const mxl_off i, const mxl_off j) const {
-    return T > 1 ? static_cast<std::size_t>(j) * static_cast<std::size_t>(j + 1) / 2 +
-                       static_cast<std::size_t>(i)
-                 : static_cast<std::size_t>(i) +
-                       static_cast<std::size_t>(j) * static_cast<std::size_t>(n);
+  // Thread tid's buffer, to pass to add() only: its layout depends on the
+  // mode.
+  double* base(const int tid) const { return part.empty() ? out : part[tid].get(); }
+  // Add v to entry (i, j), i <= j, from the thread whose buffer is `buf`.
+  // Shared must be `shared` (the other instantiation writes outside the
+  // buffer): the callers' loops are templates instantiated for each and
+  // chosen once per unit (mxl_hessian_add(), mxl_bhhh_add(),
+  // mxl_bhhh_add_dense(), MxlClusterSum::update_into()), so that the
+  // per-thread loops hold no atomic operation (a branch per entry made the
+  // per-thread BHHH 12% slower). Atomic = false is for a shared result's
+  // serial pass after the parallel region.
+  template <bool Shared, bool Atomic = Shared>
+  void add(double* buf, const mxl_off i, const mxl_off j, const double v) const {
+    const std::size_t ii = static_cast<std::size_t>(i);
+    const std::size_t jj = static_cast<std::size_t>(j);
+    if (!Shared) {
+      buf[T > 1 ? jj * (jj + 1) / 2 + ii : ii + jj * static_cast<std::size_t>(n)] += v;
+    } else if (i < s) {
+      buf[mxl_acc_col_off(j, s) + ii] += v;
+    } else {
+      double& t = out[ii + jj * static_cast<std::size_t>(n)];
+      if (Atomic) {
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+        t += v;
+      } else {
+        t += v;
+      }
+    }
   }
 
-  // The upper triangle of the result: the threads' triangles added up in
-  // thread order (a no-op with one thread); then the lower triangle as its
-  // mirror, every element negated when `negate` (the Hessian's sign).
+  // The upper triangle of the result: the entries the threads kept, added
+  // up in thread order (a no-op with one thread); then the lower triangle as
+  // its mirror, every element negated when `negate` (the Hessian's sign).
   void finish(const bool negate) {
     const mxl_off nn = n;
     double* o = out;
     const std::vector<std::unique_ptr<double[]>>& pt = part;
-    const int n_part = T > 1 ? T : 0;
+    const int n_part = static_cast<int>(part.size());
+    const mxl_off ss = s;
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 16) num_threads(T)
 #endif
     for (mxl_off j = 0; j < nn; ++j) {
       const std::size_t col = static_cast<std::size_t>(j) * static_cast<std::size_t>(nn);
       if (n_part > 0) {
-        // Column j's entries from +0, then each thread's in turn: each entry
-        // adds the threads in thread order, reading one triangle at a time.
-        const std::size_t pk = static_cast<std::size_t>(j) * static_cast<std::size_t>(j + 1) / 2;
+        // Column j's entries the threads kept (every entry, or with a shared
+        // result the continuous rows) from +0, then each thread's in turn:
+        // each entry adds the threads in thread order, reading one buffer at
+        // a time.
+        const mxl_off top = std::min<mxl_off>(ss, j + 1);
+        const std::size_t pk = mxl_acc_col_off(j, ss);
         double* oc = o + col;
-        for (mxl_off i = 0; i <= j; ++i) oc[i] = 0.0;
+        for (mxl_off i = 0; i < top; ++i) oc[i] = 0.0;
         for (int k = 0; k < n_part; ++k) {
           const double* pc = pt[k].get() + pk;
-          for (mxl_off i = 0; i <= j; ++i) oc[i] += pc[i];
+          for (mxl_off i = 0; i < top; ++i) oc[i] += pc[i];
         }
       }
       for (mxl_off i = 0; i <= j; ++i) {
@@ -1194,19 +1232,30 @@ struct MxlClusterSum {
   // s_g s_g' over the support into the accumulator's upper triangle. A sum
   // that overflowed (finite weights and scores can add up past the largest
   // double) makes it dense first, as crossprod() spread its Inf (Inf * 0).
-  void update(const MxlSymAcc& acc, double* base) {
+  // `serial`: no other thread runs (after the parallel region).
+  void update(const MxlSymAcc& acc, double* buf, const bool serial = false) {
     if (!dense && !std::all_of(supp.begin(), supp.end(), [this](const int k) {
           return std::isfinite(s[k]);
         }))
       make_dense();
     std::sort(supp.begin(), supp.end());
+    if (!acc.shared) {
+      update_into<false, false>(acc, buf);
+    } else if (serial) {
+      update_into<true, false>(acc, buf);
+    } else {
+      update_into<true, true>(acc, buf);
+    }
+  }
+  template <bool Shared, bool Atomic>
+  void update_into(const MxlSymAcc& acc, double* buf) const {
     const int n = static_cast<int>(supp.size());
     for (int b = 0; b < n; ++b) {
       const int g_b = supp[b];
       const double s_b = s[g_b];
       for (int a = 0; a <= b; ++a) {
         const double v = s[supp[a]] * s_b;
-        base[acc.at(supp[a], g_b)] += v;
+        acc.add<Shared, Atomic>(buf, supp[a], g_b, v);
       }
     }
   }
@@ -1327,6 +1376,24 @@ inline void mxl_apply_nonfinite(MxlSymAcc& acc,
   }
 }
 
+// Add w_u H_u, the unit's m_u x m_u Hessian block (exactly symmetric), into
+// the accumulator's upper triangle; each term is formed as Armadillo's
+// element-wise update formed it (see mxl_hessian_parallel()).
+template <bool Shared>
+inline void mxl_hessian_add(const MxlSymAcc& acc, double* buf,
+                            const MxlUnitMap& mp, const int Kc,
+                            const arma::mat& H, const double w_u) {
+  const int m_u = static_cast<int>(H.n_rows);
+  for (int j = 0; j < m_u; ++j) {
+    const int gj = mp.global(j, Kc);
+    for (int i = 0; i <= j; ++i) {
+      double v = H(i, j);
+      v *= w_u;
+      acc.add<Shared>(buf, mp.global(i, Kc), gj, v);
+    }
+  }
+}
+
 //' Analytical Hessian of the log-likelihood v2
 //'
 //' Computes the Hessian of the log-likelihood for the Mixed Logit model using
@@ -1362,6 +1429,14 @@ inline void mxl_apply_nonfinite(MxlSymAcc& acc,
 //' @param draw_batch Integer; \code{0} (default) forms each decision maker's
 //'   draws in batches sized to a per-thread memory budget, a positive value
 //'   caps the number of draws per batch (for tests).
+//' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+//'   default). While the triangles of the T threads in use, T n_params
+//'   (n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+//'   or for a NaN or negative value, the threads add into the result (the
+//'   continuous parameters' rows through smaller private buffers, the ASC
+//'   block atomically). One thread adds into the result whatever the value.
+//'   The two ways differ by rounding only; \code{0} forces the shared result
+//'   (for tests).
 //' @returns Hessian evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -1396,7 +1471,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0) {
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
   // Inputs, layout and parameters at theta, validated on the primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        &weights, eta_draws, rc_dist,
@@ -1436,7 +1511,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
   // The result and the threads' accumulators, slot maps and non-finite
   // records, all allocated here on the primary thread.
   const int n_threads = mxl_team_threads(lay.U);
-  MxlSymAcc acc(n_params, n_threads, "Hessian");
+  MxlSymAcc acc(n_params, n_threads, Kc, "Hessian", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
   std::vector<MxlNonFinite> nonfinite = mxl_nonfinite(n_params, n_threads);
 
@@ -1789,19 +1864,16 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
       // 6b. Louis identity: H_u = hess_term1, whose centered Identity A
       //     already subtracts g_bar g_barᵀ. The draw weights are normalized,
       //     so there is no division by the simulated P_u. Add w_u H_u into
-      //     the thread's upper triangle (opg_pz is exactly symmetric), the
+      //     the accumulator's upper triangle (opg_pz is exactly symmetric), the
       //     product formed first as Armadillo's element-wise update forms it:
       //     main's rounding under clang, which contracts within a statement
       //     only; GCC, which may fuse main's element-wise loop, can round
       //     these additions differently in the last bit (class T, as are the
       //     smaller BLAS products).
-      for (int j = 0; j < m_u; ++j) {
-        const int gj = mp.global(j, Kc);
-        for (int i = 0; i <= j; ++i) {
-          double v = opg_pz(i, j);
-          v *= w_u;
-          acc_t[acc.at(mp.global(i, Kc), gj)] += v;
-        }
+      if (acc.shared) {
+        mxl_hessian_add<true>(acc, acc_t, mp, Kc, opg_pz, w_u);
+      } else {
+        mxl_hessian_add<false>(acc, acc_t, mp, Kc, opg_pz, w_u);
       }
       if (!std::isfinite(w_u)) {
         mxl_nonfinite_weight(w_u, m_u, [&](const int i) { return mp.global(i, Kc); },
@@ -1814,6 +1886,50 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
   acc.finish(true);  // the negated Hessian
   mxl_apply_nonfinite(acc, nonfinite);
   return acc.result;
+}
+
+// Add w_u s_u s_u', s_u the unit's compact score, into the accumulator's
+// upper triangle, column by column; c holds a column (m_u entries). Each term
+// is formed as syrk_vec formed it, stored, then added (see
+// mxl_bhhh_parallel()).
+template <bool Shared>
+inline void mxl_bhhh_add(const MxlSymAcc& acc, double* buf,
+                         const MxlUnitMap& mp, const int K_c,
+                         const arma::vec& s_u, const double w_u, double* c) {
+  const int m_u = static_cast<int>(s_u.n_elem);
+  for (int b = 0; b < m_u; ++b) {
+    const double s_b = s_u[b];
+    for (int a = 0; a <= b; ++a) {
+      const double acc1 = s_u[a] * s_b;
+      c[a] = w_u * acc1;
+    }
+    const int g_b = mp.global(b, K_c);
+    for (int a = 0; a <= b; ++a) acc.add<Shared>(buf, mp.global(a, K_c), g_b, c[a]);
+  }
+}
+
+// The same update over every entry, the score read from the slot map (zero
+// outside the block), for a unit whose score or weight is not finite; c holds
+// a column (n_params entries).
+template <bool Shared>
+inline void mxl_bhhh_add_dense(const MxlSymAcc& acc, double* buf,
+                               const MxlUnitMap& mp, const int K_c,
+                               const arma::vec& s_u, const double w_u,
+                               double* c) {
+  const auto s_of = [&](const int i) -> double {
+    if (i < K_c) return s_u[i];
+    const int k = mp.unit_of[i - K_c];
+    return k >= 0 ? s_u[K_c + k] : 0.0;
+  };
+  const int n = static_cast<int>(acc.n);
+  for (int i = 0; i < n; ++i) {
+    const double s_i = s_of(i);
+    for (int k = 0; k <= i; ++k) {
+      const double acc1 = s_of(k) * s_i;
+      c[k] = w_u * acc1;
+    }
+    for (int k = 0; k <= i; ++k) acc.add<Shared>(buf, k, i, c[k]);
+  }
 }
 
 //' BHHH (outer product of gradients) information matrix for Mixed Logit
@@ -1858,6 +1974,14 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
 //' @param draw_batch Integer; \code{0} (default) forms each decision maker's
 //'   draws in batches sized to a per-thread memory budget, a positive value
 //'   caps the number of draws per batch (for tests).
+//' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+//'   default). While the triangles of the T threads in use, T n_params
+//'   (n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+//'   or for a NaN or negative value, the threads add into the result (the
+//'   continuous parameters' rows through smaller private buffers, the ASC
+//'   block atomically). One thread adds into the result whatever the value.
+//'   The two ways differ by rounding only; \code{0} forces the shared result
+//'   (for tests).
 //' @returns n_params x n_params PSD matrix representing the observed information
 //'   matrix estimated by the outer product of gradients (same sign convention
 //'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -1895,7 +2019,7 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0) {
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
   // Inputs, layout and parameters at theta, validated on the primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        &weights, eta_draws, rc_dist,
@@ -1909,7 +2033,7 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
   // The result and the threads' accumulators and slot maps, allocated here
   // on the primary thread.
   const int n_threads = mxl_team_threads(lay.U);
-  MxlSymAcc acc(n_params, n_threads, "BHHH");
+  MxlSymAcc acc(n_params, n_threads, K_c, "BHHH", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
 
 #ifdef _OPENMP
@@ -1947,15 +2071,10 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
       // accumulator, which starts at +0, is ever -0.
       if (std::isfinite(w_u) && s_u.is_finite()) {
         col.resize(static_cast<std::size_t>(m_u));
-        double* c = col.data();
-        for (int b = 0; b < m_u; ++b) {
-          const double s_b = s_u[b];
-          for (int a = 0; a <= b; ++a) {
-            const double acc1 = s_u[a] * s_b;
-            c[a] = w_u * acc1;
-          }
-          const int g_b = mp.global(b, K_c);
-          for (int a = 0; a <= b; ++a) acc_t[acc.at(mp.global(a, K_c), g_b)] += c[a];
+        if (acc.shared) {
+          mxl_bhhh_add<true>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+        } else {
+          mxl_bhhh_add<false>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
         }
       } else {
         // A non-finite weight, or a non-finite score (utilities that
@@ -1963,20 +2082,11 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
         // utilities): main's update over every entry, whose 0 * NaN and
         // 0 * Inf spread it over whole rows and columns. The scores come
         // from the slot map, zero outside the block.
-        const auto s_of = [&](const int i) -> double {
-          if (i < K_c) return s_u[i];
-          const int k = mp.unit_of[i - K_c];
-          return k >= 0 ? s_u[K_c + k] : 0.0;
-        };
         col.resize(static_cast<std::size_t>(n_params));
-        double* c = col.data();
-        for (int i = 0; i < n_params; ++i) {
-          const double s_i = s_of(i);
-          for (int k = 0; k <= i; ++k) {
-            const double acc1 = s_of(k) * s_i;
-            c[k] = w_u * acc1;
-          }
-          for (int k = 0; k <= i; ++k) acc_t[acc.at(k, i)] += c[k];
+        if (acc.shared) {
+          mxl_bhhh_add_dense<true>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+        } else {
+          mxl_bhhh_add_dense<false>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
         }
       }
       mxl_unit_map_clear(mp);
@@ -2078,7 +2188,9 @@ arma::mat mxl_scores_parallel(
 // region and the cluster updated then, so one large cluster still spreads
 // over every thread. A cluster with a non-finite weight or score is updated
 // over every parameter, as crossprod() spread its NaN or Inf (0 * NaN,
-// 0 * Inf). Weights are applied here, not on the R side.
+// 0 * Inf). Weights are applied here, not on the R side. acc_bytes chooses
+// between the threads' private triangles and a shared result, as for
+// mxl_bhhh_parallel().
 // [[Rcpp::export]]
 Rcpp::NumericMatrix mxl_cluster_meat_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
@@ -2091,7 +2203,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0) {
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
   // Inputs, layout and parameters at theta, validated on the primary thread
   // as in the other weighted kernels; then the cluster codes.
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
@@ -2154,7 +2266,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
   // and the chunks' partial sums of their cut clusters (two per chunk: the
   // cluster it starts in and the one it ends in), all allocated here on the
   // primary thread.
-  MxlSymAcc acc(n_params, n_threads, "cluster meat");
+  MxlSymAcc acc(n_params, n_threads, K_c, "cluster meat", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
   std::vector<MxlClusterSum> sums;
   sums.reserve(n_threads);
@@ -2206,7 +2318,8 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
   } // end parallel region
 
   // Clusters cut by chunk boundaries: their partial sums in chunk order, then
-  // the rank-one update, into the first thread's accumulator.
+  // the rank-one update, through the first thread's buffer and with no other
+  // thread running (no atomic additions into a shared result).
   MxlClusterSum& cs = sums[0];
   int g_open = 0;
   for (mxl_off c = 0; c < n_chunks; ++c) {
@@ -2215,7 +2328,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
       if (!part.used) continue;
       if (part.g != g_open) {
         if (g_open > 0) {
-          cs.update(acc, acc.base(0));
+          cs.update(acc, acc.base(0), true);
           cs.clear();
         }
         cs.start(part.g, K_c);
@@ -2224,7 +2337,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
       cs.merge(part);
     }
   }
-  if (g_open > 0) cs.update(acc, acc.base(0));
+  if (g_open > 0) cs.update(acc, acc.base(0), true);
 
   acc.finish(false);
   return acc.result;

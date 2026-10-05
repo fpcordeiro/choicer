@@ -2,7 +2,8 @@
 // helpers for unit testing. These functions are NOT user-facing API; they are
 // @noRd and only exported so that tests can pin the raw-array softmax,
 // log-sum-exp and nested logit probabilities to their Armadillo counterparts
-// bit for bit, and check how Armadillo is configured (its index word).
+// bit for bit, check how Armadillo is configured (its index word), and check
+// how the MXL derivative kernels choose and size their accumulators.
 //
 // DO NOT add any of these to the public documentation or NAMESPACE.
 
@@ -194,4 +195,29 @@ double test_arma_view_n_elem() {
   double cell = 0.0;
   const arma::mat view(&cell, 2147483647u, 3u, false, true);
   return static_cast<double>(view.n_elem);
+}
+
+//' The MXL derivative kernels' choice of accumulator, as MxlSymAcc makes it:
+//' the rows s = mxl_acc_rows() a thread keeps per column (n, or K_c when the
+//' threads share the result) and its buffer's column offsets
+//' mxl_acc_col_off(j, s), j = 0..n
+//'
+//' @param n,K_c Numbers of parameters and of continuous parameters.
+//' @param T Threads.
+//' @param acc_bytes The kernels' budget for the private triangles.
+//' @return List with \code{shared} (s < n) and the n + 1 offsets (doubles),
+//'   the last one the buffer's length.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+Rcpp::List test_mxl_acc(const double n, const int K_c, const int T,
+                        const double acc_bytes) {
+  const choicer_off nn = static_cast<choicer_off>(n);
+  const choicer_off s = mxl_acc_rows(nn, K_c, T, acc_bytes);
+  const bool shared = s < nn;
+  Rcpp::NumericVector off(static_cast<R_xlen_t>(nn) + 1);
+  for (choicer_off j = 0; j <= nn; ++j) {
+    off[static_cast<R_xlen_t>(j)] = static_cast<double>(mxl_acc_col_off(j, s));
+  }
+  return Rcpp::List::create(Rcpp::Named("shared") = shared,
+                            Rcpp::Named("col_off") = off);
 }
