@@ -2,8 +2,12 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "halton.h"
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <vector>
 
 // Reconstruct lower-triangular choleski factor L from L_params
 // [[Rcpp::export]]
@@ -826,6 +830,357 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
   return J;
 }
 
+// ============================================================================
+// Threads and per-thread buffers (estimation and prediction kernels)
+// ============================================================================
+
+// The team of a kernel's parallel regions, and so the number of scratch sets
+// or accumulators it allocates: OpenMP's next team, within the thread limit,
+// and at most one thread per work item (likelihood unit or choice situation),
+// but two for a single item, so that the region stays active and, as before,
+// an OpenMP-built BLAS runs the item's products single-threaded.
+inline int mxl_team_threads(const mxl_off n_items) {
+#ifdef _OPENMP
+  mxl_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
+#else
+  mxl_off n = 1;
+#endif
+  n = std::min(n, std::max<mxl_off>(n_items, 2));
+  return static_cast<int>(std::max<mxl_off>(n, 1));
+}
+
+inline int mxl_thread_num() {
+#ifdef _OPENMP
+  return omp_get_thread_num();
+#else
+  return 0;
+#endif
+}
+
+// An uninitialized array of n doubles, the thread that uses it touching it
+// first, with 128 bytes of padding (a cache line on Apple silicon, two on
+// x86-64) so that no two threads' buffers share one.
+inline std::unique_ptr<double[]> mxl_buffer(const std::size_t n) {
+  return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
+}
+
+// ============================================================================
+// Compact derivative blocks
+//
+// A unit's score and Hessian are nonzero only on the continuous parameters
+// c = [beta | mu | L] (K_c = idx_delta_start of them) and on the free ASCs of
+// the alternatives in its rows (a_u of them): about 75 of 2,620 parameters for
+// a student who chose among 10-100 of 2,602 schools. The derivative kernels
+// work in that block, m_u = K_c + a_u, and add it into the n x n result
+// (n = n_params) once per unit. A unit's free ASCs, numbered by increasing
+// global index, are its slots; within a situation the Hessian works on the
+// situation's own slots, so that a situation costs O((K_c + a_t)^2 S) with
+// a_t <= m_t its distinct free ASCs, not O(n^2 S) (nor O((K_c + a_u)^2 S): a
+// patient's a_u, over all their visits, can be far above any one visit's).
+// The free ASC of a row is its alternative's: none without ASCs, none for
+// the first inside alternative without an outside option (the normalized
+// reference), and the outside option has none. A situation that lists an
+// alternative twice adds both rows into one slot, in row order, as the dense
+// code added them into one delta.
+// ============================================================================
+
+// Free ASC (0-based index into the delta block) of stacked row r, or -1.
+inline int mxl_free_delta(const MxlUnitData& ud, const mxl_off r) {
+  if (!ud.use_asc) return -1;
+  const int id = ud.lay.alt0(r);
+  return ud.include_outside_option ? id : id - 1;
+}
+
+// Slot maps of the unit and the situation in hand. One per thread, sized on
+// the primary thread for the largest unit and situation, so that building
+// them allocates nothing; the markers (unit_of, sit_of) are -1 except while a
+// unit or situation is mapped.
+struct MxlUnitMap {
+  std::vector<int> unit_of;   // free ASC j -> unit slot, or -1 (J_d entries)
+  std::vector<int> delta;     // unit slot -> free ASC, increasing
+  std::vector<int> row_slot;  // row of the unit -> unit slot, or -1
+  std::vector<int> sit_of;    // unit slot -> situation slot, or -1
+  std::vector<int> sit_slot;  // situation slot -> unit slot, increasing
+  std::vector<int> row_sit;   // row of the situation -> situation slot, or -1
+  int a = 0;                  // free ASCs of the unit
+  int a_t = 0;                // free ASCs of the situation
+  char pad[128];              // keeps the next thread's map off these lines
+
+  // Each array is reserved 32 entries (128 bytes) beyond its largest size,
+  // so that no two threads' arrays share a cache line.
+  MxlUnitMap(const int J_d, const mxl_off max_unit_rows, const mxl_off max_m)
+      : unit_of(static_cast<std::size_t>(J_d) + 32, -1) {
+    const std::size_t a_max = static_cast<std::size_t>(
+        std::min<mxl_off>(J_d, max_unit_rows));
+    delta.reserve(a_max + 32);
+    sit_of.reserve(a_max + 32);
+    sit_of.assign(a_max, -1);
+    sit_slot.reserve(static_cast<std::size_t>(std::min<mxl_off>(J_d, max_m)) + 32);
+    row_slot.reserve(static_cast<std::size_t>(max_unit_rows) + 32);
+    row_sit.reserve(static_cast<std::size_t>(max_m) + 32);
+  }
+  // Global parameter index of unit-local index i (K_c continuous first).
+  int global(const int i, const int K_c) const {
+    return i < K_c ? i : K_c + delta[i - K_c];
+  }
+  // Unit-local index of situation-local index i.
+  int unit(const int i, const int K_c) const {
+    return i < K_c ? i : K_c + sit_slot[i - K_c];
+  }
+};
+
+// Every thread's maps, each in its own allocation, on the primary thread.
+using MxlUnitMaps = std::vector<std::unique_ptr<MxlUnitMap>>;
+inline MxlUnitMaps mxl_unit_maps(const MxlUnitData& ud, const int n_threads) {
+  const int J_d = ud.n_params - ud.par.idx_delta_start;
+  MxlUnitMaps maps;
+  maps.reserve(n_threads);
+  for (int i = 0; i < n_threads; ++i) {
+    maps.emplace_back(new MxlUnitMap(J_d, ud.lay.max_unit_rows, ud.lay.max_m));
+  }
+  return maps;
+}
+
+// The slots of the loaded unit: its distinct free ASCs, in increasing order,
+// and the slot of each of its rows. mxl_unit_map_clear() resets the markers.
+inline void mxl_unit_map(const MxlUnitData& ud, const MxlUnitScratch& sc,
+                         MxlUnitMap& mp) {
+  mp.delta.clear();
+  for (mxl_off i = 0; i < sc.R; ++i) {
+    const int j = mxl_free_delta(ud, sc.r0 + i);
+    if (j >= 0 && mp.unit_of[j] < 0) {
+      mp.unit_of[j] = 0;  // seen
+      mp.delta.push_back(j);
+    }
+  }
+  std::sort(mp.delta.begin(), mp.delta.end());
+  mp.a = static_cast<int>(mp.delta.size());
+  for (int k = 0; k < mp.a; ++k) mp.unit_of[mp.delta[k]] = k;
+  mp.row_slot.resize(static_cast<std::size_t>(sc.R));
+  for (mxl_off i = 0; i < sc.R; ++i) {
+    const int j = mxl_free_delta(ud, sc.r0 + i);
+    mp.row_slot[i] = j >= 0 ? mp.unit_of[j] : -1;
+  }
+}
+
+inline void mxl_unit_map_clear(MxlUnitMap& mp) {
+  for (int k = 0; k < mp.a; ++k) mp.unit_of[mp.delta[k]] = -1;
+}
+
+// The slots of situation t of the loaded unit: its distinct unit slots, in
+// increasing order, and the situation slot of each of its rows.
+// mxl_situation_map_clear() resets the markers.
+inline void mxl_situation_map(const MxlUnitData& ud, const MxlUnitScratch& sc,
+                              const mxl_off t, MxlUnitMap& mp) {
+  const mxl_off first = ud.lay.row_off[t] - sc.r0;  // first row in the unit
+  const int m = ud.lay.m(t);
+  mp.sit_slot.clear();
+  for (int a = 0; a < m; ++a) {
+    const int k = mp.row_slot[first + a];
+    if (k >= 0 && mp.sit_of[k] < 0) {
+      mp.sit_of[k] = 0;  // seen
+      mp.sit_slot.push_back(k);
+    }
+  }
+  std::sort(mp.sit_slot.begin(), mp.sit_slot.end());
+  mp.a_t = static_cast<int>(mp.sit_slot.size());
+  for (int q = 0; q < mp.a_t; ++q) mp.sit_of[mp.sit_slot[q]] = q;
+  mp.row_sit.resize(static_cast<std::size_t>(m));
+  for (int a = 0; a < m; ++a) {
+    const int k = mp.row_slot[first + a];
+    mp.row_sit[a] = k >= 0 ? mp.sit_of[k] : -1;
+  }
+}
+
+inline void mxl_situation_map_clear(MxlUnitMap& mp) {
+  for (int q = 0; q < mp.a_t; ++q) mp.sit_of[mp.sit_slot[q]] = -1;
+}
+
+// The n x n result of a derivative kernel (Hessian, BHHH, cluster meat): the
+// units' compact blocks are added into its upper triangle, which is mirrored
+// at the end (every block is exactly symmetric, so the mirror is the sum the
+// lower triangle would have accumulated). With one thread the blocks go into
+// the result itself; with more, each thread adds into its own packed upper
+// triangle (column j's rows 0..j from j (j + 1) / 2), and the triangles are
+// added up in thread order, starting from +0 as the critical section's
+// addition into a zero matrix did. Everything is allocated here, on the
+// primary thread, so that running out of memory is an R error saying how much
+// each thread needs, not a failure inside a parallel region.
+struct MxlSymAcc {
+  const mxl_off n;
+  const int T;
+  Rcpp::NumericMatrix result;  // n x n, zero
+  double* out = nullptr;       // its elements
+  std::vector<std::unique_ptr<double[]>> part;  // T > 1: packed triangles
+
+  static std::size_t packed_len(const mxl_off n) {
+    return static_cast<std::size_t>(n) * static_cast<std::size_t>(n + 1) / 2;
+  }
+
+  MxlSymAcc(const int n_, const int T_, const char* what)
+      : n(n_), T(T_), result(n_, n_) {
+    out = result.begin();
+    if (T > 1) {
+      const std::size_t len = packed_len(n);
+      try {
+        part.reserve(T);
+        for (int i = 0; i < T; ++i) part.push_back(mxl_buffer(len));
+      } catch (const std::bad_alloc&) {
+        std::vector<std::unique_ptr<double[]>>().swap(part);  // release
+        Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB per "
+                   "thread for %d threads. Run fewer threads with "
+                   "set_num_threads().", what,
+                   sizeof(double) * static_cast<double>(len) / 1e9, T);
+      }
+      // Thread i zeros triangle i (schedule(static)), touching first the
+      // memory it will add to.
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(T)
+#endif
+      for (int i = 0; i < T; ++i) {
+        std::fill(part[i].get(), part[i].get() + len, 0.0);
+      }
+    }
+  }
+  MxlSymAcc(const MxlSymAcc&) = delete;
+  MxlSymAcc& operator=(const MxlSymAcc&) = delete;
+
+  // Thread tid's accumulator and the offset of entry (i, j), i <= j.
+  double* base(const int tid) const { return T > 1 ? part[tid].get() : out; }
+  std::size_t at(const mxl_off i, const mxl_off j) const {
+    return T > 1 ? static_cast<std::size_t>(j) * static_cast<std::size_t>(j + 1) / 2 +
+                       static_cast<std::size_t>(i)
+                 : static_cast<std::size_t>(i) +
+                       static_cast<std::size_t>(j) * static_cast<std::size_t>(n);
+  }
+
+  // The upper triangle of the result: the threads' triangles added up in
+  // thread order (a no-op with one thread); then the lower triangle as its
+  // mirror, every element negated when `negate` (the Hessian's sign).
+  void finish(const bool negate) {
+    const mxl_off nn = n;
+    double* o = out;
+    const std::vector<std::unique_ptr<double[]>>& pt = part;
+    const int n_part = T > 1 ? T : 0;
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 16) num_threads(T)
+#endif
+    for (mxl_off j = 0; j < nn; ++j) {
+      const std::size_t col = static_cast<std::size_t>(j) * static_cast<std::size_t>(nn);
+      if (n_part > 0) {
+        // Column j's entries from +0, then each thread's in turn: each entry
+        // adds the threads in thread order, reading one triangle at a time.
+        const std::size_t pk = static_cast<std::size_t>(j) * static_cast<std::size_t>(j + 1) / 2;
+        double* oc = o + col;
+        for (mxl_off i = 0; i <= j; ++i) oc[i] = 0.0;
+        for (int k = 0; k < n_part; ++k) {
+          const double* pc = pt[k].get() + pk;
+          for (mxl_off i = 0; i <= j; ++i) oc[i] += pc[i];
+        }
+      }
+      for (mxl_off i = 0; i <= j; ++i) {
+        const double v = negate ? -o[col + static_cast<std::size_t>(i)]
+                                : o[col + static_cast<std::size_t>(i)];
+        o[col + static_cast<std::size_t>(i)] = v;
+        o[static_cast<std::size_t>(j) + static_cast<std::size_t>(i) * static_cast<std::size_t>(nn)] = v;
+      }
+    }
+  }
+};
+
+// Non-finite blocks. In the dense code a unit's block sat in an n x n matrix
+// of zeros, and two operations spread a non-finite value beyond the block. A
+// row of the score stash F_t or of the centered G holding a NaN or an
+// infinity gave NaN in that row's and that column's entries outside the
+// block, through 0 * NaN and 0 * Inf in the BLAS product (as OpenBLAS forms
+// it; a BLAS that skips zero operands spread less). And a non-finite unit
+// weight multiplied the zeros outside the unit's block: w * 0 is NaN, or NA
+// for an NA weight. The compact kernels record both in per-thread arrays
+// allocated on the primary thread, a flag per parameter and a count per
+// parameter of the non-finite-weight units whose block has it, so that
+// nothing grows inside the parallel region however many units are affected;
+// mxl_apply_nonfinite() reproduces them on the result in one pass: whole rows
+// and columns of NaN for the first, and every entry outside the intersection
+// of those units' blocks for the second.
+struct MxlNonFinite {
+  std::vector<char> row;  // parameter with a non-finite row of F_t or G
+  std::vector<int> hits;  // non-finite-weight units whose block has it
+  int n_blk = 0;          // non-finite-weight units
+  bool na = false;        // one of their weights is NA
+  explicit MxlNonFinite(const int n)
+      : row(static_cast<std::size_t>(n), 0), hits(static_cast<std::size_t>(n), 0) {}
+};
+
+inline std::vector<MxlNonFinite> mxl_nonfinite(const int n, const int n_threads) {
+  std::vector<MxlNonFinite> nf;
+  nf.reserve(n_threads);
+  for (int i = 0; i < n_threads; ++i) nf.emplace_back(n);
+  return nf;
+}
+
+// Whether x is R's NA_real_: a NaN whose low-order 32 bits are 1954, the test
+// of R_IsNA(), here without the R API so that threads may call it.
+inline bool mxl_is_na(const double x) {
+  if (!std::isnan(x)) return false;
+  uint64_t bits;
+  std::memcpy(&bits, &x, sizeof bits);
+  return (bits & 0xFFFFFFFFu) == 1954u;
+}
+
+// Flag the parameters of the rows of a unit-local or situation-local matrix B
+// (rows x S) that hold a non-finite value; `to_global` maps a row of B to its
+// global index.
+template <typename Map>
+inline void mxl_nonfinite_rows(const arma::mat& B, Map to_global,
+                               MxlNonFinite& nf) {
+  if (B.is_finite()) return;
+  for (arma::uword i = 0; i < B.n_rows; ++i) {
+    if (!B.row(i).is_finite()) nf.row[to_global(static_cast<int>(i))] = 1;
+  }
+}
+
+// Record a unit with a non-finite weight w over its block of m parameters.
+template <typename Map>
+inline void mxl_nonfinite_weight(const double w, const int m, Map to_global,
+                                 MxlNonFinite& nf) {
+  for (int i = 0; i < m; ++i) ++nf.hits[to_global(i)];
+  ++nf.n_blk;
+  if (mxl_is_na(w)) nf.na = true;
+}
+
+// Apply the threads' records to the finished result.
+inline void mxl_apply_nonfinite(MxlSymAcc& acc,
+                                const std::vector<MxlNonFinite>& nf) {
+  const mxl_off n = acc.n;
+  std::vector<char> row(static_cast<std::size_t>(n), 0);
+  std::vector<int> hits(static_cast<std::size_t>(n), 0);
+  int n_blk = 0;
+  bool na = false, any_row = false;
+  for (const MxlNonFinite& t : nf) {
+    for (mxl_off g = 0; g < n; ++g) {
+      row[g] = row[g] | t.row[g];
+      hits[g] += t.hits[g];
+      any_row = any_row || t.row[g];
+    }
+    n_blk += t.n_blk;
+    na = na || t.na;
+  }
+  if (!any_row && n_blk == 0) return;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double spread = na ? NA_REAL : nan;
+  double* o = acc.out;
+  for (mxl_off j = 0; j < n; ++j) {
+    const std::size_t col = static_cast<std::size_t>(j) * static_cast<std::size_t>(n);
+    for (mxl_off i = 0; i < n; ++i) {
+      if (row[i] || row[j]) {
+        o[col + static_cast<std::size_t>(i)] = nan;
+      } else if (n_blk > 0 && !(hits[i] == n_blk && hits[j] == n_blk)) {
+        o[col + static_cast<std::size_t>(i)] = spread;
+      }
+    }
+  }
+}
+
 //' Analytical Hessian of the log-likelihood v2
 //'
 //' Computes the Hessian of the log-likelihood for the Mixed Logit model using
@@ -885,7 +1240,7 @@ arma::mat jacobian_vech_Sigma(const arma::vec &L_params, const int K_w,
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat mxl_hessian_parallel(
+Rcpp::NumericMatrix mxl_hessian_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
     const Rcpp::IntegerVector &alt_idx,
     const Rcpp::IntegerVector &choice_idx,
@@ -916,12 +1271,13 @@ arma::mat mxl_hessian_parallel(
   const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
   const arma::vec& dmu2_final_dmu2 = par.dmu2_final_dmu2;
 
-  // Block layout: continuous block c = [beta | mu | L], size Kc = idx_delta_start
-  //               delta block d = [delta ASCs],         size Jd = n_params - idx_delta_start
-  // H_V (second derivative of utility w.r.t. theta) is nonzero only in the
-  // (mu, L) x (mu, L) sub-block, which lives entirely within the continuous block.
-  const int Kc = idx_delta_start;           // size of continuous block
-  const int Jd = n_params - idx_delta_start; // size of delta block (0 when !use_asc)
+  // Block layout: continuous block c = [beta | mu | L], size Kc = idx_delta_start,
+  // then the unit's free ASCs (its slots, see "Compact derivative blocks"):
+  // a unit's Hessian lives on its Kc + a_u parameters, a situation's
+  // per-draw pieces on its Kc + a_t. H_V (second derivative of utility
+  // w.r.t. theta) is nonzero only in the (mu, L) x (mu, L) sub-block, which
+  // lives entirely within the continuous block.
+  const int Kc = idx_delta_start;  // size of continuous block
 
   // Per unit u (Louis 1982), with omega_s the posterior draw weights and
   // g_s = sum_t g_ts, H_s = sum_t H_ts the per-draw score and Hessian of
@@ -931,34 +1287,40 @@ arma::mat mxl_hessian_parallel(
   // Pass 1 (the shared draw loop) yields omega; pass 2 accumulates the O3
   // buffers with omega_s where the cross-section used P_choice_s / P_i_hat.
 
-  // Global accumulator
-  arma::mat global_hess = arma::zeros(n_params, n_params);
+  // The result and the threads' accumulators, slot maps and non-finite
+  // records, all allocated here on the primary thread.
+  const int n_threads = mxl_team_threads(lay.U);
+  MxlSymAcc acc(n_params, n_threads, "Hessian");
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  std::vector<MxlNonFinite> nonfinite = mxl_nonfinite(n_params, n_threads);
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
-    arma::mat local_hess = arma::zeros(n_params, n_params);
+    const int tid = mxl_thread_num();
+    MxlUnitMap& mp = *maps[tid];
+    MxlNonFinite& nf = nonfinite[tid];
+    double* acc_t = acc.base(tid);
 
-    // Thread-private scratch — sized once, reset inside loops as needed.
+    // Thread-private scratch — sized per unit or situation, reset inside
+    // loops as needed; Armadillo keeps a member's memory as it shrinks.
     MxlUnitScratch sc; // unit slices, draws, probabilities P_ts, weights omega
 
     // Per-(t, s) block accumulators (reset at the start of each situation-draw).
     // cc: Kc x Kc dense outer-product sum
     arma::mat sum_Pzz_cc(Kc, Kc);
-    // cd: Kc x Jd; each col j accumulates P_a * zc_a for the alt whose delta is j
-    // Note: the "Jd > 0 ? Jd : 1" sentinel below (and for all Jd-sized buffers) avoids
-    // zero-size allocation when there are no ASC parameters; these buffers are never read
-    // when Jd == 0 because every access is guarded by "if (Jd > 0)" / "if (j_delta >= 0)".
-    arma::mat sum_Pzz_cd(Kc, Jd > 0 ? Jd : 1);
-    // dd: diagonal only — stored as length-Jd vector
-    arma::vec sum_Pzz_dd(Jd > 0 ? Jd : 1);
+    // cd: Kc x a_t; column q accumulates P_a * zc_a for the alternatives in
+    // situation slot q
+    arma::mat sum_Pzz_cd;
+    // dd: diagonal only — stored as a length-a_t vector
+    arma::vec sum_Pzz_dd;
     // P*z sums
     arma::vec sum_Pz_c(Kc);
-    arma::vec sum_Pz_d(Jd > 0 ? Jd : 1);
+    arma::vec sum_Pz_d;
     // gradient components
     arma::vec g_c(Kc);
-    arma::vec g_d(Jd > 0 ? Jd : 1);
+    arma::vec g_d;
     // H_V in the continuous block (mu,L sub-block; beta and delta rows/cols are zero)
     arma::mat sum_diff_H_V_cc(Kc, Kc);
 
@@ -967,28 +1329,26 @@ arma::mat mxl_hessian_parallel(
     arma::mat zz(Kc, Kc);
 
     // O3: Per-unit block buffers — accumulate the pieces linear in omega_s
-    // across the unit's situations and draws. These replace the per-draw H_is
-    // allocation and a running sum_s omega_s (g_s g_sT + H_s) accumulation.
-    arma::mat buf_Pzz_cc(Kc, Kc);               // Identity C: Σ_ts ω_s sum_Pzz_cc_ts
-    arma::mat buf_Pzz_cd(Kc, Jd > 0 ? Jd : 1); // Identity C: Σ_ts ω_s sum_Pzz_cd_ts
-    arma::vec buf_Pzz_dd(Jd > 0 ? Jd : 1);      // Identity C: Σ_ts ω_s sum_Pzz_dd_ts
-    arma::mat buf_diff_HV_cc(Kc, Kc);           // Identity C: Σ_ts ω_s sum_diff_H_V_cc_ts
+    // across the unit's situations and draws, in unit slots.
+    arma::mat buf_Pzz_cc(Kc, Kc);  // Identity C: Σ_ts ω_s sum_Pzz_cc_ts
+    arma::mat buf_Pzz_cd;          // Identity C: Σ_ts ω_s sum_Pzz_cd_ts (Kc x a_u)
+    arma::vec buf_Pzz_dd;          // Identity C: Σ_ts ω_s sum_Pzz_dd_ts (a_u)
+    arma::mat buf_diff_HV_cc(Kc, Kc);  // Identity C: Σ_ts ω_s sum_diff_H_V_cc_ts
     // O3: Column stashes for BLAS-3 batching.
-    // G_stash(:,s) = sqrt(ω_s) * (g_s - g_bar), g_s = Σ_t g_ts
+    // G_stash(:,s) = sqrt(ω_s) * (g_s - g_bar), g_s = Σ_t g_ts (unit slots)
     //   → G Gᵀ = Σ_s ω_s (g_s - g_bar)(g_s - g_bar)ᵀ              (Identity A)
-    // F_stash(:,s) = sqrt(ω_s) * [sum_Pz_c; sum_Pz_d]_ts → F Fᵀ = Σ_s ω_s sum_Pz sum_PzT
-    //                                                     for situation t (Identity B)
-    // These are allocated once per thread at max size (n_params x Sdraw).
+    // F_stash(:,s) = sqrt(ω_s) * [sum_Pz_c; sum_Pz_d]_ts (situation slots)
+    //   → F Fᵀ = Σ_s ω_s sum_Pz sum_PzT for situation t           (Identity B)
     // F column s is fully written in draw s of every situation; G is zeroed
     // per unit and accumulates over the unit's situations.
-    arma::mat G_stash(n_params, Sdraw);
-    arma::mat F_stash(n_params, Sdraw);
-    arma::mat opg_pz(n_params, n_params); // G Gᵀ + Σ_t F_t F_tᵀ
-    arma::vec g_bar(n_params);            // reference score, then mean deviation
+    arma::mat G_stash;
+    arma::mat F_stash;
+    arma::mat opg_pz;         // G Gᵀ + Σ_t F_t F_tᵀ, then the unit's Hessian
+    arma::vec g_bar;          // reference score, then mean deviation
     // Per-unit assembly buffers, reused so that no unit or situation
-    // allocates: the products F Fᵀ and G Gᵀ, and sqrt(ω). The unit's
-    // Hessian is then assembled in place in opg_pz.
-    arma::mat prod_buf(n_params, n_params);
+    // allocates once the thread has seen a larger one: the products F Fᵀ and
+    // G Gᵀ, and sqrt(ω). The unit's Hessian is assembled in place in opg_pz.
+    arma::mat prod_buf;
     arma::rowvec sqrt_omega(Sdraw);
 
 #ifdef _OPENMP
@@ -1006,15 +1366,18 @@ arma::mat mxl_hessian_parallel(
       if (!std::isfinite(lse)) continue;
       const arma::mat eta_u = mxl_eta_view(ud, sc);
 
+      // The unit's slots: m_u = Kc + a_u local parameters.
+      mxl_unit_map(ud, sc, mp);
+      const int a_u = mp.a;
+      const int m_u = Kc + a_u;
+
       // O3: Initialize per-unit block buffers.
       buf_Pzz_cc.zeros();
       buf_diff_HV_cc.zeros();
-      if (Jd > 0) {
-        buf_Pzz_cd.zeros();
-        buf_Pzz_dd.zeros();
-      }
-      G_stash.zeros();
-      opg_pz.zeros();
+      buf_Pzz_cd.zeros(Kc, a_u);
+      buf_Pzz_dd.zeros(a_u);
+      G_stash.zeros(m_u, Sdraw);
+      opg_pz.zeros(m_u, m_u);
 
       // --- Pass 2: situations t (outer) x draws s (inner). A unit in one
       // draw batch reuses pass 1's WGamma; for a longer one each situation's
@@ -1025,6 +1388,15 @@ arma::mat mxl_hessian_parallel(
         const int m_t = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
         const int num_choices = include_outside_option ? m_t + 1 : m_t;
         if (!one_batch) mxl_situation_wgamma(sc, lay.row_off[t] - sc.r0, m_t);
+
+        // The situation's slots: its per-draw pieces live on Kc + a_t.
+        mxl_situation_map(ud, sc, t, mp);
+        const int a_t = mp.a_t;
+        sum_Pzz_cd.set_size(Kc, a_t);
+        sum_Pzz_dd.set_size(a_t);
+        sum_Pz_d.set_size(a_t);
+        g_d.set_size(a_t);
+        F_stash.set_size(Kc + a_t, Sdraw);
 
         // chosen alternative index (validated with the layout)
         const int chosen_alt = lay.chosen(t);
@@ -1047,7 +1419,7 @@ arma::mat mxl_hessian_parallel(
           sum_Pz_c.zeros();
           g_c.zeros();
           sum_diff_H_V_cc.zeros();
-          if (Jd > 0) {
+          if (a_t > 0) {
             sum_Pzz_cd.zeros();
             sum_Pzz_dd.zeros();
             sum_Pz_d.zeros();
@@ -1098,17 +1470,8 @@ arma::mat mxl_hessian_parallel(
               }
             }
 
-            // --- Delta index for this alt (may be -1 meaning no delta entry) ---
-            int j_delta = -1; // index into delta block; -1 = no entry
-            if (use_asc && Jd > 0) {
-              const int id = lay.alt0(row);
-              if (include_outside_option) {
-                j_delta = id;           // always valid (id >= 0)
-              } else if (id > 0) {
-                j_delta = id - 1;       // first inside alt (id==0) has no ASC
-              }
-              // id==0 and !include_outside_option => j_delta stays -1
-            }
+            // --- Situation slot of this alt's free ASC (-1: none) ---
+            const int k_sit = mp.row_sit[current_a_idx];
 
             // --- Accumulate block sums ---
             const double P_a = P_s(a);
@@ -1121,11 +1484,11 @@ arma::mat mxl_hessian_parallel(
             g_c        += diff * zc_a;
 
             // cd and dd blocks (delta scatter)
-            if (j_delta >= 0) {
-              sum_Pzz_cd.col(j_delta) += P_a * zc_a;
-              sum_Pzz_dd(j_delta)     += P_a;
-              sum_Pz_d(j_delta)       += P_a;
-              g_d(j_delta)            += diff;
+            if (k_sit >= 0) {
+              sum_Pzz_cd.col(k_sit) += P_a * zc_a;
+              sum_Pzz_dd(k_sit)     += P_a;
+              sum_Pz_d(k_sit)       += P_a;
+              g_d(k_sit)            += diff;
             }
 
             // H_V accumulation — nonzero only in (mu,L)x(mu,L) within cc block
@@ -1184,46 +1547,61 @@ arma::mat mxl_hessian_parallel(
           // === 5. O3: Accumulate per-unit buffers (Identity C) and fill
           //          column stashes G_stash/F_stash (Identities A + B). ===
           //
-          // Instead of assembling H_ts (n_params x n_params) and accumulating
+          // Instead of assembling H_ts and accumulating
           //   hess_term1 += omega_s * ((g_s - g_bar)(g_s - g_bar)T + sum_t H_ts),
           // we split the linear-in-omega_s and the outer-product pieces:
           //
           //   Linear (Identity C): buf_Pzz_cc     += omega_s * sum_Pzz_cc
           //                        buf_diff_HV_cc += omega_s * sum_diff_H_V_cc
-          //                        (and cd/dd variants)
+          //                        (and cd/dd variants, situation slots to
+          //                        unit slots)
           //   Outer-product (Identity A): G_stash(:,s) += g_ts, centered at
           //     g_bar and scaled by sqrt(omega_s) after the unit, so that
           //     G GT = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)T.
           //   Outer-product (Identity B): F_stash(:,s) = sqrt(omega_s) * [sum_Pz_c; sum_Pz_d]
           //     so that F FT = Σ_s omega_s sum_Pz sum_PzT after situation t.
+          // Each addition into a unit buffer is the one the dense buffers made
+          // (their other columns gained omega_s * 0), its product formed first
+          // as Armadillo's element-wise update forms it.
 
           const double sqrt_ws = std::sqrt(omega_s);
 
           // Identity C — scalar-times-matrix accumulation into per-unit buffers.
           buf_Pzz_cc    += omega_s * sum_Pzz_cc;
           buf_diff_HV_cc += omega_s * sum_diff_H_V_cc;
-          if (Jd > 0) {
-            buf_Pzz_cd += omega_s * sum_Pzz_cd;
-            buf_Pzz_dd += omega_s * sum_Pzz_dd;
+          for (int q = 0; q < a_t; ++q) {
+            const int k_u = mp.sit_slot[q];
+            buf_Pzz_cd.col(k_u) += omega_s * sum_Pzz_cd.col(q);
+            const double v = sum_Pzz_dd(q) * omega_s;
+            buf_Pzz_dd(k_u) += v;
           }
 
           // Identity A — accumulate g_s = Σ_t g_ts in column s (g_ts = [g_c; g_d]).
           G_stash.col(s).head(Kc) += g_c;
-          if (Jd > 0) {
-            G_stash.col(s).tail(Jd) += g_d;
-          }
+          for (int q = 0; q < a_t; ++q) G_stash(Kc + mp.sit_slot[q], s) += g_d(q);
 
           // Identity B — fill column s of F_stash with sqrt(omega_s) * [sum_Pz_c; sum_Pz_d].
           F_stash.col(s).head(Kc) = sqrt_ws * sum_Pz_c;
-          if (Jd > 0) {
-            F_stash.col(s).tail(Jd) = sqrt_ws * sum_Pz_d;
+          if (a_t > 0) {
+            F_stash.col(s).tail(a_t) = sqrt_ws * sum_Pz_d;
           }
         } // end S loop
 
         // Identity B for situation t (one BLAS-3 product per situation: the
-        // outer products do not combine across situations before the product).
+        // outer products do not combine across situations before the product),
+        // added into the unit block at the situation's slots.
+        mxl_nonfinite_rows(F_stash, [&](const int i) {
+          return mp.global(mp.unit(i, Kc), Kc);
+        }, nf);
         prod_buf = F_stash * F_stash.t();
-        opg_pz += prod_buf;
+        const int m_ts = Kc + a_t;
+        for (int j = 0; j < m_ts; ++j) {
+          const int uj = mp.unit(j, Kc);
+          for (int i = 0; i < m_ts; ++i) {
+            opg_pz(mp.unit(i, Kc), uj) += prod_buf(i, j);
+          }
+        }
+        mxl_situation_map_clear(mp);
       } // end situation loop
 
       // Identity A, centered: G Gᵀ = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)ᵀ.
@@ -1236,12 +1614,13 @@ arma::mat mxl_hessian_parallel(
       G_stash.each_col() -= g_bar;
       for (int s = 0; s < Sdraw; ++s) sqrt_omega[s] = std::sqrt(sc.omega[s]);
       G_stash.each_row() %= sqrt_omega;
+      mxl_nonfinite_rows(G_stash, [&](const int i) { return mp.global(i, Kc); },
+                         nf);
       prod_buf = G_stash * G_stash.t();
       opg_pz += prod_buf;
 
       // === 6. O3: Per-unit finalization — assemble Hessian once from buffers ===
-      // 6a. Assemble hess_term1 block by block, in place in opg_pz (zeroed
-      //     again for the next unit):
+      // 6a. Assemble hess_term1 block by block, in place in opg_pz:
       //     hess_term1 = (G Gᵀ + Σ_t F_t F_tᵀ) + (-buf_Pzz) + buf_diff_HV_cc (cc block only)
       //     This is the batched equivalent of Σ_s omega_s (H_s +
       //     (g_s - g_bar)(g_s - g_bar)T), the unit's whole Hessian H_u.
@@ -1250,32 +1629,41 @@ arma::mat mxl_hessian_parallel(
       opg_pz.submat(0, 0, Kc - 1, Kc - 1) -= buf_Pzz_cc;
       opg_pz.submat(0, 0, Kc - 1, Kc - 1) += buf_diff_HV_cc;
 
-      if (Jd > 0) {
+      if (a_u > 0) {
         // cd block: -buf_Pzz_cd + opg_pz cd block (NOT symmetric — full rectangular).
-        opg_pz.submat(0, Kc, Kc - 1, n_params - 1) -= buf_Pzz_cd;
-        for (int j = 0; j < Jd; ++j) {        // dc = (cd)ᵀ
+        opg_pz.submat(0, Kc, Kc - 1, m_u - 1) -= buf_Pzz_cd;
+        for (int j = 0; j < a_u; ++j) {        // dc = (cd)ᵀ
           for (int i = 0; i < Kc; ++i) opg_pz(Kc + j, i) = opg_pz(i, Kc + j);
         }
 
         // dd block: -diag(buf_Pzz_dd) + opg_pz dd block (sum_Pz_d outer products).
-        opg_pz.submat(Kc, Kc, n_params - 1, n_params - 1).diag() -= buf_Pzz_dd;
+        opg_pz.submat(Kc, Kc, m_u - 1, m_u - 1).diag() -= buf_Pzz_dd;
       }
 
       // 6b. Louis identity: H_u = hess_term1, whose centered Identity A
       //     already subtracts g_bar g_barᵀ. The draw weights are normalized,
-      //     so there is no division by the simulated P_u.
-      local_hess += w_u * opg_pz;
+      //     so there is no division by the simulated P_u. Add w_u H_u into
+      //     the thread's upper triangle (opg_pz is exactly symmetric), the
+      //     product formed first as Armadillo's element-wise update forms it.
+      for (int j = 0; j < m_u; ++j) {
+        const int gj = mp.global(j, Kc);
+        for (int i = 0; i <= j; ++i) {
+          double v = opg_pz(i, j);
+          v *= w_u;
+          acc_t[acc.at(mp.global(i, Kc), gj)] += v;
+        }
+      }
+      if (!std::isfinite(w_u)) {
+        mxl_nonfinite_weight(w_u, m_u, [&](const int i) { return mp.global(i, Kc); },
+                             nf);
+      }
+      mxl_unit_map_clear(mp);
     } // end unit loop
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_hess += local_hess;
-    }
   } // end parallel region
 
-  return -global_hess;
+  acc.finish(true);  // the negated Hessian
+  mxl_apply_nonfinite(acc, nonfinite);
+  return acc.result;
 }
 
 //' BHHH (outer product of gradients) information matrix for Mixed Logit
@@ -1579,36 +1967,6 @@ Rcpp::List mxl_conditional_tastes_parallel(
 //     raw pointer, such a statement can fuse where it did not, which changes
 //     results under GCC with FMA.
 // ============================================================================
-
-// The team of a prediction kernel's parallel regions, and so the number of
-// scratch sets it allocates: OpenMP's next team, within the thread limit, and
-// at most one thread per situation, but two for a single situation, so that
-// its region stays active and, as before, an OpenMP-built BLAS runs the
-// situation's products single-threaded.
-inline int mxl_pred_threads(const mxl_off n_situations) {
-#ifdef _OPENMP
-  mxl_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
-#else
-  mxl_off n = 1;
-#endif
-  n = std::min(n, std::max<mxl_off>(n_situations, 2));
-  return static_cast<int>(std::max<mxl_off>(n, 1));
-}
-
-inline int mxl_thread_num() {
-#ifdef _OPENMP
-  return omp_get_thread_num();
-#else
-  return 0;
-#endif
-}
-
-// An uninitialized array of n doubles, the thread that uses it touching it
-// first, with 128 bytes of padding (a cache line on Apple silicon, two on
-// x86-64) so that no two threads' buffers share one.
-inline std::unique_ptr<double[]> mxl_buffer(const std::size_t n) {
-  return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
-}
 
 // An n x 1 R matrix, the form in which RcppArmadillo returns an arma::vec
 // (choicer.h includes <RcppArmadillo.h>, which leaves
@@ -2100,7 +2458,7 @@ Rcpp::List mxl_predict(
   const ChoiceLayout& lay = pd.lay;
   const std::size_t max_m = static_cast<std::size_t>(lay.max_m);
   std::vector<MxlPredScratch> scratch =
-      mxl_pred_scratch(pd, mxl_pred_threads(lay.N), 2 * max_m);
+      mxl_pred_scratch(pd, mxl_team_threads(lay.N), 2 * max_m);
 
   // Outputs, each written once by the situation that owns its slots. The
   // base utilities are formed in choice_prob, which a situation reads into
@@ -2242,7 +2600,7 @@ Rcpp::NumericVector mxl_logsum(const arma::vec &theta, const arma::mat &X, const
   const ChoiceLayout& lay = pd.lay;
 
   std::vector<MxlPredScratch> scratch =
-      mxl_pred_scratch(pd, mxl_pred_threads(lay.N), 0);
+      mxl_pred_scratch(pd, mxl_team_threads(lay.N), 0);
   arma::vec base(lay.n_rows, arma::fill::none);
   mxl_pred_base(pd, base, par.beta);
   const int S = pd.S;
@@ -2342,7 +2700,7 @@ arma::vec mxl_predict_shares(
   const double weight_sum = shares_denominator(weights);
   mxl_pred_check_alternatives(num_alts);
 
-  const int n_threads = mxl_pred_threads(lay.N);
+  const int n_threads = mxl_team_threads(lay.N);
   std::vector<MxlPredScratch> scratch = mxl_pred_scratch(
       pd, n_threads, static_cast<std::size_t>(lay.max_m) + 1);
   MxlPredAcc acc = mxl_pred_accumulators(scratch, num_alts, "shares");
@@ -2475,7 +2833,7 @@ arma::mat mxl_diversion_ratios_parallel(
   // Every thread's buffers (aux: a situation's cross-products and
   // denominators, sized for the largest choice set) and accumulators, then
   // the base utilities
-  const int n_threads = mxl_pred_threads(lay.N);
+  const int n_threads = mxl_team_threads(lay.N);
   const std::size_t n_max = static_cast<std::size_t>(lay.max_m) + 1;
   std::vector<MxlPredScratch> scratch =
       mxl_pred_scratch(pd, n_threads, n_max * n_max + n_max);
@@ -2719,7 +3077,7 @@ static arma::vec mxl_blp_run(
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
                  gen_S);
   const double weight_sum = shares_denominator(weights);
-  const int n_threads = mxl_pred_threads(pd.lay.N);
+  const int n_threads = mxl_team_threads(pd.lay.N);
   std::vector<MxlPredScratch> scratch = mxl_pred_scratch(
       pd, n_threads, static_cast<std::size_t>(pd.lay.max_m) + 1);
   MxlPredAcc acc = mxl_pred_accumulators(scratch, num_alts, "shares");
@@ -3065,7 +3423,7 @@ arma::mat mxl_elasticities_parallel(
   // Every thread's buffers (aux: a situation's elasticity terms, mean
   // probabilities and x_k, sized for the largest choice set) and
   // accumulators, then the base utilities
-  const int n_threads = mxl_pred_threads(lay.N);
+  const int n_threads = mxl_team_threads(lay.N);
   const std::size_t n_max = static_cast<std::size_t>(lay.max_m) + 1;
   std::vector<MxlPredScratch> scratch =
       mxl_pred_scratch(pd, n_threads, n_max * n_max + 2 * n_max);
