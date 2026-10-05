@@ -306,6 +306,39 @@
   change the fit; under `options(warn = 2)`, which turns warnings into errors,
   such fits now stop before estimating.
 
+## Mixed logit — Hessian, BHHH and clustered variances at population scale
+
+- The analytical Hessian of the mixed logit (behind `run_mxlogit()`'s
+  default standard errors, the bread of `se_method = "sandwich"` and
+  `"cluster"`, `vcov(type = )` and `wesml_vcov()`) now works, for each
+  decision maker, on the parameters its likelihood depends on: the
+  coefficients, the means and the Cholesky factor of the random
+  coefficients, and the constants of the alternatives that decision maker
+  faced; each choice situation's terms involve its own alternatives'
+  constants only. It used to carry every alternative's constant through
+  every decision maker, so that with thousands of alternatives most of its
+  work multiplied zeros. On a synthetic school-census design with 2,620
+  parameters (2,602 schools, 10 to 100 per choice set, three correlated
+  random coefficients, `S = 100`), where a student's block holds 59 of the
+  2,620 parameters on average, the Hessian for 2,000 students took 0.35 s
+  instead of 24.8 s at eleven threads (1.9 s instead of 101 s at one), and
+  for 20,000 students 3.2 s instead of 228 s. On a claims-like panel with 500
+  hospitals (518 parameters, 20 to 200 hospitals per choice set, up to 500
+  visits per patient) it took 3.4 s instead of 7.1 s for 1,500 patients and
+  26 s instead of 55 s for 15,000 (medians of three alternated runs under
+  background load). Peak working memory for the census Hessian fell from
+  1.9 GB to 0.4 GB: the threads no longer hold matrices of size parameters by
+  parameters per decision maker, only one accumulator each, allocated before
+  the parallel loop, so that running out of memory stops with an R error
+  that says how much each thread needs and suggests fewer threads. Results
+  change by floating-point rounding only: at most 3.5e-15 relative on our
+  reference battery of kernel configurations, where most Hessians, and every
+  one on designs with many alternatives, are unchanged bit for bit. As
+  before, a decision maker whose utilities overflow is left out, and a
+  non-finite term of a decision maker's Hessian (an overflowing utility at a
+  draw of zero weight) makes the rows and columns of the parameters
+  concerned `NaN`.
+
 ## Data preparation at population scale
 
 - `get_halton_normals()` builds the draw cube of `draws = "store"`, at fit
