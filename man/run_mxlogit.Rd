@@ -154,9 +154,11 @@ coarser groups (e.g. households or markets) that nest decision makers.}
 median absolute deviation; SD-equivalent under normality), or
 \code{"iqr"} (\code{stats::IQR(x) / 1.349}; also SD-equivalent under
 normality). When not \code{"none"}, every column of \code{X} and \code{W}
-is divided by the chosen scale before optimization to improve Hessian
-conditioning. Robust scales (\code{"mad"}/\code{"iqr"}) better capture
-the bulk for heavy-tailed columns where SD is dominated by outliers, but
+is divided by the chosen scale to improve Hessian conditioning; the
+estimation kernels divide each decision maker's rows as they read them,
+so the fit holds no scaled copy of the design. Robust scales
+(\code{"mad"}/\code{"iqr"}) better capture the bulk for heavy-tailed
+columns where SD is dominated by outliers, but
 \code{stats::mad} can return zero when more than half of a column's
 entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
 the same near-constant-column error as \code{"sd"}. Coefficients and
