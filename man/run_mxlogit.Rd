@@ -148,43 +148,41 @@ scores are per decision maker and
 maker's choice situations; \code{"cluster"} is then needed only for
 coarser groups (e.g. households or markets) that nest decision makers.}
 
-\item{scale_vars}{How the optimizer's coordinates are scaled; the
-estimator is the same whatever the choice, which affects how fast, and
-whether, the optimizer reaches the maximum. One of \code{"none"}
-(default), \code{"sd"} (sample standard deviation), \code{"mad"}
-(\code{stats::mad}, i.e. 1.4826 \eqn{\times} median absolute deviation;
-SD-equivalent under normality), \code{"iqr"}
-(\code{stats::IQR(x) / 1.349}; also SD-equivalent under normality), or
-\code{"bhhh"}. With \code{"sd"}, \code{"mad"} or \code{"iqr"}, every
-column of \code{X} and \code{W} is divided by the chosen scale to
-improve Hessian conditioning; the estimation kernels divide each decision
-maker's rows as they read them, so the fit holds no scaled copy of the
-design. Robust scales (\code{"mad"}/\code{"iqr"}) better capture the
-bulk for heavy-tailed columns where SD is dominated by outliers, but
-\code{stats::mad} can return zero when more than half of a column's
-entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
-the same near-constant-column error as \code{"sd"}. Columns of \code{W}
-associated with log-normal random coefficients (\code{rc_dist == 1}) are
-passed through unchanged, since the shifted log-normal parameterization
-does not admit a closed-form back-transform under multiplicative
-scaling. \code{"bhhh"} scales each parameter instead, by the inverse
-square root of the diagonal of the BHHH (outer product of gradients)
-matrix at the start values, rounded to a power of two, from one extra
-gradient pass: it reaches the constants and the Cholesky factor, whose
-curvatures can differ by orders of magnitude that no column scale
-reaches (the constants of large and small alternatives, say). A start
-near the estimates (\code{theta_init}) gives it a better diagonal.
-Where the diagonal is unusable (no finite, positive entry, as when the
-likelihood overflows at the start values), the parameters are left
-unscaled, with a message. The optimizer, a custom one included, works in
-the scaled coordinates (\code{theta_init}, \code{lower} and
+\item{scale_vars}{How the optimizer's coordinates are scaled; the estimator
+is the same whatever the choice, which affects how fast, and whether, the
+optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
+(sample standard deviation), \code{"mad"} (\code{stats::mad}, i.e. 1.4826
+\eqn{\times} median absolute deviation; SD-equivalent under normality),
+\code{"iqr"} (\code{stats::IQR(x) / 1.349}; also SD-equivalent under
+normality), or \code{"bhhh"}. With \code{"sd"}, \code{"mad"} or
+\code{"iqr"}, the optimizer works on the parameters the design would have
+with every column of \code{X} and \code{W} divided by the chosen scale, to
+improve the conditioning of its problem; the data are not divided, and the
+fit holds no scaled copy of them. Robust scales
+(\code{"mad"}/\code{"iqr"}) better capture the bulk for heavy-tailed
+columns where SD is dominated by outliers, but \code{stats::mad} can
+return zero when more than half of a column's entries are identical (e.g.,
+a sparse 0/1 dummy) and will then trigger the same near-constant-column
+error as \code{"sd"}. The parameters of log-normal random coefficients
+(\code{rc_dist == 1}) keep their scale, since the shifted log-normal
+parameterization does not admit a closed-form rescaling under
+multiplicative column scaling. \code{"bhhh"} scales each parameter
+instead, by the inverse square root of the diagonal of the BHHH (outer
+product of gradients) matrix at the start values, rounded to a power of
+two, from one extra gradient pass: it reaches the constants and the
+Cholesky factor, whose curvatures can differ by orders of magnitude that
+no column scale reaches (the constants of large and small alternatives,
+say). A start near the estimates (\code{theta_init}) gives it a better
+diagonal. Where the diagonal is unusable (no finite, positive entry, as
+when the likelihood overflows at the start values), the parameters are
+left unscaled, with a message. The optimizer, a custom one included, works
+in the scaled coordinates (\code{theta_init}, \code{lower} and
 \code{upper} are given in natural units and mapped), so settings in
 parameter units in \code{control} (nloptr's \code{xtol_abs}, optim's
 \code{parscale}) apply to the scaled coordinates. Coefficients are
-reported in natural units and the standard errors computed in them,
-with the information matrix equilibrated before it is inverted, so
-reported quantities do not depend on this choice beyond the optimizer's
-tolerance.}
+reported in natural units and the standard errors computed in them, with
+the information matrix equilibrated before it is inverted, so reported
+quantities do not depend on this choice beyond the optimizer's tolerance.}
 
 \item{weights}{Optional weight vector (convenience workflow), one weight per
 choice situation in ascending-id order (see

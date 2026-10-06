@@ -212,8 +212,9 @@ resolve_var_index <- function(var, col_names) {
 
 #' Per-column scale vector for a design matrix
 #'
-#' Returns the per-column scale (sample SD or a robust SD-equivalent) used to
-#' standardize a design matrix for optimization. Column names are preserved.
+#' Returns the per-column scale (sample SD or a robust SD-equivalent) from
+#' which `scale_vars = "sd"`, `"mad"` and `"iqr"` take the optimizer's
+#' coordinates (`.coordinate_map()`). Column names are preserved.
 #' A plain matrix is taken a column at a time: `apply()` would first copy the
 #' whole matrix (its `aperm()`), a design-sized allocation. Each column's
 #' temporaries (its copy, and the further copies "mad" and "iqr" make) are
@@ -272,26 +273,6 @@ resolve_var_index <- function(var, col_names) {
          paste0(names(s)[off], "=", signif(s[off], 3), collapse = ", "))
   }
   invisible(s)
-}
-
-#' Back-transform scaled-space estimates to natural units
-#'
-#' Maps the optimizer's estimates to natural units,
-#' `theta_natural = bt_mult * theta_scaled + bt_shift`, and restores the
-#' parameter names. The variance needs no back-transform: it is computed in
-#' natural units at the natural estimates, equilibrated
-#' (`invert_hessian()`, `.sandwich_combine()`).
-#' @param theta_hat Numeric vector of scaled-space estimates.
-#' @param bt_mult Numeric multiplier vector (length n_params).
-#' @param bt_shift Numeric shift vector (length n_params).
-#' @param param_names Character vector of parameter names.
-#' @returns The named natural-scale estimates.
-#' @noRd
-.backtransform_estimates <- function(theta_hat, bt_mult, bt_shift,
-                                     param_names) {
-  theta_hat <- theta_hat * bt_mult + bt_shift
-  names(theta_hat) <- param_names
-  theta_hat
 }
 
 #' The optimizer's coordinates for `scale_vars`
@@ -425,6 +406,35 @@ resolve_var_index <- function(var, col_names) {
 #' @noRd
 .to_coordinates <- function(theta, map) {
   (theta - map$shift) / map$scale
+}
+
+#' Run the optimizer in the coordinates of a `scale_vars` map
+#'
+#' Maps the start values and bounds, given in natural units, to the
+#' optimizer's coordinates, hands the optimizer the objective as a function
+#' of them (`.coordinate_objective()`), and maps its solution back. Without a
+#' map (`scale_vars = "none"`) the optimizer gets the natural problem as is.
+#'
+#' @param map From `.coordinate_map()`, or NULL.
+#' @param optimizer,theta_init,eval_f,lower,upper,control As for
+#'   `run_optimizer()`; `theta_init` and the bounds in natural units.
+#' @returns `run_optimizer()`'s result, with `par` in natural units (`raw`,
+#'   the optimizer's own result, stays in its coordinates).
+#' @noRd
+.optimize_in_coordinates <- function(map, optimizer, theta_init, eval_f,
+                                     lower = NULL, upper = NULL,
+                                     control = list()) {
+  if (!is.null(map)) {
+    theta_init <- .to_coordinates(theta_init, map)
+    if (!is.null(lower)) lower <- .to_coordinates(lower, map)
+    if (!is.null(upper)) upper <- .to_coordinates(upper, map)
+    eval_f <- .coordinate_objective(eval_f, map)
+  }
+  opt <- run_optimizer(optimizer = optimizer, theta_init = theta_init,
+                       eval_f = eval_f, lower = lower, upper = upper,
+                       control = control)
+  if (!is.null(map)) opt$par <- .from_coordinates(opt$par, map)
+  opt
 }
 
 #' Label a J x J matrix with alternative names

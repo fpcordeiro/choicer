@@ -1,6 +1,7 @@
-# Tests for run_mnlogit(scale_vars = ...): pre-estimation column scaling of the
-# fixed-coefficient design matrix X with a delta-method back-transform, so
-# reported quantities (coefficients, vcov, se, loglik) are in natural units.
+# Tests for run_mnlogit(scale_vars = ...): the optimizer works on the
+# coefficients of X with its columns divided by their scales; the data are
+# never divided, and reported quantities (coefficients, vcov, se, loglik) are
+# in natural units.
 #
 # The fit object also exposes two new fields:
 #   - scale_vars: character (e.g., "none", "sd", "mad", "iqr")

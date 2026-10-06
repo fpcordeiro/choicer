@@ -1,6 +1,7 @@
-# Tests for run_mxlogit(scale_vars = "sd"): pre-estimation column scaling of
-# X and W design matrices with delta-method back-transform so reported
-# quantities (coefficients, vcov, se, sigma) are in the user's natural units.
+# Tests for run_mxlogit(scale_vars = "sd"): the optimizer works on the
+# parameters of X and W with their columns divided by their scales; the data
+# are never divided, and reported quantities (coefficients, vcov, se, sigma)
+# are in the user's natural units.
 #
 # The fit object also exposes three new fields:
 #   - scale_vars: character (e.g., "none" or "sd")
@@ -12,7 +13,7 @@
 
 # =============================================================================
 # Test 1: Invariance — across all (rc_correlation, rc_mean) combinations.
-# Each variant exercises a different Jacobian-block path:
+# Each variant exercises a different block of the coordinate map:
 #   rc_mean = TRUE/FALSE         -> mu block present/absent
 #   rc_correlation = TRUE/FALSE  -> off-diagonal L params present/absent
 #                                   (the diagonal-only branch is the FALSE arm)
@@ -37,9 +38,9 @@ fit_pair <- function(dt, rc_correlation, rc_mean, scale_choice) {
   )
 }
 
-# The Jacobian back-transform is identical across sd / mad / iqr — only the
-# per-column denominator differs. Looping over all three exercises the scale
-# selection switch and confirms each robust SD-equivalent scale yields the same
+# The coordinate map is the same across sd / mad / iqr — only the per-column
+# denominator differs. Looping over all three exercises the scale selection
+# switch and confirms each robust SD-equivalent scale yields the same
 # natural-scale coefficients, vcov, and log-likelihood as the unscaled fit.
 for (scale_choice in c("sd", "mad", "iqr")) {
   for (rc_correlation in c(TRUE, FALSE)) {
@@ -69,7 +70,7 @@ for (scale_choice in c("sd", "mad", "iqr")) {
         # Coefficients in natural scale agree across pathways
         expect_lt(max(abs(coef(f1) - coef(f2))), 1e-5)
 
-        # Standard errors back-transformed via delta method agree
+        # Standard errors, computed in natural units at the estimates, agree
         expect_lt(max(abs(f1$se - f2$se), na.rm = TRUE), 1e-5)
 
         # Log-likelihood is scale-invariant
