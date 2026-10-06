@@ -274,6 +274,53 @@ test_that(".n_distinct_by and .first_by match the per-group expressions they rep
   }
 })
 
+test_that(".column_scales() gives apply()'s scales a column at a time", {
+  set.seed(9800)
+  base <- matrix(rnorm(60 * 3) * rep(c(1, 50, 0.01), each = 60), 60, 3)
+  nm <- c("a", "b", "c")
+  mats <- list(
+    plain = base,
+    colnames = `colnames<-`(base, nm),
+    rownames = `rownames<-`(base, paste0("r", 1:60)),
+    both = `dimnames<-`(base, list(paste0("r", 1:60), nm)),
+    named_dimnames = `dimnames<-`(base, list(obs = NULL, var = nm)),
+    one_row = `dimnames<-`(base[1, , drop = FALSE], list("r1", nm)),
+    one_row_colnames = `colnames<-`(base[1, , drop = FALSE], nm),
+    zero_row = `colnames<-`(base[0, , drop = FALSE], nm),
+    zero_col = base[, integer(0), drop = FALSE],
+    one_col = base[, 2, drop = FALSE],
+    integer = matrix(sample.int(9L, 120L, replace = TRUE), 60, 2),
+    logical = matrix(runif(120) < 0.3, 60, 2),
+    non_finite = local({ m <- base; m[5, 2] <- NA; m[6, 1] <- NaN; m[7, 3] <- Inf; m }),
+    constant = cbind(base[, 1], 4),
+    dummy = cbind(d = rbinom(60, 1, 0.2), x = base[, 1]),
+    # Other objects take apply(), as before.
+    data_frame = as.data.frame(`colnames<-`(base, nm)),
+    array_3d = array(base, c(20, 3, 3)))
+  fns <- list(sd = stats::sd, mad = stats::mad,
+              iqr = function(x) stats::IQR(x) / 1.349)
+  for (case in names(mats)) {
+    for (m in names(fns)) {
+      M <- mats[[case]]
+      if (m == "iqr" && anyNA(M)) next  # quantile() refuses NA; see below
+      ref <- apply(M, 2, fns[[m]])
+      what <- sprintf(".column_scales(%s, \"%s\")", case, m)
+      expect_identical(.column_scales(M, m), ref, label = what)
+      # With the per-column collection.
+      expect_identical(.column_scales(M, m, collect_rows = 0), ref,
+                       label = paste(what, "collecting"))
+    }
+  }
+  # Under "iqr", NA stops in quantile() as it did inside apply(): the same
+  # message and call.
+  na <- mats$non_finite
+  e_new <- tryCatch(.column_scales(na, "iqr"), error = identity)
+  e_old <- tryCatch(apply(na, 2, fns$iqr), error = identity)
+  expect_s3_class(e_new, "error")
+  expect_identical(conditionMessage(e_new), conditionMessage(e_old))
+  expect_identical(conditionCall(e_new), conditionCall(e_old))
+})
+
 test_that("per-situation columns work whatever the id and value columns are called", {
   # With an id column named V1 the old per-group results were read back as
   # the ids; a comma in a name broke `by = c(id, col)`.

@@ -214,18 +214,42 @@ resolve_var_index <- function(var, col_names) {
 #'
 #' Returns the per-column scale (sample SD or a robust SD-equivalent) used to
 #' standardize a design matrix before optimization. Column names are preserved.
-#' @param M A numeric matrix.
+#' A plain matrix is taken a column at a time: `apply()` would first copy the
+#' whole matrix (its `aperm()`), a design-sized allocation. Each column's
+#' temporaries (its copy, and the further copies "mad" and "iqr" sort) are
+#' garbage once its scale is known; R frees them only when its collection
+#' trigger fires, so they would pile up into the trigger's slack, many columns
+#' at population scale. From `collect_rows` rows on, a minor collection after
+#' each column usually bounds them at a few columns (garbage that an
+#' automatic collection promoted mid-column waits for the next full one). A
+#' minor collection costs more the more objects the session holds (about
+#' 0.05 s with 10^7 character strings resident), but there is one per column
+#' and per fit, small next to a fit at the sizes where it runs. Other objects
+#' go through `apply()`, as before, which keeps their errors. Either way the
+#' scales and their names are those `apply(M, 2, f)` returns.
+#' @param M A numeric matrix (as prepared; other objects take `apply()`).
 #' @param method One of "sd", "mad", or "iqr".
+#' @param collect_rows Rows from which each column's garbage is collected
+#'   before the next column.
 #' @returns Named numeric vector of column scales.
 #' @noRd
-.column_scales <- function(M, method) {
+.column_scales <- function(M, method, collect_rows = 2^22) {
   scale_fn <- switch(
     method,
     sd  = stats::sd,
     mad = stats::mad,
     iqr = function(x) stats::IQR(x) / 1.349
   )
-  apply(M, 2, scale_fn)
+  if (!is.matrix(M) || is.object(M)) return(apply(M, 2, scale_fn))
+  collect <- nrow(M) >= collect_rows
+  s <- vapply(seq_len(ncol(M)), function(k) {
+    v <- scale_fn(M[, k])
+    if (collect) gc(verbose = FALSE, full = FALSE)
+    v
+  }, numeric(1))
+  cn <- colnames(M)
+  names(s) <- if (length(cn)) cn  # apply()'s naming rule
+  s
 }
 
 #' Validate that column scales are not near-zero
