@@ -924,8 +924,8 @@ test_that("scale_vars leaves a panel fit's variances unchanged at a fixed theta"
       f <- pnl_fit(b$dt, person_col = "person", scale_vars = sv,
                    se_method = m, cluster_col = if (m == "cluster") "grp",
                    theta_init = theta, optimizer = pnl_at)
-      # Fit-time vcov is computed in scaled space and back-transformed; the
-      # post-hoc vcov uses the stored natural-scale data.
+      # The fit-time vcov, like the post-hoc one, is computed at the natural
+      # estimates on the stored natural-scale data.
       expect_equal(vcov(f, type = pnl_se_types[[m]]), f$vcov,
                    tolerance = 1e-8, label = paste(what, "post hoc"))
       expect_equal(f$vcov, unscaled[[m]]$vcov, tolerance = 1e-8,

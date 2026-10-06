@@ -29,25 +29,27 @@
 #'   argument is forwarded; otherwise it is silently ignored.
 #' @param control List of optimizer-specific control parameters passed to the
 #'   chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).
-#' @param scale_vars How the optimizer's coordinates are scaled; the
-#'   estimator is the same whatever the choice. One of \code{"none"}
-#'   (default), \code{"sd"} (sample standard deviation), \code{"mad"}
-#'   (\code{stats::mad}), \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or
-#'   \code{"bhhh"}. With \code{"sd"}, \code{"mad"} or \code{"iqr"}, every
-#'   column of \code{X} is divided by the chosen scale before optimization
-#'   to improve Hessian conditioning. \code{"bhhh"} scales each parameter
-#'   instead, by the inverse square root of the diagonal of the BHHH (outer
-#'   product of gradients) matrix at the start values (all zeros), rounded
-#'   to a power of two, from one extra gradient pass: it also reaches the
-#'   constants, whose curvatures follow the alternatives' shares. Where the
-#'   diagonal is unusable (no finite, positive entry), the parameters are
-#'   left unscaled, with a message. The optimizer, a custom one included,
-#'   works in the scaled coordinates, so settings in parameter units in
-#'   \code{control} (nloptr's \code{xtol_abs}, optim's \code{parscale}) apply
-#'   to the scaled coordinates. Coefficients are reported in natural units
-#'   and the standard errors computed in them, with the information matrix
-#'   equilibrated before it is inverted, so reported quantities do not depend
-#'   on this choice beyond the optimizer's tolerance.
+#' @param scale_vars How the optimizer's coordinates are scaled; the estimator
+#'   is the same whatever the choice. One of \code{"none"} (default),
+#'   \code{"sd"} (sample standard deviation), \code{"mad"} (\code{stats::mad}),
+#'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
+#'   \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
+#'   coefficients \code{X} would have with every column divided by the chosen
+#'   scale (each coefficient times its column's scale), to improve the
+#'   conditioning of its problem; the data are not divided, and the fit holds
+#'   no scaled copy of them. \code{"bhhh"} scales each parameter instead, by
+#'   the inverse square root of the diagonal of the BHHH (outer product of
+#'   gradients) matrix at the start values (all zeros), rounded to a power of
+#'   two, from one extra gradient pass: it also reaches the constants, whose
+#'   curvatures follow the alternatives' shares. Where the diagonal is unusable
+#'   (no finite, positive entry), the parameters are left unscaled, with a
+#'   message. The optimizer, a custom one included, works in the scaled
+#'   coordinates, so settings in parameter units in \code{control} (nloptr's
+#'   \code{xtol_abs}, optim's \code{parscale}) apply to the scaled coordinates.
+#'   Coefficients are reported in natural units and the standard errors
+#'   computed in them, with the information matrix equilibrated before it is
+#'   inverted, so reported quantities do not depend on this choice beyond the
+#'   optimizer's tolerance.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
 #'   weights (convenience workflow only). The column must be constant within each
@@ -219,17 +221,17 @@ run_mnlogit <- function(
 
   # --- Variable scaling (optional) --------------------------------------------
   # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
-  # (.coordinate_map()); estimates and variances are reported in natural
-  # units. "sd", "mad" and "iqr" scale the columns of X by their sample SD
-  # (or a robust SD-equivalent), keeping the natural-scale matrix for
-  # storage; "bhhh" takes the map from the BHHH diagonal at the start values.
-  natural_X <- input_list$X
+  # (.coordinate_map()); the kernels evaluate the model at theta on the
+  # natural X, and estimates and variances are reported in natural units.
+  # "sd", "mad" and "iqr" take the map from the columns' scales (their sample
+  # SD or a robust SD-equivalent), so that the optimizer sees the likelihood
+  # of X with its columns divided by them; "bhhh" takes it from the BHHH
+  # diagonal at the start values.
   sX <- rep(1, K_x); names(sX) <- colnames(input_list$X)
   col_scaled <- scale_vars %in% c("sd", "mad", "iqr")
   if (col_scaled && K_x > 0) {
     sX <- .column_scales(input_list$X, scale_vars)
     .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
-    input_list$X <- sweep(input_list$X, 2, sX, "/")
   }
 
   # The model's objective and gradient at theta (captures data in
@@ -255,19 +257,11 @@ run_mnlogit <- function(
   map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
                          opg_diag = opg0)
 
-  # Build eval_f closure
-  eval_f <- function(theta) model_f(theta)
-  if (scale_vars == "bhhh") {
-    theta_init <- .to_coordinates(theta_init, map)
-    eval_f <- .coordinate_objective(eval_f, map)
-  }
-
-  # Run optimizer
+  # Run the optimizer in the map's coordinates
   elapsed <- system.time({
-    opt <- run_optimizer(
-      optimizer = optimizer,
-      theta_init = theta_init,
-      eval_f = eval_f,
+    opt <- .optimize_in_coordinates(
+      map = if (scale_vars != "none") map, optimizer = optimizer,
+      theta_init = theta_init, eval_f = function(theta) model_f(theta),
       control = control
     )
   })
@@ -275,7 +269,6 @@ run_mnlogit <- function(
   message("Optimization run time ", convertTime(elapsed))
 
   theta_hat <- opt$par
-  if (scale_vars == "bhhh") theta_hat <- .from_coordinates(theta_hat, map)
   names(theta_hat) <- param_names
 
   # Choice-based-sampling provenance and a guardrail for weighted inference.
@@ -284,15 +277,6 @@ run_mnlogit <- function(
     cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mnl_data"
   )
 
-  # --- Back-transform to natural scale ----------------------------------------
-  # The back-transform is purely multiplicative (1/sX on the beta block,
-  # identity on ASCs). The variance below is computed at the natural
-  # estimates, on the natural X.
-  if (col_scaled) {
-    theta_hat <- .backtransform_estimates(theta_hat, map$scale, map$shift,
-                                          param_names)
-    input_list$X <- natural_X
-  }
   # A scaled fit's matrices are inverted equilibrated, as post hoc.
   eq <- scale_vars != "none"
 

@@ -168,20 +168,6 @@ sol_with_kernels <- function(expr, route) {
 }
 
 sol_new <- function(f) f
-# The sweep() path: X and W divided before the call, no scales passed.
-sol_old <- function(f) {
-  force(f)
-  function(..., X, W, sX = NULL, sW = NULL) {
-    if (!is.null(sX)) X <- sweep(X, 2, sX, "/")
-    if (!is.null(sW)) W <- sweep(W, 2, sW, "/")
-    f(..., X = X, W = W)
-  }
-}
-# The scales dropped: natural X and W at a scaled-space theta.
-sol_dropped <- function(f) {
-  force(f)
-  function(..., X, W, sX = NULL, sW = NULL) f(..., X = X, W = W)
-}
 
 sol_fit <- function(args, route) {
   r <- sol_with_kernels(suppressMessages(do.call("run_mxlogit", args)), route)
@@ -214,10 +200,10 @@ sol_args <- function(dt, panel, ...) {
     list(...))
 }
 
-# The objective's calls get the scales (the optimizer's theta is in the
-# scaled space); the variance is computed at the natural estimates through
-# either route, so the whole fit, variance included, is identical.
-test_that("a scaled fit equals the fit through sweep()ed X and W", {
+# The scaling is the optimizer's coordinates: every kernel call a scaled fit
+# makes, the objective's and the variance's, gets the natural design and no
+# column scales.
+test_that("a scaled fit's kernels evaluate the natural design", {
   skip_on_cran()
   mxlp_threads(1L)
   on.exit(mxlp_threads(2L), add = TRUE)
@@ -231,7 +217,7 @@ test_that("a scaled fit equals the fit through sweep()ed X and W", {
     list(panel = TRUE, ioo = TRUE, sv = "iqr", draws = "store",
          rc_dist = c(1L, 1L), rc_mean = TRUE, corr = FALSE, weights = FALSE,
          se = c("hessian", "cluster")),
-    list(panel = TRUE, ioo = FALSE, sv = "sd", draws = "generate",
+    list(panel = TRUE, ioo = FALSE, sv = "bhhh", draws = "generate",
          rc_dist = c(0L, 0L), rc_mean = FALSE, corr = TRUE, weights = TRUE,
          se = "sandwich"))
   eager <- list(hessian = "mxl_hessian_parallel", bhhh = "mxl_bhhh_parallel",
@@ -251,26 +237,19 @@ test_that("a scaled fit equals the fit through sweep()ed X and W", {
                        cluster_col = if (se == "cluster") "grp",
                        weights_col = if (cs$weights) "w")
       new <- sol_fit(args, sol_new)
-      old <- sol_fit(args, sol_old)
-      expect_true(sol_bitwise(new$value, old$value), label = paste("fit", what))
       kernels <- vapply(new$seen, `[[`, "", "kernel")
       expect_true(all(eager[[se]] %in% kernels),
                   label = paste("the variance kernels ran", what))
       expect_gt(sum(kernels == "mxl_loglik_gradient_parallel"), 1L)
       fit <- new$value
-      # The optimizer's objective runs at a scaled-space theta and gets the
-      # scales; the variance is computed at the natural estimates and gets
-      # none.
+      # The optimizer's coordinates are scaled, the data are not: every call
+      # gets the natural design and no column scales.
       got <- vapply(new$seen, function(s) {
-        natural <- identical(s$X, fit$data$X) && identical(s$W, fit$data$W)
-        if (s$kernel == "mxl_loglik_gradient_parallel") {
-          natural && identical(s$sX, fit$sX) && identical(s$sW, fit$sW)
-        } else {
-          natural && is.null(s$sX) && is.null(s$sW)
-        }
+        identical(s$X, fit$data$X) && identical(s$W, fit$data$W) &&
+          is.null(s$sX) && is.null(s$sW)
       }, TRUE)
       expect_true(all(got),
-                  label = paste("the objective's calls got the fit's scales, the variance's none", what))
+                  label = paste("every call got the natural design and no scales", what))
     }
   }
 })
@@ -287,10 +266,7 @@ test_that("unscaled fits and post-hoc variances pass no scales", {
   none <- sol_fit(c(args, list(scale_vars = "none")), sol_new)
   expect_true(no_scales(none$seen))
   scaled <- sol_fit(c(args, list(scale_vars = "sd")), sol_new)
-  # Negative control: dropping the scales without dividing X and W changes
-  # the fit, so the identity above can fail.
-  dropped <- sol_fit(c(args, list(scale_vars = "sd")), sol_dropped)
-  expect_false(identical(coef(dropped$value), coef(scaled$value)))
+  expect_true(no_scales(scaled$seen))
   # Post-hoc variances work with natural coefficients and data.
   fit <- scaled$value
   cl <- dt[!duplicated(id), stats::setNames(grp, id)]

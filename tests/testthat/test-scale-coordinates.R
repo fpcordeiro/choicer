@@ -85,6 +85,51 @@ test_that("the coordinate objective's gradient is the chain rule's", {
   expect_equal(as.numeric(r$gradient), num, tolerance = 1e-6)
 })
 
+test_that("the coordinate objective is the scaled design's objective", {
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  for (cfg in list(list(rc_dist = c(0L, 0L), corr = TRUE, mean = FALSE, panel = TRUE),
+                   list(rc_dist = c(0L, 1L), corr = FALSE, mean = TRUE, panel = FALSE))) {
+    fx <- mxlp_fixture("eqv", 45L, rc_dist = cfg$rc_dist,
+                       rc_correlation = cfg$corr, rc_mean = cfg$mean,
+                       weight_type = "person")
+    if (!cfg$panel) fx <- mxlp_cross_section(fx, 46L)
+    fx$X <- fx$X %*% diag(c(100, 0.025))
+    fx$W <- fx$W %*% diag(c(25, 1))
+    pm <- list(beta = 1:2)
+    pos <- 2L
+    if (cfg$mean) { pm$mu <- pos + 1:2; pos <- pos + 2L }
+    L_size <- if (cfg$corr) 3L else 2L
+    pm$sigma <- pos + seq_len(L_size)
+    n <- length(fx$theta)
+    for (method in c("sd", "mad", "iqr")) {
+      sX <- choicer:::.column_scales(fx$X, method)
+      sW <- choicer:::.column_scales(fx$W, method)
+      sW[cfg$rc_dist == 1L] <- 1
+      map <- choicer:::.coordinate_map(method, pm, n, sX = sX, sW = sW,
+                                       rc_correlation = cfg$corr)
+      th_t <- choicer:::.to_coordinates(fx$theta, map)
+      for (generate in c(FALSE, TRUE)) {
+        coord <- choicer:::.coordinate_objective(
+          function(theta) mxlp_call("gradient", fx, theta = theta,
+                                    generate = generate), map)(th_t)
+        fs <- fx
+        fs$X <- sweep(fx$X, 2, sX, "/")
+        fs$W <- sweep(fx$W, 2, sW, "/")
+        scaled <- mxlp_call("gradient", fs, theta = th_t, generate = generate)
+        # Two roundings of one function: far below a wrong map's 1e-2..1
+        what <- sprintf("[%s, %s, %s]", method,
+                        if (cfg$panel) "panel" else "cross-section",
+                        if (generate) "generate" else "store")
+        mxlp_expect_close(coord$objective, scaled$objective, 1e-11,
+                          paste("objective", what))
+        mxlp_expect_close(coord$gradient, scaled$gradient, 1e-11,
+                          paste("gradient", what))
+      }
+    }
+  }
+})
+
 # Simulated mixed logit data with badly scaled columns and decision-maker
 # weights.
 sc_data <- function(N, T, seed, ioo = FALSE) {
@@ -222,6 +267,40 @@ test_that("\"bhhh\" hands the optimizer mapped start values and bounds", {
   expect_null(seen$r$overflow)
 })
 
+test_that("\"sd\" hands the optimizer the column map's start values and bounds", {
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  dt <- sc_data(60L, 1L, 71L)
+  seen <- NULL
+  local_mocked_bindings(run_optimizer = function(optimizer, theta_init, eval_f,
+                                                 lower = NULL, upper = NULL,
+                                                 control = list()) {
+    seen <<- list(theta_init = theta_init, lower = lower,
+                  r = eval_f(theta_init))
+    stop("captured")
+  })
+  expect_error(run_mxlogit(dt, "id", "alt", "choice", c("x1", "x2"),
+                           c("w1", "w2"), S = 10L, scale_vars = "sd",
+                           lower = c(L_11 = -3)), "captured")
+  d <- prepare_mxl_data(dt, "id", "alt", "choice", c("x1", "x2"), c("w1", "w2"))
+  map <- choicer:::.coordinate_map(
+    "sd", list(beta = 1:2, sigma = 3:4, asc = 5:7), 7L,
+    sX = choicer:::.column_scales(d$X, "sd"),
+    sW = choicer:::.column_scales(d$W, "sd"))
+  th0 <- c(0, 0, log(0.5), log(0.5), 0, 0, 0)
+  expect_identical(seen$theta_init, (th0 - map$shift) / map$scale)
+  # The log diagonal's shift moves the bound: L_11 >= -3 natural
+  expect_identical(unname(seen$lower), c(-Inf, -Inf, -3 - map$shift[3],
+                                         rep(-Inf, 4)))
+  k <- mxl_loglik_gradient_parallel(
+    theta = choicer:::.from_coordinates(seen$theta_init, map), X = d$X,
+    W = d$W, alt_idx = d$alt_idx, choice_idx = d$choice_idx, M = d$M,
+    weights = d$weights, eta_draws = get_halton_normals(10L, d$N, 2L),
+    rc_dist = c(0L, 0L), rc_correlation = FALSE, rc_mean = FALSE)
+  expect_identical(seen$r$objective, k$objective)
+  expect_identical(seen$r$gradient, k$gradient * map$scale)
+})
+
 test_that("a \"bhhh\" fit keeps its natural bounds", {
   skip_on_cran()
   mxlp_threads(1L)
@@ -238,7 +317,7 @@ test_that("a \"bhhh\" fit keeps its natural bounds", {
   expect_lt(bnd$loglik, free$loglik)
 })
 
-test_that("multinomial \"bhhh\" fits reach the unscaled optimum", {
+test_that("multinomial scaled fits reach the unscaled optimum", {
   mxlp_threads(1L)
   on.exit(mxlp_threads(2L), add = TRUE)
   sim <- simulate_mnl_data(N = 300, J = 4, seed = 81, outside_option = TRUE)
@@ -249,10 +328,18 @@ test_that("multinomial \"bhhh\" fits reach the unscaled optimum", {
     include_outside_option = TRUE, scale_vars = sv,
     control = list(xtol_rel = 1e-10)))
   none <- fit("none")
-  bh <- fit("bhhh")
-  expect_equal(bh$loglik, none$loglik, tolerance = 1e-10)
-  expect_lt(max(abs(coef(bh) - coef(none)) / none$se), 1e-4)
+  fits <- list(bhhh = fit("bhhh"), sd = fit("sd"))
+  for (sv in names(fits)) {
+    f <- fits[[sv]]
+    expect_equal(f$loglik, none$loglik, tolerance = 1e-10, label = sv)
+    expect_lt(max(abs(coef(f) - coef(none)) / none$se), 1e-4, label = sv)
+    expect_identical(suppressMessages(vcov(f, type = "hessian")), f$vcov,
+                     label = sv)
+  }
+  bh <- fits$bhhh
   expect_identical(log2(bh$param_scale), round(log2(bh$param_scale)))
   expect_identical(unname(bh$sX), c(1, 1))
-  expect_identical(suppressMessages(vcov(bh, type = "hessian")), bh$vcov)
+  fs <- fits$sd
+  expect_identical(unname(fs$param_scale), c(1 / unname(fs$sX), rep(1, 4)))
+  expect_identical(unname(fs$param_shift), rep(0, 6))
 })

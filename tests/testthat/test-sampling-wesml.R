@@ -347,7 +347,7 @@ test_that("scale_vars='sd' sandwich vcov matches recompute and is scale-invarian
                 weights_col = ".wesml_weight", se_method = "sandwich",
                 scale_vars = "sd", keep_data = TRUE, control = ctrl)
   ))
-  # Eager (back-transformed) vcov matches the natural-space recompute.
+  # The eager vcov matches the natural-space recompute.
   recomputed <- choicer:::compute_sandwich_vcov(fit_sd)
   expect_equal(unname(fit_sd$vcov), unname(recomputed$vcov), tolerance = 1e-6)
 
