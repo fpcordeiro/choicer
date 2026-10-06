@@ -323,8 +323,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mnl_loglik_gradient_parallel
-Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, const bool opg_diag);
+RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP opg_diagSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -336,7 +336,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mnl_loglik_gradient_parallel(theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const bool >::type opg_diag(opg_diagSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnl_loglik_gradient_parallel(theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option, opg_diag));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -605,8 +606,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mxl_loglik_gradient_parallel
-Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch, const Rcpp::Nullable<Rcpp::NumericVector> sX, const Rcpp::Nullable<Rcpp::NumericVector> sW);
-RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP, SEXP sXSEXP, SEXP sWSEXP) {
+Rcpp::List mxl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const Rcpp::Nullable<Rcpp::IntegerVector> Ti, const int draw_batch, const Rcpp::Nullable<Rcpp::NumericVector> sX, const Rcpp::Nullable<Rcpp::NumericVector> sW, const bool opg_diag);
+RcppExport SEXP _choicer_mxl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP TiSEXP, SEXP draw_batchSEXP, SEXP sXSEXP, SEXP sWSEXP, SEXP opg_diagSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -630,7 +631,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const int >::type draw_batch(draw_batchSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::NumericVector> >::type sX(sXSEXP);
     Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::NumericVector> >::type sW(sWSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, sX, sW));
+    Rcpp::traits::input_parameter< const bool >::type opg_diag(opg_diagSEXP);
+    rcpp_result_gen = Rcpp::wrap(mxl_loglik_gradient_parallel(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, sX, sW, opg_diag));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -986,8 +988,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_loglik_gradient_parallel
-Rcpp::List nl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_nl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::List nl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, const bool opg_diag);
+RcppExport SEXP _choicer_nl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP opg_diagSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -1000,7 +1002,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(nl_loglik_gradient_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const bool >::type opg_diag(opg_diagSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_loglik_gradient_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, opg_diag));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1241,7 +1244,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_test_arma_view_n_elem", (DL_FUNC) &_choicer_test_arma_view_n_elem, 0},
     {"_choicer_test_mxl_acc", (DL_FUNC) &_choicer_test_mxl_acc, 4},
     {"_choicer_test_physical_memory", (DL_FUNC) &_choicer_test_physical_memory, 0},
-    {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 8},
+    {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 9},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},
     {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 7},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},
@@ -1259,7 +1262,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_riwishart_cpp", (DL_FUNC) &_choicer_riwishart_cpp, 3},
     {"_choicer_build_L_mat", (DL_FUNC) &_choicer_build_L_mat, 3},
     {"_choicer_build_var_mat", (DL_FUNC) &_choicer_build_var_mat, 3},
-    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 20},
+    {"_choicer_mxl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mxl_loglik_gradient_parallel, 21},
     {"_choicer_jacobian_vech_Sigma", (DL_FUNC) &_choicer_jacobian_vech_Sigma, 3},
     {"_choicer_mxl_hessian_parallel", (DL_FUNC) &_choicer_mxl_hessian_parallel, 21},
     {"_choicer_mxl_bhhh_parallel", (DL_FUNC) &_choicer_mxl_bhhh_parallel, 21},
@@ -1273,7 +1276,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_blp_contraction", (DL_FUNC) &_choicer_mxl_blp_contraction, 20},
     {"_choicer_mxl_blp_contraction_cached", (DL_FUNC) &_choicer_mxl_blp_contraction_cached, 21},
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 18},
-    {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 9},
+    {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 10},
     {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 9},
     {"_choicer_nl_scores_parallel", (DL_FUNC) &_choicer_nl_scores_parallel, 8},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},

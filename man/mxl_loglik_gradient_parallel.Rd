@@ -24,7 +24,8 @@ mxl_loglik_gradient_parallel(
   Ti = NULL,
   draw_batch = 0L,
   sX = NULL,
-  sW = NULL
+  sW = NULL,
+  opg_diag = FALSE
 )
 }
 \arguments{
@@ -83,11 +84,17 @@ read, giving the values \code{sweep(X, 2, sX, "/")} and
 \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
 scaled space without a scaled copy of the design. \code{NULL}
 (default): the matrices as they are.}
+
+\item{opg_diag}{Logical; \code{TRUE} also returns the diagonal of the
+BHHH (outer product of gradients) matrix with the same weights,
+\eqn{\sum_u w_u s_u \circ s_u}, accumulated in the same pass.}
 }
 \value{
 List with the negated log-likelihood (\code{objective}), its
 \code{gradient}, and an \code{overflow} flag indicating that a
-non-finite objective was replaced by the finite optimizer sentinel.
+non-finite objective was replaced by the finite optimizer sentinel;
+with \code{opg_diag}, also \code{opg_diag}, as computed (not
+sanitized).
 }
 \description{
 Computes the log-likelihood and its gradient for the Mixed Logit model using

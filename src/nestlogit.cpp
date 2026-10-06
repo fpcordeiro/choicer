@@ -41,83 +41,25 @@ static inline void nl_gather_nests(int* nest0, const int* alt, const int* nest,
   for (int j = 0; j < m; ++j) nest0[j] = nest[alt[j] - 1] - 1;
 }
 
-//' Log-likelihood and gradient for Nested Logit model
-//'
-//' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
-//' Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
-//'
-//' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
-//'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
-//' @param X sum(M) x K design matrix with covariates.
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
-//' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
-//'        1-based index relative to rows in X_i otherwise.
-//' @param nest_idx J x 1 vector with indices of nests for each alternative; 1-based indexing (1 to n_nests).
-//' @param M N x 1 vector with number of alternatives for each individual.
-//' @param weights N x 1 vector with weights for each observation.
-//' @param use_asc whether to use alternative-specific constants.
-//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-//' @returns List with loglikelihood and gradient evaluated at input arguments
-//' @examples
-//' \donttest{
-//' library(data.table)
-//' set.seed(42)
-//' N <- 50; J <- 4
-//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-//' dt[, nest := ifelse(alt <= 2, "A", "B")]
-//' dt[, choice := 0L]
-//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-//' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
-//' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
-//' result <- choicer:::nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
-//'   d$choice_idx, d$nest_idx, d$M, d$weights)
-//' result$objective
-//' }
-//' @keywords internal
-// [[Rcpp::export]]
-Rcpp::List nl_loglik_gradient_parallel(
-    const arma::vec& theta,
-    const arma::mat& X,
-    const Rcpp::IntegerVector& alt_idx,
-    const Rcpp::IntegerVector& choice_idx,
-    const Rcpp::IntegerVector& nest_idx,
-    const Rcpp::IntegerVector& M,
-    const arma::vec& weights,
-    const bool use_asc = true,
-    const bool include_outside_option = false
-) {
-  // Extract dimensions
-  const int K = X.n_cols;
-  const int n_params = theta.n_elem;
-  const int n_nests = nl_n_nests(nest_idx);
-
-  // --- 1. Parameter Parsing (shared helper; also returns the map from full
-  // nest index k to lambda_k's position in theta, -1 for singleton nests) ---
-  arma::vec beta, lambda, delta;
-  int delta_start_idx, delta_length;
-  arma::ivec nest_k_to_theta_idx;
-  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
-                 beta, lambda, delta, delta_start_idx, delta_length,
-                 &nest_k_to_theta_idx);
-  // Layout of the stacked design: 64-bit row offsets, and the alternative
-  // codes, choices and nest codes read in place
-  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
-                                           delta, &weights, &choice_idx);
+// The NL gradient kernel's pass over the choice situations: the weighted
+// sums of their log-probabilities and scores and, with OpgDiag, the diagonal
+// of the BHHH matrix, sum_i w_i s_i o s_i, its terms formed as
+// nl_bhhh_parallel() forms them (the beta block from the unweighted product
+// X_i' grad_vec, the constants scattered at scale 1.0 and squared once each,
+// lambda's weight-free terms) and rounded before they are added
+// (OpgDiagTerms). Without OpgDiag it is the kernel's loop as it was.
+template <bool OpgDiag>
+static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
+                             const int* nest, const arma::vec& base_util,
+                             const arma::vec& lambda, const int n_nests,
+                             const arma::ivec& nest_k_to_theta_idx,
+                             const arma::vec& weights, const int K,
+                             const int n_params, const int delta_start_idx,
+                             const int delta_length,
+                             const bool include_outside_option,
+                             const bool use_asc, double& global_loglik,
+                             arma::vec& global_grad, arma::vec& global_diag) {
   const choicer_off N = lay.N;
-  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
-
-  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
-  // Rcpp::stop() is only safe outside parallel regions.
-  validate_choices(lay, include_outside_option, nullptr);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
-
-  // Prepare global accumulators
-  double global_loglik = 0.0;
-  arma::vec global_grad = arma::zeros(n_params);
   const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
@@ -130,6 +72,14 @@ Rcpp::List nl_loglik_gradient_parallel(
     arma::vec grad_vec; // pre-allocated per-thread, resized per individual
     NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
     std::vector<int> nest_buf(max_m);   // each inside alternative's nest
+    // The diagonal, the constants' scores (zero between situations), the
+    // beta block's scores and a situation's terms
+    arma::vec local_diag, s_d, s_b;
+    OpgDiagTerms terms(OpgDiag ? K + max_m + n_nests : 0);
+    if (OpgDiag) {
+      local_diag.zeros(n_params);
+      if (use_asc && delta_length > 0) s_d.zeros(n_params);
+    }
 
     // Make the index map thread-private
     const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
@@ -221,6 +171,20 @@ Rcpp::List nl_loglik_gradient_parallel(
                            m_i, include_outside_option, w_i);
       } // end gradient block for beta/delta
 
+      // OPG diagonal (opg_diag), beta and delta: the weight-free score's
+      // squares, the beta block from the unweighted product as
+      // nl_bhhh_parallel() forms it
+      if (OpgDiag) {
+        s_b = X_i.t() * grad_vec;
+        for (int k = 0; k < K; ++k) terms.push(k, s_b[k], w_i);
+        if (use_asc && delta_length > 0) {
+          scatter_delta_grad(s_d, delta_start_idx, grad_vec, alt_idx0_i,
+                             m_i, include_outside_option, 1.0);
+          opg_diag_push_delta(terms, s_d, delta_start_idx, alt_idx0_i,
+                              m_i, include_outside_option, w_i);
+        }
+      }
+
       // 4.3: Gradient w.r.t. lambda_k
       for (int k = 0; k < n_nests; ++k) {
 
@@ -248,8 +212,10 @@ Rcpp::List nl_loglik_gradient_parallel(
         }
 
         local_grad[theta_idx_k] += w_i * grad_lambda_k;
+        if (OpgDiag) terms.push(theta_idx_k, grad_lambda_k, w_i);
 
       } // end gradient loop for lambda
+      if (OpgDiag) terms.flush(local_diag);
     } // end of i loop
 
     // Combine partial accumulators into global accumulators
@@ -259,10 +225,111 @@ Rcpp::List nl_loglik_gradient_parallel(
     {
       global_loglik += local_loglik;
       global_grad += local_grad;
+      if (OpgDiag) global_diag += local_diag;
     }
   } // end parallel region
+}
 
-  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel)
+//' Log-likelihood and gradient for Nested Logit model
+//'
+//' Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.
+//' Especially handles singleton nests by fixing their lambda parameters to 1. Only non-singleton nests have a inclusive value coefficient estimated in theta.
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
+//'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param choice_idx N x 1 vector with indices of chosen alternatives; 0 for outside option,
+//'        1-based index relative to rows in X_i otherwise.
+//' @param nest_idx J x 1 vector with indices of nests for each alternative; 1-based indexing (1 to n_nests).
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
+//'   BHHH (outer product of gradients) matrix with the same weights,
+//'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
+//' @returns List with loglikelihood and gradient evaluated at input
+//'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
+//'   (not sanitized)
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' K_x <- ncol(d$X); K_l <- length(unique(d$nest_idx))
+//' theta <- c(rep(0, K_x), rep(0.5, K_l), rep(0, J - 1))
+//' result <- choicer:::nl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+//'   d$choice_idx, d$nest_idx, d$M, d$weights)
+//' result$objective
+//' }
+//' @keywords internal
+// [[Rcpp::export]]
+Rcpp::List nl_loglik_gradient_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false,
+    const bool opg_diag = false
+) {
+  // Extract dimensions
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+  const int n_nests = nl_n_nests(nest_idx);
+
+  // --- 1. Parameter Parsing (shared helper; also returns the map from full
+  // nest index k to lambda_k's position in theta, -1 for singleton nests) ---
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  arma::ivec nest_k_to_theta_idx;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length,
+                 &nest_k_to_theta_idx);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes, choices and nest codes read in place
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights, &choice_idx);
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
+
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  // Rcpp::stop() is only safe outside parallel regions.
+  validate_choices(lay, include_outside_option, nullptr);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+
+  // Prepare global accumulators
+  double global_loglik = 0.0;
+  arma::vec global_grad = arma::zeros(n_params);
+  arma::vec global_diag;
+  if (opg_diag) {
+    global_diag.zeros(n_params);
+    nl_gradient_pass<true>(X, lay, nest, base_util, lambda, n_nests,
+                           nest_k_to_theta_idx, weights, K, n_params,
+                           delta_start_idx, delta_length,
+                           include_outside_option, use_asc, global_loglik,
+                           global_grad, global_diag);
+  } else {
+    nl_gradient_pass<false>(X, lay, nest, base_util, lambda, n_nests,
+                            nest_k_to_theta_idx, weights, K, n_params,
+                            delta_start_idx, delta_length,
+                            include_outside_option, use_asc, global_loglik,
+                            global_grad, global_diag);
+  }
+
+  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel); the
+  // diagonal is returned as computed
   double obj = -global_loglik;
   arma::vec grad = -global_grad;
   if (!std::isfinite(obj)) {
@@ -270,6 +337,13 @@ Rcpp::List nl_loglik_gradient_parallel(
     grad.zeros();
   } else {
     grad.elem(arma::find_nonfinite(grad)).zeros();
+  }
+  if (opg_diag) {
+    return Rcpp::List::create(
+      Rcpp::Named("objective") = obj,
+      Rcpp::Named("gradient")  = grad,
+      Rcpp::Named("opg_diag")  = global_diag
+    );
   }
   return Rcpp::List::create(
     Rcpp::Named("objective") = obj,
