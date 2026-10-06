@@ -202,9 +202,11 @@
 #'   median absolute deviation; SD-equivalent under normality), or
 #'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}; also SD-equivalent under
 #'   normality). When not \code{"none"}, every column of \code{X} and \code{W}
-#'   is divided by the chosen scale before optimization to improve Hessian
-#'   conditioning. Robust scales (\code{"mad"}/\code{"iqr"}) better capture
-#'   the bulk for heavy-tailed columns where SD is dominated by outliers, but
+#'   is divided by the chosen scale to improve Hessian conditioning; the
+#'   estimation kernels divide each decision maker's rows as they read them,
+#'   so the fit holds no scaled copy of the design. Robust scales
+#'   (\code{"mad"}/\code{"iqr"}) better capture the bulk for heavy-tailed
+#'   columns where SD is dominated by outliers, but
 #'   \code{stats::mad} can return zero when more than half of a column's
 #'   entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
 #'   the same near-constant-column error as \code{"sd"}. Coefficients and
@@ -549,13 +551,14 @@ run_mxlogit <- function(
   }
 
   # --- Variable scaling (optional) --------------------------------------------
-  # Scale columns of X and W by their sample SD to improve Hessian conditioning.
-  # Keep the natural-scale matrices for storage; theta_init is interpreted in
-  # natural units and forward-transformed below; theta_hat and vcov are
-  # back-transformed after optimization so reported quantities are in the
-  # user's natural units. sX and sW are returned as 1s when scale_vars="none".
-  natural_X <- input_data$X
-  natural_W <- input_data$W
+  # Scale columns of X and W by their sample SD (or a robust SD-equivalent) to
+  # improve Hessian conditioning. The estimation kernels divide each decision
+  # maker's rows by these scales as they read them, so the fit holds no scaled
+  # copy of the design and input_data keeps the natural-scale matrices for
+  # storage. theta_init is interpreted in natural units and forward-transformed
+  # below; theta_hat and vcov are back-transformed after optimization so
+  # reported quantities are in the user's natural units. sX and sW are
+  # returned as 1s when scale_vars="none".
   sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
   sW <- rep(1, K_w); names(sW) <- colnames(input_data$W)
   if (scale_vars != "none") {
@@ -563,7 +566,6 @@ run_mxlogit <- function(
       sX_raw <- .column_scales(input_data$X, scale_vars)
       .assert_scales_ok(sX_raw, scale_vars, "fixed-coefficient")
       sX <- sX_raw
-      input_data$X <- sweep(input_data$X, 2, sX, "/")
     }
     if (K_w > 0) {
       sW_raw <- .column_scales(input_data$W, scale_vars)
@@ -572,10 +574,10 @@ run_mxlogit <- function(
         .assert_scales_ok(sW_raw, scale_vars, "normal random-coefficient",
                           idx = normal_cols)
       }
-      # Preserve names from sW_raw; carve out log-normal columns (pass-through).
+      # Preserve names from sW_raw; carve out log-normal columns (pass-through:
+      # the kernels divide them by 1, as sweep() did).
       sW <- sW_raw
       sW[rc_dist == 1L] <- 1
-      input_data$W <- sweep(input_data$W, 2, sW, "/")
       n_lognormal <- sum(rc_dist == 1L)
       if (K_w > 0L && n_lognormal == K_w) {
         message("scale_vars='", scale_vars,
@@ -587,6 +589,11 @@ run_mxlogit <- function(
       }
     }
   }
+  # The kernels' column scales (NULL: the rows are read as they are). theta is
+  # in the scaled space, so every kernel call during the fit passes them; the
+  # post-hoc methods use the stored natural data with natural coefficients.
+  kern_sX <- if (scale_vars != "none") sX
+  kern_sW <- if (scale_vars != "none") sW
 
   # --- Natural <-> scaled Jacobian --------------------------------------------
   # Maps scaled-space parameters back to natural-scale units:
@@ -673,7 +680,9 @@ run_mxlogit <- function(
       gen_seed = gen_seed_cpp,
       gen_scramble = gen_scramble_cpp,
       gen_S = gen_S_cpp,
-      Ti = input_data$Ti
+      Ti = input_data$Ti,
+      sX = kern_sX,
+      sW = kern_sW
     )
   })
 
@@ -708,7 +717,8 @@ run_mxlogit <- function(
   # weight-free). For "cluster", the meat is the outer product of
   # within-cluster sums of weighted scores. Scores, weights and cluster labels
   # are per likelihood unit (decision maker with person_col). Computed in
-  # scaled space; the back-transform below applies.
+  # scaled space (the kernels scale X and W as they read them); the
+  # back-transform below applies.
   if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- mxl_hessian_parallel(
       theta = theta_hat, X = input_data$X, W = input_data$W,
@@ -718,7 +728,7 @@ run_mxlogit <- function(
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option,
       gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-      Ti = input_data$Ti
+      Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
     )
     B_meat <- if (se_method == "sandwich") {
       mxl_bhhh_parallel(
@@ -729,7 +739,7 @@ run_mxlogit <- function(
         use_asc = use_asc,
         include_outside_option = input_data$include_outside_option,
         gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-        Ti = input_data$Ti
+        Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
       )
     } else {
       # The weighted scores summed within clusters in C++, without the
@@ -746,7 +756,7 @@ run_mxlogit <- function(
         use_asc = use_asc,
         include_outside_option = input_data$include_outside_option,
         gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-        Ti = input_data$Ti
+        Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
       )
     }
     vcov_result <- .sandwich_combine(A_bread, B_meat)
@@ -768,7 +778,7 @@ run_mxlogit <- function(
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option,
       gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-      Ti = input_data$Ti
+      Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
     ),
     bhhh = mxl_bhhh_parallel(
       theta = theta_hat,
@@ -785,7 +795,7 @@ run_mxlogit <- function(
       use_asc = use_asc,
       include_outside_option = input_data$include_outside_option,
       gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-      Ti = input_data$Ti
+      Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
     )
   )
   vcov_result <- invert_hessian(hess)
@@ -804,8 +814,6 @@ run_mxlogit <- function(
     bt <- .backtransform_estimates(theta_hat, vcov_result, bt_mult, bt_shift, param_names)
     theta_hat <- bt$theta
     vcov_result <- bt$vcov_result
-    input_data$X <- natural_X
-    input_data$W <- natural_W
   }
 
   # Reconstruct Sigma for display (from back-transformed L params if scaled)
