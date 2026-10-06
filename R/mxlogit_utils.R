@@ -196,28 +196,43 @@
 #'   within each decision maker when \code{person_col} is used (clusters must
 #'   nest decision makers). Supplying \code{cluster_col} without an explicit
 #'   \code{se_method} selects \code{se_method = "cluster"}.
-#' @param scale_vars Pre-estimation column scaling for design matrices. One of
-#'   \code{"none"} (default), \code{"sd"} (sample standard deviation),
-#'   \code{"mad"} (\code{stats::mad}, i.e. 1.4826 \eqn{\times}
-#'   median absolute deviation; SD-equivalent under normality), or
-#'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}; also SD-equivalent under
-#'   normality). When not \code{"none"}, every column of \code{X} and \code{W}
-#'   is divided by the chosen scale to improve Hessian conditioning; the
-#'   estimation kernels divide each decision maker's rows as they read them,
-#'   so the fit holds no scaled copy of the design. Robust scales
-#'   (\code{"mad"}/\code{"iqr"}) better capture the bulk for heavy-tailed
-#'   columns where SD is dominated by outliers, but
+#' @param scale_vars How the optimizer's coordinates are scaled; the
+#'   estimator is the same whatever the choice, which affects how fast, and
+#'   whether, the optimizer reaches the maximum. One of \code{"none"}
+#'   (default), \code{"sd"} (sample standard deviation), \code{"mad"}
+#'   (\code{stats::mad}, i.e. 1.4826 \eqn{\times} median absolute deviation;
+#'   SD-equivalent under normality), \code{"iqr"}
+#'   (\code{stats::IQR(x) / 1.349}; also SD-equivalent under normality), or
+#'   \code{"bhhh"}. With \code{"sd"}, \code{"mad"} or \code{"iqr"}, every
+#'   column of \code{X} and \code{W} is divided by the chosen scale to
+#'   improve Hessian conditioning; the estimation kernels divide each decision
+#'   maker's rows as they read them, so the fit holds no scaled copy of the
+#'   design. Robust scales (\code{"mad"}/\code{"iqr"}) better capture the
+#'   bulk for heavy-tailed columns where SD is dominated by outliers, but
 #'   \code{stats::mad} can return zero when more than half of a column's
 #'   entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
-#'   the same near-constant-column error as \code{"sd"}. Coefficients are
-#'   back-transformed to the user's natural units and the standard errors
-#'   computed in them, with the information matrix equilibrated before it is
-#'   inverted, so reported quantities do not depend on this choice beyond the
-#'   optimizer's tolerance.
-#'   Columns of \code{W} associated with log-normal random coefficients
-#'   (\code{rc_dist == 1}) are passed through unchanged, since the shifted
-#'   log-normal parameterization does not admit a closed-form back-transform
-#'   under multiplicative scaling.
+#'   the same near-constant-column error as \code{"sd"}. Columns of \code{W}
+#'   associated with log-normal random coefficients (\code{rc_dist == 1}) are
+#'   passed through unchanged, since the shifted log-normal parameterization
+#'   does not admit a closed-form back-transform under multiplicative
+#'   scaling. \code{"bhhh"} scales each parameter instead, by the inverse
+#'   square root of the diagonal of the BHHH (outer product of gradients)
+#'   matrix at the start values, rounded to a power of two, from one extra
+#'   gradient pass: it reaches the constants and the Cholesky factor, whose
+#'   curvatures can differ by orders of magnitude that no column scale
+#'   reaches (the constants of large and small alternatives, say). A start
+#'   near the estimates (\code{theta_init}) gives it a better diagonal.
+#'   Where the diagonal is unusable (no finite, positive entry, as when the
+#'   likelihood overflows at the start values), the parameters are left
+#'   unscaled, with a message. The optimizer, a custom one included, works in
+#'   the scaled coordinates (\code{theta_init}, \code{lower} and
+#'   \code{upper} are given in natural units and mapped), so settings in
+#'   parameter units in \code{control} (nloptr's \code{xtol_abs}, optim's
+#'   \code{parscale}) apply to the scaled coordinates. Coefficients are
+#'   reported in natural units and the standard errors computed in them,
+#'   with the information matrix equilibrated before it is inverted, so
+#'   reported quantities do not depend on this choice beyond the optimizer's
+#'   tolerance.
 #' @param weights Optional weight vector (convenience workflow), one weight per
 #'   choice situation in ascending-id order (see
 #'   \code{\link{prepare_mxl_data}}). With \code{person_col}, situations are
@@ -359,7 +374,7 @@ run_mxlogit <- function(
     optimizer = NULL,
     control = list(),
     se_method = c("hessian", "bhhh", "sandwich", "cluster"),
-    scale_vars = c("none", "sd", "mad", "iqr"),
+    scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
     weights = NULL,
     outside_opt_label = NULL,
     include_outside_option = FALSE,
@@ -553,17 +568,20 @@ run_mxlogit <- function(
   }
 
   # --- Variable scaling (optional) --------------------------------------------
-  # Scale columns of X and W by their sample SD (or a robust SD-equivalent) to
-  # improve Hessian conditioning. The estimation kernels divide each decision
-  # maker's rows by these scales as they read them, so the fit holds no scaled
-  # copy of the design and input_data keeps the natural-scale matrices for
-  # storage. theta_init is interpreted in natural units and forward-transformed
-  # below; theta_hat is back-transformed after optimization and the variance
-  # computed at it in natural units, so reported quantities are in the user's
-  # natural units. sX and sW are returned as 1s when scale_vars="none".
+  # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
+  # (.coordinate_map()); estimates and variances are reported in natural
+  # units. "sd", "mad" and "iqr" take the map from the columns' scales
+  # (computed here; log-normal W columns at 1), so that the optimizer sees the
+  # likelihood of the design with its columns divided by them: the
+  # estimation kernels divide each decision maker's rows by the scales as
+  # they read them, so the fit holds no scaled copy of the design. "bhhh"
+  # takes the map from the BHHH diagonal at the start values. theta_init and
+  # the bounds are in natural units and mapped below; sX and sW are returned
+  # as 1s unless the columns are scaled.
+  col_scaled <- scale_vars %in% c("sd", "mad", "iqr")
   sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
   sW <- rep(1, K_w); names(sW) <- colnames(input_data$W)
-  if (scale_vars != "none") {
+  if (col_scaled) {
     if (K_x > 0) {
       sX_raw <- .column_scales(input_data$X, scale_vars)
       .assert_scales_ok(sX_raw, scale_vars, "fixed-coefficient")
@@ -595,41 +613,10 @@ run_mxlogit <- function(
   # in the scaled space while the optimizer runs, so its objective passes
   # them; the variance, like the post-hoc methods, uses the natural
   # coefficients and passes none.
-  kern_sX <- if (scale_vars != "none") sX
-  kern_sW <- if (scale_vars != "none") sW
+  kern_sX <- if (col_scaled) sX
+  kern_sW <- if (col_scaled) sW
 
-  # --- Natural <-> scaled Jacobian --------------------------------------------
-  # Maps scaled-space parameters back to natural-scale units:
-  #   theta_natural = bt_mult * theta_scaled + bt_shift
-  # Inverse forward-transforms theta_init from natural to scaled space.
-  # ASCs and any unset entries default to identity (mult=1, shift=0).
-  bt_mult <- rep(1, n_params)
-  bt_shift <- rep(0, n_params)
-  if (scale_vars != "none") {
-    if (K_x > 0) bt_mult[param_map$beta] <- 1 / sX
-    if (mu_size > 0) bt_mult[param_map$mu] <- 1 / sW
-    if (rc_correlation) {
-      idx <- 1L
-      for (i in seq_len(K_w)) {
-        for (j in seq_len(i)) {
-          pos <- param_map$sigma[idx]
-          if (i == j) {
-            bt_shift[pos] <- -log(sW[i])
-          } else {
-            bt_mult[pos] <- 1 / sW[i]
-          }
-          idx <- idx + 1L
-        }
-      }
-    } else {
-      for (i in seq_len(K_w)) {
-        pos <- param_map$sigma[i]
-        bt_shift[pos] <- -log(sW[i])
-      }
-    }
-  }
-
-  # Resolve theta_init (natural units); forward-transform to scaled space.
+  # Resolve theta_init (natural units).
   # Default cold-start: zero on every block except the Cholesky diagonal,
   # which sits at log(0.5) so each diagonal factor L_pp = 0.5 (RC variance
   # 0.25). Starting at log(1) = 0 corresponds to L_pp = 1 (unit RC variance),
@@ -646,17 +633,10 @@ run_mxlogit <- function(
       theta_init[diag_idx] <- log(0.5)
     }
   }
-  if (scale_vars != "none") {
-    theta_init <- (theta_init - bt_shift) / bt_mult
-  }
 
-  # Normalize lower/upper bounds (natural units in, scaled units out).
+  # Normalize lower/upper bounds (natural units).
   lower <- .normalize_bound(lower, param_names, -Inf, "lower")
   upper <- .normalize_bound(upper, param_names,  Inf, "upper")
-  if (scale_vars != "none") {
-    lower <- (lower - bt_shift) / bt_mult
-    upper <- (upper - bt_shift) / bt_mult
-  }
 
   # Resolve generate-mode parameters for C++ kernels.
   # In store mode (draws="store"): gen_seed_cpp = -1L triggers cube path (unchanged behavior).
@@ -664,8 +644,9 @@ run_mxlogit <- function(
   gen_scramble_cpp <- if (draws == "generate") (if (scramble == "permuted") 1L else 0L) else 1L
   gen_S_cpp        <- if (draws == "generate") S else 0L
 
-  # Build eval_f closure (the kernel's overflow sentinel kept above the path)
-  eval_f <- .lift_sentinel(function(theta) {
+  # The model's objective and gradient at theta; `...` takes the kernel's
+  # column scales or opg_diag.
+  model_f <- function(theta, ...) {
     mxl_loglik_gradient_parallel(
       theta = theta,
       X = input_data$X,
@@ -684,10 +665,41 @@ run_mxlogit <- function(
       gen_scramble = gen_scramble_cpp,
       gen_S = gen_S_cpp,
       Ti = input_data$Ti,
-      sX = kern_sX,
-      sW = kern_sW
+      ...
     )
-  })
+  }
+
+  # --- The optimizer's coordinates --------------------------------------------
+  #   theta_natural = map$scale * theta_t + map$shift
+  # "bhhh": the BHHH diagonal at the start values, from one gradient pass;
+  # unusable where the likelihood overflows there (unit entries: the identity).
+  opg0 <- NULL
+  if (scale_vars == "bhhh") {
+    g0 <- model_f(theta_init, opg_diag = TRUE)
+    if (isTRUE(g0$overflow)) {
+      message("scale_vars = \"bhhh\": the likelihood overflows at the start ",
+              "values (check theta_init); the parameters are left unscaled.")
+      opg0 <- rep(1, n_params)
+    } else {
+      opg0 <- g0$opg_diag
+    }
+  }
+  map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX, sW = sW,
+                         rc_correlation = rc_correlation, opg_diag = opg0)
+  if (scale_vars != "none") {
+    theta_init <- .to_coordinates(theta_init, map)
+    lower <- .to_coordinates(lower, map)
+    upper <- .to_coordinates(upper, map)
+  }
+
+  # Build eval_f closure (the kernel's overflow sentinel kept above the path)
+  eval_f <- if (scale_vars == "bhhh") {
+    .coordinate_objective(.lift_sentinel(model_f), map)
+  } else if (col_scaled) {
+    .lift_sentinel(function(theta) model_f(theta, sX = kern_sX, sW = kern_sW))
+  } else {
+    .lift_sentinel(model_f)
+  }
 
   # Run optimizer
   elapsed <- system.time({
@@ -703,8 +715,9 @@ run_mxlogit <- function(
 
   message("Optimization run time ", convertTime(elapsed))
 
-  # Estimate at the optimum (in scaled space if scale_vars != "none")
+  # Estimate at the optimum (in the optimizer's coordinates)
   theta_hat <- opt$par
+  if (scale_vars == "bhhh") theta_hat <- .from_coordinates(theta_hat, map)
   names(theta_hat) <- param_names
 
   # Choice-based-sampling provenance and a guardrail for weighted inference.
@@ -714,11 +727,10 @@ run_mxlogit <- function(
   )
 
   # --- Back-transform to natural scale ----------------------------------------
-  # Uses the bt_mult / bt_shift map built before optimization:
-  #   theta_natural = bt_mult * theta_scaled + bt_shift
-  # The variance below is computed at the natural estimates, in natural units.
-  if (scale_vars != "none") {
-    theta_hat <- .backtransform_estimates(theta_hat, bt_mult, bt_shift,
+  # Column scales: theta_natural = scale * theta_scaled + shift. The variance
+  # below is computed at the natural estimates, in natural units.
+  if (col_scaled) {
+    theta_hat <- .backtransform_estimates(theta_hat, map$scale, map$shift,
                                           param_names)
   }
 
@@ -788,8 +800,8 @@ run_mxlogit <- function(
     sW = sW,
     choice_sampling = choice_sampling,
     n_persons = if (!is.null(input_data$Ti)) length(input_data$Ti),
-    param_scale = stats::setNames(bt_mult, param_names),
-    param_shift = stats::setNames(bt_shift, param_names)
+    param_scale = stats::setNames(map$scale, param_names),
+    param_shift = stats::setNames(map$shift, param_names)
   )
 
   # Compute vcov eagerly using the selected SE method, by the route

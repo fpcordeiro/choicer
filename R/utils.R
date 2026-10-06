@@ -294,6 +294,139 @@ resolve_var_index <- function(var, col_names) {
   theta_hat
 }
 
+#' The optimizer's coordinates for `scale_vars`
+#'
+#' The map \eqn{\theta = m \circ \tilde\theta + c} (elementwise,
+#' \eqn{m > 0}) between the optimizer's coordinates \eqn{\tilde\theta} and
+#' the parameters. The kernels evaluate the model at \eqn{\theta};
+#' `.coordinate_objective()` hands the optimizer the same objective as a
+#' function of \eqn{\tilde\theta}. `"none"` is the identity (callers bypass
+#' the map). `"sd"`, `"mad"` and `"iqr"` take it from the column scales: 1/sX
+#' on beta, 1/sW on mu, each Cholesky row divided by its row's sW (on the log
+#' diagonal, a shift of -log(sW)), the constants and nest parameters
+#' unchanged, so that the optimizer sees the likelihood of the design with
+#' its columns divided by their scales. `"bhhh"` takes it from the BHHH
+#' diagonal at the start values (`.bhhh_scales()`), for every parameter,
+#' with no shift.
+#'
+#' @param scale_vars One of "none", "sd", "mad", "iqr", "bhhh".
+#' @param param_map The fit's parameter index map.
+#' @param n_params Number of parameters.
+#' @param sX,sW Column scales of X and W (sd/mad/iqr; log-normal W columns at
+#'   1).
+#' @param rc_correlation Whether the Cholesky factor is full (mixed logit).
+#' @param opg_diag The BHHH diagonal at the start values ("bhhh").
+#' @returns List with `scale` (m) and `shift` (c), each of length n_params.
+#' @noRd
+.coordinate_map <- function(scale_vars, param_map, n_params, sX = NULL,
+                            sW = NULL, rc_correlation = FALSE,
+                            opg_diag = NULL) {
+  scale <- rep(1, n_params)
+  shift <- rep(0, n_params)
+  if (identical(scale_vars, "bhhh")) {
+    scale <- .bhhh_scales(opg_diag)
+  } else if (!identical(scale_vars, "none")) {
+    if (length(param_map$beta)) scale[param_map$beta] <- 1 / sX
+    if (length(param_map$mu)) scale[param_map$mu] <- 1 / sW
+    K_w <- length(sW)
+    if (length(param_map$sigma) && K_w > 0L) {
+      if (rc_correlation) {
+        idx <- 1L
+        for (i in seq_len(K_w)) {
+          for (j in seq_len(i)) {
+            pos <- param_map$sigma[idx]
+            if (i == j) shift[pos] <- -log(sW[i]) else scale[pos] <- 1 / sW[i]
+            idx <- idx + 1L
+          }
+        }
+      } else {
+        for (i in seq_len(K_w)) shift[param_map$sigma[i]] <- -log(sW[i])
+      }
+    }
+  }
+  stopifnot(length(scale) == n_params, length(shift) == n_params)
+  list(scale = scale, shift = shift)
+}
+
+#' Parameter scales from the BHHH diagonal (`scale_vars = "bhhh"`)
+#'
+#' \eqn{m_k = 2^{\mathrm{round}(\log_2 (1 / \sqrt{B_{kk}}))}}, with B the
+#' BHHH matrix at the start values, so that the optimizer's coordinates have
+#' curvatures near one: L-BFGS scales its initial curvature by one number per
+#' iteration, and the constants of large and small alternatives, or the
+#' Cholesky entries, can differ in curvature by orders of magnitude that no
+#' column scale reaches. Powers of two make the map exact, start values and
+#' bounds included. An entry that is not finite, or below 1e-12 times the
+#' median of the finite positive ones, carries no information at the start
+#' values and takes the median's scale; scales stay within
+#' \eqn{[2^{-400}, 2^{400}]}.
+#'
+#' @param B The BHHH diagonal at the start values.
+#' @param floor_rel Relative floor below which an entry takes the median.
+#' @returns Numeric vector of scales; ones, with a message, when no entry is
+#'   finite and positive.
+#' @noRd
+.bhhh_scales <- function(B, floor_rel = 1e-12) {
+  B <- as.numeric(B)
+  pos <- is.finite(B) & B > 0
+  if (!any(pos)) {
+    message("scale_vars = \"bhhh\": the BHHH diagonal has no finite, positive ",
+            "entry at the start values; the parameters are left unscaled.")
+    return(rep(1, length(B)))
+  }
+  med <- stats::median(B[pos])
+  low <- !is.finite(B) | B < floor_rel * med
+  B[low] <- med
+  pmin(pmax(2^round(log2(1 / sqrt(B))), 2^-400), 2^400)
+}
+
+#' The objective in the optimizer's coordinates
+#'
+#' `eval_f` evaluates the model at the parameters; the result evaluates it at
+#' \eqn{\theta = m \circ \tilde\theta + c} and returns the gradient times
+#' m, the chain rule for the affine, diagonal map (its Hessian is
+#' \eqn{J H J}, J = diag(m), with no second-order term).
+#'
+#' @param eval_f Function of the parameters returning `list(objective,
+#'   gradient, ...)`.
+#' @param map From `.coordinate_map()`.
+#' @returns Function of the optimizer's coordinates.
+#' @noRd
+.coordinate_objective <- function(eval_f, map) {
+  force(eval_f)
+  scale <- map$scale
+  function(theta_t) {
+    res <- eval_f(.from_coordinates(theta_t, map))
+    res$gradient <- res$gradient * scale
+    res
+  }
+}
+
+#' Parameters from the optimizer's coordinates
+#'
+#' \eqn{m \circ \tilde\theta}, plus the shift only when the map has one:
+#' adding a zero shift would turn -0 into +0.
+#'
+#' @param theta_t The optimizer's coordinates.
+#' @param map From `.coordinate_map()`.
+#' @returns The parameters.
+#' @noRd
+.from_coordinates <- function(theta_t, map) {
+  theta <- map$scale * theta_t
+  if (any(map$shift != 0)) theta <- theta + map$shift
+  theta
+}
+
+#' The optimizer's coordinates of parameters (start values and bounds)
+#'
+#' @param theta Parameters, or bounds (infinite bounds stay infinite).
+#' @param map From `.coordinate_map()`.
+#' @returns \eqn{(\theta - c) / m}.
+#' @noRd
+.to_coordinates <- function(theta, map) {
+  (theta - map$shift) / map$scale
+}
+
 #' Label a J x J matrix with alternative names
 #'
 #' Adds row and column names from \code{alt_mapping} to a square matrix.

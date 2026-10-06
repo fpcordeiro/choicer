@@ -29,16 +29,25 @@
 #'   argument is forwarded; otherwise it is silently ignored.
 #' @param control List of optimizer-specific control parameters passed to the
 #'   chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).
-#' @param scale_vars Pre-estimation column scaling for the design matrix. One of
-#'   \code{"none"} (default), \code{"sd"} (sample standard deviation),
-#'   \code{"mad"} (\code{stats::mad}), or \code{"iqr"}
-#'   (\code{stats::IQR(x) / 1.349}). When not \code{"none"}, every column of
-#'   \code{X} is divided by the chosen scale before optimization to improve
-#'   Hessian conditioning. Coefficients are back-transformed to the user's
-#'   natural units and the standard errors computed in them, with the
-#'   information matrix equilibrated before it is inverted, so reported
-#'   quantities do not depend on this choice beyond the optimizer's
-#'   tolerance.
+#' @param scale_vars How the optimizer's coordinates are scaled; the
+#'   estimator is the same whatever the choice. One of \code{"none"}
+#'   (default), \code{"sd"} (sample standard deviation), \code{"mad"}
+#'   (\code{stats::mad}), \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or
+#'   \code{"bhhh"}. With \code{"sd"}, \code{"mad"} or \code{"iqr"}, every
+#'   column of \code{X} is divided by the chosen scale before optimization
+#'   to improve Hessian conditioning. \code{"bhhh"} scales each parameter
+#'   instead, by the inverse square root of the diagonal of the BHHH (outer
+#'   product of gradients) matrix at the start values (all zeros), rounded
+#'   to a power of two, from one extra gradient pass: it also reaches the
+#'   constants, whose curvatures follow the alternatives' shares. Where the
+#'   diagonal is unusable (no finite, positive entry), the parameters are
+#'   left unscaled, with a message. The optimizer, a custom one included,
+#'   works in the scaled coordinates, so settings in parameter units in
+#'   \code{control} (nloptr's \code{xtol_abs}, optim's \code{parscale}) apply
+#'   to the scaled coordinates. Coefficients are reported in natural units
+#'   and the standard errors computed in them, with the information matrix
+#'   equilibrated before it is inverted, so reported quantities do not depend
+#'   on this choice beyond the optimizer's tolerance.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
 #'   weights (convenience workflow only). The column must be constant within each
@@ -103,7 +112,7 @@ run_mnlogit <- function(
     include_outside_option = FALSE,
     use_asc = TRUE,
     keep_data = TRUE,
-    scale_vars = c("none", "sd", "mad", "iqr"),
+    scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
     se_method = c("hessian", "bhhh", "sandwich", "cluster"),
     cluster_col = NULL,
     nloptr_opts = NULL
@@ -209,23 +218,23 @@ run_mnlogit <- function(
   if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
 
   # --- Variable scaling (optional) --------------------------------------------
-  # Scale columns of X by their sample SD (or robust SD-equivalent) to improve
-  # Hessian conditioning. Keep the natural-scale matrix for storage; theta_hat
-  # is back-transformed after optimization and the variance computed at it on
-  # the natural X.
+  # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
+  # (.coordinate_map()); estimates and variances are reported in natural
+  # units. "sd", "mad" and "iqr" scale the columns of X by their sample SD
+  # (or a robust SD-equivalent), keeping the natural-scale matrix for
+  # storage; "bhhh" takes the map from the BHHH diagonal at the start values.
   natural_X <- input_list$X
   sX <- rep(1, K_x); names(sX) <- colnames(input_list$X)
-  bt_mult <- rep(1, n_params)
-  bt_shift <- rep(0, n_params)
-  if (scale_vars != "none" && K_x > 0) {
+  col_scaled <- scale_vars %in% c("sd", "mad", "iqr")
+  if (col_scaled && K_x > 0) {
     sX <- .column_scales(input_list$X, scale_vars)
     .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
     input_list$X <- sweep(input_list$X, 2, sX, "/")
-    bt_mult[param_map$beta] <- 1 / sX
   }
 
-  # Build eval_f closure (captures data in environment)
-  eval_f <- function(theta) {
+  # The model's objective and gradient at theta (captures data in
+  # environment); `...` takes opg_diag
+  model_f <- function(theta, ...) {
     mnl_loglik_gradient_parallel(
       theta = theta,
       X = input_list$X,
@@ -234,8 +243,23 @@ run_mnlogit <- function(
       M = input_list$M,
       weights = input_list$weights,
       use_asc = use_asc,
-      include_outside_option = input_list$include_outside_option
+      include_outside_option = input_list$include_outside_option,
+      ...
     )
+  }
+
+  # --- The optimizer's coordinates --------------------------------------------
+  #   theta_natural = map$scale * theta_t + map$shift
+  # "bhhh": the BHHH diagonal at the start values, from one gradient pass.
+  opg0 <- if (scale_vars == "bhhh") model_f(theta_init, opg_diag = TRUE)$opg_diag
+  map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
+                         opg_diag = opg0)
+
+  # Build eval_f closure
+  eval_f <- function(theta) model_f(theta)
+  if (scale_vars == "bhhh") {
+    theta_init <- .to_coordinates(theta_init, map)
+    eval_f <- .coordinate_objective(eval_f, map)
   }
 
   # Run optimizer
@@ -251,6 +275,7 @@ run_mnlogit <- function(
   message("Optimization run time ", convertTime(elapsed))
 
   theta_hat <- opt$par
+  if (scale_vars == "bhhh") theta_hat <- .from_coordinates(theta_hat, map)
   names(theta_hat) <- param_names
 
   # Choice-based-sampling provenance and a guardrail for weighted inference.
@@ -263,8 +288,8 @@ run_mnlogit <- function(
   # The back-transform is purely multiplicative (1/sX on the beta block,
   # identity on ASCs). The variance below is computed at the natural
   # estimates, on the natural X.
-  if (scale_vars != "none") {
-    theta_hat <- .backtransform_estimates(theta_hat, bt_mult, bt_shift,
+  if (col_scaled) {
+    theta_hat <- .backtransform_estimates(theta_hat, map$scale, map$shift,
                                           param_names)
     input_list$X <- natural_X
   }
@@ -367,8 +392,8 @@ run_mnlogit <- function(
     sX = sX,
     se_method = se_method,
     choice_sampling = choice_sampling,
-    param_scale = stats::setNames(bt_mult, param_names),
-    param_shift = stats::setNames(bt_shift, param_names)
+    param_scale = stats::setNames(map$scale, param_names),
+    param_shift = stats::setNames(map$shift, param_names)
   )
 }
 

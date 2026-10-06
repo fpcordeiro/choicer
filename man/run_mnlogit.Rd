@@ -19,7 +19,7 @@ run_mnlogit(
   include_outside_option = FALSE,
   use_asc = TRUE,
   keep_data = TRUE,
-  scale_vars = c("none", "sd", "mad", "iqr"),
+  scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
   se_method = c("hessian", "bhhh", "sandwich", "cluster"),
   cluster_col = NULL,
   nloptr_opts = NULL
@@ -70,16 +70,25 @@ weighting; pair with \code{se_method = "sandwich"} for valid inference.}
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in the
 returned object for \code{predict()} and post-estimation functions.}
 
-\item{scale_vars}{Pre-estimation column scaling for the design matrix. One of
-\code{"none"} (default), \code{"sd"} (sample standard deviation),
-\code{"mad"} (\code{stats::mad}), or \code{"iqr"}
-(\code{stats::IQR(x) / 1.349}). When not \code{"none"}, every column of
-\code{X} is divided by the chosen scale before optimization to improve
-Hessian conditioning. Coefficients are back-transformed to the user's
-natural units and the standard errors computed in them, with the
-information matrix equilibrated before it is inverted, so reported
-quantities do not depend on this choice beyond the optimizer's
-tolerance.}
+\item{scale_vars}{How the optimizer's coordinates are scaled; the
+estimator is the same whatever the choice. One of \code{"none"}
+(default), \code{"sd"} (sample standard deviation), \code{"mad"}
+(\code{stats::mad}), \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or
+\code{"bhhh"}. With \code{"sd"}, \code{"mad"} or \code{"iqr"}, every
+column of \code{X} is divided by the chosen scale before optimization
+to improve Hessian conditioning. \code{"bhhh"} scales each parameter
+instead, by the inverse square root of the diagonal of the BHHH (outer
+product of gradients) matrix at the start values (all zeros), rounded
+to a power of two, from one extra gradient pass: it also reaches the
+constants, whose curvatures follow the alternatives' shares. Where the
+diagonal is unusable (no finite, positive entry), the parameters are
+left unscaled, with a message. The optimizer, a custom one included,
+works in the scaled coordinates, so settings in parameter units in
+\code{control} (nloptr's \code{xtol_abs}, optim's \code{parscale}) apply
+to the scaled coordinates. Coefficients are reported in natural units
+and the standard errors computed in them, with the information matrix
+equilibrated before it is inverted, so reported quantities do not depend
+on this choice beyond the optimizer's tolerance.}
 
 \item{se_method}{Method for computing standard errors: \code{"hessian"}
 (default, analytical Hessian), \code{"bhhh"} (outer product of gradients),
