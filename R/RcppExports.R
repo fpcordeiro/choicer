@@ -446,7 +446,12 @@ test_physical_memory <- function() {
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @returns List with loglikelihood and gradient evaluated at input arguments
+#' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
+#'   BHHH (outer product of gradients) matrix with the same weights,
+#'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
+#' @returns List with loglikelihood and gradient evaluated at input
+#'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
+#'   (not sanitized)
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -463,8 +468,8 @@ test_physical_memory <- function() {
 #' result$objective  # negative log-likelihood
 #' }
 #' @keywords internal
-mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mnl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
+mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, opg_diag = FALSE) {
+    .Call(`_choicer_mnl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option, opg_diag)
 }
 
 #' BHHH/OPG information matrix for multinomial logit model
@@ -841,9 +846,14 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
 #'   scaled space without a scaled copy of the design. \code{NULL}
 #'   (default): the matrices as they are.
+#' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
+#'   BHHH (outer product of gradients) matrix with the same weights,
+#'   \eqn{\sum_u w_u s_u \circ s_u}, accumulated in the same pass.
 #' @returns List with the negated log-likelihood (\code{objective}), its
 #'   \code{gradient}, and an \code{overflow} flag indicating that a
-#'   non-finite objective was replaced by the finite optimizer sentinel.
+#'   non-finite objective was replaced by the finite optimizer sentinel;
+#'   with \code{opg_diag}, also \code{opg_diag}, as computed (not
+#'   sanitized).
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 #'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
@@ -867,8 +877,8 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' result$objective
 #' }
 #' @keywords internal
-mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, sX = NULL, sW = NULL) {
-    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, sX, sW)
+mxl_loglik_gradient_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, sX = NULL, sW = NULL, opg_diag = FALSE) {
+    .Call(`_choicer_mxl_loglik_gradient_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, sX, sW, opg_diag)
 }
 
 #' Utility to compute analytical Jacobian of random coefficient matrix transformed by vech (dVech(Sigma) / dTheta)
@@ -1399,7 +1409,12 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #' @param weights N x 1 vector with weights for each observation.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-#' @returns List with loglikelihood and gradient evaluated at input arguments
+#' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
+#'   BHHH (outer product of gradients) matrix with the same weights,
+#'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
+#' @returns List with loglikelihood and gradient evaluated at input
+#'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
+#'   (not sanitized)
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1418,8 +1433,8 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #' result$objective
 #' }
 #' @keywords internal
-nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_nl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
+nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, opg_diag = FALSE) {
+    .Call(`_choicer_nl_loglik_gradient_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, opg_diag)
 }
 
 #' BHHH/OPG information matrix for the Nested Logit model

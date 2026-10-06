@@ -700,6 +700,65 @@ inline void scatter_delta_grad(arma::vec& g, const int delta_start,
 }
 
 // ----------------------------------------------------------------------------
+// The OPG (BHHH) diagonal of the MNL and NL gradient kernels (opg_diag): a
+// situation's terms w s^2, each rounded and stored by push(), then added by
+// flush(). The BHHH kernels' rank-one update `B += w * s * s.t()` (Armadillo)
+// rounds each term before adding it, where a term formed and added in one
+// step could become a fused multiply-add, rounded once. So, with finite
+// weights and one thread, the diagonal is diag() of mnl_bhhh_parallel() /
+// nl_bhhh_parallel() bit for bit under clang and under GCC at R's default
+// -O2; GCC at -O3 can fuse the BHHH update itself (syrk_vec, two or more
+// parameters), and the two then differ in the last bit. The capacity is one
+// situation's terms: flush() runs once per situation, before the next one
+// pushes.
+// ----------------------------------------------------------------------------
+struct OpgDiagTerms {
+  std::vector<arma::uword> g;  // each pushed term's entry of the diagonal
+  std::vector<double> t;       // and the term
+  std::size_t n = 0;           // terms pushed since the last flush()
+
+  explicit OpgDiagTerms(const std::size_t cap) : g(cap), t(cap) {}
+
+  void push(const arma::uword gi, const double s, const double w) {
+    const double acc1 = s * s;
+    g[n] = gi;
+    t[n] = w * acc1;
+    ++n;
+  }
+
+  void flush(arma::vec& d) {
+    for (std::size_t p = 0; p < n; ++p) d[g[p]] += t[p];
+    n = 0;
+  }
+};
+
+// The constants' terms of a situation's OPG diagonal. s_d holds the
+// situation's weight-free constant scores, scattered at scale 1.0 as the BHHH
+// kernels scatter them, and is zero elsewhere; each entry is pushed once (a
+// repeated alternative's later rows push w * 0 = +0) and reset to zero for
+// the next situation.
+template <typename IdxT>
+inline void opg_diag_push_delta(OpgDiagTerms& terms, arma::vec& s_d,
+                                const int delta_start, const IdxT& alt_idx0_i,
+                                const int m_i,
+                                const bool include_outside_option,
+                                const double w) {
+  for (int j = 0; j < m_i; ++j) {
+    const int id = static_cast<int>(alt_idx0_i[j]);
+    int g;
+    if (include_outside_option) {
+      g = delta_start + id;
+    } else if (id > 0) { // delta of first inside alt is normalised to 0
+      g = delta_start + (id - 1);
+    } else {
+      continue;
+    }
+    terms.push(g, s_d[g], w);
+    s_d[g] = 0.0;
+  }
+}
+
+// ----------------------------------------------------------------------------
 // Map local choice-set indices to global alternative indices for the
 // J_total x J_total output matrices (elasticities, diversion ratios), from
 // the 1-based codes of a situation's m rows, into a caller-owned buffer of at

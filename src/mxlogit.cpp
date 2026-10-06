@@ -832,6 +832,69 @@ inline void mxl_check_memory(const char* what, const int T,
              mxl_bytes_str(shared(1)), mxl_bytes_str(limit), source);
 }
 
+// The gradient kernel's pass over the likelihood units: the weighted sums of
+// their simulated log-likelihoods and scores and, with OpgDiag, the diagonal
+// of the BHHH matrix, sum_u w_u s_u o s_u. Each of its terms is formed as
+// mxl_bhhh_add() forms it (the product of the scores, times the weight,
+// stored, then added), so that it equals diag(mxl_bhhh_parallel()) bit for
+// bit at one thread. The dense score is zero outside the unit's block, where
+// the terms are w_u * 0: +0 for a finite weight, NaN otherwise, as
+// mxl_bhhh_add_dense() spreads a non-finite weight; hence the loop over every
+// entry. Without OpgDiag it is the kernel's loop as it was.
+template <bool OpgDiag>
+static void mxl_gradient_pass(const MxlUnitData& ud, const arma::vec& weights,
+                              const double log_S, double& global_loglik,
+                              arma::vec& global_grad, arma::vec& global_diag) {
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+  {
+    // Thread-local accumulators and unit scratch
+    double local_loglik = 0.0;
+    arma::vec local_grad = arma::zeros(n_params);
+    arma::vec local_diag;
+    if (OpgDiag) local_diag.zeros(n_params);
+    MxlUnitScratch sc;
+    arma::vec s_u; // score of unit u
+
+// Loop over likelihood units in parallel
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (mxl_off u = 0; u < lay.U; ++u) {
+      mxl_unit_load(ud, u, sc, 2);
+      const double lse = mxl_unit_simulate(ud, sc, true); // log sum_s exp(lambda_s)
+      mxl_unit_score(ud, sc, s_u);
+
+      // ell_u = lse - log(S); unit weight = weight of its first situation
+      const double w_u = weights[lay.unit_first(u)];
+      local_loglik += w_u * (lse - log_S);
+      local_grad += w_u * s_u;
+      if (OpgDiag) {
+        // The terms w_u s_uk^2 in the score's place, then added
+        for (arma::uword k = 0; k < s_u.n_elem; ++k) {
+          const double acc1 = s_u[k] * s_u[k];
+          s_u[k] = w_u * acc1;
+        }
+        local_diag += s_u;
+      }
+    } // end unit loop
+
+// Combine thread-local results
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_loglik += local_loglik;
+      global_grad += local_grad;
+      if (OpgDiag) global_diag += local_diag;
+    }
+  } // end parallel region
+}
+
 //' Log-likelihood and gradient for Mixed Logit
 //'
 //' Computes the log-likelihood and its gradient for the Mixed Logit model using
@@ -876,9 +939,14 @@ inline void mxl_check_memory(const char* what, const int T,
 //'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
 //'   scaled space without a scaled copy of the design. \code{NULL}
 //'   (default): the matrices as they are.
+//' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
+//'   BHHH (outer product of gradients) matrix with the same weights,
+//'   \eqn{\sum_u w_u s_u \circ s_u}, accumulated in the same pass.
 //' @returns List with the negated log-likelihood (\code{objective}), its
 //'   \code{gradient}, and an \code{overflow} flag indicating that a
-//'   non-finite objective was replaced by the finite optimizer sentinel.
+//'   non-finite objective was replaced by the finite optimizer sentinel;
+//'   with \code{opg_diag}, also \code{opg_diag}, as computed (not
+//'   sanitized).
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
 //'   where exp(mu_k) shifts the location and exp(L_k * eta) ~ LogNormal(0, sigma_k^2).
@@ -915,7 +983,8 @@ Rcpp::List mxl_loglik_gradient_parallel(
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
     const int draw_batch = 0,
     const Rcpp::Nullable<Rcpp::NumericVector> sX = R_NilValue,
-    const Rcpp::Nullable<Rcpp::NumericVector> sW = R_NilValue) {
+    const Rcpp::Nullable<Rcpp::NumericVector> sW = R_NilValue,
+    const bool opg_diag = false) {
   // Inputs, layout, parameters at theta and column scales, validated on the
   // primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
@@ -926,48 +995,24 @@ Rcpp::List mxl_loglik_gradient_parallel(
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
   const double log_S = std::log(static_cast<double>(ud.S));
+  // With the diagonal: a per-thread one, the shared one and its returned copy
+  const double diag_bytes = opg_diag ? 8.0 * n_params : 0.0;
   mxl_check_memory("gradient", mxl_team_threads(lay.U),
-                   ud.scratch_bytes() + 16.0 * n_params,
-                   [&](const int) { return 16.0 * n_params; });
+                   ud.scratch_bytes() + 16.0 * n_params + diag_bytes,
+                   [&](const int) { return 16.0 * n_params + 2.0 * diag_bytes; });
 
   // Prepare global accumulators
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
-
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-  {
-    // Thread-local accumulators and unit scratch
-    double local_loglik = 0.0;
-    arma::vec local_grad = arma::zeros(n_params);
-    MxlUnitScratch sc;
-    arma::vec s_u; // score of unit u
-
-// Loop over likelihood units in parallel
-#ifdef _OPENMP
-#pragma omp for schedule(dynamic)
-#endif
-    for (mxl_off u = 0; u < lay.U; ++u) {
-      mxl_unit_load(ud, u, sc, 2);
-      const double lse = mxl_unit_simulate(ud, sc, true); // log sum_s exp(lambda_s)
-      mxl_unit_score(ud, sc, s_u);
-
-      // ell_u = lse - log(S); unit weight = weight of its first situation
-      const double w_u = weights[lay.unit_first(u)];
-      local_loglik += w_u * (lse - log_S);
-      local_grad += w_u * s_u;
-    } // end unit loop
-
-// Combine thread-local results
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_loglik += local_loglik;
-      global_grad += local_grad;
-    }
-  } // end parallel region
+  arma::vec global_diag;
+  if (opg_diag) {
+    global_diag.zeros(n_params);
+    mxl_gradient_pass<true>(ud, weights, log_S, global_loglik, global_grad,
+                            global_diag);
+  } else {
+    mxl_gradient_pass<false>(ud, weights, log_S, global_loglik, global_grad,
+                             global_diag);
+  }
 
   // Sanitize NaN/Inf so the optimizer's line-search can backtrack instead
   // of stalling at an undefined objective. The minimizer expects a finite
@@ -977,7 +1022,8 @@ Rcpp::List mxl_loglik_gradient_parallel(
   // the sentinel marks utilities that overflowed (e.g. an exploding
   // Cholesky diagonal during a line search), not a poor fit. Finite
   // objectives are then unbounded, so run_mxlogit() lifts the sentinel above
-  // every objective seen along the optimizer's path.
+  // every objective seen along the optimizer's path. The diagonal is
+  // returned as computed.
   double obj = -global_loglik;
   arma::vec grad = -global_grad;
   const bool overflow = !std::isfinite(obj);
@@ -986,6 +1032,12 @@ Rcpp::List mxl_loglik_gradient_parallel(
     grad.zeros();
   } else {
     grad.elem(arma::find_nonfinite(grad)).zeros();
+  }
+  if (opg_diag) {
+    return Rcpp::List::create(Rcpp::Named("objective") = obj,
+                              Rcpp::Named("gradient") = grad,
+                              Rcpp::Named("overflow") = overflow,
+                              Rcpp::Named("opg_diag") = global_diag);
   }
   return Rcpp::List::create(Rcpp::Named("objective") = obj,
                             Rcpp::Named("gradient") = grad,

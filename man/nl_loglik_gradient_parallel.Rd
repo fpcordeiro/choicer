@@ -13,7 +13,8 @@ nl_loglik_gradient_parallel(
   M,
   weights,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  opg_diag = FALSE
 )
 }
 \arguments{
@@ -36,9 +37,15 @@ Order: \verb{[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]}}
 \item{use_asc}{whether to use alternative-specific constants.}
 
 \item{include_outside_option}{whether to include outside option normalized to V=0, lambda=1.}
+
+\item{opg_diag}{Logical; \code{TRUE} also returns the diagonal of the
+BHHH (outer product of gradients) matrix with the same weights,
+\eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.}
 }
 \value{
-List with loglikelihood and gradient evaluated at input arguments
+List with loglikelihood and gradient evaluated at input
+arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
+(not sanitized)
 }
 \description{
 Computes the log-likelihood and its gradient for the Nested Logit model using OpenMP for parallelization.

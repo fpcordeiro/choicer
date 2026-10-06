@@ -2,69 +2,22 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 
-//' Log-likelihood and gradient for multinomial logit model
-//'
-//' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
-//' Allows for inclusion of alternative-specific constants, outside option, and observation weights.
-//'
-//' @param theta K + J - 1 or K + J vector with model parameters
-//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
-//' @param M N x 1 vector with number of alternatives for each individual
-//' @param weights N x 1 vector with weights for each observation
-//' @param use_asc whether to use alternative-specific constants
-//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @returns List with loglikelihood and gradient evaluated at input arguments
-//' @examples
-//' \donttest{
-//' library(data.table)
-//' set.seed(42)
-//' N <- 50; J <- 3
-//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-//' dt[, choice := 0L]
-//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-//' d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
-//' theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
-//' result <- choicer:::mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
-//'   d$choice_idx, d$M, d$weights)
-//' result$objective  # negative log-likelihood
-//' }
-//' @keywords internal
-// [[Rcpp::export]]
-Rcpp::List mnl_loglik_gradient_parallel(
-    const arma::vec& theta,
-    const arma::mat& X,
-    const Rcpp::IntegerVector& alt_idx,
-    const Rcpp::IntegerVector& choice_idx,
-    const Rcpp::IntegerVector& M,
-    const arma::vec& weights,
-    const bool use_asc = true,
-    const bool include_outside_option = false
-) {
-  // Extract beta and delta from theta
-  const int K = X.n_cols;
-  const int n_params = theta.n_elem;
-
-  const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
-  // Layout of the stacked design: 64-bit row offsets, and the alternative
-  // codes and choices read in place
-  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc,
-                                               par.delta, &weights, &choice_idx);
+// The MNL gradient kernel's pass over the choice situations: the weighted
+// sums of their log-probabilities and scores and, with OpgDiag, the diagonal
+// of the BHHH matrix, sum_i w_i s_i o s_i, its terms formed as
+// mnl_bhhh_parallel() forms them (the beta block from the unweighted product
+// X_i' diff, the constants scattered at scale 1.0 and squared once each) and
+// rounded before they are added (OpgDiagTerms). Without OpgDiag it is the
+// kernel's loop as it was.
+template <bool OpgDiag>
+static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
+                              const arma::vec& base_util,
+                              const arma::vec& weights, const int K,
+                              const int n_params, const bool use_asc,
+                              const bool include_outside_option,
+                              double& global_loglik, arma::vec& global_grad,
+                              arma::vec& global_diag, bool& nonfinite_seen) {
   const choicer_off N = lay.N;
-
-  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
-  // Rcpp::stop() is only safe outside parallel regions.
-  validate_choices(lay, include_outside_option, nullptr);
-
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
-
-  // Prepare global accumulators
-  double global_loglik = 0.0;
-  arma::vec global_grad = arma::zeros(n_params);
-  bool nonfinite_seen = false; // H1: flag set inside parallel, warning emitted after
 
 #ifdef _OPENMP
 #pragma omp parallel
@@ -75,6 +28,14 @@ Rcpp::List mnl_loglik_gradient_parallel(
     arma::vec local_grad = arma::zeros(n_params);
     arma::vec diff_vec; // pre-allocated per-thread, resized per individual
     bool local_nonfinite = false;
+    // The diagonal, the constants' scores (zero between situations), the
+    // beta block's scores and a situation's terms
+    arma::vec local_diag, s_d, s_b;
+    OpgDiagTerms terms(OpgDiag ? K + lay.max_m : 0);
+    if (OpgDiag) {
+      local_diag.zeros(n_params);
+      if (use_asc) s_d.zeros(n_params);
+    }
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -140,6 +101,30 @@ Rcpp::List mnl_loglik_gradient_parallel(
                              m_i, include_outside_option, w_i);
         }
       }
+
+      // ---- OPG diagonal (opg_diag): the weight-free score's squares ----
+      if (OpgDiag) {
+        if (include_outside_option) {
+          const auto diff_inside = diff_vec.subvec(1, m_i);
+          s_b = X_i.t() * diff_inside;
+          if (use_asc) {
+            scatter_delta_grad(s_d, K, diff_inside, alt_idx0_i, m_i,
+                               include_outside_option, 1.0);
+          }
+        } else {
+          s_b = X_i.t() * diff_vec;
+          if (use_asc) {
+            scatter_delta_grad(s_d, K, diff_vec, alt_idx0_i, m_i,
+                               include_outside_option, 1.0);
+          }
+        }
+        for (int k = 0; k < K; ++k) terms.push(k, s_b[k], w_i);
+        if (use_asc) {
+          opg_diag_push_delta(terms, s_d, K, alt_idx0_i, m_i,
+                              include_outside_option, w_i);
+        }
+        terms.flush(local_diag);
+      }
     } // end of i loop
 
     // Combine partial accumulators into global accumulators
@@ -149,16 +134,99 @@ Rcpp::List mnl_loglik_gradient_parallel(
     {
       global_loglik += local_loglik;
       global_grad += local_grad;
+      if (OpgDiag) global_diag += local_diag;
       if (local_nonfinite) nonfinite_seen = true;
     }
   } // end parallel region
+}
+
+//' Log-likelihood and gradient for multinomial logit model
+//'
+//' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
+//' Allows for inclusion of alternative-specific constants, outside option, and observation weights.
+//'
+//' @param theta K + J - 1 or K + J vector with model parameters
+//' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
+//' @param choice_idx N x 1 vector with indices of chosen alternatives; 1-based indexing relative to X; 0 is used if include_outside_option=True
+//' @param M N x 1 vector with number of alternatives for each individual
+//' @param weights N x 1 vector with weights for each observation
+//' @param use_asc whether to use alternative-specific constants
+//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
+//'   BHHH (outer product of gradients) matrix with the same weights,
+//'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
+//' @returns List with loglikelihood and gradient evaluated at input
+//'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
+//'   (not sanitized)
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 3
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' d <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
+//' theta <- rep(0, ncol(d$X) + nrow(d$alt_mapping) - 1)
+//' result <- choicer:::mnl_loglik_gradient_parallel(theta, d$X, d$alt_idx,
+//'   d$choice_idx, d$M, d$weights)
+//' result$objective  # negative log-likelihood
+//' }
+//' @keywords internal
+// [[Rcpp::export]]
+Rcpp::List mnl_loglik_gradient_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false,
+    const bool opg_diag = false
+) {
+  // Extract beta and delta from theta
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+
+  const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  // Layout of the stacked design: 64-bit row offsets, and the alternative
+  // codes and choices read in place
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc,
+                                               par.delta, &weights, &choice_idx);
+
+  // --- H2: Serial pre-loop validation of chosen-alternative indices ---
+  // Rcpp::stop() is only safe outside parallel regions.
+  validate_choices(lay, include_outside_option, nullptr);
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+
+  // Prepare global accumulators
+  double global_loglik = 0.0;
+  arma::vec global_grad = arma::zeros(n_params);
+  arma::vec global_diag;
+  bool nonfinite_seen = false; // H1: flag set inside parallel, warning emitted after
+  if (opg_diag) {
+    global_diag.zeros(n_params);
+    mnl_gradient_pass<true>(X, lay, base_util, weights, K, n_params, use_asc,
+                            include_outside_option, global_loglik, global_grad,
+                            global_diag, nonfinite_seen);
+  } else {
+    mnl_gradient_pass<false>(X, lay, base_util, weights, K, n_params, use_asc,
+                             include_outside_option, global_loglik, global_grad,
+                             global_diag, nonfinite_seen);
+  }
 
   // H1: emit warning once, outside the parallel region (R-API safe here)
   if (nonfinite_seen) {
     Rcpp::warning("Non-finite log-probability encountered; clamped to -1e10. Check for extreme utility values.");
   }
 
-  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel)
+  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel); the
+  // diagonal is returned as computed
   double obj = -global_loglik;
   arma::vec grad = -global_grad;
   if (!std::isfinite(obj)) {
@@ -166,6 +234,13 @@ Rcpp::List mnl_loglik_gradient_parallel(
     grad.zeros();
   } else {
     grad.elem(arma::find_nonfinite(grad)).zeros();
+  }
+  if (opg_diag) {
+    return Rcpp::List::create(
+      Rcpp::Named("objective") = obj,
+      Rcpp::Named("gradient")  = grad,
+      Rcpp::Named("opg_diag")  = global_diag
+    );
   }
   return Rcpp::List::create(
     Rcpp::Named("objective") = obj,

@@ -467,7 +467,7 @@ mxlp_weighted <- c("gradient", "hessian", "bhhh", "meat")
 mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
                       Ti = fx[["Ti"]], eta = fx$eta, generate = FALSE,
                       draw_batch = NULL, cluster = NULL, acc_bytes = NULL,
-                      sX = NULL, sW = NULL) {
+                      sX = NULL, sW = NULL, opg_diag = NULL) {
   args <- list(theta = theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
                choice_idx = fx$choice_idx, M = fx$M)
   if (kernel %in% mxlp_weighted) args$weights <- weights
@@ -492,6 +492,7 @@ mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
   if (!is.null(acc_bytes)) args$acc_bytes <- acc_bytes
   if (!is.null(sX)) args$sX <- sX
   if (!is.null(sW)) args$sW <- sW
+  if (!is.null(opg_diag)) args$opg_diag <- opg_diag
   fn <- switch(kernel,
     gradient = mxl_loglik_gradient_parallel,
     hessian  = mxl_hessian_parallel,
