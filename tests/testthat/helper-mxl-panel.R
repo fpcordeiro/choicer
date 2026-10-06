@@ -462,12 +462,12 @@ mxlp_weighted <- c("gradient", "hessian", "bhhh", "meat")
 # The cluster meat ("meat") gets one cluster per likelihood unit unless
 # `cluster` is given, so it equals the BHHH kernel with squared weights.
 # `acc_bytes` bounds the Hessian's, BHHH's and meat's per-thread accumulators
-# (0 makes the threads share the result). `sX`/`sW` pass column scales to the
-# kernels a fit calls (gradient, Hessian, BHHH, meat), as scale_vars does.
+# (0 makes the threads share the result). `opg_diag = TRUE` makes the
+# gradient kernel also return the BHHH diagonal.
 mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
                       Ti = fx[["Ti"]], eta = fx$eta, generate = FALSE,
                       draw_batch = NULL, cluster = NULL, acc_bytes = NULL,
-                      sX = NULL, sW = NULL, opg_diag = NULL) {
+                      opg_diag = NULL) {
   args <- list(theta = theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
                choice_idx = fx$choice_idx, M = fx$M)
   if (kernel %in% mxlp_weighted) args$weights <- weights
@@ -490,8 +490,6 @@ mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
   if (!is.null(Ti)) args$Ti <- as.integer(Ti)
   if (!is.null(draw_batch)) args$draw_batch <- as.integer(draw_batch)
   if (!is.null(acc_bytes)) args$acc_bytes <- acc_bytes
-  if (!is.null(sX)) args$sX <- sX
-  if (!is.null(sW)) args$sW <- sW
   if (!is.null(opg_diag)) args$opg_diag <- opg_diag
   fn <- switch(kernel,
     gradient = mxl_loglik_gradient_parallel,

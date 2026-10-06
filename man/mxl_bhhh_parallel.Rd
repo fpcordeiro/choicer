@@ -23,9 +23,7 @@ mxl_bhhh_parallel(
   gen_S = 0L,
   Ti = NULL,
   draw_batch = 0L,
-  acc_bytes = 2147483648,
-  sX = NULL,
-  sW = NULL
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -85,14 +83,6 @@ continuous parameters' rows through smaller private buffers, the ASC
 block atomically). One thread adds into the result whatever the value.
 The two ways differ by rounding only; \code{0} forces the shared result
 (for tests).}
-
-\item{sX, sW}{Optional column scales of \code{X} and \code{W}
-(\code{run_mxlogit(scale_vars = )}): one finite, positive value per
-column. Each decision maker's rows are divided by them as they are
-read, giving the values \code{sweep(X, 2, sX, "/")} and
-\code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
-scaled space without a scaled copy of the design. \code{NULL}
-(default): the matrices as they are.}
 }
 \value{
 n_params x n_params PSD matrix representing the observed information

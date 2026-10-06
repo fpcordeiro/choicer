@@ -67,7 +67,7 @@ opg_dup_row <- function(fx, t) {
   fx
 }
 
-test_that("the mixed logit's OPG diagonal holds without constants, with a repeated row and with column scales", {
+test_that("the mixed logit's OPG diagonal holds without constants and with a repeated row", {
   mxlp_threads(1L)
   on.exit(mxlp_threads(2L), add = TRUE)
   fx <- mxlp_fixture("opg_noasc", 921L, rc_correlation = TRUE,
@@ -82,11 +82,6 @@ test_that("the mixed logit's OPG diagonal holds without constants, with a repeat
     expect_identical(g1$g, mxlp_call("gradient", f), label = f$name)
     expect_lt(opg_dev(g1$d, mxlp_call("bhhh", f)), 1e-13, label = f$name)
   }
-  sX <- c(2, 0.5)
-  sW <- c(3, 0.25)
-  g1 <- opg_split(mxlp_call("gradient", fd, sX = sX, sW = sW, opg_diag = TRUE))
-  expect_identical(g1$g, mxlp_call("gradient", fd, sX = sX, sW = sW))
-  expect_lt(opg_dev(g1$d, mxlp_call("bhhh", fd, sX = sX, sW = sW)), 1e-13)
 })
 
 test_that("the mixed logit's OPG diagonal is returned as computed", {

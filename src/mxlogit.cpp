@@ -204,41 +204,12 @@ inline int mxl_batch_count(const mxl_off R, const int S, const int n_mats,
   return (S + b - 1) / b;
 }
 
-// A value for a message, with R's spelling of NA, NaN and the infinities.
-inline std::string mxl_value_str(const double x) {
-  if (R_IsNA(x)) return "NA";
-  if (std::isnan(x)) return "NaN";
-  if (std::isinf(x)) return x > 0 ? "Inf" : "-Inf";
-  return tfm::format("%g", x);
-}
-
-// Column scales of run_mxlogit(scale_vars =) for a matrix of n_cols columns:
-// NULL (no scaling), or one finite, positive scale per column. Copied, so
-// that MxlUnitData holds no SEXP; empty means no scaling.
-inline arma::vec mxl_column_scales(const Rcpp::Nullable<Rcpp::NumericVector>& s,
-                                   const arma::uword n_cols, const char* arg,
-                                   const char* mat) {
-  if (s.isNull()) return arma::vec();
-  const Rcpp::NumericVector v(s.get());
-  if (static_cast<arma::uword>(v.size()) != n_cols) {
-    Rcpp::stop("%s must hold one scale per column of %s (%d); got %d.", arg,
-               mat, static_cast<int>(n_cols), static_cast<int>(v.size()));
-  }
-  for (R_xlen_t k = 0; k < v.size(); ++k) {
-    if (!(std::isfinite(v[k]) && v[k] > 0)) {
-      Rcpp::stop("%s must be finite and positive; %s[%d] is %s.", arg, arg,
-                 static_cast<int>(k + 1), mxl_value_str(v[k]));
-    }
-  }
-  return arma::vec(v.begin(), v.size());
-}
-
 // Everything the per-unit routines read, shared by all threads: the stacked
-// design and its layout, the parameters at theta, the draw source, the column
-// scales and the model flags. Construct it once per kernel call, on the
-// primary thread: it owns what it derives (the layout, the parsed parameters,
-// the Halton generator and copies of the scales) and validates the inputs,
-// each check O(1) or one pass over the rows or the situations. Holds no SEXP.
+// design and its layout, the parameters at theta, the draw source and the
+// model flags. Construct it once per kernel call, on the primary thread: it
+// owns what it derives (the layout, the parsed parameters and the Halton
+// generator) and validates the inputs, each check O(1) or one pass over the
+// rows or the situations. Holds no SEXP.
 struct MxlUnitData {
   const arma::mat& X;
   const arma::mat& W;              // row-aligned with X, or J x K_w
@@ -252,10 +223,6 @@ struct MxlUnitData {
   const int draw_batch;            // > 0: draws per batch (tests); 0: automatic
   const bool use_generate, rc_correlation, rc_mean, use_asc,
       include_outside_option, alt_level_W;
-  // Column scales of scale_vars (empty: none): mxl_unit_load() divides the
-  // unit's rows of X and W by them, so theta is in the scaled space and no
-  // scaled copy of the design exists.
-  arma::vec sX, sW;
 
   MxlUnitData(const arma::vec& theta, const arma::mat& X_, const arma::mat& W_,
               const Rcpp::IntegerVector& alt_idx,
@@ -266,9 +233,7 @@ struct MxlUnitData {
               const bool use_asc_, const bool include_outside_option_,
               const int gen_seed, const int gen_scramble, const int gen_S,
               const Rcpp::Nullable<Rcpp::IntegerVector>& Ti,
-              const int draw_batch_, const char* kernel,
-              const Rcpp::Nullable<Rcpp::NumericVector>& sX_ = R_NilValue,
-              const Rcpp::Nullable<Rcpp::NumericVector>& sW_ = R_NilValue)
+              const int draw_batch_, const char* kernel)
       : X(X_), W(W_), eta_draws(eta_draws_), rc_dist(rc_dist_),
         // Parse theta into parameter blocks (shared helper; validates theta
         // and the length of rc_dist)
@@ -358,9 +323,6 @@ struct MxlUnitData {
       // Constructed here, outside the parallel region; read-only after.
       gen = HaltonGen(static_cast<uint64_t>(gen_seed), S, K_w, gen_scramble);
     }
-    // The scales last, so that every earlier check keeps its precedence.
-    sX = mxl_column_scales(sX_, X.n_cols, "sX", "X");
-    sW = mxl_column_scales(sW_, W.n_cols, "sW", "W");
   }
   MxlUnitData(const MxlUnitData&) = delete;
   MxlUnitData& operator=(const MxlUnitData&) = delete;
@@ -422,33 +384,14 @@ inline const arma::mat mxl_eta_view(const MxlUnitData& ud,
                    true);
 }
 
-// Rows [r0, r0 + R) of A into out, column k divided by s[k]: one IEEE
-// division per value, which is what sweep(A, 2, s, "/") does to the whole
-// matrix, so the values are bit-identical to the scaled copy that
-// run_mxlogit() used to hold. Multiplying by 1 / s[k] would round
-// differently. A column whose scale is 1 is divided too, as sweep() did:
-// that quiets a signaling NaN such as R's NA, which a copy would not.
-inline void mxl_rows_scaled(arma::mat& out, const arma::mat& A,
-                            const mxl_off r0, const mxl_off R,
-                            const arma::vec& s) {
-  out.set_size(R, A.n_cols);
-  for (arma::uword k = 0; k < A.n_cols; ++k) {
-    const double* a = A.colptr(k) + r0;
-    double* o = out.colptr(k);
-    const double s_k = s[k];
-    for (mxl_off i = 0; i < R; ++i) o[i] = a[i] / s_k;
-  }
-}
-
 // Load unit u into the thread's buffers: its rows of X and W (for an
-// alternative-level W, the rows of its alternatives), divided by the column
-// scales when there are any (scale_vars), the base utilities X_u beta + W_u
-// mu_final + delta of those rows (per unit, inside the parallel region:
-// nothing of the stacked length is formed per evaluation), the draws eta_u
-// (cube slice u in place, or on-the-fly Halton block u + 1), Gamma_u = L eta_u
-// with the derivatives of its transform (Dgamma1 unless only the draws
-// themselves are needed), and the unit's draw batch size for a kernel that
-// keeps n_mats R x B matrices.
+// alternative-level W, the rows of its alternatives), the base utilities
+// X_u beta + W_u mu_final + delta of those rows (per unit, inside the
+// parallel region: nothing of the stacked length is formed per evaluation),
+// the draws eta_u (cube slice u in place, or on-the-fly Halton block u + 1),
+// Gamma_u = L eta_u with the derivatives of its transform (Dgamma1 unless
+// only the draws themselves are needed), and the unit's draw batch size for
+// a kernel that keeps n_mats R x B matrices.
 inline void mxl_unit_load(const MxlUnitData& ud, const mxl_off u,
                           MxlUnitScratch& sc, const int n_mats,
                           const bool with_Dgamma1 = true,
@@ -461,31 +404,14 @@ inline void mxl_unit_load(const MxlUnitData& ud, const mxl_off u,
   const arma::uword r0 = static_cast<arma::uword>(sc.r0);
   const arma::uword r1 = static_cast<arma::uword>(sc.r0 + sc.R - 1);
   const int K_w = ud.W.n_cols;
-  if (ud.sX.is_empty()) {
-    sc.X_u = ud.X.rows(r0, r1);
-  } else {
-    mxl_rows_scaled(sc.X_u, ud.X, sc.r0, sc.R, ud.sX);
-  }
+  sc.X_u = ud.X.rows(r0, r1);
   if (!ud.alt_level_W) {
-    if (ud.sW.is_empty()) {
-      sc.W_u = ud.W.rows(r0, r1);
-    } else {
-      mxl_rows_scaled(sc.W_u, ud.W, sc.r0, sc.R, ud.sW);
-    }
+    sc.W_u = ud.W.rows(r0, r1);
   } else {
     sc.W_u.set_size(sc.R, K_w);
-    if (ud.sW.is_empty()) {
-      for (int k = 0; k < K_w; ++k) {
-        for (mxl_off i = 0; i < sc.R; ++i) {
-          sc.W_u(i, k) = ud.W(lay.alt0(sc.r0 + i), k);
-        }
-      }
-    } else {
-      for (int k = 0; k < K_w; ++k) {
-        const double s_k = ud.sW[k];
-        for (mxl_off i = 0; i < sc.R; ++i) {
-          sc.W_u(i, k) = ud.W(lay.alt0(sc.r0 + i), k) / s_k;
-        }
+    for (int k = 0; k < K_w; ++k) {
+      for (mxl_off i = 0; i < sc.R; ++i) {
+        sc.W_u(i, k) = ud.W(lay.alt0(sc.r0 + i), k);
       }
     }
   }
@@ -932,13 +858,6 @@ static void mxl_gradient_pass(const MxlUnitData& ud, const arma::vec& weights,
 //' @param draw_batch Integer; \code{0} (default) forms each decision maker's
 //'   draws in batches sized to a per-thread memory budget, a positive value
 //'   caps the number of draws per batch (for tests).
-//' @param sX,sW Optional column scales of \code{X} and \code{W}
-//'   (\code{run_mxlogit(scale_vars = )}): one finite, positive value per
-//'   column. Each decision maker's rows are divided by them as they are
-//'   read, giving the values \code{sweep(X, 2, sX, "/")} and
-//'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
-//'   scaled space without a scaled copy of the design. \code{NULL}
-//'   (default): the matrices as they are.
 //' @param opg_diag Logical; \code{TRUE} also returns the diagonal of the
 //'   BHHH (outer product of gradients) matrix with the same weights,
 //'   \eqn{\sum_u w_u s_u \circ s_u}, accumulated in the same pass.
@@ -981,17 +900,13 @@ Rcpp::List mxl_loglik_gradient_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0,
-    const Rcpp::Nullable<Rcpp::NumericVector> sX = R_NilValue,
-    const Rcpp::Nullable<Rcpp::NumericVector> sW = R_NilValue,
-    const bool opg_diag = false) {
-  // Inputs, layout, parameters at theta and column scales, validated on the
-  // primary thread
+    const int draw_batch = 0, const bool opg_diag = false) {
+  // Inputs, layout and parameters at theta, validated on the primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        &weights, eta_draws, rc_dist,
                        rc_correlation, rc_mean, use_asc, include_outside_option,
                        gen_seed, gen_scramble, gen_S, Ti, draw_batch,
-                       "mxl_loglik_gradient_parallel", sX, sW);
+                       "mxl_loglik_gradient_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
   const double log_S = std::log(static_cast<double>(ud.S));
@@ -1708,13 +1623,6 @@ inline void mxl_hessian_add(const MxlSymAcc& acc, double* buf,
 //'   block atomically). One thread adds into the result whatever the value.
 //'   The two ways differ by rounding only; \code{0} forces the shared result
 //'   (for tests).
-//' @param sX,sW Optional column scales of \code{X} and \code{W}
-//'   (\code{run_mxlogit(scale_vars = )}): one finite, positive value per
-//'   column. Each decision maker's rows are divided by them as they are
-//'   read, giving the values \code{sweep(X, 2, sX, "/")} and
-//'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
-//'   scaled space without a scaled copy of the design. \code{NULL}
-//'   (default): the matrices as they are.
 //' @returns Hessian evaluated at input arguments
 //' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 //'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -1749,16 +1657,13 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0, const double acc_bytes = 2147483648.0,
-    const Rcpp::Nullable<Rcpp::NumericVector> sX = R_NilValue,
-    const Rcpp::Nullable<Rcpp::NumericVector> sW = R_NilValue) {
-  // Inputs, layout, parameters at theta and column scales, validated on the
-  // primary thread
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
+  // Inputs, layout and parameters at theta, validated on the primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        &weights, eta_draws, rc_dist,
                        rc_correlation, rc_mean, use_asc, include_outside_option,
                        gen_seed, gen_scramble, gen_S, Ti, draw_batch,
-                       "mxl_hessian_parallel", sX, sW);
+                       "mxl_hessian_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
   const int K_w = W.n_cols;
@@ -2270,13 +2175,6 @@ inline void mxl_bhhh_add_dense(const MxlSymAcc& acc, double* buf,
 //'   block atomically). One thread adds into the result whatever the value.
 //'   The two ways differ by rounding only; \code{0} forces the shared result
 //'   (for tests).
-//' @param sX,sW Optional column scales of \code{X} and \code{W}
-//'   (\code{run_mxlogit(scale_vars = )}): one finite, positive value per
-//'   column. Each decision maker's rows are divided by them as they are
-//'   read, giving the values \code{sweep(X, 2, sX, "/")} and
-//'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
-//'   scaled space without a scaled copy of the design. \code{NULL}
-//'   (default): the matrices as they are.
 //' @returns n_params x n_params PSD matrix representing the observed information
 //'   matrix estimated by the outer product of gradients (same sign convention
 //'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can
@@ -2314,16 +2212,13 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0, const double acc_bytes = 2147483648.0,
-    const Rcpp::Nullable<Rcpp::NumericVector> sX = R_NilValue,
-    const Rcpp::Nullable<Rcpp::NumericVector> sW = R_NilValue) {
-  // Inputs, layout, parameters at theta and column scales, validated on the
-  // primary thread
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
+  // Inputs, layout and parameters at theta, validated on the primary thread
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        &weights, eta_draws, rc_dist,
                        rc_correlation, rc_mean, use_asc, include_outside_option,
                        gen_seed, gen_scramble, gen_S, Ti, draw_batch,
-                       "mxl_bhhh_parallel", sX, sW);
+                       "mxl_bhhh_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
   const int K_c = ud.par.idx_delta_start;
@@ -2495,8 +2390,7 @@ arma::mat mxl_scores_parallel(
 // over every parameter, as crossprod() spread its NaN or Inf (0 * NaN,
 // 0 * Inf). Weights are applied here, not on the R side. acc_bytes chooses
 // between the threads' private triangles and a shared result, as for
-// mxl_bhhh_parallel(), and sX and sW scale the columns of X and W as for
-// mxl_loglik_gradient_parallel().
+// mxl_bhhh_parallel().
 // [[Rcpp::export]]
 Rcpp::NumericMatrix mxl_cluster_meat_parallel(
     const arma::vec &theta, const arma::mat &X, const arma::mat &W,
@@ -2509,16 +2403,14 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
     const bool use_asc = true, const bool include_outside_option = false,
     const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
     const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
-    const int draw_batch = 0, const double acc_bytes = 2147483648.0,
-    const Rcpp::Nullable<Rcpp::NumericVector> sX = R_NilValue,
-    const Rcpp::Nullable<Rcpp::NumericVector> sW = R_NilValue) {
-  // Inputs, layout, parameters at theta and column scales, validated on the
-  // primary thread as in the other weighted kernels; then the cluster codes.
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  // as in the other weighted kernels; then the cluster codes.
   const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
                        &weights, eta_draws, rc_dist,
                        rc_correlation, rc_mean, use_asc, include_outside_option,
                        gen_seed, gen_scramble, gen_S, Ti, draw_batch,
-                       "mxl_cluster_meat_parallel", sX, sW);
+                       "mxl_cluster_meat_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
   const int K_c = ud.par.idx_delta_start;
