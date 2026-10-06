@@ -34,9 +34,11 @@
 #'   \code{"mad"} (\code{stats::mad}), or \code{"iqr"}
 #'   (\code{stats::IQR(x) / 1.349}). When not \code{"none"}, every column of
 #'   \code{X} is divided by the chosen scale before optimization to improve
-#'   Hessian conditioning. Coefficients and standard errors are back-transformed
-#'   to the user's natural units via the delta method, so reported quantities
-#'   are invariant to this choice.
+#'   Hessian conditioning. Coefficients are back-transformed to the user's
+#'   natural units and the standard errors computed in them, with the
+#'   information matrix equilibrated before it is inverted, so reported
+#'   quantities do not depend on this choice beyond the optimizer's
+#'   tolerance.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
 #'   weights (convenience workflow only). The column must be constant within each
@@ -209,8 +211,8 @@ run_mnlogit <- function(
   # --- Variable scaling (optional) --------------------------------------------
   # Scale columns of X by their sample SD (or robust SD-equivalent) to improve
   # Hessian conditioning. Keep the natural-scale matrix for storage; theta_hat
-  # and vcov are back-transformed after optimization. The back-transform is
-  # purely multiplicative (1/sX on the beta block, identity on ASCs).
+  # is back-transformed after optimization and the variance computed at it on
+  # the natural X.
   natural_X <- input_list$X
   sX <- rep(1, K_x); names(sX) <- colnames(input_list$X)
   bt_mult <- rep(1, n_params)
@@ -257,12 +259,23 @@ run_mnlogit <- function(
     cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mnl_data"
   )
 
+  # --- Back-transform to natural scale ----------------------------------------
+  # The back-transform is purely multiplicative (1/sX on the beta block,
+  # identity on ASCs). The variance below is computed at the natural
+  # estimates, on the natural X.
+  if (scale_vars != "none") {
+    theta_hat <- .backtransform_estimates(theta_hat, bt_mult, bt_shift,
+                                          param_names)
+    input_list$X <- natural_X
+  }
+  # A scaled fit's matrices are inverted equilibrated, as post hoc.
+  eq <- scale_vars != "none"
+
   # Compute vcov eagerly using the selected SE method. For "sandwich"
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
   # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
   # weight-free BHHH routine). For "cluster", the meat is the outer product of
-  # within-cluster sums of weighted scores. Computed in scaled space;
-  # back-transform applies.
+  # within-cluster sums of weighted scores.
   if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- mnl_loglik_hessian_parallel(
       theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
@@ -286,7 +299,7 @@ run_mnlogit <- function(
       )
       .score_meat(S_scores, input_list$weights, "cluster", input_list$cluster)
     }
-    vcov_result <- .sandwich_combine(A_bread, B_meat)
+    vcov_result <- .sandwich_combine(A_bread, B_meat, equilibrate = eq)
   } else {
     hess <- switch(
       se_method,
@@ -303,20 +316,12 @@ run_mnlogit <- function(
         include_outside_option = input_list$include_outside_option
       )
     )
-    vcov_result <- invert_hessian(hess)
+    vcov_result <- invert_hessian(hess, equilibrate = eq)
   }
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
     names(vcov_result$se) <- param_names
-  }
-
-  # --- Back-transform to natural scale ----------------------------------------
-  if (scale_vars != "none") {
-    bt <- .backtransform_estimates(theta_hat, vcov_result, bt_mult, bt_shift, param_names)
-    theta_hat <- bt$theta
-    vcov_result <- bt$vcov_result
-    input_list$X <- natural_X
   }
 
   # Build S3 object
@@ -361,7 +366,9 @@ run_mnlogit <- function(
     scale_vars = scale_vars,
     sX = sX,
     se_method = se_method,
-    choice_sampling = choice_sampling
+    choice_sampling = choice_sampling,
+    param_scale = stats::setNames(bt_mult, param_names),
+    param_shift = stats::setNames(bt_shift, param_names)
   )
 }
 

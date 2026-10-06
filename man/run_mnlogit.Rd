@@ -75,9 +75,11 @@ returned object for \code{predict()} and post-estimation functions.}
 \code{"mad"} (\code{stats::mad}), or \code{"iqr"}
 (\code{stats::IQR(x) / 1.349}). When not \code{"none"}, every column of
 \code{X} is divided by the chosen scale before optimization to improve
-Hessian conditioning. Coefficients and standard errors are back-transformed
-to the user's natural units via the delta method, so reported quantities
-are invariant to this choice.}
+Hessian conditioning. Coefficients are back-transformed to the user's
+natural units and the standard errors computed in them, with the
+information matrix equilibrated before it is inverted, so reported
+quantities do not depend on this choice beyond the optimizer's
+tolerance.}
 
 \item{se_method}{Method for computing standard errors: \code{"hessian"}
 (default, analytical Hessian), \code{"bhhh"} (outer product of gradients),

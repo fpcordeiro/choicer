@@ -209,9 +209,11 @@
 #'   columns where SD is dominated by outliers, but
 #'   \code{stats::mad} can return zero when more than half of a column's
 #'   entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
-#'   the same near-constant-column error as \code{"sd"}. Coefficients and
-#'   standard errors are back-transformed to the user's natural units via the
-#'   delta method, so reported quantities are invariant to this choice.
+#'   the same near-constant-column error as \code{"sd"}. Coefficients are
+#'   back-transformed to the user's natural units and the standard errors
+#'   computed in them, with the information matrix equilibrated before it is
+#'   inverted, so reported quantities do not depend on this choice beyond the
+#'   optimizer's tolerance.
 #'   Columns of \code{W} associated with log-normal random coefficients
 #'   (\code{rc_dist == 1}) are passed through unchanged, since the shifted
 #'   log-normal parameterization does not admit a closed-form back-transform
@@ -556,9 +558,9 @@ run_mxlogit <- function(
   # maker's rows by these scales as they read them, so the fit holds no scaled
   # copy of the design and input_data keeps the natural-scale matrices for
   # storage. theta_init is interpreted in natural units and forward-transformed
-  # below; theta_hat and vcov are back-transformed after optimization so
-  # reported quantities are in the user's natural units. sX and sW are
-  # returned as 1s when scale_vars="none".
+  # below; theta_hat is back-transformed after optimization and the variance
+  # computed at it in natural units, so reported quantities are in the user's
+  # natural units. sX and sW are returned as 1s when scale_vars="none".
   sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
   sW <- rep(1, K_w); names(sW) <- colnames(input_data$W)
   if (scale_vars != "none") {
@@ -590,8 +592,9 @@ run_mxlogit <- function(
     }
   }
   # The kernels' column scales (NULL: the rows are read as they are). theta is
-  # in the scaled space, so every kernel call during the fit passes them; the
-  # post-hoc methods use the stored natural data with natural coefficients.
+  # in the scaled space while the optimizer runs, so its objective passes
+  # them; the variance, like the post-hoc methods, uses the natural
+  # coefficients and passes none.
   kern_sX <- if (scale_vars != "none") sX
   kern_sW <- if (scale_vars != "none") sW
 
@@ -700,7 +703,7 @@ run_mxlogit <- function(
 
   message("Optimization run time ", convertTime(elapsed))
 
-  # Estimate at the optimum (in scaled space if scale_vars='sd')
+  # Estimate at the optimum (in scaled space if scale_vars != "none")
   theta_hat <- opt$par
   names(theta_hat) <- param_names
 
@@ -710,113 +713,16 @@ run_mxlogit <- function(
     cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mxl_data"
   )
 
-  # Compute vcov eagerly using the selected SE method.
-  # For "sandwich" (robust / WESML) standard errors, form V = A^{-1} B A^{-1}
-  # with bread A = weighted negated Hessian and meat B = weight-squared OPG
-  # (pass weights^2 to the BHHH routine, whose per-unit score is
-  # weight-free). For "cluster", the meat is the outer product of
-  # within-cluster sums of weighted scores. Scores, weights and cluster labels
-  # are per likelihood unit (decision maker with person_col). Computed in
-  # scaled space (the kernels scale X and W as they read them); the
-  # back-transform below applies.
-  if (se_method %in% c("sandwich", "cluster")) {
-    A_bread <- mxl_hessian_parallel(
-      theta = theta_hat, X = input_data$X, W = input_data$W,
-      alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
-      M = input_data$M, weights = input_data$weights, eta_draws = eta_draws,
-      rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
-      use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-      Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
-    )
-    B_meat <- if (se_method == "sandwich") {
-      mxl_bhhh_parallel(
-        theta = theta_hat, X = input_data$X, W = input_data$W,
-        alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
-        M = input_data$M, weights = input_data$weights^2, eta_draws = eta_draws,
-        rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
-        use_asc = use_asc,
-        include_outside_option = input_data$include_outside_option,
-        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-        Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
-      )
-    } else {
-      # The weighted scores summed within clusters in C++, without the
-      # U x p score matrix.
-      cl_u <- .to_units(input_data$cluster, input_data, "`cluster_col`")
-      .check_cluster_labels(cl_u, length(.unit_first(input_data)))
-      cl_u <- as.character(cl_u)
-      mxl_cluster_meat_parallel(
-        theta = theta_hat, X = input_data$X, W = input_data$W,
-        alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
-        M = input_data$M, weights = input_data$weights,
-        cluster = match(cl_u, unique(cl_u)), eta_draws = eta_draws,
-        rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
-        use_asc = use_asc,
-        include_outside_option = input_data$include_outside_option,
-        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-        Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
-      )
-    }
-    vcov_result <- .sandwich_combine(A_bread, B_meat)
-  } else {
-  hess <- switch(
-    se_method,
-    hessian = mxl_hessian_parallel(
-      theta = theta_hat,
-      X = input_data$X,
-      W = input_data$W,
-      alt_idx = input_data$alt_idx,
-      choice_idx = input_data$choice_idx,
-      M = input_data$M,
-      weights = input_data$weights,
-      eta_draws = eta_draws,
-      rc_dist = rc_dist,
-      rc_correlation = rc_correlation,
-      rc_mean = rc_mean,
-      use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-      Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
-    ),
-    bhhh = mxl_bhhh_parallel(
-      theta = theta_hat,
-      X = input_data$X,
-      W = input_data$W,
-      alt_idx = input_data$alt_idx,
-      choice_idx = input_data$choice_idx,
-      M = input_data$M,
-      weights = input_data$weights,
-      eta_draws = eta_draws,
-      rc_dist = rc_dist,
-      rc_correlation = rc_correlation,
-      rc_mean = rc_mean,
-      use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option,
-      gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp,
-      Ti = input_data$Ti, sX = kern_sX, sW = kern_sW
-    )
-  )
-  vcov_result <- invert_hessian(hess)
-  }
-  if (!is.null(vcov_result$vcov)) {
-    rownames(vcov_result$vcov) <- param_names
-    colnames(vcov_result$vcov) <- param_names
-    names(vcov_result$se) <- param_names
-  }
-
   # --- Back-transform to natural scale ----------------------------------------
   # Uses the bt_mult / bt_shift map built before optimization:
   #   theta_natural = bt_mult * theta_scaled + bt_shift
-  #   vcov_natural  = (bt_mult bt_mult') o vcov_scaled  (shifts don't enter)
+  # The variance below is computed at the natural estimates, in natural units.
   if (scale_vars != "none") {
-    bt <- .backtransform_estimates(theta_hat, vcov_result, bt_mult, bt_shift, param_names)
-    theta_hat <- bt$theta
-    vcov_result <- bt$vcov_result
+    theta_hat <- .backtransform_estimates(theta_hat, bt_mult, bt_shift,
+                                          param_names)
   }
 
-  # Reconstruct Sigma for display (from back-transformed L params if scaled)
+  # Reconstruct Sigma for display (from the natural-scale L params)
   L_params <- theta_hat[param_map$sigma]
   sigma_mat <- build_var_mat(L_params, K_w, rc_correlation)
   w_names <- colnames(input_data$W)
@@ -837,8 +743,8 @@ run_mxlogit <- function(
     scramble = if (draws == "generate") scramble else NULL
   )
 
-  # Build S3 object
-  new_choicer_mxl(
+  # Build S3 object. It holds the data until its variance is computed below.
+  fit <- new_choicer_mxl(
     call = cl,
     coefficients = theta_hat,
     loglik = -opt$value,
@@ -857,22 +763,20 @@ run_mxlogit <- function(
       elapsed_time = elapsed[["elapsed"]],
       iterations = opt$iterations
     ),
-    vcov = vcov_result$vcov,
-    se = vcov_result$se,
-    data = if (keep_data) {
-      list(
-        X = input_data$X,
-        W = input_data$W,
-        alt_idx = input_data$alt_idx,
-        choice_idx = input_data$choice_idx,
-        M = input_data$M,
-        weights = input_data$weights,
-        cluster = input_data$cluster,
-        situation_ids = input_data$situation_ids,
-        Ti = input_data$Ti,
-        person_ids = input_data$person_ids
-      )
-    },
+    vcov = NULL,
+    se = NULL,
+    data = list(
+      X = input_data$X,
+      W = input_data$W,
+      alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx,
+      M = input_data$M,
+      weights = input_data$weights,
+      cluster = input_data$cluster,
+      situation_ids = input_data$situation_ids,
+      Ti = input_data$Ti,
+      person_ids = input_data$person_ids
+    ),
     draws_info = draws_info,
     rc_dist = rc_dist,
     rc_correlation = rc_correlation,
@@ -883,8 +787,37 @@ run_mxlogit <- function(
     sX = sX,
     sW = sW,
     choice_sampling = choice_sampling,
-    n_persons = if (!is.null(input_data$Ti)) length(input_data$Ti)
+    n_persons = if (!is.null(input_data$Ti)) length(input_data$Ti),
+    param_scale = stats::setNames(bt_mult, param_names),
+    param_shift = stats::setNames(bt_shift, param_names)
   )
+
+  # Compute vcov eagerly using the selected SE method, by the route
+  # vcov(fit, type = ) takes post hoc, with the fit's own draws: at the
+  # natural estimates, in natural units, inverted equilibrated for a scaled
+  # fit. For "sandwich" (robust / WESML) standard errors, V = A^{-1} B A^{-1}
+  # with bread A = weighted negated Hessian and meat B = weight-squared OPG
+  # (the BHHH kernel with weights^2, its per-unit score being weight-free).
+  # For "cluster", the meat is the outer product of within-cluster sums of
+  # weighted scores, summed in C++ without the U x p score matrix. Scores,
+  # weights and cluster labels are per likelihood unit (decision maker with
+  # person_col).
+  vcov_result <- .assemble_score_vcov(
+    fit, type = if (se_method == "sandwich") "robust" else se_method,
+    gp = list(eta_draws = eta_draws, gen_seed = gen_seed_cpp,
+              gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp),
+    what = "`cluster_col`"
+  )
+  if (!is.null(vcov_result$vcov)) {
+    rownames(vcov_result$vcov) <- param_names
+    colnames(vcov_result$vcov) <- param_names
+    names(vcov_result$se) <- param_names
+  }
+  fit["vcov"] <- list(vcov_result$vcov)
+  fit["se"] <- list(vcov_result$se)
+  if (keep_data) return(fit)
+  fit["data"] <- list(NULL)  # the slot is kept, NULL
+  fit
 }
 
 

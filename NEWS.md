@@ -404,6 +404,28 @@
   overflowing utility at a draw of zero weight) makes the rows and columns
   of the parameters concerned `NaN`.
 
+## Standard errors of scaled fits
+
+- The standard errors of a fit with `scale_vars` (`run_mxlogit()`,
+  `run_mnlogit()`) are now computed in natural units, at the natural
+  estimates, and its information matrix is equilibrated before it is
+  inverted: scaled by the powers of two nearest (on a log scale) the inverse
+  square roots of its diagonal's magnitudes, which adds no rounding. The
+  estimator and the estimates are unchanged. The fit used to invert the
+  information of the scaled design and transform the result back, while
+  `vcov(fit, type = )` inverted the natural information as it was. Both lost
+  digits when the design's columns span orders of magnitude: post hoc, the
+  inversion failed as computationally singular on such a design, and a mixed
+  logit fit's robust variance from the tests was off by 1.6e-8 relative (now
+  within 1e-15 of an independent computation); at fit time, the scaled
+  design's information could still be ill-conditioned (condition number
+  1.3e10 on one design, against 9 equilibrated), and its standard errors
+  moved by up to 3e-9. A mixed logit's variance at fit time is now computed
+  by the route `vcov(fit, type = )` takes post hoc (`"robust"` for
+  `se_method = "sandwich"`), with the fit's own draws, so the two agree, bit
+  for bit on one thread (draws supplied through `eta_draws` are not
+  regenerated post hoc). Unscaled fits are unchanged.
+
 ## Data preparation at population scale
 
 - `get_halton_normals()` builds the draw cube of `draws = "store"`, at fit
@@ -480,8 +502,8 @@
   divide each decision maker's rows by the scales as they read them, and the
   scales are computed a column at a time, collecting each column's temporaries
   before the next on large designs. Every value is divided exactly as before,
-  so estimates, standard errors and the optimizer's path are unchanged, bit
-  for bit, and a likelihood evaluation takes as long as before (from 2.3% less
+  so estimates and the optimizer's path are unchanged, bit for bit, and a
+  likelihood evaluation takes as long as before (from 2.3% less
   to 0.5% more time, within the run-to-run noise: at 10^6 to 10^7 rows and
   `S = 100` with draws generated on the fly, and with 50 fixed-coefficient
   covariates at `S = 20` and `100` with draws generated or stored). On the

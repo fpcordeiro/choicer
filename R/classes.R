@@ -36,6 +36,9 @@
 #'   or \code{"sandwich"} (robust Huber--White / WESML variance).
 #' @param choice_sampling Optional list recording choice-based-sampling
 #'   provenance (scheme, population/sample shares, meat type), or NULL.
+#' @param param_scale,param_shift Named numeric vectors (m, c) of the map from
+#'   the optimizer's coordinates to the parameters, theta = m * theta_t + c:
+#'   1s and 0s without scaling.
 #' @returns A choicer_mnl object (S3 class)
 #' @noRd
 new_choicer_mnl <- function(call, coefficients, loglik,
@@ -46,7 +49,8 @@ new_choicer_mnl <- function(call, coefficients, loglik,
                             vcov = NULL, se = NULL, data = NULL,
                             scale_vars = "none", sX = NULL,
                             se_method = "hessian",
-                            choice_sampling = NULL) {
+                            choice_sampling = NULL,
+                            param_scale = NULL, param_shift = NULL) {
   structure(
     list(
       call = call,
@@ -69,7 +73,9 @@ new_choicer_mnl <- function(call, coefficients, loglik,
       scale_vars = scale_vars,
       sX = sX,
       se_method = se_method,
-      choice_sampling = choice_sampling
+      choice_sampling = choice_sampling,
+      param_scale = param_scale,
+      param_shift = param_shift
     ),
     class = c("choicer_mnl", "choicer_fit")
   )
@@ -99,6 +105,9 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #'   provenance (scheme, population/sample shares, meat type), or NULL.
 #' @param n_persons Number of decision makers of a panel fit (`person_col`),
 #'   or NULL for a cross-sectional fit.
+#' @param param_scale,param_shift Named numeric vectors (m, c) of the map from
+#'   the optimizer's coordinates to the parameters, theta = m * theta_t + c:
+#'   1s and 0s without scaling.
 #' @returns A choicer_mxl object (S3 class)
 #' @noRd
 new_choicer_mxl <- function(call, coefficients, loglik,
@@ -114,7 +123,8 @@ new_choicer_mxl <- function(call, coefficients, loglik,
                             scale_vars = "none",
                             sX = NULL, sW = NULL,
                             choice_sampling = NULL,
-                            n_persons = NULL) {
+                            n_persons = NULL,
+                            param_scale = NULL, param_shift = NULL) {
   structure(
     list(
       call = call,
@@ -144,7 +154,9 @@ new_choicer_mxl <- function(call, coefficients, loglik,
       sX = sX,
       sW = sW,
       choice_sampling = choice_sampling,
-      n_persons = n_persons
+      n_persons = n_persons,
+      param_scale = param_scale,
+      param_shift = param_shift
     ),
     class = c("choicer_mxl", "choicer_fit")
   )
@@ -378,7 +390,7 @@ ensure_vcov <- function(object) {
     # cluster = NULL routes to the stored, already-aligned fit-time labels.
     .assemble_score_vcov(object, type = "cluster")
   } else {
-    invert_hessian(compute_hessian(object))
+    invert_hessian(compute_hessian(object), equilibrate = .is_scaled(object))
   }
 
   object$vcov <- result$vcov
@@ -666,17 +678,31 @@ compute_hessian <- function(object) {
 #' Accepts either a negated-Hessian or a BHHH/OPG estimate of the observed
 #' information matrix and returns its inverse plus standard errors.
 #'
+#' With `equilibrate`, it inverts \eqn{D H D} and returns
+#' \eqn{D (D H D)^{-1} D}, with \eqn{D} the Jacobi scale of `.jacobi_scale()`
+#' (powers of two, so the products with \eqn{D} are exact and only `solve()`
+#' rounds). A scaled fit's information is in natural units, whose curvatures
+#' can span many orders of magnitude; equilibrated, it inverts as accurately
+#' as its well-scaled equivalent instead of failing as computationally
+#' singular. Without it, the raw matrix goes to `solve()`.
+#'
 #' @param hess Observed information matrix (negated Hessian or BHHH/OPG).
+#' @param equilibrate Whether to invert the Jacobi-equilibrated matrix
+#'   (scaled fits, `.is_scaled()`).
 #' @returns List with vcov (matrix or NULL) and se (numeric vector).
 #' @noRd
-invert_hessian <- function(hess) {
+invert_hessian <- function(hess, equilibrate = FALSE) {
   p_len <- nrow(hess)
   vcov_mat <- NULL
   se <- rep(NA_real_, p_len)
+  D <- if (equilibrate) .jacobi_scale(hess)
 
   singular_flag <- FALSE
   tryCatch({
-    vcov_mat <- solve(hess)
+    # tcrossprod(D) formed at each use, so that no extra p x p matrix lives
+    # through solve()
+    vcov_mat <- if (is.null(D)) solve(hess) else
+      solve(hess * tcrossprod(D)) * tcrossprod(D)
   }, error = function(e) {
     singular_flag <<- TRUE
     message("Error inverting information matrix (likely singular): ", e$message)
@@ -706,21 +732,32 @@ invert_hessian <- function(hess) {
 #' Forms \code{V = A^{-1} B A^{-1}} from the (weighted) negated Hessian
 #' \code{A} (bread) and the (weight-squared) outer-product-of-gradients
 #' \code{B} (meat), with the same singular / not-positive-definite guards as
-#' \code{invert_hessian()}.
+#' \code{invert_hessian()}. With `equilibrate`, \eqn{D} is the Jacobi scale
+#' of the bread, and the inner product is formed on \eqn{D A D} and
+#' \eqn{D B D}: \eqn{V = D [(DAD)^{-1} (DBD) (DAD)^{-1}] D}, the inner matrix
+#' symmetrized before the exact products with \eqn{D}.
 #'
 #' @param A Bread matrix (observed information; weighted negated Hessian).
 #' @param B Meat matrix (weighted outer product of per-individual scores).
+#' @param equilibrate Whether to equilibrate by the bread's Jacobi scale
+#'   (scaled fits, `.is_scaled()`).
 #' @returns List with \code{vcov} (matrix or NULL) and \code{se} (numeric).
 #' @noRd
-.sandwich_combine <- function(A, B) {
+.sandwich_combine <- function(A, B, equilibrate = FALSE) {
   p_len <- nrow(A)
   vcov_mat <- NULL
   se <- rep(NA_real_, p_len)
+  D <- if (equilibrate) .jacobi_scale(A)
 
   singular_flag <- FALSE
   tryCatch({
-    Ainv <- solve(A)
-    vcov_mat <- Ainv %*% B %*% Ainv
+    if (is.null(D)) {
+      Ainv <- solve(A)
+      vcov_mat <- Ainv %*% B %*% Ainv
+    } else {
+      Ainv <- solve(A * tcrossprod(D))
+      vcov_mat <- Ainv %*% (B * tcrossprod(D)) %*% Ainv
+    }
   }, error = function(e) {
     singular_flag <<- TRUE
     message("Error inverting information (bread) matrix (likely singular): ",
@@ -729,6 +766,7 @@ invert_hessian <- function(hess) {
 
   if (!singular_flag && !is.null(vcov_mat)) {
     vcov_mat <- (vcov_mat + t(vcov_mat)) / 2   # symmetrize away FP asymmetry
+    if (!is.null(D)) vcov_mat <- vcov_mat * tcrossprod(D)
     diag_vcov <- diag(vcov_mat)
     neg <- !is.na(diag_vcov) & diag_vcov < 0
     if (any(neg)) {
@@ -745,6 +783,39 @@ invert_hessian <- function(hess) {
   }
 
   list(vcov = vcov_mat, se = se)
+}
+
+#' Jacobi equilibration scale of an information matrix
+#'
+#' \eqn{D_k = 2^{\mathrm{round}(-\log_2 |A_{kk}| / 2)}} for a finite, nonzero
+#' diagonal entry and 1 otherwise, within \eqn{[2^{-500}, 2^{500}]}: powers of
+#' two, so \eqn{D A D} and the products with \eqn{D} are exact, and, unless
+#' clamped, the scaled matrix's diagonal is within a factor of two of one in
+#' magnitude. The magnitude, so that a matrix that is not positive definite
+#' away from the optimum (a negative diagonal entry) is equilibrated too and
+#' its negative variances are reported rather than a singular inversion.
+#'
+#' @param A Square matrix.
+#' @returns Numeric vector of scales.
+#' @noRd
+.jacobi_scale <- function(A) {
+  d <- diag(A)
+  ok <- is.finite(d) & d != 0
+  D <- rep(1, length(d))
+  D[ok] <- 2^round(-0.5 * log2(abs(d[ok])))
+  pmin(pmax(D, 2^-500), 2^500)
+}
+
+#' Whether a fit was estimated with `scale_vars`
+#'
+#' Its variances are then inverted equilibrated (`invert_hessian()`,
+#' `.sandwich_combine()`), at fit time and post hoc alike.
+#'
+#' @param object A fitted object.
+#' @returns `TRUE` or `FALSE`.
+#' @noRd
+.is_scaled <- function(object) {
+  !identical(object$scale_vars %||% "none", "none")
 }
 
 #' Robust (Huber-White) sandwich vcov for a fitted logit model
@@ -1081,9 +1152,11 @@ compute_scores <- function(object) {
 #'
 #' The single post-hoc entry point behind \code{vcov(fit, type = )},
 #' \code{ensure_vcov()} (for \code{se_method = "cluster"} fits) and
-#' \code{compute_sandwich_vcov()}. Operates entirely in natural space: the
-#' stored data and coefficients are natural-scale even when the fit used
-#' \code{scale_vars}, so no back-transform is needed.
+#' \code{compute_sandwich_vcov()}, and a mixed logit's variance at fit time.
+#' Operates entirely in natural space: the stored data and coefficients are
+#' natural-scale even when the fit used \code{scale_vars}, so no
+#' back-transform is needed; a scaled fit's matrices are inverted
+#' equilibrated (\code{.is_scaled()}).
 #'
 #' @param object A fitted \code{choicer_fit} (MNL / MXL / NL) with
 #'   \code{keep_data = TRUE}.
@@ -1091,9 +1164,16 @@ compute_scores <- function(object) {
 #'   \code{"cluster"}.
 #' @param cluster Cluster labels for \code{type = "cluster"}; defaults to the
 #'   labels stored at fit time via \code{cluster_col}.
+#' @param gp For a mixed logit, the draw arguments of \code{.mxl_gen_params()}
+#'   when the caller holds them already (the fit itself, so that its variance
+#'   uses its own draws without building a second store-mode cube);
+#'   \code{NULL} builds them from \code{draws_info}.
+#' @param what The cluster labels' name in messages (the fit itself says
+#'   \code{cluster_col}).
 #' @returns List with \code{vcov} and \code{se}.
 #' @noRd
-.assemble_score_vcov <- function(object, type, cluster = NULL) {
+.assemble_score_vcov <- function(object, type, cluster = NULL, gp = NULL,
+                                 what = "`cluster`") {
   if (is.null(object[["data"]])) {
     stop("Cannot compute standard errors: no data stored. ",
          "Refit with keep_data = TRUE.")
@@ -1103,8 +1183,9 @@ compute_scores <- function(object) {
          "mixed (MXL) and nested (NL) logit only.")
   }
 
+  eq <- .is_scaled(object)
   if (identical(type, "hessian")) {
-    return(invert_hessian(.compute_bread(object)))
+    return(invert_hessian(.compute_bread(object, gp), equilibrate = eq))
   }
 
   # Scores, weights and cluster labels are per likelihood unit: choice
@@ -1116,26 +1197,28 @@ compute_scores <- function(object) {
     # scores without forming the U x p score matrix; the meat and the bread
     # share one set of draws, built once.
     if (identical(type, "cluster")) {
-      cluster <- .unit_clusters(object, cluster)
+      cluster <- .unit_clusters(object, cluster, what)
       # before the draws, which in store mode can take gigabytes
       .check_cluster_labels(cluster, length(.unit_first(d)))
     }
-    gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
+    if (is.null(gp)) {
+      gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
+    }
     B <- .mxl_score_meat(object, gp, type, cluster)
-    if (identical(type, "bhhh")) return(invert_hessian(B))
-    return(.sandwich_combine(.compute_bread(object, gp), B))
+    if (identical(type, "bhhh")) return(invert_hessian(B, equilibrate = eq))
+    return(.sandwich_combine(.compute_bread(object, gp), B, equilibrate = eq))
   }
 
   w <- d$weights[.unit_first(d)]
   S <- compute_scores(object)
 
   if (identical(type, "bhhh")) {
-    return(invert_hessian(.score_meat(S, w, "bhhh")))
+    return(invert_hessian(.score_meat(S, w, "bhhh"), equilibrate = eq))
   }
 
-  if (identical(type, "cluster")) cluster <- .unit_clusters(object, cluster)
+  if (identical(type, "cluster")) cluster <- .unit_clusters(object, cluster, what)
   B <- .score_meat(S, w, type, cluster)
-  .sandwich_combine(.compute_bread(object), B)
+  .sandwich_combine(.compute_bread(object), B, equilibrate = eq)
 }
 
 #' Cluster labels of a fit's likelihood units
@@ -1148,9 +1231,10 @@ compute_scores <- function(object) {
 #'
 #' @param object A fitted \code{choicer_fit} with stored data.
 #' @param cluster User-supplied labels, or \code{NULL}.
+#' @param what The labels' name in messages.
 #' @returns Cluster labels, one per likelihood unit.
 #' @noRd
-.unit_clusters <- function(object, cluster) {
+.unit_clusters <- function(object, cluster, what = "`cluster`") {
   d <- object[["data"]]
   if (is.null(cluster)) {
     # No explicit labels: use the fit-time cluster_col vector, already
@@ -1166,5 +1250,5 @@ compute_scores <- function(object) {
     cluster <- .resolve_cluster(object, cluster)
   }
   # Per situation so far; panel fits need clusters that nest decision makers.
-  .to_units(cluster, d, "`cluster`")
+  .to_units(cluster, d, what)
 }

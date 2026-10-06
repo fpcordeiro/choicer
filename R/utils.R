@@ -276,33 +276,22 @@ resolve_var_index <- function(var, col_names) {
 
 #' Back-transform scaled-space estimates to natural units
 #'
-#' Applies the delta-method back-transform
-#' `theta_natural = bt_mult * theta_scaled + bt_shift` and
-#' `vcov_natural = (bt_mult bt_mult') o vcov_scaled`, re-deriving SEs while
-#' guarding against NA/negative variances, and restores parameter names.
+#' Maps the optimizer's estimates to natural units,
+#' `theta_natural = bt_mult * theta_scaled + bt_shift`, and restores the
+#' parameter names. The variance needs no back-transform: it is computed in
+#' natural units at the natural estimates, equilibrated
+#' (`invert_hessian()`, `.sandwich_combine()`).
 #' @param theta_hat Numeric vector of scaled-space estimates.
-#' @param vcov_result List with `vcov` (matrix or NULL) and `se`.
 #' @param bt_mult Numeric multiplier vector (length n_params).
 #' @param bt_shift Numeric shift vector (length n_params).
 #' @param param_names Character vector of parameter names.
-#' @returns List with `theta` and `vcov_result`.
+#' @returns The named natural-scale estimates.
 #' @noRd
-.backtransform_estimates <- function(theta_hat, vcov_result, bt_mult, bt_shift,
+.backtransform_estimates <- function(theta_hat, bt_mult, bt_shift,
                                      param_names) {
   theta_hat <- theta_hat * bt_mult + bt_shift
   names(theta_hat) <- param_names
-  if (!is.null(vcov_result$vcov)) {
-    vcov_result$vcov <- vcov_result$vcov * tcrossprod(bt_mult)
-    rownames(vcov_result$vcov) <- param_names
-    colnames(vcov_result$vcov) <- param_names
-    diag_v <- diag(vcov_result$vcov)
-    se <- rep(NA_real_, length(theta_hat))
-    ok <- !is.na(diag_v) & diag_v >= 0
-    se[ok] <- sqrt(diag_v[ok])
-    names(se) <- param_names
-    vcov_result$se <- se
-  }
-  list(theta = theta_hat, vcov_result = vcov_result)
+  theta_hat
 }
 
 #' Label a J x J matrix with alternative names
