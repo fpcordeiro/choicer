@@ -23,8 +23,6 @@ mxl_loglik_gradient_parallel(
   gen_S = 0L,
   Ti = NULL,
   draw_batch = 0L,
-  sX = NULL,
-  sW = NULL,
   opg_diag = FALSE
 )
 }
@@ -76,14 +74,6 @@ decision maker. NULL (default): every choice situation is its own unit
 \item{draw_batch}{Integer; \code{0} (default) forms each decision maker's
 draws in batches sized to a per-thread memory budget, a positive value
 caps the number of draws per batch (for tests).}
-
-\item{sX, sW}{Optional column scales of \code{X} and \code{W}
-(\code{run_mxlogit(scale_vars = )}): one finite, positive value per
-column. Each decision maker's rows are divided by them as they are
-read, giving the values \code{sweep(X, 2, sX, "/")} and
-\code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
-scaled space without a scaled copy of the design. \code{NULL}
-(default): the matrices as they are.}
 
 \item{opg_diag}{Logical; \code{TRUE} also returns the diagonal of the
 BHHH (outer product of gradients) matrix with the same weights,

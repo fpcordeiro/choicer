@@ -343,3 +343,44 @@ test_that("multinomial scaled fits reach the unscaled optimum", {
   expect_identical(unname(fs$param_scale), c(1 / unname(fs$sX), rep(1, 4)))
   expect_identical(unname(fs$param_shift), rep(0, 6))
 })
+
+test_that("a scaled fit's kernels evaluate the natural design", {
+  skip_on_cran()
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  ns <- asNamespace("choicer")
+  kernels <- c("mxl_loglik_gradient_parallel", "mxl_hessian_parallel",
+               "mxl_bhhh_parallel", "mxl_cluster_meat_parallel")
+  seen <- list()
+  mocks <- lapply(stats::setNames(nm = kernels), function(name) {
+    real <- get(name, envir = ns)
+    function(..., X, W) {
+      seen[[length(seen) + 1L]] <<- list(kernel = name, X = X, W = W)
+      real(..., X = X, W = W)
+    }
+  })
+  local_mocked_bindings(!!!mocks)
+  dt <- sc_data(120L, 1L, 91L)
+  dt[, grp := (match(id, unique(id)) - 1L) %% 7L]
+  d <- prepare_mxl_data(dt, "id", "alt", "choice", c("x1", "x2"), c("w1", "w2"))
+  # The variance's kernels for each se_method; the gradient runs throughout.
+  variance <- list(sandwich = c("mxl_hessian_parallel", "mxl_bhhh_parallel"),
+                   cluster = c("mxl_hessian_parallel", "mxl_cluster_meat_parallel"))
+  for (sv in c("sd", "bhhh")) {
+    for (se in names(variance)) {
+      what <- paste0("[", sv, ", ", se, "]")
+      seen <- list()
+      fit <- sc_fit(dt, scale_vars = sv, se_method = se,
+                    cluster_col = if (se == "cluster") "grp")
+      ran <- vapply(seen, `[[`, "", "kernel")
+      expect_true(all(variance[[se]] %in% ran),
+                  label = paste("the variance's kernels ran", what))
+      expect_gt(sum(ran == "mxl_loglik_gradient_parallel"), 1L,
+                label = paste("gradient calls", what))
+      natural <- vapply(seen, function(s) {
+        identical(s$X, d$X) && identical(s$W, d$W)
+      }, TRUE)
+      expect_true(all(natural), label = paste("natural design", what))
+    }
+  }
+})
