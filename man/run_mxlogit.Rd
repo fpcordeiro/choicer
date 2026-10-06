@@ -161,9 +161,11 @@ so the fit holds no scaled copy of the design. Robust scales
 columns where SD is dominated by outliers, but
 \code{stats::mad} can return zero when more than half of a column's
 entries are identical (e.g., a sparse 0/1 dummy) and will then trigger
-the same near-constant-column error as \code{"sd"}. Coefficients and
-standard errors are back-transformed to the user's natural units via the
-delta method, so reported quantities are invariant to this choice.
+the same near-constant-column error as \code{"sd"}. Coefficients are
+back-transformed to the user's natural units and the standard errors
+computed in them, with the information matrix equilibrated before it is
+inverted, so reported quantities do not depend on this choice beyond the
+optimizer's tolerance.
 Columns of \code{W} associated with log-normal random coefficients
 (\code{rc_dist == 1}) are passed through unchanged, since the shifted
 log-normal parameterization does not admit a closed-form back-transform

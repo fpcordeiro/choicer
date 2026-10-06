@@ -140,9 +140,9 @@ test_that("scale_vars='sd' errors on a near-constant covariate", {
 })
 
 # =============================================================================
-# Test 5: Lazy-recompute vcov parity — the eagerly-stored (scaled-then-back-
-# transformed) vcov matches a fresh lazy recompute from the stored natural-scale
-# data via compute_hessian()/invert_hessian().
+# Test 5: Lazy-recompute vcov parity — the eagerly-stored vcov (natural units,
+# equilibrated) matches a fresh recompute from the stored natural-scale data
+# via compute_hessian()/invert_hessian().
 # =============================================================================
 
 test_that("scale_vars='sd' eager vcov matches lazy recompute from stored data", {

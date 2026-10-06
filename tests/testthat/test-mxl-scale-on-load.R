@@ -214,6 +214,9 @@ sol_args <- function(dt, panel, ...) {
     list(...))
 }
 
+# The objective's calls get the scales (the optimizer's theta is in the
+# scaled space); the variance is computed at the natural estimates through
+# either route, so the whole fit, variance included, is identical.
 test_that("a scaled fit equals the fit through sweep()ed X and W", {
   skip_on_cran()
   mxlp_threads(1L)
@@ -255,12 +258,19 @@ test_that("a scaled fit equals the fit through sweep()ed X and W", {
                   label = paste("the variance kernels ran", what))
       expect_gt(sum(kernels == "mxl_loglik_gradient_parallel"), 1L)
       fit <- new$value
+      # The optimizer's objective runs at a scaled-space theta and gets the
+      # scales; the variance is computed at the natural estimates and gets
+      # none.
       got <- vapply(new$seen, function(s) {
-        identical(s$X, fit$data$X) && identical(s$W, fit$data$W) &&
-          identical(s$sX, fit$sX) && identical(s$sW, fit$sW)
+        natural <- identical(s$X, fit$data$X) && identical(s$W, fit$data$W)
+        if (s$kernel == "mxl_loglik_gradient_parallel") {
+          natural && identical(s$sX, fit$sX) && identical(s$sW, fit$sW)
+        } else {
+          natural && is.null(s$sX) && is.null(s$sW)
+        }
       }, TRUE)
       expect_true(all(got),
-                  label = paste("every call got the natural design and the fit's scales", what))
+                  label = paste("the objective's calls got the fit's scales, the variance's none", what))
     }
   }
 })
