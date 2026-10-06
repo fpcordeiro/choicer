@@ -27,10 +27,11 @@
 #' @param vcov Named variance-covariance matrix (or NULL for lazy computation)
 #' @param se Named numeric vector of standard errors (or NULL for lazy computation)
 #' @param data List of prepared inputs (X, alt_idx, choice_idx, M, weights) or NULL
-#' @param scale_vars Character. Pre-estimation scaling applied to the design
-#'   matrix: \code{"none"} (default), \code{"sd"}, \code{"mad"}, or \code{"iqr"}.
-#' @param sX Named numeric vector of column scales used to standardize X during
-#'   optimization. Defaults to a vector of 1s when scale_vars = 'none'.
+#' @param scale_vars Character. How the optimizer's coordinates were scaled:
+#'   \code{"none"} (default), \code{"sd"}, \code{"mad"}, \code{"iqr"}, or
+#'   \code{"bhhh"}.
+#' @param sX Named numeric vector of the column scales of X (\code{"sd"},
+#'   \code{"mad"}, \code{"iqr"}); 1s otherwise.
 #' @param se_method Character. Method used for standard errors: \code{"hessian"}
 #'   (analytical Hessian, default), \code{"bhhh"} (outer product of gradients),
 #'   or \code{"sandwich"} (robust Huber--White / WESML variance).
@@ -90,17 +91,15 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #' @param sigma Reconstructed covariance matrix of random coefficients (or NULL)
 #' @param se_method Character. Method used for standard errors: "hessian"
 #'   (analytical Hessian, default) or "bhhh" (outer product of gradients).
-#' @param scale_vars Character. Pre-estimation scaling applied to the design
-#'   matrices: \code{"none"} (default) or \code{"sd"}.
-#' @param sX Named numeric vector of column scales used to standardize \code{X}
-#'   during optimization. Defaults to a vector of 1s (no scaling applied) when
-#'   \code{scale_vars = "none"}; equals \code{apply(X, 2, sd)} when
-#'   \code{scale_vars = "sd"}.
-#' @param sW Named numeric vector of column scales used to standardize \code{W}
-#'   during optimization. Defaults to a vector of 1s when
-#'   \code{scale_vars = "none"}; equals \code{apply(W, 2, sd)} for normal
-#'   random-coefficient columns when \code{scale_vars = "sd"}, with entries for
-#'   log-normal columns (\code{rc_dist[k] == 1}) carved out to 1.
+#' @param scale_vars Character. How the optimizer's coordinates were scaled:
+#'   \code{"none"} (default), \code{"sd"}, \code{"mad"}, \code{"iqr"}, or
+#'   \code{"bhhh"}.
+#' @param sX Named numeric vector of the column scales of \code{X}
+#'   (\code{scale_vars} \code{"sd"}, \code{"mad"} or \code{"iqr"}; e.g.
+#'   \code{apply(X, 2, sd)}); 1s otherwise.
+#' @param sW Named numeric vector of the column scales of \code{W}, as
+#'   \code{sX}, with entries for log-normal columns (\code{rc_dist[k] == 1})
+#'   carved out to 1; 1s otherwise.
 #' @param choice_sampling Optional list recording choice-based-sampling
 #'   provenance (scheme, population/sample shares, meat type), or NULL.
 #' @param n_persons Number of decision makers of a panel fit (`person_col`),
