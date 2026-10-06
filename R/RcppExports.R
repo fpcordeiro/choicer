@@ -837,9 +837,10 @@ build_var_mat <- function(L_params, K_w, rc_correlation) {
 #' @param sX,sW Optional column scales of \code{X} and \code{W}
 #'   (\code{run_mxlogit(scale_vars = )}): one finite, positive value per
 #'   column. Each decision maker's rows are divided by them as they are
-#'   read, giving the values \code{sweep(X, 2, sX, "/")} would, so that
-#'   \code{theta} is in the scaled space without a scaled copy of the
-#'   design. \code{NULL} (default): the matrices as they are.
+#'   read, giving the values \code{sweep(X, 2, sX, "/")} and
+#'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
+#'   scaled space without a scaled copy of the design. \code{NULL}
+#'   (default): the matrices as they are.
 #' @returns List with the negated log-likelihood (\code{objective}), its
 #'   \code{gradient}, and an \code{overflow} flag indicating that a
 #'   non-finite objective was replaced by the finite optimizer sentinel.
@@ -931,9 +932,10 @@ jacobian_vech_Sigma <- function(L_params, K_w, rc_correlation = TRUE) {
 #' @param sX,sW Optional column scales of \code{X} and \code{W}
 #'   (\code{run_mxlogit(scale_vars = )}): one finite, positive value per
 #'   column. Each decision maker's rows are divided by them as they are
-#'   read, giving the values \code{sweep(X, 2, sX, "/")} would, so that
-#'   \code{theta} is in the scaled space without a scaled copy of the
-#'   design. \code{NULL} (default): the matrices as they are.
+#'   read, giving the values \code{sweep(X, 2, sX, "/")} and
+#'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
+#'   scaled space without a scaled copy of the design. \code{NULL}
+#'   (default): the matrices as they are.
 #' @returns Hessian evaluated at input arguments
 #' @note For log-normal random coefficients (rc_dist=1) with rc_mean=TRUE,
 #'   the distribution is a shifted log-normal: beta_k = exp(mu_k) + exp(L_k * eta),
@@ -1017,9 +1019,10 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
 #' @param sX,sW Optional column scales of \code{X} and \code{W}
 #'   (\code{run_mxlogit(scale_vars = )}): one finite, positive value per
 #'   column. Each decision maker's rows are divided by them as they are
-#'   read, giving the values \code{sweep(X, 2, sX, "/")} would, so that
-#'   \code{theta} is in the scaled space without a scaled copy of the
-#'   design. \code{NULL} (default): the matrices as they are.
+#'   read, giving the values \code{sweep(X, 2, sX, "/")} and
+#'   \code{sweep(W, 2, sW, "/")} would, so that \code{theta} is in the
+#'   scaled space without a scaled copy of the design. \code{NULL}
+#'   (default): the matrices as they are.
 #' @returns n_params x n_params PSD matrix representing the observed information
 #'   matrix estimated by the outer product of gradients (same sign convention
 #'   as the negated Hessian returned by \code{mxl_hessian_parallel}, so it can

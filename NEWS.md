@@ -472,6 +472,35 @@
   of 4.4-5.7 times. Peak resident memory, which also counts memory R has freed
   but not returned, is 2.3-2.4 times the input for all three instead of
   5.3-8.1 times (medians of three runs).
+- `run_mxlogit(scale_vars = )` no longer holds a scaled copy of the design. It
+  used to divide `X` and `W` by their column scales with `sweep()` and keep
+  the results beside the original matrices for the whole fit, which also took
+  two design-sized temporaries to form. The scales themselves came from
+  `apply()`, which first copies the whole matrix. The estimation kernels now
+  divide each decision maker's rows by the scales as they read them, and the
+  scales are computed a column at a time, collecting each column's temporaries
+  before the next on large designs. Every value is divided exactly as before,
+  so estimates, standard errors and the optimizer's path are unchanged, bit
+  for bit, and a likelihood evaluation takes as long as before (from 2.3% less
+  to 0.5% more time, within the run-to-run noise: at 10^6 to 10^7 rows and
+  `S = 100` with draws generated on the fly, and with 50 fixed-coefficient
+  covariates at `S = 20` and `100` with draws generated or stored). On the
+  claims- and census-style panels above (8.7 and 9.8 million rows, 13
+  covariates), the memory a scaled fit holds while it optimizes fell by 0.9
+  and 1.0 GB, one copy of `X` and `W`. Fitted from the long data, preparation
+  included, a scaled fit's peak heap is now an unscaled one's: it fell from
+  3.3 to 1.9 times the size of the long data (from 3.4 and 3.9 GB to 2.0 and
+  2.2 GB), with `scale_vars = "sd"` and `"mad"` alike. With the data prepared
+  beforehand, `"sd"` no longer raises the peak (it raised it by 1.9 and
+  1.6 GB) and `"mad"` raises it by 0.3 GB at most (2.6 and 2.3 GB before).
+  Scaling added 0.5-0.6 s to the fit instead of 1.3-1.5 s with `"sd"`, and
+  2.9-3.2 s instead of 3.7-4.2 s with `"mad"` (medians of three alternated
+  runs of one likelihood evaluation and the BHHH variance, under background
+  load, in a session holding little besides the data). The collection after
+  each column takes longer the more distinct character strings a session
+  holds, the data's own included: about 0.05 s with 10^7.
+  `run_mnlogit(scale_vars = )` also computes its scales without copying `X`,
+  but still holds a scaled copy of it while it fits.
 - `prepare_mnp_data()`, `prepare_hmnl_data()` and `prepare_hmnp_data()` (and
   so `run_mnprobit()`, `run_hmnlogit()` and `run_hmnprobit()`) now also copy
   only the columns the model uses, scan them for missing values one at a

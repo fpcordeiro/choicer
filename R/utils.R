@@ -213,19 +213,19 @@ resolve_var_index <- function(var, col_names) {
 #' Per-column scale vector for a design matrix
 #'
 #' Returns the per-column scale (sample SD or a robust SD-equivalent) used to
-#' standardize a design matrix before optimization. Column names are preserved.
+#' standardize a design matrix for optimization. Column names are preserved.
 #' A plain matrix is taken a column at a time: `apply()` would first copy the
 #' whole matrix (its `aperm()`), a design-sized allocation. Each column's
-#' temporaries (its copy, and the further copies "mad" and "iqr" sort) are
+#' temporaries (its copy, and the further copies "mad" and "iqr" make) are
 #' garbage once its scale is known; R frees them only when its collection
 #' trigger fires, so they would pile up into the trigger's slack, many columns
 #' at population scale. From `collect_rows` rows on, a minor collection after
 #' each column usually bounds them at a few columns (garbage that an
 #' automatic collection promoted mid-column waits for the next full one). A
-#' minor collection costs more the more objects the session holds (about
-#' 0.05 s with 10^7 character strings resident), but there is one per column
-#' and per fit, small next to a fit at the sizes where it runs. Other objects
-#' go through `apply()`, as before, which keeps their errors. Either way the
+#' minor collection costs more the more distinct character strings the
+#' session holds (about 0.05 s with 10^7), but there is one per column and per
+#' fit, small next to a fit at the sizes where it runs. Other objects go
+#' through `apply()`, as before, which keeps their errors. Either way the
 #' scales and their names are those `apply(M, 2, f)` returns.
 #' @param M A numeric matrix (as prepared; other objects take `apply()`).
 #' @param method One of "sd", "mad", or "iqr".
