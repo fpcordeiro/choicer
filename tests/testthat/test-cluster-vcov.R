@@ -460,7 +460,7 @@ test_that("clustering composes with weights and with scale_vars", {
   # scale_vars is unwound to natural units, so a scaled clustered fit matches
   # the natural-scale post-hoc cluster variance of an unscaled fit.
   fit_scaled <- fit_mnl(dt, scale_vars = "sd", cluster_col = "person")
-  fit_plain <- fit_mnl(dt)
+  fit_plain <- fit_mnl(dt, scale_vars = "none")
   expect_equal(vcov(fit_scaled),
                vcov(fit_plain, type = "cluster", cluster = cl),
                tolerance = 1e-6)

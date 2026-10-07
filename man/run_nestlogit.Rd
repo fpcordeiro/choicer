@@ -62,7 +62,9 @@ unique. If \code{NULL}, default names are generated.}
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 or a custom function. See \code{\link{run_mnlogit}} for details.}
 
-\item{control}{List of optimizer-specific control parameters.}
+\item{control}{List of optimizer-specific control parameters. With
+\code{scale_vars} other than \code{"none"}, settings in parameter units
+apply to the scaled coordinates.}
 
 \item{weights}{Optional weight vector (convenience workflow). If \code{NULL},
 equal weights are used. All weights must be finite and strictly positive.}
@@ -102,8 +104,8 @@ within each \code{id_col}. Supplying \code{cluster_col} without an explicit
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control}
 instead.}
 
-\item{scale_vars}{How the optimizer's coordinates are scaled; the estimator
-is the same whatever the choice, which affects how fast, and whether, the
+\item{scale_vars}{How the optimizer's coordinates are scaled. The choice
+does not change the estimator; it changes how fast, and whether, the
 optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
 (sample standard deviation), \code{"mad"} (\code{stats::mad}),
 \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
@@ -119,14 +121,17 @@ the start values, so when the nest parameters end far from their start
 (0.5) they can mislead the optimizer, which then converges more slowly
 than without them; hence \code{"none"} is the default here. Where the
 diagonal is unusable (no finite, positive entry), the parameters are left
-unscaled, with a message. The optimizer, a custom one included, works in
-the scaled coordinates (\code{theta_init}, in natural units, and the nest
-parameters' lower bound of 1e-16 are mapped), so settings in parameter
-units in \code{control} (nloptr's \code{xtol_abs}, optim's
-\code{parscale}) apply to the scaled coordinates. Coefficients are
-reported in natural units and the standard errors computed in them, with
-the information matrix equilibrated before it is inverted, so reported
-quantities do not depend on this choice beyond the optimizer's tolerance.}
+unscaled, with a message. With any choice but \code{"none"}, the
+optimizer, a custom one included, works in the scaled coordinates
+(\code{theta_init}, in natural units, and the nest parameters' lower bound
+of 1e-16 are mapped), so settings in parameter units in \code{control}
+(nloptr's \code{xtol_abs}; optim's \code{parscale}, and \code{pgtol},
+which then applies to the scaled gradient) apply to the scaled
+coordinates; \code{"none"} keeps the parameters' units. Coefficients are
+reported in natural units and the standard errors computed in them (for
+any choice but \code{"none"}, with the information matrix equilibrated
+before it is inverted), so reported quantities do not depend on this
+choice beyond the optimizer's tolerance.}
 }
 \value{
 A \code{choicer_nl} object (inherits from \code{choicer_fit}).

@@ -167,11 +167,12 @@ test_that("\"bhhh\" fits reach the unscaled optimum", {
   for (cs in cases) {
     dt <- sc_data(if (cs$panel) 80L else 200L, if (cs$panel) 3L else 1L,
                   51L + cs$panel, cs$ioo)
-    none <- do.call(sc_fit, c(list(dt, cs$panel), cs$args))
+    none <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "none"), cs$args))
     bh <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "bhhh"), cs$args))
     # The unscaled optimizer polishing from the "bhhh" estimates: the optimum
     # both reach (unscaled from its cold start may stop short of it).
-    ref <- do.call(sc_fit, c(list(dt, cs$panel, theta_init = coef(bh)), cs$args))
+    ref <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "none",
+                                  theta_init = coef(bh)), cs$args))
     what <- if (cs$panel) "panel" else "cross-section"
     expect_gte(bh$loglik, none$loglik - 1e-6, label = what)
     expect_equal(bh$loglik, ref$loglik, tolerance = 1e-8, label = what)
@@ -219,7 +220,8 @@ test_that("\"none\" hands the optimizer the natural problem", {
     stop("captured")
   })
   expect_error(run_mxlogit(dt, "id", "alt", "choice", c("x1", "x2"),
-                           c("w1", "w2"), S = 10L), "captured")
+                           c("w1", "w2"), S = 10L, scale_vars = "none"),
+               "captured")
   expect_identical(seen$theta_init, c(0, 0, log(0.5), log(0.5), 0, 0, 0))
   expect_identical(seen$lower, rep(-Inf, 7))
   expect_identical(seen$upper, rep(Inf, 7))
@@ -246,8 +248,9 @@ test_that("\"bhhh\" hands the optimizer mapped start values and bounds", {
                   r = eval_f(theta_init))
     stop("captured")
   })
+  # No scale_vars: the default is "bhhh"
   expect_error(run_mxlogit(dt, "id", "alt", "choice", c("x1", "x2"),
-                           c("w1", "w2"), S = 10L, scale_vars = "bhhh",
+                           c("w1", "w2"), S = 10L,
                            lower = c(x2 = -30, L_11 = -3),
                            upper = c(x1 = 0.5)), "captured")
   th0 <- c(0, 0, log(0.5), log(0.5), 0, 0, 0)
@@ -455,9 +458,29 @@ test_that("nested logit \"bhhh\" maps the start values and the nest parameters' 
 test_that("a scaled fit's start values must have one value per parameter", {
   mxlp_threads(1L)
   on.exit(mxlp_threads(2L), add = TRUE)
+  # The default ("bhhh") checks them before its gradient pass.
+  dm <- sc_data(60L, 1L, 71L)
+  fit_x <- function(th) run_mxlogit(dm, "id", "alt", "choice", c("x1", "x2"),
+                                    c("w1", "w2"), S = 10L, theta_init = th)
+  expect_error(fit_x(rep(0, 8L)), "one value per parameter (7); got 8",
+               fixed = TRUE)
+  expect_error(fit_x(c(0, NA, 0, 0, 0, 0, 0)), "`theta_init` must be finite",
+               fixed = TRUE)
+})
+
+test_that("a scaled nested logit's start values must have one value per parameter", {
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
   dt <- nl_sc_data(200L, 22L)
   expect_error(suppressMessages(run_nestlogit(
     dt, "id", "j", "choice", c("X", "W"), "nest", scale_vars = "sd",
     theta_init = rep(0.1, 8L))), "one value per parameter (9); got 8",
     fixed = TRUE)
+})
+
+test_that("\"bhhh\" is the mixed and multinomial logits' default, \"none\" the nested logit's", {
+  default <- function(f) eval(formals(f)$scale_vars)[1L]
+  expect_identical(default(run_mxlogit), "bhhh")
+  expect_identical(default(run_mnlogit), "bhhh")
+  expect_identical(default(run_nestlogit), "none")
 })

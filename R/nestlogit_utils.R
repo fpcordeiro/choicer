@@ -34,7 +34,9 @@
 #'   unique. If \code{NULL}, default names are generated.
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 #'   or a custom function. See \code{\link{run_mnlogit}} for details.
-#' @param control List of optimizer-specific control parameters.
+#' @param control List of optimizer-specific control parameters. With
+#'   \code{scale_vars} other than \code{"none"}, settings in parameter units
+#'   apply to the scaled coordinates.
 #' @param weights Optional weight vector (convenience workflow). If \code{NULL},
 #'   equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
@@ -65,8 +67,8 @@
 #'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
 #'   instead.
-#' @param scale_vars How the optimizer's coordinates are scaled; the estimator
-#'   is the same whatever the choice, which affects how fast, and whether, the
+#' @param scale_vars How the optimizer's coordinates are scaled. The choice
+#'   does not change the estimator; it changes how fast, and whether, the
 #'   optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
 #'   (sample standard deviation), \code{"mad"} (\code{stats::mad}),
 #'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
@@ -82,14 +84,17 @@
 #'   (0.5) they can mislead the optimizer, which then converges more slowly
 #'   than without them; hence \code{"none"} is the default here. Where the
 #'   diagonal is unusable (no finite, positive entry), the parameters are left
-#'   unscaled, with a message. The optimizer, a custom one included, works in
-#'   the scaled coordinates (\code{theta_init}, in natural units, and the nest
-#'   parameters' lower bound of 1e-16 are mapped), so settings in parameter
-#'   units in \code{control} (nloptr's \code{xtol_abs}, optim's
-#'   \code{parscale}) apply to the scaled coordinates. Coefficients are
-#'   reported in natural units and the standard errors computed in them, with
-#'   the information matrix equilibrated before it is inverted, so reported
-#'   quantities do not depend on this choice beyond the optimizer's tolerance.
+#'   unscaled, with a message. With any choice but \code{"none"}, the
+#'   optimizer, a custom one included, works in the scaled coordinates
+#'   (\code{theta_init}, in natural units, and the nest parameters' lower bound
+#'   of 1e-16 are mapped), so settings in parameter units in \code{control}
+#'   (nloptr's \code{xtol_abs}; optim's \code{parscale}, and \code{pgtol},
+#'   which then applies to the scaled gradient) apply to the scaled
+#'   coordinates; \code{"none"} keeps the parameters' units. Coefficients are
+#'   reported in natural units and the standard errors computed in them (for
+#'   any choice but \code{"none"}, with the information matrix equilibrated
+#'   before it is inverted), so reported quantities do not depend on this
+#'   choice beyond the optimizer's tolerance.
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
@@ -279,7 +284,11 @@ run_nestlogit <- function(
     sX <- .column_scales(input_data$X, scale_vars)
     .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
   }
-  opg0 <- if (scale_vars == "bhhh") model_f(theta_init, opg_diag = TRUE)$opg_diag
+  if (scale_vars != "none") .check_theta_init(theta_init, n_params)
+  t_bpass <- system.time(
+    opg0 <- if (scale_vars == "bhhh") model_f(theta_init, opg_diag = TRUE)$opg_diag,
+    gcFirst = FALSE
+  )
   map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
                          opg_diag = opg0)
 
@@ -292,6 +301,7 @@ run_nestlogit <- function(
     )
   })
 
+  elapsed <- elapsed + t_bpass  # "bhhh"'s gradient pass counts
   message("Optimization run time ", convertTime(elapsed))
 
   # Estimates in natural units

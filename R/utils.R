@@ -408,6 +408,27 @@ resolve_var_index <- function(var, col_names) {
   (theta - map$shift) / map$scale
 }
 
+#' Start values a scaled fit can map
+#'
+#' A scaled fit maps `theta_init` to the optimizer's coordinates (and, for
+#' `"bhhh"`, evaluates the BHHH diagonal there) before the kernels check it:
+#' one finite value per parameter, or a clear error.
+#'
+#' @param theta_init Start values in natural units.
+#' @param n_params Number of parameters.
+#' @returns `theta_init`, invisibly.
+#' @noRd
+.check_theta_init <- function(theta_init, n_params) {
+  if (length(theta_init) != n_params) {
+    stop("`theta_init` must have one value per parameter (", n_params,
+         "); got ", length(theta_init), ".", call. = FALSE)
+  }
+  if (!all(is.finite(theta_init))) {
+    stop("`theta_init` must be finite.", call. = FALSE)
+  }
+  invisible(theta_init)
+}
+
 #' Run the optimizer in the coordinates of a `scale_vars` map
 #'
 #' Maps the start values and bounds, given in natural units, to the
@@ -425,10 +446,7 @@ resolve_var_index <- function(var, col_names) {
                                      lower = NULL, upper = NULL,
                                      control = list()) {
   if (!is.null(map)) {
-    if (length(theta_init) != length(map$scale)) {
-      stop("`theta_init` must have one value per parameter (",
-           length(map$scale), "); got ", length(theta_init), ".", call. = FALSE)
-    }
+    .check_theta_init(theta_init, length(map$scale))
     theta_init <- .to_coordinates(theta_init, map)
     if (!is.null(lower)) lower <- .to_coordinates(lower, map)
     if (!is.null(upper)) upper <- .to_coordinates(upper, map)

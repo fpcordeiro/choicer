@@ -267,7 +267,7 @@ test_that("fit objects keep their shape and their own draws", {
   expect_identical(unname(with_data$param_scale[with_data$param_map$beta]),
                    unname(1 / with_data$sX))
   expect_identical(names(with_data$param_shift), names(coef(with_data)))
-  none <- vop_mxl_fit(dt)
+  none <- vop_mxl_fit(dt, scale_vars = "none")
   expect_identical(unname(none$param_scale), rep(1, length(coef(none))))
   expect_identical(unname(none$param_shift), rep(0, length(coef(none))))
 
