@@ -19,7 +19,7 @@ run_mnlogit(
   include_outside_option = FALSE,
   use_asc = TRUE,
   keep_data = TRUE,
-  scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
+  scale_vars = c("bhhh", "none", "sd", "mad", "iqr"),
   se_method = c("hessian", "bhhh", "sandwich", "cluster"),
   cluster_col = NULL,
   nloptr_opts = NULL
@@ -47,10 +47,15 @@ a custom function with signature \code{f(theta_init, eval_f, lower, upper, contr
 where \code{eval_f(theta)} returns \code{list(objective, gradient)}.
 Must return a list with \code{par}/\code{value} (or \code{solution}/\code{objective}).
 If the custom function accepts \code{control} or \code{...}, the \code{control}
-argument is forwarded; otherwise it is silently ignored.}
+argument is forwarded; otherwise it is silently ignored.
+With \code{scale_vars} other than \code{"none"}, it receives
+\code{theta_init}, \code{lower}, \code{upper} and \code{eval_f} in the
+scaled coordinates, and its \code{par} is mapped back.}
 
 \item{control}{List of optimizer-specific control parameters passed to the
-chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr).}
+chosen optimizer (e.g., \code{list(maxeval = 2000)} for nloptr). With
+\code{scale_vars} other than \code{"none"}, settings in parameter units
+apply to the scaled coordinates.}
 
 \item{weights}{Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.}
 
@@ -70,27 +75,31 @@ weighting; pair with \code{se_method = "sandwich"} for valid inference.}
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in the
 returned object for \code{predict()} and post-estimation functions.}
 
-\item{scale_vars}{How the optimizer's coordinates are scaled; the estimator
-is the same whatever the choice. One of \code{"none"} (default),
-\code{"sd"} (sample standard deviation), \code{"mad"} (\code{stats::mad}),
-\code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
-\code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
+\item{scale_vars}{How the optimizer's coordinates are scaled. The choice
+does not change the estimator; it changes how fast, and whether, the
+optimizer reaches the maximum. \code{"bhhh"} (default) scales each
+parameter by the inverse square root of the diagonal of the BHHH (outer
+product of gradients) matrix at the start values (all zeros), rounded to a
+power of two, from one extra gradient pass, so that the BHHH diagonal, an
+estimate of the curvature, is near one at the start values in every
+coordinate, the constants' included (theirs follow the alternatives'
+shares). Where the diagonal is unusable (no finite, positive entry), the
+parameters are left unscaled, with a message. \code{"none"} hands the
+optimizer the parameters as they are (the default in choicer 0.2.x). With
+\code{"sd"} (sample standard deviation), \code{"mad"} (\code{stats::mad})
+or \code{"iqr"} (\code{stats::IQR(x) / 1.349}), the optimizer works on the
 coefficients \code{X} would have with every column divided by the chosen
-scale (each coefficient times its column's scale), to improve the
-conditioning of its problem; the data are not divided, and the fit holds
-no scaled copy of them. \code{"bhhh"} scales each parameter instead, by
-the inverse square root of the diagonal of the BHHH (outer product of
-gradients) matrix at the start values (all zeros), rounded to a power of
-two, from one extra gradient pass: it also reaches the constants, whose
-curvatures follow the alternatives' shares. Where the diagonal is unusable
-(no finite, positive entry), the parameters are left unscaled, with a
-message. The optimizer, a custom one included, works in the scaled
-coordinates, so settings in parameter units in \code{control} (nloptr's
-\code{xtol_abs}, optim's \code{parscale}) apply to the scaled coordinates.
-Coefficients are reported in natural units and the standard errors
-computed in them, with the information matrix equilibrated before it is
-inverted, so reported quantities do not depend on this choice beyond the
-optimizer's tolerance.}
+scale (each coefficient times its column's scale); the constants keep
+their scale, the data are not divided, and the fit holds no scaled copy of
+them. With any choice but \code{"none"} (so by default), the optimizer, a
+custom one included, works in the scaled coordinates, so settings in
+parameter units in \code{control} (nloptr's \code{xtol_abs}; optim's
+\code{parscale}, and \code{pgtol}, which then applies to the scaled
+gradient) apply to the scaled coordinates; \code{"none"} keeps the
+parameters' units. Coefficients are reported in natural units and the
+standard errors computed in them (for any choice but \code{"none"}, with
+the information matrix equilibrated before it is inverted), so reported
+quantities do not depend on this choice beyond the optimizer's tolerance.}
 
 \item{se_method}{Method for computing standard errors: \code{"hessian"}
 (default, analytical Hessian), \code{"bhhh"} (outer product of gradients),

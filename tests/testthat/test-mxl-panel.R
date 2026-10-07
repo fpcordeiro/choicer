@@ -507,7 +507,7 @@ test_that("scale_vars is invariant on a panel fit", {
   dt[, `:=`(x1 = 10 * x1, w2 = 5 * w2)]
   ctrl <- list(xtol_rel = 1e-12, maxeval = 5000L)
   f_none <- pnl_fit(dt, person_col = "person", rc_correlation = TRUE,
-                    S = 40L, control = ctrl)
+                    S = 40L, control = ctrl, scale_vars = "none")
   f_sd <- pnl_fit(dt, person_col = "person", rc_correlation = TRUE,
                   S = 40L, control = ctrl, scale_vars = "sd")
 
@@ -917,8 +917,13 @@ test_that("population moments of shifted log-normal coefficients match the close
 test_that("scale_vars leaves a panel fit's variances unchanged at a fixed theta", {
   b <- .pnl_base()
   theta <- unname(coef(b$fit))
-  unscaled <- .pnl_se_fits()$store
-  for (sv in c("sd", "mad")) {
+  # The unscaled fits at theta (the default scales the coordinates)
+  unscaled <- lapply(stats::setNames(nm = names(pnl_se_types)), function(m) {
+    pnl_fit(b$dt, person_col = "person", scale_vars = "none", se_method = m,
+            cluster_col = if (m == "cluster") "grp", theta_init = theta,
+            optimizer = pnl_at)
+  })
+  for (sv in c("sd", "mad", "bhhh")) {
     for (m in names(pnl_se_types)) {
       what <- sprintf("[scale_vars = %s, se_method = %s]", sv, m)
       f <- pnl_fit(b$dt, person_col = "person", scale_vars = sv,
