@@ -213,15 +213,18 @@ test_that("multinomial and nested logit variances follow their post-hoc routes",
   simn <- simulate_nl_data(N = 400, seed = 22)
   dn <- data.table::as.data.table(simn$data)
   dn[, clus := (id - 1L) %/% 10L]
-  for (se in c("hessian", "numeric", "bhhh", "sandwich", "cluster")) {
-    fit <- suppressMessages(run_nestlogit(
-      dn, "id", "j", "choice", c("X", "W"), "nest", se_method = se,
-      cluster_col = if (se == "cluster") "clus"))
-    post <- suppressMessages(vcov(fit, type = vop_type(se)))
-    if (se %in% c("hessian", "numeric", "cluster")) {
-      expect_identical(post, fit$vcov, label = paste("NL", se))
-    } else {
-      expect_equal(post, fit$vcov, tolerance = 1e-10, label = paste("NL", se))
+  for (sv in c("none", "bhhh")) {
+    for (se in c("hessian", "numeric", "bhhh", "sandwich", "cluster")) {
+      what <- paste("NL", sv, se)
+      fit <- suppressMessages(run_nestlogit(
+        dn, "id", "j", "choice", c("X", "W"), "nest", se_method = se,
+        cluster_col = if (se == "cluster") "clus", scale_vars = sv))
+      post <- suppressMessages(vcov(fit, type = vop_type(se)))
+      if (se %in% c("hessian", "numeric", "cluster")) {
+        expect_identical(post, fit$vcov, label = what)
+      } else {
+        expect_equal(post, fit$vcov, tolerance = 1e-10, label = what)
+      }
     }
   }
 })

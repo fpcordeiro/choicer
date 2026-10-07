@@ -24,7 +24,8 @@ run_nestlogit(
   keep_data = TRUE,
   se_method = c("hessian", "numeric", "bhhh", "sandwich", "cluster"),
   cluster_col = NULL,
-  nloptr_opts = NULL
+  nloptr_opts = NULL,
+  scale_vars = c("none", "sd", "mad", "iqr", "bhhh")
 )
 }
 \arguments{
@@ -50,8 +51,10 @@ named like a generated parameter: \code{Lambda_<k>}, or
 \item{use_asc}{Logical indicating whether to include alternative specific
 constants (ASCs).}
 
-\item{theta_init}{Optional initial parameter vector. If \code{NULL}, a
-default vector is used.}
+\item{theta_init}{Optional initial parameter vector in natural units,
+ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one
+per nest of two or more alternatives) and the constants. If \code{NULL}:
+0 for the coefficients and constants, 0.5 for each nest parameter.}
 
 \item{param_names}{Optional vector of parameter names, which must be
 unique. If \code{NULL}, default names are generated.}
@@ -98,6 +101,32 @@ within each \code{id_col}. Supplying \code{cluster_col} without an explicit
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control}
 instead.}
+
+\item{scale_vars}{How the optimizer's coordinates are scaled; the estimator
+is the same whatever the choice, which affects how fast, and whether, the
+optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
+(sample standard deviation), \code{"mad"} (\code{stats::mad}),
+\code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
+\code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
+coefficients \code{X} would have with every column divided by the chosen
+scale (each coefficient times its column's scale), to improve the
+conditioning of its problem; the nest parameters and constants keep their
+scale, and the data are not divided. \code{"bhhh"} scales every parameter,
+nest parameters included, by the inverse square root of the diagonal of
+the BHHH (outer product of gradients) matrix at the start values, rounded
+to a power of two, from one extra gradient pass. Its scales are fixed at
+the start values, so when the nest parameters end far from their start
+(0.5) they can mislead the optimizer, which then converges more slowly
+than without them; hence \code{"none"} is the default here. Where the
+diagonal is unusable (no finite, positive entry), the parameters are left
+unscaled, with a message. The optimizer, a custom one included, works in
+the scaled coordinates (\code{theta_init}, in natural units, and the nest
+parameters' lower bound of 1e-16 are mapped), so settings in parameter
+units in \code{control} (nloptr's \code{xtol_abs}, optim's
+\code{parscale}) apply to the scaled coordinates. Coefficients are
+reported in natural units and the standard errors computed in them, with
+the information matrix equilibrated before it is inverted, so reported
+quantities do not depend on this choice beyond the optimizer's tolerance.}
 }
 \value{
 A \code{choicer_nl} object (inherits from \code{choicer_fit}).

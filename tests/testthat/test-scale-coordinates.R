@@ -384,3 +384,80 @@ test_that("a scaled fit's kernels evaluate the natural design", {
     }
   }
 })
+
+# Simulated nested logit data: two nests of 2 and 3 alternatives and a
+# singleton nest holding j = 0 (an inside alternative here, the constants'
+# reference), X in large units.
+nl_sc_data <- function(N, seed) {
+  sim <- simulate_nl_data(N = N, seed = seed)
+  dt <- data.table::as.data.table(sim$data)
+  dt[, X := X * 100]
+  dt
+}
+
+test_that("nested logit scale_vars fits reach the unscaled optimum", {
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  dt <- nl_sc_data(600L, 21L)
+  fit <- function(sv, ...) suppressMessages(run_nestlogit(
+    dt, "id", "j", "choice", c("X", "W"), "nest", scale_vars = sv,
+    control = list(xtol_rel = 1e-10, maxeval = 1000L), ...))
+  bh <- fit("bhhh")
+  sd <- fit("sd")
+  # The unscaled optimizer polishing from the "bhhh" estimates: the optimum
+  # both reach (unscaled from its cold start may stop short of it).
+  ref <- fit("none", theta_init = coef(bh))
+  for (f in list(bh, sd)) {
+    expect_equal(f$loglik, ref$loglik, tolerance = 1e-10)
+    expect_lt(max(abs(coef(f) - coef(ref)) / ref$se), 1e-3)
+    expect_identical(suppressMessages(vcov(f, type = "hessian")), f$vcov)
+  }
+  expect_identical(log2(bh$param_scale), round(log2(bh$param_scale)))
+  expect_identical(unname(bh$sX), c(1, 1))
+  # Column scales reach the coefficients only.
+  pm <- sd$param_map
+  expect_identical(unname(sd$param_scale[pm$beta]), 1 / unname(sd$sX))
+  expect_identical(unname(sd$param_scale[c(pm$lambda, pm$asc)]),
+                   rep(1, length(c(pm$lambda, pm$asc))))
+  expect_identical(unname(sd$param_shift), rep(0, length(coef(sd))))
+  expect_identical(ref$scale_vars, "none")
+  expect_identical(unname(ref$param_scale), rep(1, length(coef(ref))))
+})
+
+test_that("nested logit \"bhhh\" maps the start values and the nest parameters' bound", {
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  dt <- nl_sc_data(200L, 22L)
+  th0 <- c(0.005, -0.3, 0.7, 0.4, 0, 0.1, -0.1, 0.2, 0.1)
+  seen <- NULL
+  local_mocked_bindings(run_optimizer = function(optimizer, theta_init, eval_f,
+                                                 lower = NULL, upper = NULL,
+                                                 control = list()) {
+    seen <<- list(theta_init = theta_init, lower = lower,
+                  r = eval_f(theta_init))
+    stop("captured")
+  })
+  expect_error(run_nestlogit(dt, "id", "j", "choice", c("X", "W"), "nest",
+                             theta_init = th0, scale_vars = "bhhh"),
+               "captured")
+  d <- prepare_nl_data(dt, "id", "j", "choice", c("X", "W"), "nest")
+  g <- nl_loglik_gradient_parallel(th0, d$X, d$alt_idx, d$choice_idx,
+                                   d$nest_idx, d$M, d$weights, TRUE, FALSE,
+                                   opg_diag = TRUE)
+  m <- choicer:::.bhhh_scales(g$opg_diag)
+  expect_true(all(m[3:4] != 1))  # the bound's mapping is visible
+  expect_identical(seen$theta_init, th0 / m)
+  expect_identical(seen$lower, c(-Inf, -Inf, 1e-16 / m[3:4], rep(-Inf, 5)))
+  expect_identical(seen$r$objective, g$objective)
+  expect_identical(seen$r$gradient, g$gradient * m)
+})
+
+test_that("a scaled fit's start values must have one value per parameter", {
+  mxlp_threads(1L)
+  on.exit(mxlp_threads(2L), add = TRUE)
+  dt <- nl_sc_data(200L, 22L)
+  expect_error(suppressMessages(run_nestlogit(
+    dt, "id", "j", "choice", c("X", "W"), "nest", scale_vars = "sd",
+    theta_init = rep(0.1, 8L))), "one value per parameter (9); got 8",
+    fixed = TRUE)
+})
