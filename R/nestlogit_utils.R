@@ -26,8 +26,10 @@
 #'   (advanced workflow). Mutually exclusive with \code{data}.
 #' @param use_asc Logical indicating whether to include alternative specific
 #'   constants (ASCs).
-#' @param theta_init Optional initial parameter vector. If \code{NULL}, a
-#'   default vector is used.
+#' @param theta_init Optional initial parameter vector in natural units,
+#'   ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one
+#'   per nest of two or more alternatives) and the constants. If \code{NULL}:
+#'   0 for the coefficients and constants, 0.5 for each nest parameter.
 #' @param param_names Optional vector of parameter names, which must be
 #'   unique. If \code{NULL}, default names are generated.
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
@@ -63,6 +65,31 @@
 #'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control}
 #'   instead.
+#' @param scale_vars How the optimizer's coordinates are scaled; the estimator
+#'   is the same whatever the choice, which affects how fast, and whether, the
+#'   optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
+#'   (sample standard deviation), \code{"mad"} (\code{stats::mad}),
+#'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
+#'   \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
+#'   coefficients \code{X} would have with every column divided by the chosen
+#'   scale (each coefficient times its column's scale), to improve the
+#'   conditioning of its problem; the nest parameters and constants keep their
+#'   scale, and the data are not divided. \code{"bhhh"} scales every parameter,
+#'   nest parameters included, by the inverse square root of the diagonal of
+#'   the BHHH (outer product of gradients) matrix at the start values, rounded
+#'   to a power of two, from one extra gradient pass. Its scales are fixed at
+#'   the start values, so when the nest parameters end far from their start
+#'   (0.5) they can mislead the optimizer, which then converges more slowly
+#'   than without them; hence \code{"none"} is the default here. Where the
+#'   diagonal is unusable (no finite, positive entry), the parameters are left
+#'   unscaled, with a message. The optimizer, a custom one included, works in
+#'   the scaled coordinates (\code{theta_init}, in natural units, and the nest
+#'   parameters' lower bound of 1e-16 are mapped), so settings in parameter
+#'   units in \code{control} (nloptr's \code{xtol_abs}, optim's
+#'   \code{parscale}) apply to the scaled coordinates. Coefficients are
+#'   reported in natural units and the standard errors computed in them, with
+#'   the information matrix equilibrated before it is inverted, so reported
+#'   quantities do not depend on this choice beyond the optimizer's tolerance.
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
@@ -107,10 +134,12 @@ run_nestlogit <- function(
     keep_data = TRUE,
     se_method = c("hessian", "numeric", "bhhh", "sandwich", "cluster"),
     cluster_col = NULL,
-    nloptr_opts = NULL
+    nloptr_opts = NULL,
+    scale_vars = c("none", "sd", "mad", "iqr", "bhhh")
 ) {
   se_method_default <- missing(se_method)
   se_method <- match.arg(se_method)
+  scale_vars <- match.arg(scale_vars)
   if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
   cl <- match.call()
 
@@ -219,8 +248,13 @@ run_nestlogit <- function(
   # Lower bounds: lambda must be > 0
   theta_lb <- c(rep(-Inf, K_x), rep(1e-16, K_l), rep(-Inf, n_asc))
 
-  # Build eval_f closure
-  eval_f <- function(theta) {
+  # Parameter index map
+  param_map <- list(beta = seq_len(K_x))
+  param_map$lambda <- K_x + seq_len(K_l)
+  if (n_asc > 0) param_map$asc <- K_x + K_l + seq_len(n_asc)
+
+  # The model's objective and gradient at theta; `...` takes opg_diag
+  model_f <- function(theta, ...) {
     nl_loglik_gradient_parallel(
       theta = theta,
       X = input_data$X,
@@ -230,31 +264,39 @@ run_nestlogit <- function(
       M = input_data$M,
       weights = input_data$weights,
       use_asc = use_asc,
-      include_outside_option = input_data$include_outside_option
+      include_outside_option = input_data$include_outside_option,
+      ...
     )
   }
 
-  # Run optimizer
+  # --- The optimizer's coordinates (scale_vars) -------------------------------
+  #   theta_natural = map$scale * theta_t + map$shift
+  # "sd", "mad" and "iqr" take the map from the columns' scales (beta only);
+  # "bhhh" from the BHHH diagonal at the start values, from one gradient pass.
+  sX <- rep(1, K_x); names(sX) <- colnames(input_data$X)
+  col_scaled <- scale_vars %in% c("sd", "mad", "iqr")
+  if (col_scaled && K_x > 0) {
+    sX <- .column_scales(input_data$X, scale_vars)
+    .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
+  }
+  opg0 <- if (scale_vars == "bhhh") model_f(theta_init, opg_diag = TRUE)$opg_diag
+  map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
+                         opg_diag = opg0)
+
+  # Run the optimizer in the map's coordinates
   elapsed <- system.time({
-    opt <- run_optimizer(
-      optimizer = optimizer,
-      theta_init = theta_init,
-      eval_f = eval_f,
-      lower = theta_lb,
-      control = control
+    opt <- .optimize_in_coordinates(
+      map = if (scale_vars != "none") map, optimizer = optimizer,
+      theta_init = theta_init, eval_f = function(theta) model_f(theta),
+      lower = theta_lb, control = control
     )
   })
 
   message("Optimization run time ", convertTime(elapsed))
 
-  # Parameter names and index map
+  # Estimates in natural units
   theta_hat <- opt$par
   names(theta_hat) <- param_names
-
-  # Parameter index map
-  param_map <- list(beta = seq_len(K_x))
-  param_map$lambda <- K_x + seq_len(K_l)
-  if (n_asc > 0) param_map$asc <- K_x + K_l + seq_len(n_asc)
 
   # Extract lambda values
   lambda <- theta_hat[param_map$lambda]
@@ -269,7 +311,9 @@ run_nestlogit <- function(
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
   # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
   # weight-free BHHH routine). For "cluster", the meat is the outer product of
-  # within-cluster sums of weighted scores. No back-transform layer in NL.
+  # within-cluster sums of weighted scores. At the natural estimates; a scaled
+  # fit's matrices are inverted equilibrated, as post hoc.
+  eq <- scale_vars != "none"
   if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- nl_loglik_hessian_parallel(
       theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
@@ -293,7 +337,7 @@ run_nestlogit <- function(
       )
       .score_meat(S_scores, input_data$weights, "cluster", input_data$cluster)
     }
-    vcov_result <- .sandwich_combine(A_bread, B_meat)
+    vcov_result <- .sandwich_combine(A_bread, B_meat, equilibrate = eq)
   } else {
     hess <- switch(
       se_method,
@@ -316,7 +360,7 @@ run_nestlogit <- function(
         include_outside_option = input_data$include_outside_option
       )
     )
-    vcov_result <- invert_hessian(hess)
+    vcov_result <- invert_hessian(hess, equilibrate = eq)
   }
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
@@ -361,7 +405,11 @@ run_nestlogit <- function(
     lambda = lambda,
     nest_idx = input_data$nest_idx,
     se_method = se_method,
-    choice_sampling = choice_sampling
+    choice_sampling = choice_sampling,
+    scale_vars = scale_vars,
+    sX = sX,
+    param_scale = stats::setNames(map$scale, param_names),
+    param_shift = stats::setNames(map$shift, param_names)
   )
 }
 

@@ -425,6 +425,10 @@ resolve_var_index <- function(var, col_names) {
                                      lower = NULL, upper = NULL,
                                      control = list()) {
   if (!is.null(map)) {
+    if (length(theta_init) != length(map$scale)) {
+      stop("`theta_init` must have one value per parameter (",
+           length(map$scale), "); got ", length(theta_init), ".", call. = FALSE)
+    }
     theta_init <- .to_coordinates(theta_init, map)
     if (!is.null(lower)) lower <- .to_coordinates(lower, map)
     if (!is.null(upper)) upper <- .to_coordinates(upper, map)

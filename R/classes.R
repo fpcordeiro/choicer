@@ -173,6 +173,10 @@ new_choicer_mxl <- function(call, coefficients, loglik,
 #'   Huber--White / WESML variance).
 #' @param choice_sampling Optional list recording choice-based-sampling
 #'   provenance (scheme, population/sample shares, meat type), or NULL.
+#' @param scale_vars,sX As for \code{new_choicer_mnl()}.
+#' @param param_scale,param_shift Named numeric vectors (m, c) of the map from
+#'   the optimizer's coordinates to the parameters, theta = m * theta_t + c:
+#'   1s and 0s without scaling.
 #' @returns A choicer_nl object (S3 class)
 #' @noRd
 new_choicer_nl <- function(call, coefficients, loglik,
@@ -183,7 +187,9 @@ new_choicer_nl <- function(call, coefficients, loglik,
                            vcov = NULL, se = NULL, data = NULL,
                            lambda = NULL, nest_idx = NULL,
                            se_method = "hessian",
-                           choice_sampling = NULL) {
+                           choice_sampling = NULL,
+                           scale_vars = "none", sX = NULL,
+                           param_scale = NULL, param_shift = NULL) {
   structure(
     list(
       call = call,
@@ -206,7 +212,11 @@ new_choicer_nl <- function(call, coefficients, loglik,
       lambda = lambda,
       nest_idx = nest_idx,
       se_method = se_method,
-      choice_sampling = choice_sampling
+      choice_sampling = choice_sampling,
+      scale_vars = scale_vars,
+      sX = sX,
+      param_scale = param_scale,
+      param_shift = param_shift
     ),
     class = c("choicer_nl", "choicer_fit")
   )
