@@ -1,5 +1,121 @@
 # choicer (development version)
 
+## Scaling the optimizer's coordinates (`scale_vars`): `"bhhh"` is the new default
+
+- **Default change.** `run_mxlogit()` and `run_mnlogit()` now default to
+  `scale_vars = "bhhh"`, below; `run_nestlogit()` gains `scale_vars` (its last
+  argument) and keeps `"none"`. A fit that uses the default reaches the same
+  estimator's maximum through other coordinates, so its estimates, iteration
+  counts and convergence codes change. With any `scale_vars` but `"none"` (so
+  now by default for the mixed and multinomial logits), settings in parameter
+  units in `control` (nloptr's `xtol_abs`; optim's `parscale`, and `pgtol` for
+  the mixed and nested logits, which optim fits by L-BFGS-B) and custom
+  optimizers act on the scaled coordinates. `scale_vars = "none"` restores the
+  0.2.x path; for a saved fit, `update(fit, scale_vars = "none")`.
+- `scale_vars` chooses how the optimizer's coordinates are scaled; it never
+  changes the estimator or the data. The likelihood is evaluated at the
+  parameters, on the design as supplied, while the optimizer works on rescaled
+  parameters, theta = m * theta_t + c, with the gradient rescaled by the chain
+  rule. Start values and bounds are given in natural units and mapped;
+  estimates and standard errors are reported in natural units.
+- `scale_vars = "bhhh"` scales each parameter by the inverse square root of
+  the diagonal of the BHHH (outer product of gradients) matrix at the start
+  values, rounded to a power of two, from one extra gradient pass. L-BFGS
+  starts every iteration from a single multiple of the identity as its
+  curvature, and in a model with many alternatives the curvatures of the
+  constants (large and small alternatives) and of the Cholesky entries spread
+  over orders of magnitude that no column scale reaches. On simulated designs
+  (census-style, claims-style and small) and on the shipped `mode_choice`
+  data, with the default optimizer (nloptr L-BFGS) and a budget of 2,000
+  likelihood evaluations, `"bhhh"` reached the maximum (log-likelihood within
+  1e-6 of a Newton-polished reference, Newton decrement below 1e-6) in (base
+  runs; reruns from starts perturbed by 1e-13 moved the counts by up to a
+  quarter, never their order):
+  - mixed logit, census-style (20,000 and 200,000 students, 2,530 and 2,620
+    parameters): 42 and 49 evaluations, where `"none"` and `"sd"` had not
+    arrived after 2,000 (they stopped up to 90 log-likelihood units short, and
+    one of those runs reported convergence);
+  - mixed logit, claims-style (518 parameters): 198, against 988 for `"none"`
+    and 998 for `"sd"`;
+  - multinomial logit (509 and 2,521 parameters): 26 and 39, against 787 and
+    1,358 for `"none"`;
+  - small models, `mode_choice` included: 11 to 30, against 19 to 108 for
+    `"none"` and 20 to 31 for `"sd"`; on a small mixed logit `"none"` and
+    `"sd"` both failed at once.
+
+  Over the test suite's default fits, those capped by a test's evaluation
+  limit included, `"bhhh"` took 20% fewer iterations for the multinomial logit
+  (1,532 against 1,915 over 149 fits) and 6% fewer for the mixed logit (3,591
+  against 3,832 over 146). The scales fix the optimizer's metric, not a start
+  that is wrong in a column's units: with the census-style design's columns
+  rescaled by 10^3 or 10^-3, no choice reached the mixed logit's maximum in
+  2,000 evaluations from the default start (Cholesky diagonal 0.5), while from
+  a start in the columns' units `"bhhh"` did in 43 (`"sd"` and `"none"` still
+  did not); the multinomial logit, whose start does not depend on units,
+  reached it with `"bhhh"` in 38 evaluations, against about 1,300 with `"sd"`,
+  while `"none"` reported convergence 1,920 log-likelihood units short. Where
+  the diagonal is unusable at the start values (no finite, positive entry, as
+  when the likelihood overflows there), the parameters are left unscaled, with
+  a message.
+- **What moves with the default.** Where the likelihood is well identified,
+  estimates move within the optimizer's tolerance, and on the designs above
+  (the rescaled one from a start in its units) fits that stopped short of the
+  maximum, or reported a convergence they had not reached, reached it.
+  Standard errors are computed from the equilibrated information (below); they
+  move with the estimates, and where the information is near singular (a
+  variance at its boundary) they can differ widely. Where the data barely
+  identify a direction, estimates can move along it: on a 60-person panel in
+  our reference battery, the constants moved together by 1.0, 0.0005 standard
+  errors, at log-likelihoods 1e-7 apart. On small, degenerate likelihoods the
+  two paths can stop at different points: among the test suite's fits,
+  `"bhhh"` reached a log-likelihood 0.96 higher in one fit whose coefficients
+  diverge (the data separate) and stopped short in two (by 0.09 and 0.02; an
+  alternative never chosen, a random coefficient's variance going to zero).
+- With `optimizer = "optim"`, BFGS for the multinomial logit (its stopping
+  rule `reltol`, relative to the log-likelihood, about 1.5e-8 of its value)
+  and L-BFGS-B for the mixed and nested logits (`factr`, about 2.2e-9) can
+  stop before the accuracy above, scaled or not: on the claims-style
+  multinomial logit, optim reported convergence 0.44 log-likelihood units
+  short with `"bhhh"` (23 evaluations), and 0.52 short with `"none"` (778
+  evaluations, with `maxit` raised to 2,000). `control = list(reltol = )` or
+  `list(factr = )` tightens them; `maxit` (100 by default) caps the
+  iterations.
+- `run_nestlogit()` keeps `"none"` as its default. Its `"bhhh"` scales are
+  fixed at the start values, and when the nest parameters end far from their
+  start (0.5) they can mislead the optimizer: over the test suite's nested
+  logit fits, `"bhhh"` took 14% more iterations than `"none"` (21,190 against
+  18,650 over 102 fits; one fit 540 against 29, to the same maximum), although
+  on one simulated design with a covariate in large units `"none"` failed
+  where `"bhhh"` converged in 27 evaluations, and `"sd"` in 35.
+- `"sd"`, `"mad"` and `"iqr"` keep their meaning (the optimizer works on the
+  parameters the design would have with its columns divided by their scales)
+  but take the same route: the data are never divided, and `run_mnlogit()` no
+  longer holds a scaled copy of `X` while it fits (on the claims-style
+  design's 8.7 million rows and 10 fixed-coefficient columns, a scaled fit's
+  peak heap fell from 1.39 to 0.10 GB, close to an unscaled fit's 0.08 GB).
+  Their estimates move within 1.7e-5 standard errors on our reference battery
+  (1.2e-6 over the test suite's fits).
+- The standard errors of a scaled fit are computed in natural units, at the
+  natural estimates, and its information matrix is equilibrated before it is
+  inverted: scaled by the powers of two nearest (on a log scale) the inverse
+  square roots of its diagonal's magnitudes, which adds no rounding. A fit
+  used to invert the information of the scaled design and transform the result
+  back, while `vcov(fit, type = )` inverted the natural information as it was;
+  both lost digits when the design's columns span orders of magnitude (post
+  hoc, the inversion failed as computationally singular on such a design, and
+  a mixed logit's robust variance from the tests was off by 1.6e-8 relative;
+  now within 1e-15 of an independent computation). A mixed logit's variance at
+  fit time is computed by the route `vcov(fit, type = )` takes post hoc
+  (`"robust"` for `se_method = "sandwich"`), with the fit's own draws, so the
+  two agree, bit for bit on one thread (draws supplied through `eta_draws` are
+  not regenerated post hoc). An unscaled fit's inversion is unchanged.
+- The extra gradient pass of `"bhhh"` counts in the reported optimization
+  time. A scaled fit's `theta_init` must have one finite value per parameter;
+  a shorter or longer vector used to be recycled.
+- Fits record the map in `param_scale` and `param_shift` (1s and 0s for
+  `"none"`); `sX` and `sW` hold the column scales under `"sd"`, `"mad"` and
+  `"iqr"`, and 1s otherwise.
+
 ## Mixed logit — panel likelihood (`person_col`) and conditional tastes
 
 - `run_mxlogit()` / `prepare_mxl_data()` gain `person_col`: the frequentist
@@ -45,11 +161,12 @@
     `person_col`, reports `recovery_table()` and `conditional_tastes()`, and
     contrasts standard errors against a cluster-robust cross-sectional fit of
     the same data.
-  - Apart from the corrections below, default (cross-sectional) behavior is
-    unchanged up to floating-point reassociation (<= 1e-10 relative in the
-    estimation kernels, measured on the reference battery of test
-    configurations); prediction kernels are bit-identical (see also "Mixed
-    logit — prediction at population scale").
+  - Apart from the corrections below and the new default `scale_vars` (see
+    "Scaling the optimizer's coordinates"), default (cross-sectional)
+    behavior is unchanged up to floating-point reassociation (<= 1e-10
+    relative in the estimation kernels, measured on the reference battery of
+    test configurations); prediction kernels are bit-identical (see also
+    "Mixed logit — prediction at population scale").
   - New input guards: a non-`NULL` empty `Ti` is an error, and a
     primary-thread memory check now stops when a single decision maker
     stacks so many alternative rows (tens of millions) that its design rows
@@ -130,7 +247,8 @@
   rounding: at most 3.4e-15 relative on our reference battery of kernel
   configurations, and within the 1e-10 our tests allow for decision makers
   split into draw batches. The numerical changes of substance are the
-  corrections below.
+  corrections below and the new default `scale_vars` (see "Scaling the
+  optimizer's coordinates").
 
 ## Multinomial and nested logit kernels at population scale
 
@@ -404,28 +522,6 @@
   overflowing utility at a draw of zero weight) makes the rows and columns
   of the parameters concerned `NaN`.
 
-## Standard errors of scaled fits
-
-- The standard errors of a fit with `scale_vars` (`run_mxlogit()`,
-  `run_mnlogit()`) are now computed in natural units, at the natural
-  estimates, and its information matrix is equilibrated before it is
-  inverted: scaled by the powers of two nearest (on a log scale) the inverse
-  square roots of its diagonal's magnitudes, which adds no rounding. The
-  estimator and the estimates are unchanged. The fit used to invert the
-  information of the scaled design and transform the result back, while
-  `vcov(fit, type = )` inverted the natural information as it was. Both lost
-  digits when the design's columns span orders of magnitude: post hoc, the
-  inversion failed as computationally singular on such a design, and a mixed
-  logit fit's robust variance from the tests was off by 1.6e-8 relative (now
-  within 1e-15 of an independent computation); at fit time, the scaled
-  design's information could still be ill-conditioned (condition number
-  1.3e10 on one design, against 9 equilibrated), and its standard errors
-  moved by up to 3e-9. A mixed logit's variance at fit time is now computed
-  by the route `vcov(fit, type = )` takes post hoc (`"robust"` for
-  `se_method = "sandwich"`), with the fit's own draws, so the two agree, bit
-  for bit on one thread (draws supplied through `eta_draws` are not
-  regenerated post hoc). Unscaled fits are unchanged.
-
 ## Data preparation at population scale
 
 - `get_halton_normals()` builds the draw cube of `draws = "store"`, at fit
@@ -498,31 +594,27 @@
   used to divide `X` and `W` by their column scales with `sweep()` and keep
   the results beside the original matrices for the whole fit, which also took
   two design-sized temporaries to form. The scales themselves came from
-  `apply()`, which first copies the whole matrix. The estimation kernels now
-  divide each decision maker's rows by the scales as they read them, and the
-  scales are computed a column at a time, collecting each column's temporaries
-  before the next on large designs. Every value is divided exactly as before,
-  so estimates and the optimizer's path are unchanged, bit for bit, and a
-  likelihood evaluation takes as long as before (from 2.3% less
-  to 0.5% more time, within the run-to-run noise: at 10^6 to 10^7 rows and
-  `S = 100` with draws generated on the fly, and with 50 fixed-coefficient
-  covariates at `S = 20` and `100` with draws generated or stored). On the
-  claims- and census-style panels above (8.7 and 9.8 million rows, 13
-  covariates), the memory a scaled fit holds while it optimizes fell by 0.9
-  and 1.0 GB, one copy of `X` and `W`. Fitted from the long data, preparation
-  included, a scaled fit's peak heap is now an unscaled one's: it fell from
-  3.3 to 1.9 times the size of the long data (from 3.4 and 3.9 GB to 2.0 and
-  2.2 GB), with `scale_vars = "sd"` and `"mad"` alike. With the data prepared
-  beforehand, `"sd"` no longer raises the peak (it raised it by 1.9 and
-  1.6 GB) and `"mad"` raises it by 0.3 GB at most (2.6 and 2.3 GB before).
-  Scaling added 0.5-0.6 s to the fit instead of 1.3-1.5 s with `"sd"`, and
-  2.9-3.2 s instead of 3.7-4.2 s with `"mad"` (medians of three alternated
-  runs of one likelihood evaluation and the BHHH variance, under background
-  load, in a session holding little besides the data). The collection after
-  each column takes longer the more distinct character strings a session
+  `apply()`, which first copies the whole matrix. Scaling is now a change of
+  the optimizer's coordinates (see "Scaling the optimizer's coordinates"
+  above), so the data are never divided, and the scales are computed a column
+  at a time, collecting each column's temporaries before the next on large
+  designs. On the claims- and census-style panels above (8.7 and 9.8 million
+  rows, 13 covariates), the memory a scaled fit holds while it optimizes fell
+  by 0.9 and 1.0 GB, one copy of `X` and `W`. Fitted from the long data,
+  preparation included, a scaled fit's peak heap is now an unscaled one's: it
+  fell from 3.3 to 1.9 times the size of the long data (from 3.4 and 3.9 GB to
+  2.0 and 2.2 GB), with `scale_vars = "sd"` and `"mad"` alike. With the data
+  prepared beforehand, `"sd"` raises the peak by 0.06 GB at most (it raised it
+  by 1.9 and 1.6 GB) and `"mad"` by 0.3 GB at most (2.6 and 2.3 GB before).
+  Computing the scales adds 0.5-0.6 s to such a fit with `"sd"` and 2.8-3.3 s
+  with `"mad"` (1.3-1.5 s and 3.7-4.2 s before, with the scaled copies), and
+  `"bhhh"`'s extra gradient pass 0.35-0.46 s (single runs of one likelihood
+  evaluation and the BHHH variance, under background load; the earlier times
+  were medians of three alternated runs). The collection
+  after each column takes longer the more distinct character strings a session
   holds, the data's own included: about 0.05 s with 10^7.
-  `run_mnlogit(scale_vars = )` also computes its scales without copying `X`,
-  but still holds a scaled copy of it while it fits.
+  `run_mnlogit(scale_vars = )` no longer holds a scaled copy of `X` either
+  (see above).
 - `prepare_mnp_data()`, `prepare_hmnl_data()` and `prepare_hmnp_data()` (and
   so `run_mnprobit()`, `run_hmnlogit()` and `run_hmnprobit()`) now also copy
   only the columns the model uses, scan them for missing values one at a

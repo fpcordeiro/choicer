@@ -55,9 +55,11 @@ sim
 
 ## Fit
 
-A robust recipe for mixed logit: warm-start from a plain MNL, scale the
-variables so the Hessian is well conditioned, and use enough Halton draws. Here
-we estimate a full (correlated) covariance of the random coefficients.
+A robust recipe for mixed logit: for a large model, warm-start from a plain MNL
+(as `inst/simulations/mxl_simulation.R` does); let the optimizer work in
+coordinates scaled by the curvature at the start values (the default,
+`scale_vars = "bhhh"`); and use enough Halton draws. Here we estimate a full
+(correlated) covariance of the random coefficients.
 
 ```{r fit}
 fit <- run_mxlogit(
@@ -71,7 +73,7 @@ fit <- run_mxlogit(
   S               = 100L,           # Halton draws per choice situation (no person_col here)
   draws           = "generate",     # generate draws on the fly (low memory)
   seed            = 7L,
-  scale_vars      = "sd",           # condition the Hessian across blocks
+  scale_vars      = "bhhh",         # the optimizer's coordinates (the default)
   se_method       = "bhhh"
 )
 summary(fit)
@@ -87,7 +89,7 @@ the weighted cluster sandwich (`se_method = "cluster"`, with `cluster_col`) and
 have enough independent clusters for its asymptotics.
 
 > **Tip.** For real applications increase the number of draws (`S`) until your
-> estimates are stable, and keep `scale_vars = "sd"`. Stability in `S` is a
+> estimates are stable, and keep the default `scale_vars = "bhhh"`. Stability in `S` is a
 > statistical requirement, not just numerical hygiene: simulated ML with a
 > fixed number of draws is biased — the log of an unbiased probability
 > simulator is not unbiased — and the classical asymptotics require `S` to
@@ -343,8 +345,10 @@ they were data.
 
 For a reportable `run_mxlogit()` application:
 
-1. Fit a transparent MNL benchmark, scale poorly conditioned covariates, and use
-   its estimates to inform explicit `theta_init` values.
+1. Fit a transparent MNL benchmark, put covariates in units where the default
+   start values are reasonable (the random coefficients' standard deviations
+   start at 0.5 per unit of their covariates), and use the benchmark's
+   estimates to inform explicit `theta_init` values.
 2. Run several manually supplied starting values and retain their objective,
    convergence code and substantive outputs. choicer does not yet automate
    multistart estimation.

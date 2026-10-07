@@ -52,13 +52,14 @@
 #'   their scale, the data are not divided, and the fit holds no scaled copy of
 #'   them. With any choice but \code{"none"} (so by default), the optimizer, a
 #'   custom one included, works in the scaled coordinates, so settings in
-#'   parameter units in \code{control} (nloptr's \code{xtol_abs}; optim's
-#'   \code{parscale}, and \code{pgtol}, which then applies to the scaled
-#'   gradient) apply to the scaled coordinates; \code{"none"} keeps the
+#'   parameter units in \code{control} (nloptr's \code{xtol_abs}, optim's
+#'   \code{parscale}) apply to the scaled coordinates; \code{"none"} keeps the
 #'   parameters' units. Coefficients are reported in natural units and the
 #'   standard errors computed in them (for any choice but \code{"none"}, with
-#'   the information matrix equilibrated before it is inverted), so reported
-#'   quantities do not depend on this choice beyond the optimizer's tolerance.
+#'   the information matrix equilibrated before it is inverted), so, where the
+#'   likelihood is well identified and every choice reaches its maximum,
+#'   reported quantities do not depend on this choice beyond the optimizer's
+#'   tolerance.
 #' @param weights Optional vector of weights for each choice situation. If \code{NULL}, equal weights are used. All weights must be finite and strictly positive.
 #' @param weights_col Optional name of a column in \code{data} holding per-row
 #'   weights (convenience workflow only). The column must be constant within each
@@ -228,7 +229,7 @@ run_mnlogit <- function(
   param_map <- list(beta = seq_len(K_x))
   if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
 
-  # --- Variable scaling (optional) --------------------------------------------
+  # --- The optimizer's coordinates: column scales (scale_vars) ----------------
   # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
   # (.coordinate_map()); the kernels evaluate the model at theta on the
   # natural X, and estimates and variances are reported in natural units.
