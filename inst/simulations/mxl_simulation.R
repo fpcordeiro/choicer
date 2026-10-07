@@ -3,7 +3,8 @@
 # Demonstrates the recommended hardening for production specifications:
 #   1. Warm-up MNL fit on the same X block -> structured theta_init for MXL.
 #   2. Cholesky-diagonal bounds via the named-vector form of `lower`/`upper`.
-#   3. `scale_vars = "sd"` for Hessian conditioning across blocks.
+#   3. `scale_vars = "bhhh"` (the default): the optimizer's coordinates
+#      scaled by the BHHH estimate of the curvature at the start values.
 #
 # Run from package root: Rscript inst/simulations/mxl_simulation.R
 
@@ -80,8 +81,8 @@ theta_init[asc_idx] <- mnl_coef[K_x + seq_len(n_asc)]
 # 5) Cholesky bounds (named partial form) =====================================
 # Clip ell_pp in [-5, 5] so each L_pp in [exp(-5), exp(5)] = [0.007, 148].
 # Keeps the optimizer from diverging the diagonal early without constraining
-# the eventual MLE. Bounds are passed in natural units; the package forward-
-# transforms them into scaled space internally.
+# the eventual MLE. Bounds are passed in natural units; the package maps them
+# to the optimizer's coordinates.
 L_diag_names <- paste0("L_", seq_len(K_w), seq_len(K_w))
 lower <- setNames(rep(-5, K_w), L_diag_names)
 upper <- setNames(rep( 5, K_w), L_diag_names)
@@ -105,7 +106,7 @@ fit <- run_mxlogit(
   theta_init = theta_init,
   lower      = lower,
   upper      = upper,
-  scale_vars = "sd",
+  scale_vars = "bhhh",
   se_method  = "bhhh",
   control    = list(print_level = 1L),
   draws = "generate",

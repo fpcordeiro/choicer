@@ -138,8 +138,7 @@ common <- list(
   random_var_cols = c("w1", "w2"),  # random coefficients
   S               = 100L,
   draws           = "generate",
-  seed            = 7L,
-  scale_vars      = "sd"
+  seed            = 7L
 )
 
 # sample_by_choice() records WESML provenance, and choicer deliberately applies

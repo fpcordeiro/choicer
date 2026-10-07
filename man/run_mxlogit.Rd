@@ -93,12 +93,12 @@ constants.}
 \code{NULL}, defaults to zeros for the \eqn{\beta}, \eqn{\mu}, and ASC
 blocks, and \code{log(0.5)} on the Cholesky diagonal (so each diagonal
 factor \eqn{L_{pp} = 0.5}, i.e. a moderate random-coefficient variance of
-\code{0.25}). The zero-on-diagonal alternative corresponds to
-\eqn{L_{pp} = 1} (unit RC variance), which often lets the first L-BFGS
-step overshoot.}
+\code{0.25} per squared unit of its covariate). The zero-on-diagonal
+alternative corresponds to \eqn{L_{pp} = 1} (unit RC variance), which
+often lets the first L-BFGS step overshoot.}
 
 \item{lower, upper}{Optional parameter bounds for the optimizer, in
-natural-scale units (forward-transformed internally to scaled space when
+natural-scale units (mapped to the optimizer's coordinates when
 \code{scale_vars != "none"}). Each accepts three forms:
 \describe{
 \item{\code{NULL}}{(default) Unbounded (\code{-Inf}/\code{Inf}).}
@@ -187,8 +187,10 @@ parameter units in \code{control} (nloptr's \code{xtol_abs}; optim's
 gradient) apply to the scaled coordinates; \code{"none"} keeps the
 parameters' units. Coefficients are reported in natural units and the
 standard errors computed in them (for any choice but \code{"none"}, with
-the information matrix equilibrated before it is inverted), so reported
-quantities do not depend on this choice beyond the optimizer's tolerance.}
+the information matrix equilibrated before it is inverted), so, where the
+likelihood is well identified and every choice reaches its maximum,
+reported quantities do not depend on this choice beyond the optimizer's
+tolerance.}
 
 \item{weights}{Optional weight vector (convenience workflow), one weight per
 choice situation in ascending-id order (see

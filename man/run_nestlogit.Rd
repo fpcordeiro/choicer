@@ -130,8 +130,9 @@ which then applies to the scaled gradient) apply to the scaled
 coordinates; \code{"none"} keeps the parameters' units. Coefficients are
 reported in natural units and the standard errors computed in them (for
 any choice but \code{"none"}, with the information matrix equilibrated
-before it is inverted), so reported quantities do not depend on this
-choice beyond the optimizer's tolerance.}
+before it is inverted), so, where the likelihood is well identified and
+every choice reaches its maximum, reported quantities do not depend on
+this choice beyond the optimizer's tolerance.}
 }
 \value{
 A \code{choicer_nl} object (inherits from \code{choicer_fit}).
