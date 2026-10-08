@@ -345,10 +345,14 @@ they were data.
 
 For a reportable `run_mxlogit()` application:
 
-1. Fit a transparent MNL benchmark, put covariates in units where the default
-   start values are reasonable (the random coefficients' standard deviations
-   start at 0.5 per unit of their covariates), and use the benchmark's
-   estimates to inform explicit `theta_init` values.
+1. Fit a transparent MNL benchmark and use its estimates to inform explicit
+   `theta_init` values. The default start moves with the covariates' units (a
+   normal random coefficient's standard deviation starts at one over its
+   covariate's typical step: 1 for a dummy, the standard deviation for a
+   dense covariate), so the optimizer's path barely depends on them (exactly
+   so, in exact arithmetic, under `scale_vars = "sd"`); a shifted log-normal
+   coefficient's random part, though, has median one in its covariate's units:
+   put such a covariate in units where the coefficient is of order one.
 2. Run several manually supplied starting values and retain their objective,
    convergence code and substantive outputs. choicer does not yet automate
    multistart estimation.

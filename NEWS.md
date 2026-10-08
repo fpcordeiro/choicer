@@ -11,7 +11,9 @@
   units in `control` (nloptr's `xtol_abs`; optim's `parscale`, and `pgtol` for
   the mixed and nested logits, which optim fits by L-BFGS-B) and custom
   optimizers act on the scaled coordinates. `scale_vars = "none"` restores the
-  0.2.x path; for a saved fit, `update(fit, scale_vars = "none")`.
+  0.2.x path, for a mixed logit together with the 0.2.x start values (next
+  section); for a saved fit, `update(fit, scale_vars = "none")` (and, for a
+  mixed logit, `theta_init`).
 - `scale_vars` chooses how the optimizer's coordinates are scaled; it never
   changes the estimator or the data. The likelihood is evaluated at the
   parameters, on the design as supplied, while the optimizer works on rescaled
@@ -29,8 +31,9 @@
   data, with the default optimizer (nloptr L-BFGS) and a budget of 2,000
   likelihood evaluations, `"bhhh"` reached the maximum (log-likelihood within
   1e-6 of a Newton-polished reference, Newton decrement below 1e-6) in (base
-  runs; reruns from starts perturbed by 1e-13 moved the counts by up to a
-  quarter, never their order):
+  runs from the 0.2.x start values, which the mixed logit's default no longer
+  uses (next section); reruns from starts perturbed by 1e-13 moved the counts
+  by up to a quarter, never their order):
   - mixed logit, census-style (20,000 and 200,000 students, 2,530 and 2,620
     parameters): 42 and 49 evaluations, where `"none"` and `"sd"` had not
     arrived after 2,000 (they stopped up to 90 log-likelihood units short, and
@@ -46,17 +49,19 @@
   Over the test suite's default fits, those capped by a test's evaluation
   limit included, `"bhhh"` took 20% fewer iterations for the multinomial logit
   (1,532 against 1,915 over 149 fits) and 6% fewer for the mixed logit (3,591
-  against 3,832 over 146). The scales fix the optimizer's metric, not a start
-  that is wrong in a column's units: with the census-style design's columns
-  rescaled by 10^3 or 10^-3, no choice reached the mixed logit's maximum in
-  2,000 evaluations from the default start (Cholesky diagonal 0.5), while from
-  a start in the columns' units `"bhhh"` did in 43 (`"sd"` and `"none"` still
-  did not); the multinomial logit, whose start does not depend on units,
-  reached it with `"bhhh"` in 38 evaluations, against about 1,300 with `"sd"`,
-  while `"none"` reported convergence 1,920 log-likelihood units short. Where
-  the diagonal is unusable at the start values (no finite, positive entry, as
-  when the likelihood overflows there), the parameters are left unscaled, with
-  a message.
+  against 3,832 over 146, from the 0.2.x start). The scales fix the
+  optimizer's metric, not a start that is wrong in a column's units: with the
+  census-style design's columns rescaled by 10^3 or 10^-3, no choice reached
+  the mixed logit's maximum in 2,000 evaluations from the 0.2.x start
+  (Cholesky diagonal 0.5 in every column's units), which is why the mixed
+  logit's default start is now in the columns' units (next section); from the
+  new start `"bhhh"` reaches the maximum in 54 evaluations (`"sd"` and
+  `"none"` still do not). The multinomial logit, whose start does not depend
+  on units, reached its own maximum on that design with `"bhhh"` in 38
+  evaluations, against about 1,300 with `"sd"`, while `"none"` reported
+  convergence 1,920 log-likelihood units short. Where the diagonal is unusable
+  at the start values (no finite, positive entry, as when the likelihood
+  overflows there), the parameters are left unscaled, with a message.
 - **What moves with the default.** Where the likelihood is well identified,
   estimates move within the optimizer's tolerance, and on the designs above
   (the rescaled one from a start in its units) fits that stopped short of the
@@ -115,6 +120,96 @@
 - Fits record the map in `param_scale` and `param_shift` (1s and 0s for
   `"none"`); `sX` and `sW` hold the column scales under `"sd"`, `"mad"` and
   `"iqr"`, and 1s otherwise.
+
+## Mixed logit — the default start is in the columns' units
+
+- **Default change.** With `theta_init = NULL`, `run_mxlogit()` now starts
+  each normal random coefficient at L_pp = 1 / h_p on the Cholesky diagonal,
+  where h_p is the typical step of its column: the distance between its values
+  for a column with two (a dummy: 1), the mean distance from a value that
+  fills more than half of the column over the other rows (a mostly-zero
+  column), and its standard deviation otherwise. It started at 0.5 whatever
+  the column's units. At the start, a step of h_p in a column now moves the
+  utility by a random amount with standard deviation 1 (the logit error's is
+  about 1.28), whether a price is in cents or in thousands. Rescaling a column
+  divides its row of the Cholesky factor (and its mean, with `rc_mean = TRUE`)
+  by the same factor and changes nothing else, and the start now moves with
+  it: in exact arithmetic, with `scale_vars = "sd"`, `"mad"` or `"iqr"` the
+  optimizer's problem is the same in any units, and with `"bhhh"` the same up
+  to the power-of-two rounding of its scales. A log-normal coefficient keeps
+  L_pp = 0.5, the standard deviation of the logarithm of its random part,
+  which has no units; that random part has median one in the covariate's
+  units, though, so a log-normal covariate still belongs in units where its
+  coefficient is of order one. The estimator is unchanged: a fit that uses the
+  default start reaches the same maximum within the optimizer's tolerance,
+  except where one start or the other stops short of it, or the likelihood has
+  another local maximum or its supremum on a boundary (below). A `theta_init`
+  of zeros with log(0.5) on the Cholesky diagonal restores the 0.2.x start,
+  and with `scale_vars = "none"` the 0.2.x path.
+- **Why.** The optimizer's coordinates (`scale_vars`, above) cannot repair a
+  start in the wrong units. On simulated designs whose columns we rescaled by
+  up to 10^±3 (census-style with 20,000 students, a cross-section of 10^6
+  rows) and on rescaled versions of the shipped `mode_choice` data, the
+  default `"bhhh"` from the 0.2.x start stopped 233 to 1,730 log-likelihood
+  units short of the maximum in 4 of 10 rescalings, three of them reporting
+  convergence (the fourth ran out of the budget), and needed 167 evaluations
+  in a fifth, against 42 on the original units. From the new start it reached
+  the maximum in all 10: in 0.84 to 1.09 times the evaluations it took on the
+  original units in 9 of them (54 on the census-style design rescaled by 10^3
+  and 10^-3, against 56 on its original units), and in 1.8 times as many in
+  the tenth, a rescaling of `mode_choice` (58 against 32; `"bhhh"`'s scales
+  round, and its stopping rule stops, differently in other units, while under
+  `"sd"` every rescaling of `mode_choice` took 29). Over these and the
+  original designs, 16 in all (claims-style with 518 parameters and
+  census-style with 200,000 students included; nloptr, 50 draws, a budget of
+  2,000 evaluations, the accuracy criterion above), the new start took at most
+  1.35 times the evaluations of the best of the five starts we compared on
+  each; the 0.2.x start missed 4 and took up to 3.9 times elsewhere. Against
+  the 0.2.x start: 157 against 219 on the claims-style design (213 in a
+  replicate; 198 in the study above), 44 against 49 on the census-style design
+  at 200,000 students, 56 against 42 at 20,000. Every column of these designs
+  has many values, so their step is the standard deviation.
+- **Dummies.** For a dummy with a share q of ones the standard deviation,
+  sqrt(q (1 - q)), understates the step its coefficient multiplies. On the
+  census-style design with a dummy marking one alternative per situation among
+  the random coefficients, 1 / sd(W_p) starts its L_pp at 6.4 and took 90 and
+  108 evaluations (the dummy's coefficient with standard deviation 1 and 2),
+  against 44 and 66 from the 0.2.x start and 54 and 64 from the new start,
+  whose step for a dummy is 1. In the test suite's fits every random
+  coefficient's column has at least 10 distinct values, none filling more
+  than 29% of the rows, so its step is its standard deviation.
+- **Why not a smaller start.** `"bhhh"` fixes its scales at the start, and
+  with too little heterogeneity there they are too generous for the Cholesky
+  diagonal, whose curvature grows with L_pp: from 0.25 / sd(W_p) `"bhhh"`
+  reported convergence on the cross-section 554 log-likelihood units short.
+  `"none"` and `"sd"` have no such scales, but from 0.5 / sd(W_p) both failed
+  at once on that design, where from 1 / sd(W_p) both reached the maximum (in
+  43 evaluations).
+- **What moves.** Over the test suite's 177 distinct default-start mixed logit
+  fits, those that reached the same maximum took 6.2% fewer iterations.
+  Fourteen, all with the default `"bhhh"`, reached a higher log-likelihood (up
+  to 0.81 higher, on a 30-situation design where the 0.2.x start reported
+  convergence short of it); five, all with `scale_vars = "none"` on
+  deliberately badly scaled designs, a lower one (0.18 to 0.27 lower): there
+  the unscaled optimizer can drive a random coefficient's variance toward
+  zero, where the likelihood flattens and its gradient vanishes. On a weakly
+  identified design in our reference battery whose supremum lies on the
+  boundary (a degenerate covariance), `"none"` and `"sd"` now stop at the
+  interior maximum that `"bhhh"` reached before and still reaches, 0.021 below
+  the supremum: the second random coefficient's variance given the first
+  (L_22²) moves there from nearly zero to about 1.4.
+- Where the default start falls outside `lower`/`upper`, it is moved to the
+  nearest bound, with a message naming the parameters; with the default
+  optimizer such a call used to stop with an error (nloptr refuses a start
+  outside its box). A supplied `theta_init` is used as given. Bounds that hold
+  no start (`lower` above `upper`, `lower = Inf`, `upper = -Inf`) now stop
+  `run_mxlogit()` before the fit, naming the parameters, whatever the start;
+  before, nloptr stopped with its own error, while optim's L-BFGS-B returned a
+  fit with convergence code 52 for `lower` above `upper` and treated an
+  infinite bound on the wrong side as no bound.
+- The columns' steps are read in place, without copying the design (computing
+  standard deviations with `stats::sd()` a column at a time would copy each
+  column and an index of its rows: 1.2 GB more at 98 million rows).
 
 ## Mixed logit — panel likelihood (`person_col`) and conditional tastes
 

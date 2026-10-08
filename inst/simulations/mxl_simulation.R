@@ -54,9 +54,9 @@ mnl_coef <- coef(mnl_fit)
 # 4) Build structured theta_init for MXL ======================================
 # Splice MNL coefficients into the MXL parameter vector block-by-block. The
 # MXL ordering is (beta, [mu], L, ASC); the MNL ordering is (beta, ASC).
-# Default `log(0.5)` on the Cholesky diagonal (L_pp = 0.5, RC variance 0.25)
-# is a moderate prior - much safer than `0` (L_pp = 1, unit variance), which
-# can let the first L-BFGS step push ell_pp toward -Inf.
+# The Cholesky diagonal starts where run_mxlogit()'s default does for these
+# dense columns, at L_pp = 1 / sd(W_p): a one-standard-deviation step in each
+# column moves the utility by a random amount with standard deviation 1.
 K_x    <- ncol(mxl_inputs$X)
 K_w    <- ncol(mxl_inputs$W)
 J      <- nrow(mxl_inputs$alt_mapping)
@@ -69,10 +69,10 @@ theta_init <- numeric(n_params)
 # beta block
 theta_init[seq_len(K_x)] <- mnl_coef[seq_len(K_x)]
 
-# Cholesky block: log(0.5) on diagonals, 0 on off-diagonals
+# Cholesky block: -log(sd(W_p)) on diagonals, 0 on off-diagonals
 sigma_idx          <- K_x + seq_len(L_size)
 diag_pos_in_sigma  <- cumsum(seq_len(K_w))   # row-major diag positions
-theta_init[sigma_idx[diag_pos_in_sigma]] <- log(0.5)
+theta_init[sigma_idx[diag_pos_in_sigma]] <- -log(apply(mxl_inputs$W, 2, sd))
 
 # ASC block: MNL ASCs (last n_asc entries of mnl_coef)
 asc_idx <- K_x + L_size + seq_len(n_asc)
