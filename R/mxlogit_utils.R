@@ -63,6 +63,55 @@
   labels
 }
 
+# run_mxlogit()'s default start, in the columns' units: zero for beta, mu, the
+# Cholesky factor's off-diagonal entries and the constants; on its diagonal
+# (which holds log L_pp), L_pp = 1 / h_p for a normal random coefficient, where
+# h_p is the typical step of its column (design_column_step(), reading W in
+# place): the distance between its values for a column with two (a dummy, a
+# two-level attribute), the mean distance from a value that fills more than
+# half of the column over the other rows (a mostly-zero column), the standard
+# deviation otherwise. A step of h_p in the column then moves the utility by a
+# random amount with standard deviation 1 at the start. For a dummy with a
+# share q of ones the standard deviation, sqrt(q (1 - q)), would understate the
+# step: with one of J alternatives marked per situation, L_pp would start about
+# sqrt(J) times higher, which took about 1.7 times the evaluations on a
+# census-style design. Rescaling a column, W_p -> a W_p, gives the same model
+# with row p of L (and mu_p) divided by a, and this start moves with it, so the
+# optimizer's problem does not depend on the units: in exact arithmetic under
+# scale_vars = "sd" (whose map undoes the rescaling), up to the power-of-two
+# rounding of its scales under "bhhh". From L_pp = 0.5 in each column's own
+# units, fits of rescaled designs stopped hundreds to thousands of
+# log-likelihood units short under every scale_vars. The level errs high:
+# "bhhh" fixes its scales at the start, and too little heterogeneity there
+# makes them too generous for the Cholesky diagonal, whose curvature grows with
+# L_pp (from 0.25 / sd(W_p) a fit reported convergence 554 log-likelihood
+# units short). A log-normal coefficient keeps L_pp = 0.5, the standard
+# deviation of the logarithm of its random part, which has no units; that
+# random part, exp((L eta)_p), has median 1 in the column's units, so no start
+# makes a log-normal column's units irrelevant. A column with no variation
+# (relative to its level), or a step that is not finite, starts at L_pp = 1;
+# steps are clamped to [2^-500, 2^500]. A W that is not double (a hand-built
+# input_data) is read through a double copy.
+.mxl_default_start <- function(n_params, param_map, W, rc_dist,
+                               rc_correlation) {
+  theta <- rep(0, n_params)
+  K_w <- ncol(W)
+  if (!K_w) return(theta)
+  diag_idx <- if (rc_correlation) {
+    param_map$sigma[cumsum(seq_len(K_w))]
+  } else {
+    param_map$sigma
+  }
+  if (!is.double(W)) storage.mode(W) <- "double"
+  s <- design_column_step(W)
+  ok <- is.finite(s) & s > 0
+  log_L <- numeric(K_w)
+  log_L[ok] <- -log(pmin(pmax(s[ok], 2^-500), 2^500))
+  log_L[rc_dist[seq_len(K_w)] %in% 1L] <- log(0.5)
+  theta[diag_idx] <- log_L
+  theta
+}
+
 #' Runs mixed logit estimation
 #'
 #' Estimates a mixed logit model via simulated maximum likelihood.
@@ -136,15 +185,28 @@
 #' @param use_asc Logical indicating whether to include alternative-specific
 #'   constants.
 #' @param theta_init Initial parameter vector in natural-scale units. If
-#'   \code{NULL}, defaults to zeros for the \eqn{\beta}, \eqn{\mu}, and ASC
-#'   blocks, and \code{log(0.5)} on the Cholesky diagonal (so each diagonal
-#'   factor \eqn{L_{pp} = 0.5}, i.e. a moderate random-coefficient variance of
-#'   \code{0.25} per squared unit of its covariate). The zero-on-diagonal
-#'   alternative corresponds to \eqn{L_{pp} = 1} (unit RC variance), which
-#'   often lets the first L-BFGS step overshoot.
+#'   \code{NULL} (default), the start is in the columns' units: zero for the
+#'   \eqn{\beta}, \eqn{\mu} and ASC blocks and the Cholesky factor's
+#'   off-diagonal entries; on its diagonal, \eqn{L_{pp} = 1 / h_p} for a
+#'   normal random coefficient, where \eqn{h_p} is the typical step of its
+#'   column of \eqn{W}: the distance between its values for a column with two
+#'   (a dummy: 1), the mean distance from a value that fills more than half of
+#'   the column over the other rows (a mostly-zero column), and the standard
+#'   deviation otherwise; a column with no variation starts at
+#'   \eqn{L_{pp} = 1}. At the start, a step of \eqn{h_p} in the column then
+#'   moves the utility by a random amount with standard deviation 1, whatever
+#'   the column's units of measurement. A log-normal coefficient starts at
+#'   \eqn{L_{pp} = 0.5}, the standard deviation of the logarithm of its random
+#'   part, which has no units (that random part has median 1 in the column's
+#'   units, so a log-normal covariate belongs in units where its coefficient is
+#'   of order one). Where the default start falls outside
+#'   \code{lower}/\code{upper}, it is moved to the nearest bound, with a
+#'   message. A supplied \code{theta_init} is used as given.
 #' @param lower,upper Optional parameter bounds for the optimizer, in
 #'   natural-scale units (mapped to the optimizer's coordinates when
-#'   \code{scale_vars != "none"}). Each accepts three forms:
+#'   \code{scale_vars != "none"}); \code{lower} must not exceed \code{upper},
+#'   nor be \code{Inf} (nor \code{upper} \code{-Inf}). Each accepts three
+#'   forms:
 #'   \describe{
 #'     \item{\code{NULL}}{(default) Unbounded (\code{-Inf}/\code{Inf}).}
 #'     \item{Unnamed numeric vector of length \code{n_params}}{Full-length
@@ -554,6 +616,17 @@ run_mxlogit <- function(
       "exp(Mu_<variable>)")
   )
 
+  # Normalize lower/upper bounds (natural units); a box that holds no start
+  # is an error here, before the draws, rather than at the optimizer.
+  lower <- .normalize_bound(lower, param_names, -Inf, "lower")
+  upper <- .normalize_bound(upper, param_names,  Inf, "upper")
+  bad <- lower > upper | lower == Inf | upper == -Inf
+  if (any(bad)) {
+    stop("Invalid bounds for ", paste(param_names[bad], collapse = ", "),
+         ": `lower` must not exceed `upper`, `lower` must not be Inf, and ",
+         "`upper` must not be -Inf.", call. = FALSE)
+  }
+
   # Draws for the convenience workflow, built once the inputs have passed
   # the checks above: a store-mode cube can take gigabytes.
   if (has_data) {
@@ -615,27 +688,25 @@ run_mxlogit <- function(
       }
     }
   }
-  # Resolve theta_init (natural units).
-  # Default cold-start: zero on every block except the Cholesky diagonal,
-  # which sits at log(0.5) so each diagonal factor L_pp = 0.5 (RC variance
-  # 0.25). Starting at log(1) = 0 corresponds to L_pp = 1 (unit RC variance),
-  # which is often too large for typical specs and lets the first L-BFGS step
-  # push ell_pp far enough that L_pp underflows / overflows.
+  # Resolve theta_init (natural units). The default start is in the columns'
+  # units (.mxl_default_start()), moved to the nearest bound where it falls
+  # outside the box (the optimizer refuses a start outside it), with a
+  # message. A supplied theta_init is used as given.
   if (is.null(theta_init)) {
-    theta_init <- rep(0, n_params)
-    if (K_w > 0L) {
-      if (rc_correlation) {
-        diag_idx <- param_map$sigma[cumsum(seq_len(K_w))]
-      } else {
-        diag_idx <- param_map$sigma
+    theta_init <- .mxl_default_start(n_params, param_map, input_data$W,
+                                     rc_dist, rc_correlation)
+    moved <- theta_init < lower | theta_init > upper
+    if (any(moved)) {
+      # Parameters pinned by lower == upper are moved without a word.
+      named <- param_names[moved & lower < upper]
+      if (length(named)) {
+        message("The default start of ", paste(utils::head(named, 5L), collapse = ", "),
+                if (length(named) > 5L) paste0(" and ", length(named) - 5L, " more"),
+                " lies outside `lower`/`upper`; it starts at the nearest bound.")
       }
-      theta_init[diag_idx] <- log(0.5)
+      theta_init <- pmin(pmax(theta_init, lower), upper)
     }
   }
-
-  # Normalize lower/upper bounds (natural units).
-  lower <- .normalize_bound(lower, param_names, -Inf, "lower")
-  upper <- .normalize_bound(upper, param_names,  Inf, "upper")
 
   # Resolve generate-mode parameters for C++ kernels.
   # In store mode (draws="store"): gen_seed_cpp = -1L triggers cube path (unchanged behavior).

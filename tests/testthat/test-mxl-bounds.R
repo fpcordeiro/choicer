@@ -47,8 +47,7 @@ test_that("full-length unnamed bounds clip the Cholesky diagonal", {
   # Positions 3, 4 are the Cholesky diagonal entries L_11, L_22.
   lo[3:4] <- -0.3
   up[3:4] <-  0.3
-  # Start inside the box; the default theta_init places log(0.5) ~= -0.693
-  # on the diagonal which is outside the lower bound.
+  # An explicit start inside the box (the default would be moved into it).
   init <- rep(0, n_params)
 
   fit <- suppressMessages(do.call(run_mxlogit, c(
@@ -72,8 +71,8 @@ test_that("named partial bounds clip only the named parameter", {
     list(
       lower = c(L_11 = -0.3),
       upper = c(L_11 =  0.3),
-      # Default theta_init has log(0.5) on the diagonal which would be outside
-      # this tight a lower bound, so cold-start at zero (which is inside).
+      # An explicit start inside these bounds (the default would be moved
+      # into them).
       theta_init = rep(0, n_params)
     )
   )))

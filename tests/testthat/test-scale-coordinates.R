@@ -167,8 +167,11 @@ test_that("\"bhhh\" fits reach the unscaled optimum", {
   for (cs in cases) {
     dt <- sc_data(if (cs$panel) 80L else 200L, if (cs$panel) 3L else 1L,
                   51L + cs$panel, cs$ioo)
-    none <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "none"), cs$args))
     bh <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "bhhh"), cs$args))
+    # The unscaled fit from the 0.2.x start: from the default, on the
+    # cross-section it drives w2's variance onto its zero plateau, 0.18 short.
+    none <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "none",
+                                   theta_init = mxl_start_0_2(bh)), cs$args))
     # The unscaled optimizer polishing from the "bhhh" estimates: the optimum
     # both reach (unscaled from its cold start may stop short of it).
     ref <- do.call(sc_fit, c(list(dt, cs$panel, scale_vars = "none",
@@ -222,10 +225,11 @@ test_that("\"none\" hands the optimizer the natural problem", {
   expect_error(run_mxlogit(dt, "id", "alt", "choice", c("x1", "x2"),
                            c("w1", "w2"), S = 10L, scale_vars = "none"),
                "captured")
-  expect_identical(seen$theta_init, c(0, 0, log(0.5), log(0.5), 0, 0, 0))
+  d <- prepare_mxl_data(dt, "id", "alt", "choice", c("x1", "x2"), c("w1", "w2"))
+  expect_identical(seen$theta_init, choicer:::.mxl_default_start(
+    7L, list(beta = 1:2, sigma = 3:4, asc = 5:7), d$W, c(0L, 0L), FALSE))
   expect_identical(seen$lower, rep(-Inf, 7))
   expect_identical(seen$upper, rep(Inf, 7))
-  d <- prepare_mxl_data(dt, "id", "alt", "choice", c("x1", "x2"), c("w1", "w2"))
   k <- mxl_loglik_gradient_parallel(
     theta = seen$theta_init, X = d$X, W = d$W, alt_idx = d$alt_idx,
     choice_idx = d$choice_idx, M = d$M, weights = d$weights,
@@ -253,8 +257,11 @@ test_that("\"bhhh\" hands the optimizer mapped start values and bounds", {
                            c("w1", "w2"), S = 10L,
                            lower = c(x2 = -30, L_11 = -3),
                            upper = c(x1 = 0.5)), "captured")
-  th0 <- c(0, 0, log(0.5), log(0.5), 0, 0, 0)
   d <- prepare_mxl_data(dt, "id", "alt", "choice", c("x1", "x2"), c("w1", "w2"))
+  # The default start, inside these bounds
+  th0 <- choicer:::.mxl_default_start(
+    7L, list(beta = 1:2, sigma = 3:4, asc = 5:7), d$W, c(0L, 0L), FALSE)
+  expect_gt(th0[3], -3)
   k <- mxl_loglik_gradient_parallel(
     theta = th0, X = d$X, W = d$W, alt_idx = d$alt_idx,
     choice_idx = d$choice_idx, M = d$M, weights = d$weights,
@@ -290,8 +297,12 @@ test_that("\"sd\" hands the optimizer the column map's start values and bounds",
     "sd", list(beta = 1:2, sigma = 3:4, asc = 5:7), 7L,
     sX = choicer:::.column_scales(d$X, "sd"),
     sW = choicer:::.column_scales(d$W, "sd"))
-  th0 <- c(0, 0, log(0.5), log(0.5), 0, 0, 0)
+  th0 <- choicer:::.mxl_default_start(
+    7L, list(beta = 1:2, sigma = 3:4, asc = 5:7), d$W, c(0L, 0L), FALSE)
   expect_identical(seen$theta_init, (th0 - map$shift) / map$scale)
+  # The default start is the design's with its columns standardized, there
+  # at L_pp = 1: the optimizer's log diagonal starts at 0.
+  expect_equal(seen$theta_init[3:4], c(0, 0), tolerance = 1e-14)
   # The log diagonal's shift moves the bound: L_11 >= -3 natural
   expect_identical(unname(seen$lower), c(-Inf, -Inf, -3 - map$shift[3],
                                          rep(-Inf, 4)))

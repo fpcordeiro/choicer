@@ -90,16 +90,29 @@ correlated (convenience workflow). Ignored when \code{input_data} is used
 constants.}
 
 \item{theta_init}{Initial parameter vector in natural-scale units. If
-\code{NULL}, defaults to zeros for the \eqn{\beta}, \eqn{\mu}, and ASC
-blocks, and \code{log(0.5)} on the Cholesky diagonal (so each diagonal
-factor \eqn{L_{pp} = 0.5}, i.e. a moderate random-coefficient variance of
-\code{0.25} per squared unit of its covariate). The zero-on-diagonal
-alternative corresponds to \eqn{L_{pp} = 1} (unit RC variance), which
-often lets the first L-BFGS step overshoot.}
+\code{NULL} (default), the start is in the columns' units: zero for the
+\eqn{\beta}, \eqn{\mu} and ASC blocks and the Cholesky factor's
+off-diagonal entries; on its diagonal, \eqn{L_{pp} = 1 / h_p} for a
+normal random coefficient, where \eqn{h_p} is the typical step of its
+column of \eqn{W}: the distance between its values for a column with two
+(a dummy: 1), the mean distance from a value that fills more than half of
+the column over the other rows (a mostly-zero column), and the standard
+deviation otherwise; a column with no variation starts at
+\eqn{L_{pp} = 1}. At the start, a step of \eqn{h_p} in the column then
+moves the utility by a random amount with standard deviation 1, whatever
+the column's units of measurement. A log-normal coefficient starts at
+\eqn{L_{pp} = 0.5}, the standard deviation of the logarithm of its random
+part, which has no units (that random part has median 1 in the column's
+units, so a log-normal covariate belongs in units where its coefficient is
+of order one). Where the default start falls outside
+\code{lower}/\code{upper}, it is moved to the nearest bound, with a
+message. A supplied \code{theta_init} is used as given.}
 
 \item{lower, upper}{Optional parameter bounds for the optimizer, in
 natural-scale units (mapped to the optimizer's coordinates when
-\code{scale_vars != "none"}). Each accepts three forms:
+\code{scale_vars != "none"}); \code{lower} must not exceed \code{upper},
+nor be \code{Inf} (nor \code{upper} \code{-Inf}). Each accepts three
+forms:
 \describe{
 \item{\code{NULL}}{(default) Unbounded (\code{-Inf}/\code{Inf}).}
 \item{Unnamed numeric vector of length \code{n_params}}{Full-length

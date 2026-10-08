@@ -147,14 +147,20 @@ test_that("a mixed logit's variance is the one vcov() returns post hoc", {
   mxlp_threads(1L)
   on.exit(mxlp_threads(2L), add = TRUE)
   # A design whose unscaled fits' matrices invert with a raw solve() (with
-  # seed 11 the unscaled BHHH is singular to it: a variance near zero).
+  # seed 11 the unscaled BHHH is singular to it: a variance near zero). The
+  # unscaled fits start where 0.2.x did: from the default, the unscaled
+  # optimizer drives w2's variance onto its zero plateau, where the
+  # information is singular. The layout: x1, x2; L_11, L_21, L_22; constants.
   dt <- vop_mxl_data(200L, 1L, 13L)
+  start_0_2 <- c(0, 0, log(0.5), 0, log(0.5),
+                 rep(0, data.table::uniqueN(dt$alt) - 1L))
   for (sv in c("none", "sd")) {
     for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
       fit <- vop_mxl_fit(dt, scale_vars = sv, se_method = se,
                          weights_col = if (se == "sandwich") "w",
                          rc_correlation = TRUE,
-                         cluster_col = if (se == "cluster") "grp")
+                         cluster_col = if (se == "cluster") "grp",
+                         theta_init = if (sv == "none") start_0_2)
       what <- paste(sv, se)
       expect_false(is.null(fit$vcov), label = what)
       expect_identical(suppressMessages(vcov(fit, type = vop_type(se))),

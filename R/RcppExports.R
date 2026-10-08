@@ -1762,6 +1762,36 @@ prep_gather_design <- function(cols, rows, base = NULL) {
     .Call(`_choicer_prep_gather_design`, cols, rows, base)
 }
 
+#' The step of each column of a double matrix, read in place
+#'
+#' The typical step a random coefficient multiplies, behind `run_mxlogit()`'s
+#' default start (`.mxl_default_start()`): for a column with two values (a
+#' dummy, a two-level attribute), the distance between them; for a column in
+#' which one value fills more than half of the rows (a mostly-zero column),
+#' the mean distance from that value over the other rows; otherwise the
+#' sample standard deviation. A 0/1 dummy's step is 1 whatever its share q of
+#' ones, where its standard deviation, sqrt(q (1 - q)), would understate it.
+#' Zero for a column whose step is below 1e-12 of its level (its larger value,
+#' the dominant value or the mean): a constant column, or rounding around a
+#' constant; also for a step that is not finite (a column holding a value that
+#' is not finite) and a matrix with no rows. Squared deviations underflow for
+#' a column whose values are below about 1e-154 in magnitude, and overflow
+#' above about 1e154, which gives 0 too.
+#'
+#' One pass runs Boyer and Moore's majority vote and counts the distinct
+#' values up to three; a second checks the vote and sums; a standard
+#' deviation takes a third, the corrected two-pass sum of squares. The matrix
+#' is read in place, a column at a time, with double sums in a fixed order:
+#' `stats::sd()` on a column would copy it and allocate an index of its rows
+#' (1.2 GB more at 9.8e7 rows).
+#'
+#' @param M A double matrix.
+#' @returns A double vector, one step per column.
+#' @noRd
+design_column_step <- function(M) {
+    .Call(`_choicer_design_column_step`, M)
+}
+
 #' Query choicer OpenMP thread settings
 #'
 #' @return A list with OpenMP availability, active/max thread settings, CPU

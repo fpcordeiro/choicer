@@ -1183,6 +1183,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// design_column_step
+SEXP design_column_step(SEXP M);
+RcppExport SEXP _choicer_design_column_step(SEXP MSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type M(MSEXP);
+    rcpp_result_gen = Rcpp::wrap(design_column_step(M));
+    return rcpp_result_gen;
+END_RCPP
+}
 // thread_info
 Rcpp::List thread_info();
 RcppExport SEXP _choicer_thread_info() {
@@ -1279,6 +1289,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_nl_diversion_ratios_parallel", (DL_FUNC) &_choicer_nl_diversion_ratios_parallel, 8},
     {"_choicer_nl_blp_contraction", (DL_FUNC) &_choicer_nl_blp_contraction, 13},
     {"_choicer_prep_gather_design", (DL_FUNC) &_choicer_prep_gather_design, 3},
+    {"_choicer_design_column_step", (DL_FUNC) &_choicer_design_column_step, 1},
     {"_choicer_thread_info", (DL_FUNC) &_choicer_thread_info, 0},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},
     {"_choicer_set_num_threads", (DL_FUNC) &_choicer_set_num_threads, 1},
