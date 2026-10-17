@@ -496,9 +496,46 @@ run_nloptr <- function(theta_init, eval_f, lower, upper, control) {
   )
 }
 
+#' Keep the last evaluation of the objective
+#'
+#' `stats::optim()` takes the objective (`fn`) and its gradient (`gr`) from
+#' separate functions, and asks for the gradient at the point whose objective
+#' it has just computed (L-BFGS-B's line search can also ask again for the
+#' point it has just evaluated); `eval_f` computes both in one kernel pass.
+#' The result answers a call at the last point evaluated from that
+#' evaluation, and evaluates any other point afresh: BFGS's line search asks
+#' for the objective alone at trial points, CG for the gradient back at its
+#' line search's point once an interpolation step fails. Points match bit for
+#' bit, names included (`identical(num.eq = FALSE, single.NA = FALSE)`: -0 is
+#' not 0). A cached answer stands for a repeat of the call before it, which
+#' leaves `.lift_sentinel()`'s running maximum as it was; a cache of earlier
+#' points would not be exact, since the sentinel's value at a point that
+#' overflows rises with that maximum.
+#'
+#' @param eval_f Function of theta returning `list(objective, gradient)`.
+#' @returns The wrapped function.
+#' @noRd
+.one_point_cache <- function(eval_f) {
+  force(eval_f)
+  last_theta <- NULL
+  last <- NULL
+  function(theta) {
+    if (!identical(theta, last_theta, num.eq = FALSE, single.NA = FALSE)) {
+      res <- eval_f(theta)
+      last_theta <<- theta
+      last <<- res
+    }
+    last
+  }
+}
+
 #' stats::optim adapter
+#'
+#' The objective and the gradient at the point optim has just evaluated share
+#' one kernel pass (`.one_point_cache()`).
 #' @noRd
 run_optim <- function(theta_init, eval_f, lower, upper, control) {
+  eval_f <- .one_point_cache(eval_f)
   fn <- function(theta) eval_f(theta)$objective
   gr <- function(theta) eval_f(theta)$gradient
 
