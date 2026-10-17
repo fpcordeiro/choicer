@@ -763,6 +763,33 @@
   unchanged on every call the test suite makes and on a battery of edge
   cases.
 
+## `optimizer = "optim"` reuses the likelihood pass for the gradient
+
+- With `optimizer = "optim"`, `run_mnlogit()`, `run_mxlogit()` and
+  `run_nestlogit()` no longer repeat the likelihood pass for a gradient at the
+  point just evaluated. `stats::optim()` asks for the objective and its
+  gradient through separate functions, and each call ran the pass, which
+  computes both, so a point at which optim asked for both was evaluated twice;
+  the gradient now comes from the pass that computed the objective. L-BFGS-B,
+  which fits the mixed and nested logits, asks for both at every point, so
+  those fits take about half the evaluations; BFGS, which fits the multinomial
+  logit, also asks for the objective alone, at its line search's trial points,
+  and saves one evaluation per gradient. Over the test suite's fits refitted
+  with `optimizer = "optim"`, the evaluations (the `"bhhh"` pass included)
+  fell from 14,104 to 7,087 for the mixed logit (198 fits), from 12,941 to
+  6,470 for the nested logit (95) and from 4,671 to 3,118 for the multinomial
+  logit (179). On simulated data at one thread, with the default `scale_vars`,
+  the optimizer's time fell from 14.24 to 7.30 s for a mixed logit (two fixed
+  and two normal random coefficients, 100,000 choice situations of two to four
+  alternatives, 50 stored draws), from 8.36 to 4.26 s for a nested logit (two
+  covariates, 500,000 situations of six alternatives in three nests) and from
+  4.29 to 3.15 s for a multinomial logit (two covariates, 1,000,000 situations
+  of two to ten alternatives and an outside option); medians of three
+  alternated runs. Estimates, standard errors, iteration counts and
+  convergence codes are unchanged, bit for bit on one thread. nloptr, the
+  default optimizer, takes the objective and the gradient from one function
+  and is unchanged.
+
 ## Corrections
 
 The following were found while implementing the panel likelihood above and
