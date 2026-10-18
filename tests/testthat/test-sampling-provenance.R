@@ -1,4 +1,6 @@
-# Characterize the shared post-fit WESML contract through the public wrappers.
+# Characterize the shared WESML contract through the public wrappers. Its
+# checks run before the optimizer: the warnings come first, and the error
+# stops the call before the fit.
 # A fixed custom optimizer keeps these tests cheap and platform-independent;
 # data preparation, covariance calculations, and fitted objects remain real.
 provenance_fixture <- function(weights = c(0.5, 1, 2, 0.5, 1, 2)) {
@@ -100,7 +102,7 @@ test_that("weighted provenance and warnings agree across models and input pathwa
           expect_identical(vapply(case$warnings, conditionMessage, character(1)), message)
           expect_true(all(vapply(case$warnings, function(w) is.null(conditionCall(w)),
                                  logical(1))))
-          expect_identical(case$events, c("optimizer", rep("warning", length(message))))
+          expect_identical(case$events, c(rep("warning", length(message)), "optimizer"))
         }
       }
     }
@@ -126,7 +128,7 @@ test_that("uniform weights preserve the distinct convenience and prepared guards
         expect_length(case$warnings, 1L)
         expect_identical(conditionMessage(case$warnings[[1]]), provenance_uniform_warning)
         expect_null(conditionCall(case$warnings[[1]]))
-        expect_identical(case$events, c("optimizer", "warning"))
+        expect_identical(case$events, c("warning", "optimizer"))
       } else {
         expect_s3_class(case$result, "error")
         prepare_name <- paste0("prepare_", model, "_data")
@@ -142,7 +144,7 @@ test_that("uniform weights preserve the distinct convenience and prepared guards
         expect_identical(conditionMessage(case$result), expected)
         expect_null(conditionCall(case$result))
         expect_length(case$warnings, 0L)
-        expect_identical(case$events, c("optimizer", "error"))
+        expect_identical(case$events, "error")
       }
     }
   }

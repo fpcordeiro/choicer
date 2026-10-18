@@ -848,6 +848,24 @@
   sandwich, at 2,620 parameters, 29% and 38% less at one and four threads
   (medians of three alternated runs).
 
+## The fit-time variance's inputs are checked before the optimizer
+
+- The inputs of the variance are now checked before any evaluation of the
+  likelihood (for the mixed logit, before its draws are built), not after the
+  optimizer: the guard on the weights, whose error (a prepared `input_data`
+  that carries choice-based-sampling provenance with uniform weights) now
+  stops the call before the fit and whose warnings (non-uniform weights
+  without `se_method = "sandwich"` or `"cluster"`; that provenance with
+  uniform weights) are printed as they occur, before it (in a loop of fits,
+  once per fit rather than collected at the end); then the fit-time cluster
+  labels (one per choice situation, none missing, and, for a panel mixed
+  logit, constant within each decision maker). The messages are the same, and
+  a call that fails later now gives the guard's warnings as well. Only labels
+  edited in a prepared `input_data` can fail the label checks: the
+  preparations drop the choice situations with a missing value in any column
+  they use, and check that the labels are constant within each choice
+  situation and, with `person_col`, within each decision maker.
+
 ## Corrections
 
 The following were found while implementing the panel likelihood above and
