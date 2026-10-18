@@ -1239,6 +1239,24 @@ unless it says otherwise.
   variance for their standard errors. It now reports the covariance matrix and
   `exp(Mu)` whether or not the variance is available, with `NA` standard
   errors where it is not.
+- `run_mxlogit(use_asc = FALSE)`, the mixed logit without alternative-specific
+  constants, counted the `J - 1` constants of the model with them whatever
+  `use_asc` said. Since 0.2.0 the first evaluation of the likelihood, at start
+  values that many entries too long, stopped with "Theta vector too long: ...
+  Did you mean use_asc = TRUE?". 0.1.0, whose kernels did not check the
+  length, returned the constants as coefficients held at their start of 0, on
+  which the likelihood does not depend: its other estimates were those of the
+  model without constants, but `n_params`, AIC and BIC counted the constants,
+  and every standard error was `NA` (the information is zero in their rows and
+  columns, so singular). It now fits the model without constants: its
+  parameters are the fixed coefficients, the random coefficients' means (with
+  `rc_mean = TRUE`) and their Cholesky factor, `param_map` has no `asc` block,
+  as in `run_mnlogit()` and `run_nestlogit()`, and the default start,
+  `theta_init` and `lower`/`upper` have one entry per parameter, with or
+  without the outside option. Prediction, elasticities, diversion ratios, BLP
+  inversions, log-sums, consumer surplus, WTP, conditional tastes and every
+  `vcov(type = )` work on such fits. Fits with constants (`use_asc = TRUE`,
+  the default) are unchanged, bit for bit.
 - `blp()` on a model fitted without constants (`use_asc = FALSE`) and with
   the outside option (`include_outside_option = TRUE`) started its
   contraction from one zero too many, counting the outside option, which
