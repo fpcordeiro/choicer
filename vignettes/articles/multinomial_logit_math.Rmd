@@ -723,7 +723,8 @@ $$
 
 The eager fit-time path is algebraically identical and may obtain $B$ by calling the
 BHHH accumulator with `weights = w^2`.  Both routes combine the matrices as
-$V=A^{-1}BA^{-1}$.
+$V=A^{-1}BA^{-1}$, computed equilibrated by two solves against the $LU$ factors of the
+equilibrated bread, without forming an inverse (§12.6).
 
 For cluster labels $g(i)$, `se_method = "cluster"` replaces the meat by
 
@@ -744,7 +745,7 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc. Passing
 choice situation (validated constant within `id`), and a provenance guard prevents a
 WESML-labeled sample from being silently fit unweighted.
 
-*Code reference: `mnl_scores_parallel()` / `mnl_bhhh_parallel()` in [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, and `.assemble_score_vcov()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mnl_scores_parallel()` / `mnl_bhhh_parallel()` in [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, `.assemble_score_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 
@@ -800,6 +801,72 @@ search backtrack from pathological trial parameters and are not part of the regu
 finite-utility likelihood.
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
+
+### 12.6 Inverting the Information
+
+Every reported variance of $\hat\theta$ is the inverse of an estimate of the information
+matrix, or a sandwich built on one: $V = \mathcal{I}^{-1}$ with $\mathcal{I}$ the negated
+Hessian $-\nabla^2_\theta \ell(\hat\theta)$ of §4 (`se_method = "hessian"`) or the BHHH
+matrix $\sum_i w_i\, s_i s_i^{\top}$ of §11.3 (`"bhhh"`), or $V = A^{-1} B A^{-1}$ with
+the bread $A$ and meat $B$ of §11.3 (`"sandwich"`) or §11.5 (`"cluster"`). In the data's
+units the diagonal of $\mathcal{I}$ can span many orders of magnitude: a covariate
+measured in thousands next to one measured in thousandths, or the constant of an
+alternative a handful of individuals chose next to that of one most chose. Inverted as it
+is, such a matrix can be refused as computationally singular although only the units make
+it so (`solve()` refuses a matrix whose estimated reciprocal condition number falls below
+the machine epsilon, and the units alone can push it there), and a sandwich built on it
+can lose digits. Every fit, whatever the coordinates its optimizer used (`scale_vars`;
+§1.5 of the [mixed logit article](mixed_logit_math.html)), therefore inverts the
+equilibrated matrix:
+
+$$
+V = D\,(D \mathcal{I} D)^{-1} D, \qquad
+D = \mathrm{diag}(d), \quad d = 2^{\,\mathrm{round}(-\frac{1}{2}\log_2 |\mathrm{diag}(\mathcal{I})|)},
+$$
+
+with $\mathrm{diag}(\mathcal{I})$ the vector of the diagonal entries of $\mathcal{I}$ and
+the functions applied elementwise: $d$ holds the powers of two nearest, on a log scale, to
+the inverse square roots of the diagonal's magnitudes, with an entry of 1 where the
+diagonal entry is zero or not finite and every entry clamped to $[2^{-500}, 2^{500}]$. For
+the sandwich, $V = D\,V_D\,D$ with $V_D = (DAD)^{-1} (DBD) (DAD)^{-1}$ and $D$ from $A$.
+Any $D$ leaves $V$ unchanged in exact arithmetic, and powers of two make the products with
+$D$ exact too, barring overflow or underflow: only the $LU$ factorization and the solves
+round (for the sandwich, also the symmetrization below), on a matrix whose diagonal is
+within a factor of two of one in magnitude except where a diagonal entry is zero or not
+finite, or an entry of $d$ is clamped. The magnitude of the diagonal is used so that an
+information that is not positive definite (away from a maximum) is equilibrated too, and
+its negative variances reported: their standard errors are `NA`, with a message.
+
+$D \mathcal{I} D$ is formed in one working copy, which LAPACK factors in place ($LU$ with
+partial pivoting) with `solve()`'s checks: a pivot that is exactly zero is an error, and
+so, when every factor is finite, is a reciprocal condition number (estimated in the
+1-norm) below the machine epsilon; either error leaves the fit without a variance, its
+standard errors `NA`, with a message. The identity is then solved against the factors into
+the result, as reference LAPACK's `dgesv` does for `solve()`, with two $p \times p$
+matrices besides $\mathcal{I}$ ($p$ the number of parameters) where `solve()` holds three.
+The sandwich is solved twice against the factors of $DAD$, first $(DAD)\,Y = DBD$ and then
+the transposed system $(DAD)^{\top} V_D^{\top} = Y^{\top}$, without forming an inverse:
+two $p \times p$ matrices besides $A$ and $B$ where an explicit inverse and two products
+hold four, and $4\tfrac{2}{3} p^3$ operations against $6\tfrac{2}{3} p^3$. $V_D$ is
+symmetrized, $(V_D + V_D^{\top})/2$, before $D$ is applied. At $p = 17{,}000$ each such
+matrix takes 2.3 GB. The working copy is freed as the call returns, and the package's own
+passes over whole matrices (the scaling, the scan of the factors for non-finite entries,
+the transposition and the symmetrization) run in parallel over columns, without sums
+across threads, so they do not depend on the number of threads. The fit and post-hoc
+`vcov(fit, type = )` and `wesml_vcov()` take this same route.
+
+Against an exact computation on the package's reference battery and tests (963 inversions
+of 477 distinct matrices, of 2 to 13 parameters), a raw inversion refused 52 as singular;
+equilibrated, 44 of them, with raw condition numbers from $4.5 \times 10^{18}$ to
+$1.2 \times 10^{28}$, had condition numbers below 20 and came out with standard errors
+within about $10^{-15}$ relative of exact, while the other eight stayed ill-conditioned or
+singular. Equilibration removes the ill-conditioning that the parameters' units cause, not
+the likelihood's own: a matrix that stays ill-conditioned after it (a likelihood nearly
+flat along a combination of parameters, which no rescaling of the parameters one by one
+removes) keeps only the digits its condition number allows, by any inversion, and one
+singular to working precision is refused either way.
+
+*Code reference: `invert_hessian()`, `.sandwich_combine()` and `.jacobi_scale()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_inverse()` and `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp).*
 
 ---
 

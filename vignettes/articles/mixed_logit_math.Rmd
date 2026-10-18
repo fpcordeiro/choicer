@@ -190,13 +190,9 @@ From $L_{pp} = 0.5$ in each column's own units (the 0.2.x default), no choice of
 
 A log-normal coefficient starts at $\ell_{pp} = \log 0.5$: there $L_{pp}$ is the standard deviation of the logarithm of the coefficient's random part, which has no units. That random part, $\exp((L\eta)_p)$, has median one in any units, so no start makes a log-normal column's units irrelevant: its covariate belongs in units where the coefficient is of order one.
 
-**Variance.** The variance is computed at $\hat\theta$, in natural units, as for an unscaled fit: $V = A^{-1}$ with $A = -H(\hat\theta)$ the information (the negated Hessian of the log-likelihood), the BHHH variance $\big(\sum_u w_u s_u s_u^\top\big)^{-1}$ at $\hat\theta$, or the sandwich $A^{-1} B A^{-1}$ of §9.3 (with $B$ the meat, its weights squared). A scaled fit's natural information can be ill-conditioned for the reason it was scaled, so the matrix $M$ being inverted ($A$, or the BHHH matrix) is equilibrated:
+**Variance.** The variance is computed at $\hat\theta$, in natural units, whatever the coordinates the optimizer used: $V = A^{-1}$ with $A = -H(\hat\theta)$ the information (the negated Hessian of the log-likelihood), the BHHH variance $\big(\sum_u w_u s_u s_u^\top\big)^{-1}$ at $\hat\theta$, or the sandwich $A^{-1} B A^{-1}$ of §9.3 (with $B$ the meat, its weights squared) or its cluster-robust extension (§9.5). The natural information can be ill-conditioned for the reasons a fit is scaled (columns in different units, the constants of rarely and often chosen alternatives), so every fit, scaled or not, inverts it equilibrated, as §5.6 describes.
 
-$$V = D \, (D M D)^{-1} D, \qquad D = \mathrm{diag}\big(2^{\mathrm{round}(-\log_2 |M_{kk}| / 2)}\big),$$
-
-and for the sandwich $V = D \, [(DAD)^{-1} (DBD) (DAD)^{-1}] \, D$, with $D$ from $A$. The products with $D$ are exact (powers of two), so only the inversion rounds (for the sandwich, also the products with the meat and their symmetrization), on a matrix whose diagonal is within a factor of two of one in magnitude. On one test design the natural bread had condition number $2.5 \times 10^{13}$ and the equilibrated one $7.4$; inverted raw, the robust variance was off by $1.6 \times 10^{-8}$ relative, equilibrated by $8 \times 10^{-16}$. The magnitude of the diagonal is used so that an information that is not positive definite away from the optimum is equilibrated too, and its negative variances reported. Post-hoc `vcov(fit, type = )` uses the same route; an unscaled fit keeps the raw inversion.
-
-**The other models.** `run_mnlogit()` and `run_nestlogit()` take the same map: column scales reach the coefficients only ($m = 1/s_k^X$ on $\beta_k$; the constants and the nest parameters keep $m = 1$), and `"bhhh"` reaches every parameter, the nest parameters $\lambda$ included, whose lower bound is mapped with the start values. `run_nestlogit()` keeps `"none"` as its default: the BHHH scales are fixed at $\theta_0$, and nest parameters that end far from their start can leave them misleading.
+**The other models.** `run_mnlogit()` and `run_nestlogit()` take the same map: column scales reach the coefficients only ($m = 1/s_k^X$ on $\beta_k$; the constants and the nest parameters keep $m = 1$), and `"bhhh"` reaches every parameter, the nest parameters $\lambda$ included, whose lower bound is mapped with the start values. `run_nestlogit()` keeps `"none"` as its default: the BHHH scales are fixed at $\theta_0$, and nest parameters that end far from their start can leave them misleading. Their variances are inverted equilibrated in the same way, whatever `scale_vars` (§12.6 of the [multinomial logit article](multinomial_logit_math.html), §5.8 of the [nested logit article](nested_logit_math.html)).
 
 ### 1.6 Likelihood Unit: Cross-Section or Panel
 
@@ -1171,6 +1167,78 @@ scheduling for load balancing (`#pragma omp for schedule(dynamic)`):
   generator covers up to 128 random coefficients; beyond them the functions build the
   cube.
 
+### 5.6 Inverting the Information
+
+Every reported variance of $\hat\theta$ is the inverse of an estimate of the information
+matrix, or a sandwich built on one: $V = \mathcal{I}^{-1}$ with $\mathcal{I}$ the negated
+Hessian $-\nabla^2_\theta \ell(\hat\theta)$ of §4 (`se_method = "hessian"`) or the BHHH
+matrix $\sum_u w_u\, s_u s_u^{\top}$ of §9.5 (`"bhhh"`), or $V = A^{-1} B A^{-1}$ with the
+bread $A$ and meat $B$ of §9.3 (`"sandwich"`) or §9.5 (`"cluster"`). In the data's units
+the diagonal of $\mathcal{I}$ can span many orders of magnitude: a covariate measured in
+thousands next to one measured in thousandths, or the constant of an alternative a handful
+of individuals chose next to that of one most chose. Inverted as it is, such a matrix can
+be refused as computationally singular although only the units make it so (`solve()`
+refuses a matrix whose estimated reciprocal condition number falls below the machine
+epsilon, and the units alone can push it there), and a sandwich built on it can lose
+digits. Every fit, whatever the coordinates its optimizer used (`scale_vars`, §1.5),
+therefore inverts the equilibrated matrix:
+
+$$
+V = D\,(D \mathcal{I} D)^{-1} D, \qquad
+D = \mathrm{diag}(d), \quad d = 2^{\,\mathrm{round}(-\frac{1}{2}\log_2 |\mathrm{diag}(\mathcal{I})|)},
+$$
+
+with $\mathrm{diag}(\mathcal{I})$ the vector of the diagonal entries of $\mathcal{I}$ and
+the functions applied elementwise: $d$ holds the powers of two nearest, on a log scale, to
+the inverse square roots of the diagonal's magnitudes, with an entry of 1 where the
+diagonal entry is zero or not finite and every entry clamped to $[2^{-500}, 2^{500}]$. For
+the sandwich, $V = D\,V_D\,D$ with $V_D = (DAD)^{-1} (DBD) (DAD)^{-1}$ and $D$ from $A$.
+Any $D$ leaves $V$ unchanged in exact arithmetic, and powers of two make the products with
+$D$ exact too, barring overflow or underflow: only the $LU$ factorization and the solves
+round (for the sandwich, also the symmetrization below), on a matrix whose diagonal is
+within a factor of two of one in magnitude except where a diagonal entry is zero or not
+finite, or an entry of $d$ is clamped. The magnitude of the diagonal is used so that an
+information that is not positive definite (away from a maximum) is equilibrated too, and
+its negative variances reported: their standard errors are `NA`, with a message.
+
+$D \mathcal{I} D$ is formed in one working copy, which LAPACK factors in place ($LU$ with
+partial pivoting) with `solve()`'s checks: a pivot that is exactly zero is an error, and
+so, when every factor is finite, is a reciprocal condition number (estimated in the
+1-norm) below the machine epsilon; either error leaves the fit without a variance, its
+standard errors `NA`, with a message. The identity is then solved against the factors into
+the result, as reference LAPACK's `dgesv` does for `solve()`, with two
+$n_\text{params} \times n_\text{params}$ matrices besides $\mathcal{I}$ ($n_\text{params}$
+the number of parameters) where `solve()` holds three. The sandwich is solved twice
+against the factors of $DAD$, first $(DAD)\,Y = DBD$ and then the transposed system
+$(DAD)^{\top} V_D^{\top} = Y^{\top}$, without forming an inverse: two
+$n_\text{params} \times n_\text{params}$ matrices besides $A$ and $B$ where an explicit
+inverse and two products hold four, and $4\tfrac{2}{3} n_\text{params}^3$ operations
+against $6\tfrac{2}{3} n_\text{params}^3$. $V_D$ is symmetrized, $(V_D + V_D^{\top})/2$,
+before $D$ is applied. At $n_\text{params} = 17{,}000$ each such matrix takes 2.3 GB. The
+working copy is freed as the call returns, and the package's own passes over whole
+matrices (the scaling, the scan of the factors for non-finite entries, the transposition
+and the symmetrization) run in parallel over columns, without sums across threads, so they
+do not depend on the number of threads. The fit and post-hoc `vcov(fit, type = )` and
+`wesml_vcov()` take this same route.
+
+On one test design, a mixed logit's robust variance, the bread had condition number
+$1.2 \times 10^{12}$, and $2.6$ equilibrated: its inverse was accurate either way, with
+standard errors within $6 \times 10^{-16}$ relative of an exact computation, but the
+sandwich's standard errors, computed raw from an explicit inverse and two products, were
+off by $2.1 \times 10^{-7}$ relative, and equilibrated by $9 \times 10^{-16}$. Against an
+exact computation on the package's reference battery and tests (963 inversions of 477
+distinct matrices, of 2 to 13 parameters), a raw inversion refused 52 as singular;
+equilibrated, 44 of them, with raw condition numbers from $4.5 \times 10^{18}$ to
+$1.2 \times 10^{28}$, had condition numbers below 20 and came out with standard errors
+within about $10^{-15}$ relative of exact, while the other eight stayed ill-conditioned or
+singular. Equilibration removes the ill-conditioning that the parameters' units cause, not
+the likelihood's own: a matrix that stays ill-conditioned after it (a likelihood nearly
+flat along a combination of parameters, which no rescaling of the parameters one by one
+removes) keeps only the digits its condition number allows, by any inversion, and one
+singular to working precision is refused either way.
+
+*Code reference: `invert_hessian()`, `.sandwich_combine()` and `.jacobi_scale()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_inverse()` and `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp).*
+
 ---
 
 ## 6. Elasticity Computation
@@ -1497,9 +1565,10 @@ $$
 B=\sum_i w_i^2 s_i s_i^T=\texttt{mxl\_bhhh\_parallel}(\widehat\theta;w^2),
 $$
 
-and `vcov(type = "bhhh")` is the same kernel with weights $w$. The matrices are combined
-as $V = A^{-1} B A^{-1}$, and one set of draws, stored or generated from the fit's draw
-metadata, serves both. For clusters $g(i)$, the meat
+and `vcov(type = "bhhh")` is the same kernel with weights $w$. One set of draws, stored or
+generated from the fit's draw metadata, serves both matrices, which are combined as
+$V = A^{-1} B A^{-1}$, computed equilibrated by two solves against the $LU$ factors of the
+equilibrated bread, without forming an inverse (§5.6). For clusters $g(i)$, the meat
 
 $$
 B_{\mathrm{cluster}}=\sum_g
@@ -1524,13 +1593,13 @@ their situations, so a choice-based weight cannot enter it — `run_mxlogit(...,
 its cluster-robust extension here in §9.5 carry no such restriction: both are built from
 whichever likelihood unit's score was actually fit (a decision maker under `person_col`, a
 choice situation otherwise), so they apply to panel fits too, with cluster labels then
-nesting decision makers exactly as above. A scaled fit's variance is computed in
-natural units and inverted equilibrated ($\S$1.5); the Cholesky-to-$\Sigma$ delta method
-($\S$5.2) applies on top, exactly as for any stored `vcov`. User-facing entry points: `wesml_weights()` and
+nesting decision makers exactly as above. The variance is computed in natural units
+and inverted equilibrated (§5.6); the Cholesky-to-$\Sigma$ delta method
+(§5.2) applies on top, exactly as for any stored `vcov`. User-facing entry points: `wesml_weights()` and
 `sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
 estimates with the robust variance; `wesml_vcov()` returns it post hoc.
 
-*Code reference: `mxl_bhhh_parallel()`, `mxl_cluster_meat_parallel()` and `mxl_scores_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `compute_sandwich_vcov()`, `.assemble_score_vcov()`, `.mxl_score_meat()` and (MNL, NL) `.score_meat()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mxl_bhhh_parallel()`, `mxl_cluster_meat_parallel()` and `mxl_scores_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `compute_sandwich_vcov()`, `.assemble_score_vcov()`, `.mxl_score_meat()`, (MNL, NL) `.score_meat()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 
