@@ -33,7 +33,14 @@ at fit time, which sidesteps post-hoc alignment entirely.}
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-Named variance-covariance matrix, or NULL if unavailable.
+Named variance-covariance matrix, or NULL if unavailable: when
+the information is singular, or when the variance failed at fit time (the
+fit warned, and its \code{variance_error} holds the error; see
+\code{\link{run_mnlogit}}). For such a fit, \code{type} computes the
+variance from the stored data and returns it; the fit itself keeps its
+\code{NA} standard errors. Removing the record,
+\code{fit$variance_error <- NULL}, lets \code{summary()} and the other
+methods compute the variance each time they need it.
 }
 \description{
 With no arguments, returns the variance-covariance matrix implied by the
@@ -41,7 +48,9 @@ fit's own \code{se_method} (triggering lazy computation if needed). Passing
 \code{type} recomputes a different variance estimator post hoc from the
 stored data — no refit needed (requires \code{keep_data = TRUE}):
 \describe{
-\item{\code{"hessian"}}{Inverse of the analytical negated Hessian.}
+\item{\code{"hessian"}}{Inverse of the analytical negated Hessian (the
+numerical one for a nested logit fitted with
+\code{se_method = "numeric"}).}
 \item{\code{"bhhh"}}{Inverse of the BHHH/OPG information
 \eqn{\sum_i w_i s_i s_i'}.}
 \item{\code{"robust"}}{Huber-White sandwich
