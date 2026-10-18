@@ -50,10 +50,10 @@ Mutually exclusive with \code{input_data}.}
 
 \item{covariate_cols}{Vector of column names for fixed covariates. None
 may take a name the model gives its parameters, or prints for them in
-\code{summary()}: \code{ASC_<label>}, \code{L_<i><j>} and
-\code{Sigma_<i><j>}, and with \code{rc_mean = TRUE}
-\code{Mu_<variable>} and, for a log-normal coefficient,
-\code{exp(Mu_<variable>)}.}
+\code{summary()}: \code{L_<i><j>} and \code{Sigma_<i><j>}, with
+\code{use_asc = TRUE} \code{ASC_<label>}, and with
+\code{rc_mean = TRUE} \code{Mu_<variable>} and, for a log-normal
+coefficient, \code{exp(Mu_<variable>)}.}
 
 \item{random_var_cols}{Vector of column names for random coefficients.}
 
@@ -87,7 +87,12 @@ correlated (convenience workflow). Ignored when \code{input_data} is used
 (taken from the prepared data).}
 
 \item{use_asc}{Logical indicating whether to include alternative-specific
-constants.}
+constants: one per inside alternative with the outside option, otherwise
+one per alternative but the first (\code{outside_opt_label} when it is
+given, else the first label in \code{sort()} order, which for a factor
+is the first of its levels present), whose constant is normalized to 0.
+With \code{FALSE} the utilities have no constants, so alternatives
+differ only through their covariates.}
 
 \item{theta_init}{Initial parameter vector in natural-scale units. If
 \code{NULL} (default), the start is in the columns' units: zero for the

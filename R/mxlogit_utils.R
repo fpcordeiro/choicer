@@ -154,10 +154,10 @@
 #' @param choice_col Name of the column indicating chosen alternative (1/0).
 #' @param covariate_cols Vector of column names for fixed covariates. None
 #'   may take a name the model gives its parameters, or prints for them in
-#'   \code{summary()}: \code{ASC_<label>}, \code{L_<i><j>} and
-#'   \code{Sigma_<i><j>}, and with \code{rc_mean = TRUE}
-#'   \code{Mu_<variable>} and, for a log-normal coefficient,
-#'   \code{exp(Mu_<variable>)}.
+#'   \code{summary()}: \code{L_<i><j>} and \code{Sigma_<i><j>}, with
+#'   \code{use_asc = TRUE} \code{ASC_<label>}, and with
+#'   \code{rc_mean = TRUE} \code{Mu_<variable>} and, for a log-normal
+#'   coefficient, \code{exp(Mu_<variable>)}.
 #' @param random_var_cols Vector of column names for random coefficients.
 #' @param input_data List output from \code{\link{prepare_mxl_data}} (advanced
 #'   workflow). Mutually exclusive with \code{data}.
@@ -183,7 +183,12 @@
 #'   correlated (convenience workflow). Ignored when \code{input_data} is used
 #'   (taken from the prepared data).
 #' @param use_asc Logical indicating whether to include alternative-specific
-#'   constants.
+#'   constants: one per inside alternative with the outside option, otherwise
+#'   one per alternative but the first (\code{outside_opt_label} when it is
+#'   given, else the first label in \code{sort()} order, which for a factor
+#'   is the first of its levels present), whose constant is normalized to 0.
+#'   With \code{FALSE} the utilities have no constants, so alternatives
+#'   differ only through their covariates.
 #' @param theta_init Initial parameter vector in natural-scale units. If
 #'   \code{NULL} (default), the start is in the columns' units: zero for the
 #'   \eqn{\beta}, \eqn{\mu} and ASC blocks and the Cholesky factor's
@@ -583,14 +588,17 @@ run_mxlogit <- function(
          "prepare_mxl_data(cluster_col = ).", call. = FALSE)
   }
 
-  # Parameter dimensions
+  # Parameter dimensions. alt_mapping has one row per alternative, the outside
+  # option's first when there is one, so use_asc frees J - 1 constants: every
+  # inside alternative's with the outside option, all but the first's
+  # (normalized to 0) without it.
   J <- nrow(input_data$alt_mapping)
   K_x <- ncol(input_data$X)
   K_w <- ncol(input_data$W)
   rc_correlation <- input_data$rc_correlation
   L_size <- if (rc_correlation) K_w * (K_w + 1) / 2 else K_w
   mu_size <- if (rc_mean) K_w else 0
-  n_asc <- J - 1
+  n_asc <- if (use_asc) J - 1 else 0
   n_params <- K_x + mu_size + L_size + n_asc
 
   if (is.null(rc_dist)) rc_dist <- rep(0L, K_w)
@@ -605,14 +613,18 @@ run_mxlogit <- function(
   }
   param_map$sigma <- pos + seq_len(L_size)
   pos <- pos + L_size
-  param_map$asc <- pos + seq_len(n_asc)
+  if (n_asc > 0) param_map$asc <- pos + seq_len(n_asc)
 
   # Parameter names (built early; reused for theta_hat, vcov, se downstream)
   beta_names <- colnames(input_data$X)
   mu_names <- if (rc_mean) paste0("Mu_", colnames(input_data$W)) else character(0)
   sigma_names <- .mxl_cov_names("L", K_w, rc_correlation)
   alt_col <- names(input_data$alt_mapping)[2]
-  asc_names <- paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
+  asc_names <- if (use_asc) {
+    paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
+  } else {
+    character(0)
+  }
   param_names <- c(beta_names, mu_names, sigma_names, asc_names)
   # summary() relabels some parameters: its labels may not repeat either
   .check_param_names(
