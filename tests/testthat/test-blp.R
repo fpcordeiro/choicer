@@ -490,6 +490,44 @@ test_that("blp.choicer_mnl works with include_outside_option = TRUE", {
   expect_equal(delta_centered, asc_centered, tolerance = 1e-4)
 })
 
+test_that("blp() starts a fit without constants at one zero per inside alternative", {
+  # alt_mapping has a row for the outside option, which has no constant: the
+  # default start had a zero for it too, and the contraction stopped
+  # ("target_shares must have the same length as the total number of
+  # alternatives")
+  sim <- simulate_mnl_data(N = 300L, J = 3L, beta = c(0.8, -0.6),
+                           delta = rep(0, 3L), outside_option = TRUE, seed = 3L)
+  inside <- data.table::as.data.table(sim$data)[alt != 0L]
+  inside[, nest := ifelse(alt <= 2L, 1L, 2L)]
+  args <- list(data = inside, id_col = "id", alt_col = "alt",
+               choice_col = "choice", covariate_cols = c("x1", "x2"),
+               use_asc = FALSE, include_outside_option = TRUE,
+               outside_opt_label = 0L)
+  mnl <- suppressMessages(do.call(run_mnlogit, args))
+  nl <- suppressMessages(do.call(run_nestlogit, c(args, nest_col = "nest")))
+  for (fit in list(mnl, nl)) {
+    d <- fit$data
+    s <- as.vector(predict(fit, type = "shares"))
+    target <- (s + rev(s)) / 2  # the outside option first, then 1, 2, 3
+    delta <- blp(fit, target_shares = target)
+    expect_length(delta, 3L)
+    expect_equal(delta, blp(fit, target_shares = target,
+                            delta_init = rep(0, 3L)))
+    # The constants that give the model the target shares: theta with one
+    # constant per inside alternative after the fit's own parameters
+    theta <- c(coef(fit), delta)
+    shares <- if (inherits(fit, "choicer_nl")) {
+      nl_predict_shares(theta, d$X, d$alt_idx, d$M, d$weights,
+                        d$nest_idx, use_asc = TRUE,
+                        include_outside_option = TRUE)
+    } else {
+      mnl_predict_shares(theta, d$X, d$alt_idx, d$M, d$weights,
+                         use_asc = TRUE, include_outside_option = TRUE)
+    }
+    expect_equal(as.vector(shares), target, tolerance = 1e-6)
+  }
+})
+
 test_that("blp_contraction rejects non-positive target shares", {
   dt <- create_small_mnl_data()
   inputs <- prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))
