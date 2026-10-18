@@ -1833,3 +1833,55 @@ set_num_threads <- function(n_threads) {
     invisible(.Call(`_choicer_set_num_threads`, n_threads))
 }
 
+#' The inverse of an information matrix, equilibrated
+#'
+#' \eqn{V = D (D A D)^{-1} D}: `A` scaled by `D` on both sides into a
+#' working copy, LU-factored there in place (`dgetrf`), the identity in the
+#' result solved against the factors (`dgetrs`), and the result scaled back.
+#' That factorization and solve are what reference LAPACK's `dgesv` performs
+#' for `solve(A * tcrossprod(D)) * tcrossprod(D)`, on the same values, so
+#' with R's reference LAPACK (or OpenBLAS's) the two agree bit for bit, but
+#' without R's temporaries: `solve(A)` holds three n x n matrices besides `A`
+#' (the identity, its copy that becomes the result, and the copy LAPACK
+#' factors); this holds two, the factors and the result, and frees the
+#' factors as it returns. The checks are `solve()`'s: an error for a pivot
+#' that is exactly zero, and, when every factor is finite, for a reciprocal
+#' condition number below the machine epsilon. (LAPACK's
+#' in-place inverse, `dgetri`, would need one, but its many thin BLAS calls
+#' ran several times slower than the two solves with threads.)
+#'
+#' With `D` from `.jacobi_scale()` (powers of two), every product with `D` is
+#' exact unless it underflows or overflows, so only the factorization and the
+#' solves round, on a matrix whose diagonal is within a factor of two of one
+#' in magnitude.
+#'
+#' @param A The information matrix, a square double matrix (read only).
+#' @param D The scales, a double vector of length `nrow(A)`.
+#' @returns The double matrix \eqn{V}, without dimnames.
+#' @noRd
+equilibrated_inverse <- function(A, D) {
+    .Call(`_choicer_equilibrated_inverse`, A, D)
+}
+
+#' The sandwich of an information matrix and a meat, equilibrated
+#'
+#' \eqn{V = D \, \mathrm{sym}[(DAD)^{-1} (DBD) (DAD)^{-1}] \, D}, with
+#' \eqn{\mathrm{sym}(M) = (M + M^\top) / 2}, without an explicit inverse:
+#' `A` is scaled into a working copy and LU-factored there (`dgetrf`, with
+#' `equilibrated_inverse()`'s checks); `B` is scaled into the result, which
+#' becomes \eqn{X = (DAD)^{-1} (DBD)} by one solve (`dgetrs`), is transposed
+#' in place, and becomes \eqn{(DAD)^{-\top} X^\top = [X (DAD)^{-1}]^\top} by
+#' a second (the transposed system). Symmetrized and scaled back, that is the
+#' sandwich. Two n x n matrices besides `A` and `B`, the working copy and the
+#' result. Forming \eqn{(DAD)^{-1}} as `solve()` does and multiplying twice
+#' takes 43% more arithmetic, and three such matrices in place (four in R).
+#'
+#' @param A The bread (the information), a square double matrix.
+#' @param B The meat, a double matrix of the same order.
+#' @param D The scales, a double vector of length `nrow(A)` (from `A`).
+#' @returns The symmetric double matrix \eqn{V}, without dimnames.
+#' @noRd
+equilibrated_sandwich <- function(A, B, D) {
+    .Call(`_choicer_equilibrated_sandwich`, A, B, D)
+}
+

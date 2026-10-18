@@ -1222,6 +1222,29 @@ BEGIN_RCPP
     return R_NilValue;
 END_RCPP
 }
+// equilibrated_inverse
+SEXP equilibrated_inverse(SEXP A, SEXP D);
+RcppExport SEXP _choicer_equilibrated_inverse(SEXP ASEXP, SEXP DSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type A(ASEXP);
+    Rcpp::traits::input_parameter< SEXP >::type D(DSEXP);
+    rcpp_result_gen = Rcpp::wrap(equilibrated_inverse(A, D));
+    return rcpp_result_gen;
+END_RCPP
+}
+// equilibrated_sandwich
+SEXP equilibrated_sandwich(SEXP A, SEXP B, SEXP D);
+RcppExport SEXP _choicer_equilibrated_sandwich(SEXP ASEXP, SEXP BSEXP, SEXP DSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type A(ASEXP);
+    Rcpp::traits::input_parameter< SEXP >::type B(BSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type D(DSEXP);
+    rcpp_result_gen = Rcpp::wrap(equilibrated_sandwich(A, B, D));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_choicer_halton_radical_inverse", (DL_FUNC) &_choicer_halton_radical_inverse, 2},
@@ -1293,6 +1316,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_thread_info", (DL_FUNC) &_choicer_thread_info, 0},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},
     {"_choicer_set_num_threads", (DL_FUNC) &_choicer_set_num_threads, 1},
+    {"_choicer_equilibrated_inverse", (DL_FUNC) &_choicer_equilibrated_inverse, 2},
+    {"_choicer_equilibrated_sandwich", (DL_FUNC) &_choicer_equilibrated_sandwich, 3},
     {NULL, NULL, 0}
 };
 

@@ -296,8 +296,8 @@
 #'   \code{parscale}, and \code{pgtol}, which then applies to the scaled
 #'   gradient) apply to the scaled coordinates; \code{"none"} keeps the
 #'   parameters' units. Coefficients are reported in natural units and the
-#'   standard errors computed in them (for any choice but \code{"none"}, with
-#'   the information matrix equilibrated before it is inverted), so, where the
+#'   standard errors computed in them, from the information matrix
+#'   equilibrated before it is inverted, whatever the choice, so, where the
 #'   likelihood is well identified and every choice reaches its maximum,
 #'   reported quantities do not depend on this choice beyond the optimizer's
 #'   tolerance.
@@ -852,11 +852,11 @@ run_mxlogit <- function(
 
   # Compute vcov eagerly using the selected SE method, by the route
   # vcov(fit, type = ) takes post hoc, with the fit's own draws: at the
-  # natural estimates, in natural units, inverted equilibrated for a scaled
-  # fit. For "sandwich" (robust / WESML) standard errors, V = A^{-1} B A^{-1}
-  # with bread A = weighted negated Hessian and meat B = weight-squared OPG
-  # (the BHHH kernel with weights^2, its per-unit score being weight-free).
-  # For "cluster", the meat is the outer product of within-cluster sums of
+  # natural estimates, in natural units, inverted equilibrated. For
+  # "sandwich" (robust / WESML) standard errors, V = A^{-1} B A^{-1} with
+  # bread A = weighted negated Hessian and meat B = weight-squared OPG (the
+  # BHHH kernel with weights^2, its per-unit score being weight-free). For
+  # "cluster", the meat is the outer product of within-cluster sums of
   # weighted scores, summed in C++ without the U x p score matrix. Scores,
   # weights and cluster labels are per likelihood unit (decision maker with
   # person_col).

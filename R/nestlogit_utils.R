@@ -91,11 +91,11 @@
 #'   (nloptr's \code{xtol_abs}; optim's \code{parscale}, and \code{pgtol},
 #'   which then applies to the scaled gradient) apply to the scaled
 #'   coordinates; \code{"none"} keeps the parameters' units. Coefficients are
-#'   reported in natural units and the standard errors computed in them (for
-#'   any choice but \code{"none"}, with the information matrix equilibrated
-#'   before it is inverted), so, where the likelihood is well identified and
-#'   every choice reaches its maximum, reported quantities do not depend on
-#'   this choice beyond the optimizer's tolerance.
+#'   reported in natural units and the standard errors computed in them, from
+#'   the information matrix equilibrated before it is inverted, whatever the
+#'   choice, so, where the likelihood is well identified and every choice
+#'   reaches its maximum, reported quantities do not depend on this choice
+#'   beyond the optimizer's tolerance.
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
@@ -322,9 +322,8 @@ run_nestlogit <- function(
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
   # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
   # weight-free BHHH routine). For "cluster", the meat is the outer product of
-  # within-cluster sums of weighted scores. At the natural estimates; a scaled
-  # fit's matrices are inverted equilibrated, as post hoc.
-  eq <- scale_vars != "none"
+  # within-cluster sums of weighted scores. At the natural estimates; the
+  # matrices are inverted equilibrated, as post hoc.
   if (se_method %in% c("sandwich", "cluster")) {
     A_bread <- nl_loglik_hessian_parallel(
       theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
@@ -348,7 +347,7 @@ run_nestlogit <- function(
       )
       .score_meat(S_scores, input_data$weights, "cluster", input_data$cluster)
     }
-    vcov_result <- .sandwich_combine(A_bread, B_meat, equilibrate = eq)
+    vcov_result <- .sandwich_combine(A_bread, B_meat)
   } else {
     hess <- switch(
       se_method,
@@ -371,7 +370,7 @@ run_nestlogit <- function(
         include_outside_option = input_data$include_outside_option
       )
     )
-    vcov_result <- invert_hessian(hess, equilibrate = eq)
+    vcov_result <- invert_hessian(hess)
   }
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names

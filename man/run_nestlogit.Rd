@@ -128,11 +128,11 @@ of 1e-16 are mapped), so settings in parameter units in \code{control}
 (nloptr's \code{xtol_abs}; optim's \code{parscale}, and \code{pgtol},
 which then applies to the scaled gradient) apply to the scaled
 coordinates; \code{"none"} keeps the parameters' units. Coefficients are
-reported in natural units and the standard errors computed in them (for
-any choice but \code{"none"}, with the information matrix equilibrated
-before it is inverted), so, where the likelihood is well identified and
-every choice reaches its maximum, reported quantities do not depend on
-this choice beyond the optimizer's tolerance.}
+reported in natural units and the standard errors computed in them, from
+the information matrix equilibrated before it is inverted, whatever the
+choice, so, where the likelihood is well identified and every choice
+reaches its maximum, reported quantities do not depend on this choice
+beyond the optimizer's tolerance.}
 }
 \value{
 A \code{choicer_nl} object (inherits from \code{choicer_fit}).

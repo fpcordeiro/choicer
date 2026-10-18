@@ -96,8 +96,8 @@ custom one included, works in the scaled coordinates, so settings in
 parameter units in \code{control} (nloptr's \code{xtol_abs}, optim's
 \code{parscale}) apply to the scaled coordinates; \code{"none"} keeps the
 parameters' units. Coefficients are reported in natural units and the
-standard errors computed in them (for any choice but \code{"none"}, with
-the information matrix equilibrated before it is inverted), so, where the
+standard errors computed in them, from the information matrix
+equilibrated before it is inverted, whatever the choice, so, where the
 likelihood is well identified and every choice reaches its maximum,
 reported quantities do not depend on this choice beyond the optimizer's
 tolerance.}
