@@ -848,6 +848,38 @@
   sandwich, at 2,620 parameters, 29% and 38% less at one and four threads
   (medians of three alternated runs).
 
+## A variance that fails no longer discards the estimates
+
+- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` compute the variance
+  of their estimates (`se_method`) once the optimizer has stopped. An error in
+  that step used to stop the call, and the estimates were lost with it,
+  however long the optimizer had run: the mixed logit's memory check, say,
+  which stops a Hessian, BHHH matrix or clustered meat that would need more
+  than the machine's physical memory (or `options(choicer.max_memory =)`) at
+  the threads set, or an allocation that fails in R. The fit now returns its
+  estimates without a variance (`vcov` is `NULL`, the standard errors are
+  `NA`, and `variance_error` holds the error's message) and warns (class
+  `choicer_vcov_failed`) with the error and how to compute the variance later:
+  `vcov(fit, type = )`, which needs the data the fit keeps with
+  `keep_data = TRUE` (the default); the memory check's own message says how
+  many threads fit, or how to lift its limit. Nothing the size of the variance
+  is allocated after the failure, so a fit whose variance does not fit in
+  memory at all keeps its estimates too, as long as the failure is an error
+  (the memory check, or an allocation that fails with an error). `summary()`,
+  `print()` and the post-estimation methods work as on any fit, with `NA`
+  wherever a standard error enters, and do not run the failed step again;
+  `summary()` says that the standard errors were not computed and how to
+  compute them. An allocation that fails while the information is inverted,
+  which was reported as a singular information (and recomputed at every
+  `summary()`), now takes the same route at fit time; after the fit it is an
+  error, from `vcov(fit, type = )` or from `summary()` and the other methods
+  when they compute a missing variance. Errors in the optimizer and before it
+  stop the call as before, and a singular information matrix still gives `NA`
+  standard errors with a message. Fits whose variance can be computed are
+  unchanged, bit for bit. An allocation that fails inside the multinomial and
+  nested logits' Hessian and BHHH loops, which allocate per thread inside
+  their parallel region, still terminates R.
+
 ## The fit-time variance's inputs are checked before the optimizer
 
 - The inputs of the variance are now checked before any evaluation of the
@@ -1199,6 +1231,14 @@ unless it says otherwise.
   output of `conditional_tastes()`, are allocated where Armadillo stopped
   with "requested size is too large". Below 2^32 values, results are
   unchanged, bit for bit.
+- `summary()` of a mixed logit fit without a variance, one whose information
+  matrix is singular, printed the Cholesky factor's parameters (the diagonal
+  on its log scale) under the labels of the covariance matrix,
+  `Sigma_<i><j>`, and the means of log-normal coefficients untransformed
+  under `exp(Mu_<variable>)`: it transformed the estimates only when it had a
+  variance for their standard errors. It now reports the covariance matrix and
+  `exp(Mu)` whether or not the variance is available, with `NA` standard
+  errors where it is not.
 
 # choicer 0.2.1
 

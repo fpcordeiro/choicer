@@ -83,7 +83,9 @@ coef.choicer_fit <- function(object, ...) {
 #' \code{type} recomputes a different variance estimator post hoc from the
 #' stored data — no refit needed (requires \code{keep_data = TRUE}):
 #' \describe{
-#'   \item{\code{"hessian"}}{Inverse of the analytical negated Hessian.}
+#'   \item{\code{"hessian"}}{Inverse of the analytical negated Hessian (the
+#'     numerical one for a nested logit fitted with
+#'     \code{se_method = "numeric"}).}
 #'   \item{\code{"bhhh"}}{Inverse of the BHHH/OPG information
 #'     \eqn{\sum_i w_i s_i s_i'}.}
 #'   \item{\code{"robust"}}{Huber-White sandwich
@@ -135,7 +137,14 @@ coef.choicer_fit <- function(object, ...) {
 #'   \code{type = "cluster"}. The safest route is to pass \code{cluster_col=}
 #'   at fit time, which sidesteps post-hoc alignment entirely.
 #' @param ... Additional arguments (ignored).
-#' @returns Named variance-covariance matrix, or NULL if unavailable.
+#' @returns Named variance-covariance matrix, or NULL if unavailable: when
+#'   the information is singular, or when the variance failed at fit time (the
+#'   fit warned, and its \code{variance_error} holds the error; see
+#'   \code{\link{run_mnlogit}}). For such a fit, \code{type} computes the
+#'   variance from the stored data and returns it; the fit itself keeps its
+#'   \code{NA} standard errors. Removing the record,
+#'   \code{fit$variance_error <- NULL}, lets \code{summary()} and the other
+#'   methods compute the variance each time they need it.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -316,6 +325,20 @@ nobs.choicer_fit <- function(object, ...) {
 
 # --- summary: shared helpers -------------------------------------------------
 
+#' A summary's record of a variance that failed at fit time
+#'
+#' The fit's `variance_error` and whether the fit keeps the data that
+#' `vcov(fit, type = )` needs; a summary of any other fit is returned
+#' unchanged.
+#' @noRd
+.summary_variance_error <- function(out, object) {
+  err <- object[["variance_error"]]
+  if (is.null(err)) return(out)
+  out$variance_error <- err
+  out$keeps_data <- !is.null(object[["data"]])
+  out
+}
+
 #' Significance codes for p-values
 #' @noRd
 significance_code <- function(p) {
@@ -382,7 +405,7 @@ summary.choicer_mnl <- function(object, gof = TRUE, ...) {
     param_names = names(object$coefficients)
   )
 
-  structure(
+  out <- structure(
     list(
       model = object$model,
       coefficients = coef_table,
@@ -403,6 +426,7 @@ summary.choicer_mnl <- function(object, gof = TRUE, ...) {
     ),
     class = "summary.choicer_mnl"
   )
+  .summary_variance_error(out, object)
 }
 
 #' Print summary for multinomial logit model
@@ -469,8 +493,10 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
   est <- object$coefficients
   se <- object$se %||% rep(NA_real_, length(est))
 
-  # Apply delta method for log-normal mu and Cholesky -> Sigma
-  if (!is.null(object$vcov) && !is.null(object$param_map)) {
+  # Apply delta method for log-normal mu and Cholesky -> Sigma. Without a
+  # variance (a singular information, or one that failed at fit time) the
+  # estimates are transformed alike and their standard errors stay NA.
+  if (!is.null(object$param_map)) {
     delta_result <- apply_mxl_delta_method(
       est_theta = est,
       se = se,
@@ -496,7 +522,7 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
     param_names = display_names
   )
 
-  structure(
+  out <- structure(
     list(
       model = object$model,
       coefficients = coef_table,
@@ -519,6 +545,7 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
     ),
     class = "summary.choicer_mxl"
   )
+  .summary_variance_error(out, object)
 }
 
 #' Print summary for mixed logit model
@@ -595,7 +622,7 @@ summary.choicer_nl <- function(object, gof = TRUE, ...) {
     param_names = names(object$coefficients)
   )
 
-  structure(
+  out <- structure(
     list(
       model = object$model,
       coefficients = coef_table,
@@ -616,6 +643,7 @@ summary.choicer_nl <- function(object, gof = TRUE, ...) {
     ),
     class = "summary.choicer_nl"
   )
+  .summary_variance_error(out, object)
 }
 
 #' Print summary for nested logit model
@@ -937,6 +965,16 @@ print_se_weighting <- function(x) {
     numeric = "Numerical Hessian (finite differences)",
     "Analytical Hessian"
   ), "\n")
+  if (!is.null(x[["variance_error"]])) {
+    retry <- sprintf("vcov(fit, type = \"%s\")",
+                     .vcov_type(x$se_method %||% "hessian"))
+    cat("  not computed at fit time (the fit's variance_error says why);",
+        if (isTRUE(x$keeps_data)) {
+          paste(retry, "computes them\n")
+        } else {
+          paste("refit with keep_data = TRUE for", retry, "to compute them\n")
+        })
+  }
   if (!is.null(x$weighting)) {
     # Backward-compat: when weights_applied is absent (older fits) treat as applied.
     applied <- !isFALSE(x$weights_applied)
@@ -1179,7 +1217,8 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
 #'
 #' @param est_theta Raw parameter estimates
 #' @param se Raw standard errors
-#' @param vcov_mat Variance-covariance matrix
+#' @param vcov_mat Variance-covariance matrix, or NULL (no variance: the
+#'   transformed estimates' standard errors are NA)
 #' @param param_map Named list with index vectors (beta, mu, sigma, asc)
 #' @param rc_dist Integer vector of distribution types
 #' @param rc_correlation Logical whether correlated
@@ -1220,7 +1259,11 @@ apply_mxl_delta_method <- function(est_theta, se, vcov_mat,
     }
 
     J_mat <- jacobian_vech_Sigma(L_params_hat, K_w, rc_correlation)
-    vcov_L <- vcov_mat[idx_sigma, idx_sigma]
+    vcov_L <- if (is.null(vcov_mat)) {
+      matrix(NA_real_, length(idx_sigma), length(idx_sigma))
+    } else {
+      vcov_mat[idx_sigma, idx_sigma]
+    }
     V_sigma <- J_mat %*% vcov_L %*% t(J_mat)
     se_out[idx_sigma] <- sqrt(diag(V_sigma))
   }

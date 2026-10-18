@@ -377,14 +377,19 @@ new_choicer_hmnp <- function(call, coefficients, se, vcov, theta_summary,
 
 #' Compute vcov and SE on demand (lazy evaluation)
 #'
-#' If `vcov` is already populated, returns the object unchanged.
+#' If `vcov` is already populated, or the fit's variance failed at fit time
+#' (its `variance_error`, see `.vcov_failed()`), returns the object
+#' unchanged: the failed step is run again only on request, by
+#' `vcov(fit, type = )`.
 #' Otherwise, uses `compute_hessian()` to recompute from stored data.
 #'
 #' @param object A choicer_fit object.
 #' @returns The object with `vcov` and `se` populated.
 #' @noRd
 ensure_vcov <- function(object) {
-  if (!is.null(object$vcov)) return(object)
+  if (!is.null(object$vcov) || !is.null(object[["variance_error"]])) {
+    return(object)
+  }
 
   if (is.null(object[["data"]])) {
     message("Cannot compute standard errors: no data stored. ",
@@ -735,7 +740,9 @@ compute_hessian <- function(object) {
 #' instead of losing digits or failing as computationally singular.
 #'
 #' @param hess Observed information matrix (negated Hessian or BHHH/OPG).
-#' @returns List with vcov (matrix or NULL) and se (numeric vector).
+#' @returns List with vcov (matrix, or NULL for a singular matrix) and se
+#'   (numeric vector). Errors other than singularity (an allocation that
+#'   fails, say) are passed on.
 #' @noRd
 invert_hessian <- function(hess) {
   p_len <- nrow(hess)
@@ -746,6 +753,9 @@ invert_hessian <- function(hess) {
   tryCatch({
     vcov_mat <- equilibrated_inverse(hess, .jacobi_scale(hess))
   }, error = function(e) {
+    # A singular information gives NA standard errors; any other error (an
+    # allocation that fails, say) is the caller's
+    if (!grepl("singular", conditionMessage(e), fixed = TRUE)) stop(e)
     singular_flag <<- TRUE
     message("Error inverting information matrix (likely singular): ", e$message)
   })
@@ -782,7 +792,8 @@ invert_hessian <- function(hess) {
 #'
 #' @param A Bread matrix (observed information; weighted negated Hessian).
 #' @param B Meat matrix (weighted outer product of per-individual scores).
-#' @returns List with \code{vcov} (matrix or NULL) and \code{se} (numeric).
+#' @returns List with \code{vcov} (matrix, or NULL for a singular bread) and
+#'   \code{se} (numeric). Errors other than singularity are passed on.
 #' @noRd
 .sandwich_combine <- function(A, B) {
   p_len <- nrow(A)
@@ -793,6 +804,8 @@ invert_hessian <- function(hess) {
   tryCatch({
     vcov_mat <- equilibrated_sandwich(A, B, .jacobi_scale(A))
   }, error = function(e) {
+    # As in invert_hessian(): only a singular bread is reported here
+    if (!grepl("singular", conditionMessage(e), fixed = TRUE)) stop(e)
     singular_flag <<- TRUE
     message("Error inverting information (bread) matrix (likely singular): ",
             e$message)
@@ -815,6 +828,63 @@ invert_hessian <- function(hess) {
   }
 
   list(vcov = vcov_mat, se = se)
+}
+
+#' The vcov(type = ) that recomputes a fit's se_method
+#'
+#' \code{"robust"} for the sandwich; \code{"hessian"} for a nested logit's
+#' \code{"numeric"}, whose bread \code{.compute_bread()} takes numerically for
+#' such fits; the method's own name otherwise.
+#'
+#' @param se_method A fit's \code{se_method}.
+#' @returns The \code{type} of \code{vcov.choicer_fit()}.
+#' @noRd
+.vcov_type <- function(se_method) {
+  switch(se_method, sandwich = "robust", numeric = "hessian", se_method)
+}
+
+#' No variance for a fit whose variance step failed
+#'
+#' The error handler of the `run_*()` wrappers' variance step, which runs
+#' after the optimizer: an error there (a mixed logit kernel's memory check,
+#' an allocation that fails, an error in the score matrix) would otherwise
+#' stop the call and discard the estimates. Warns, quoting the error and
+#' naming the post-hoc route, and returns no variance: `vcov` NULL, `se` NA,
+#' and the error's message, which the wrapper keeps as the fit's
+#' `variance_error` (on such fits only; `$vcov` cannot partially match the
+#' name), so that `ensure_vcov()` does not run the failed step again from
+#' `summary()` and the other methods that call it, while `vcov(fit, type = )`
+#' runs it on request. Nothing the size of the variance is allocated here:
+#' where the p x p result itself did not fit, a matrix of NA would not fit
+#' either. The mixed logit's memory check names in its own message the
+#' threads that fit or how to lift the limit, so no advice on memory is added.
+#'
+#' @param e The error.
+#' @param se_method The fit's `se_method`.
+#' @param param_names The parameter names.
+#' @param keep_data Whether the fit keeps its data.
+#' @returns List with `vcov` (NULL), `se` (p NA, named) and `error` (the
+#'   error's message).
+#' @noRd
+.vcov_failed <- function(e, se_method, param_names, keep_data) {
+  retry <- sprintf("vcov(fit, type = \"%s\")", .vcov_type(se_method))
+  err <- trimws(conditionMessage(e))
+  if (!nzchar(err)) err <- paste("an error of class", class(e)[1L])
+  if (!grepl("[.!?]$", err)) err <- paste0(err, ".")
+  advice <- if (keep_data) {
+    paste0("To compute it from the fit, call ", retry)
+  } else {
+    paste0("The fit keeps no data (keep_data = FALSE): refit with ",
+           "keep_data = TRUE to compute it with ", retry)
+  }
+  warning(warningCondition(paste0(
+    "The variance could not be computed (se_method = \"", se_method, "\"), ",
+    "so the estimates are returned without it, with NA standard errors: ",
+    err, " ", advice, "."),
+    class = "choicer_vcov_failed"))
+  list(vcov = NULL,
+       se = stats::setNames(rep(NA_real_, length(param_names)), param_names),
+       error = err)
 }
 
 #' Jacobi equilibration scale of an information matrix

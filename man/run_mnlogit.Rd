@@ -123,6 +123,13 @@ within each \code{id_col}. Supplying \code{cluster_col} without an explicit
 A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
 \code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
+The variance is computed once the optimizer has stopped. If that step
+fails with an error (an allocation in R, say), the fit returns its
+estimates without it (\code{vcov} \code{NULL}, \code{NA} standard
+errors, the error's message in \code{variance_error}) and warns, naming
+the \code{vcov(fit, type = )} that computes the variance later from a
+fit that keeps its data (\code{keep_data = TRUE}). An allocation that
+fails inside the compiled Hessian or BHHH loops still terminates R.
 }
 \description{
 Estimates a multinomial logit model via maximum likelihood.

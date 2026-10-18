@@ -320,7 +320,14 @@ Standard S3 methods available: \code{summary()}, \code{coef()},
 \code{nobs()}. A panel fit (\code{person_col}) also carries
 \code{n_persons}, the number of decision makers; \code{nobs()} remains
 the number of choice situations, which is also the \eqn{n} in BIC's
-\eqn{\log n} penalty.
+\eqn{\log n} penalty. The variance is computed once the optimizer has
+stopped. If that step fails with an error (the kernels' memory check,
+see \code{\link{set_num_threads}}, say), the fit returns its estimates
+without it (\code{vcov} \code{NULL}, \code{NA} standard errors, the
+error's message in \code{variance_error}) and warns, naming the
+\code{vcov(fit, type = )} that computes the variance later from a fit
+that keeps its data (\code{keep_data = TRUE}); the memory check's message
+names the threads that fit or how to lift its limit.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.

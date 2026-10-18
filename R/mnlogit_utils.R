@@ -89,6 +89,13 @@
 #' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
 #'   \code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
+#'   The variance is computed once the optimizer has stopped. If that step
+#'   fails with an error (an allocation in R, say), the fit returns its
+#'   estimates without it (\code{vcov} \code{NULL}, \code{NA} standard
+#'   errors, the error's message in \code{variance_error}) and warns, naming
+#'   the \code{vcov(fit, type = )} that computes the variance later from a
+#'   fit that keeps its data (\code{keep_data = TRUE}). An allocation that
+#'   fails inside the compiled Hessian or BHHH loops still terminates R.
 #' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{
@@ -302,49 +309,54 @@ run_mnlogit <- function(
   # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
   # weight-free BHHH routine). For "cluster", the meat is the outer product of
   # within-cluster sums of weighted scores. The matrices are inverted
-  # equilibrated, as post hoc.
-  if (se_method %in% c("sandwich", "cluster")) {
-    A_bread <- mnl_loglik_hessian_parallel(
-      theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
-      choice_idx = input_list$choice_idx, M = input_list$M,
-      weights = input_list$weights, use_asc = use_asc,
-      include_outside_option = input_list$include_outside_option
-    )
-    B_meat <- if (se_method == "sandwich") {
-      mnl_bhhh_parallel(
+  # equilibrated, as post hoc. An error here (an allocation that fails, say)
+  # returns the estimates without a variance, with a warning (.vcov_failed()).
+  vcov_result <- tryCatch({
+    if (se_method %in% c("sandwich", "cluster")) {
+      A_bread <- mnl_loglik_hessian_parallel(
         theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
         choice_idx = input_list$choice_idx, M = input_list$M,
-        weights = input_list$weights^2, use_asc = use_asc,
+        weights = input_list$weights, use_asc = use_asc,
         include_outside_option = input_list$include_outside_option
       )
+      B_meat <- if (se_method == "sandwich") {
+        mnl_bhhh_parallel(
+          theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+          choice_idx = input_list$choice_idx, M = input_list$M,
+          weights = input_list$weights^2, use_asc = use_asc,
+          include_outside_option = input_list$include_outside_option
+        )
+      } else {
+        S_scores <- mnl_scores_parallel(
+          theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+          choice_idx = input_list$choice_idx, M = input_list$M,
+          use_asc = use_asc,
+          include_outside_option = input_list$include_outside_option
+        )
+        .score_meat(S_scores, input_list$weights, "cluster", input_list$cluster)
+      }
+      .sandwich_combine(A_bread, B_meat)
     } else {
-      S_scores <- mnl_scores_parallel(
-        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
-        choice_idx = input_list$choice_idx, M = input_list$M,
-        use_asc = use_asc,
-        include_outside_option = input_list$include_outside_option
+      hess <- switch(
+        se_method,
+        hessian = mnl_loglik_hessian_parallel(
+          theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+          choice_idx = input_list$choice_idx, M = input_list$M,
+          weights = input_list$weights, use_asc = use_asc,
+          include_outside_option = input_list$include_outside_option
+        ),
+        bhhh = mnl_bhhh_parallel(
+          theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
+          choice_idx = input_list$choice_idx, M = input_list$M,
+          weights = input_list$weights, use_asc = use_asc,
+          include_outside_option = input_list$include_outside_option
+        )
       )
-      .score_meat(S_scores, input_list$weights, "cluster", input_list$cluster)
+      invert_hessian(hess)
     }
-    vcov_result <- .sandwich_combine(A_bread, B_meat)
-  } else {
-    hess <- switch(
-      se_method,
-      hessian = mnl_loglik_hessian_parallel(
-        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
-        choice_idx = input_list$choice_idx, M = input_list$M,
-        weights = input_list$weights, use_asc = use_asc,
-        include_outside_option = input_list$include_outside_option
-      ),
-      bhhh = mnl_bhhh_parallel(
-        theta = theta_hat, X = input_list$X, alt_idx = input_list$alt_idx,
-        choice_idx = input_list$choice_idx, M = input_list$M,
-        weights = input_list$weights, use_asc = use_asc,
-        include_outside_option = input_list$include_outside_option
-      )
-    )
-    vcov_result <- invert_hessian(hess)
-  }
+  }, error = function(e) {
+    .vcov_failed(e, se_method, param_names, keep_data)
+  })
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
@@ -352,7 +364,7 @@ run_mnlogit <- function(
   }
 
   # Build S3 object
-  new_choicer_mnl(
+  fit <- new_choicer_mnl(
     call = cl,
     coefficients = theta_hat,
     loglik = -opt$value,
@@ -397,6 +409,11 @@ run_mnlogit <- function(
     param_scale = stats::setNames(map$scale, param_names),
     param_shift = stats::setNames(map$shift, param_names)
   )
+  # A variance step that failed is recorded, on such fits only
+  if (!is.null(vcov_result$error)) {
+    fit["variance_error"] <- list(vcov_result$error)
+  }
+  fit
 }
 
 #' Prepare inputs for multinomial logit estimation

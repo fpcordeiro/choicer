@@ -397,7 +397,14 @@
 #'   \code{nobs()}. A panel fit (\code{person_col}) also carries
 #'   \code{n_persons}, the number of decision makers; \code{nobs()} remains
 #'   the number of choice situations, which is also the \eqn{n} in BIC's
-#'   \eqn{\log n} penalty.
+#'   \eqn{\log n} penalty. The variance is computed once the optimizer has
+#'   stopped. If that step fails with an error (the kernels' memory check,
+#'   see \code{\link{set_num_threads}}, say), the fit returns its estimates
+#'   without it (\code{vcov} \code{NULL}, \code{NA} standard errors, the
+#'   error's message in \code{variance_error}) and warns, naming the
+#'   \code{vcov(fit, type = )} that computes the variance later from a fit
+#'   that keeps its data (\code{keep_data = TRUE}); the memory check's message
+#'   names the threads that fit or how to lift its limit.
 #' @references Revelt, D. and Train, K. (1998). Mixed logit with repeated
 #'   choices: households' choices of appliance efficiency level.
 #'   \emph{Review of Economics and Statistics} 80(4), 647-657.
@@ -873,12 +880,18 @@ run_mxlogit <- function(
   # "cluster", the meat is the outer product of within-cluster sums of
   # weighted scores, summed in C++ without the U x p score matrix. Scores,
   # weights and cluster labels are per likelihood unit (decision maker with
-  # person_col).
-  vcov_result <- .assemble_score_vcov(
-    fit, type = if (se_method == "sandwich") "robust" else se_method,
-    gp = list(eta_draws = eta_draws, gen_seed = gen_seed_cpp,
-              gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp),
-    what = "`cluster_col`"
+  # person_col). An error here (a kernel's memory check, say) returns the
+  # estimates without a variance, with a warning (.vcov_failed()).
+  vcov_result <- tryCatch(
+    .assemble_score_vcov(
+      fit, type = if (se_method == "sandwich") "robust" else se_method,
+      gp = list(eta_draws = eta_draws, gen_seed = gen_seed_cpp,
+                gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp),
+      what = "`cluster_col`"
+    ),
+    error = function(e) {
+      .vcov_failed(e, se_method, param_names, keep_data)
+    }
   )
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
@@ -887,6 +900,10 @@ run_mxlogit <- function(
   }
   fit["vcov"] <- list(vcov_result$vcov)
   fit["se"] <- list(vcov_result$se)
+  # A variance step that failed is recorded, on such fits only
+  if (!is.null(vcov_result$error)) {
+    fit["variance_error"] <- list(vcov_result$error)
+  }
   if (keep_data) return(fit)
   fit["data"] <- list(NULL)  # the slot is kept, NULL
   fit
