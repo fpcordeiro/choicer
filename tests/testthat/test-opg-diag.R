@@ -21,8 +21,8 @@ opg_split <- function(g) {
 }
 
 test_that("the mixed logit's OPG diagonal is the BHHH diagonal", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   cfgs <- list(
     list(rc_dist = c(0L, 0L), corr = TRUE, mean = FALSE, ioo = FALSE, W = "row"),
     list(rc_dist = c(0L, 1L), corr = FALSE, mean = TRUE, ioo = TRUE, W = "row"),
@@ -68,8 +68,8 @@ opg_dup_row <- function(fx, t) {
 }
 
 test_that("the mixed logit's OPG diagonal holds without constants and with a repeated row", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   fx <- mxlp_fixture("opg_noasc", 921L, rc_correlation = TRUE,
                      use_asc = FALSE, weight_type = "person")
   fd <- mxlp_fixture("opg_dup", 922L, rc_mean = TRUE,
@@ -85,8 +85,8 @@ test_that("the mixed logit's OPG diagonal holds without constants and with a rep
 })
 
 test_that("the mixed logit's OPG diagonal is returned as computed", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   fx <- mxlp_fixture("opg_edge", 931L, rc_correlation = TRUE)
   th <- fx$theta
   th[1L] <- 4
@@ -120,8 +120,8 @@ opg_choice_data <- function(seed, N, J, K, ioo, dup = FALSE) {
 }
 
 test_that("the multinomial logit's OPG diagonal is the BHHH diagonal", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   for (ioo in c(FALSE, TRUE)) {
     for (use_asc in c(TRUE, FALSE)) {
       for (dup in c(FALSE, TRUE)) {
@@ -149,8 +149,8 @@ test_that("the multinomial logit's OPG diagonal is the BHHH diagonal", {
 })
 
 test_that("the nested logit's OPG diagonal is the BHHH diagonal", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   nest <- c(1L, 1L, 2L, 2L, 2L, 3L, 4L, 4L)  # nest 3 is a singleton
   for (ioo in c(FALSE, TRUE)) {
     for (use_asc in c(TRUE, FALSE)) {
@@ -175,8 +175,8 @@ test_that("the nested logit's OPG diagonal is the BHHH diagonal", {
 })
 
 test_that("the multinomial and nested logits' OPG diagonals are returned as computed", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   d <- opg_choice_data(948L, 30L, 4L, 2L, FALSE)
   d$X[5L, 1L] <- 1e308  # utilities overflow
   th <- c(4, 0.2, 0.1, -0.1, 0.3)
@@ -205,7 +205,7 @@ test_that("the multinomial and nested logits' OPG diagonals are returned as comp
 })
 
 test_that("the OPG diagonal is the BHHH diagonal at two threads", {
-  mxlp_threads(2L)
+  set_omp_threads(2L)
   # About 1,500 situations, so that both threads take part.
   fx <- mxlp_fixture("opg_threads", 981L, rc_correlation = TRUE,
                      include_outside_option = TRUE, weight_type = "person",

@@ -139,11 +139,11 @@ mxc_call <- function(k, d, points = FALSE, var = 1L, random = FALSE) {
 }
 
 test_that("store-mode points on the fly give the whole cube's results", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(set_omp_threads(2L), add = TRUE)
   for (ioo in c(FALSE, TRUE)) {
     for (w_type in c("row", "alt")) {
       d <- mxc_data(100 + ioo, 23L, ioo = ioo, w_type = w_type)
-      set_num_threads(1L)
+      set_omp_threads(1L)
       for (k in c("pred", "logsum", "shares", "elas", "dr", "blp")) {
         expect_identical(mxc_call(k, d, points = TRUE), mxc_call(k, d),
                          label = sprintf("%s, ioo %d, W %s", k, ioo, w_type))
@@ -156,7 +156,7 @@ test_that("store-mode points on the fly give the whole cube's results", {
       # over situations to rounding
       whole_pred <- mxc_call("pred", d)
       whole_ls <- mxc_call("logsum", d)
-      set_num_threads(2L)
+      set_omp_threads(2L)
       expect_identical(mxc_call("pred", d, points = TRUE), whole_pred)
       expect_identical(mxc_call("logsum", d, points = TRUE), whole_ls)
       expect_equal(mxc_call("shares", d, points = TRUE), mxc_call("shares", d),
@@ -166,8 +166,8 @@ test_that("store-mode points on the fly give the whole cube's results", {
 })
 
 test_that("store-mode points without ASCs, with one draw, and one coefficient", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   d <- mxc_data(110, 9L, use_asc = FALSE)
   for (k in c("pred", "logsum", "shares", "elas", "dr")) {
     expect_identical(mxc_call(k, d, TRUE), mxc_call(k, d))
@@ -219,8 +219,8 @@ mxc_methods <- function(fit, cf) {
 }
 
 test_that("store-mode methods form their draws on the fly, as the cube's", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   cube_draws <- function(draws_info, N, what) {
     list(eta_draws = mxc_points_cube(draws_info$S, N, draws_info$K_w),
          gen_seed = -1L, gen_scramble = 1L, gen_S = 0L)
@@ -339,8 +339,8 @@ mxc_blp_kept <- function(d, gen, budget, max_iter = 1000L) {
 }
 
 test_that("draws kept across blp()'s iterations give the same deltas", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   gens <- list(points = list(gen_seed = 0L, gen_scramble = 2L),
                permuted = list(gen_seed = 9L, gen_scramble = 1L),
                plain = list(gen_seed = 9L, gen_scramble = 0L))
@@ -378,7 +378,7 @@ test_that("draws kept across blp()'s iterations give the same deltas", {
   expect_identical(c(r$kept$passes, r$kept$reads), c(1, 0))
   expect_identical(r$kept$delta, r$formed)
   # At two threads, the sums over situations to rounding
-  set_num_threads(2L)
+  set_omp_threads(2L)
   d <- mxc_data(165, 23L)
   r <- mxc_blp_kept(d, list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S), Inf)
   read_all(r$kept, d)
@@ -386,8 +386,8 @@ test_that("draws kept across blp()'s iterations give the same deltas", {
 })
 
 test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   d <- mxc_data(170, 23L)
   gen <- list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S)
   bytes <- 8 * d$K_w * d$S * d$N
@@ -483,8 +483,8 @@ mxc_long <- function(seed, N, J = 4L, T = 1L) {
 }
 
 test_that("a store-mode fit above the cube budget warns, then fits as before", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)  # fits at one thread are bit-reproducible
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)  # fits at one thread are bit-reproducible
   dt <- mxc_long(150, 60L)
   args <- list(data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
                covariate_cols = "x1", random_var_cols = c("w1", "w2"), S = 20L,

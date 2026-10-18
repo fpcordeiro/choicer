@@ -211,8 +211,8 @@ oc_expect_once <- function(fit, kernel, bpass, what) {
 }
 
 test_that("multinomial logit fits by BFGS are the uncached path's", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_mnl_data(N = 300, J = 4, seed = 61, outside_option = TRUE)
   for (sv in c("bhhh", "none", "sd")) {
     fit <- function() run_mnlogit(
@@ -226,8 +226,8 @@ test_that("multinomial logit fits by BFGS are the uncached path's", {
 
 test_that("mixed logit fits by L-BFGS-B are the uncached path's at one pass per point", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_mxl_data(N = 120L, J = 3L, T = 2L, seed = 62L,
                            outside_option = FALSE)
   dt <- data.table::as.data.table(sim$data)
@@ -250,8 +250,8 @@ test_that("mixed logit fits by L-BFGS-B are the uncached path's at one pass per 
 })
 
 test_that("nested logit fits by L-BFGS-B are the uncached path's at one pass per point", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_nl_data(N = 300, seed = 63)
   for (sv in c("none", "bhhh")) {
     fit <- function() run_nestlogit(

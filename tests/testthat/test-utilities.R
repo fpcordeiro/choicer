@@ -369,9 +369,14 @@ test_that("thread_info returns structured OpenMP state", {
 })
 
 test_that("set_num_threads accepts valid input", {
-  # Should not error
-  expect_no_error(set_num_threads(1))
-  expect_no_error(set_num_threads(2))
+  # Without OpenMP every kernel runs on one thread, and the call only warns
+  if (isTRUE(thread_info()$openmp_enabled)) {
+    expect_no_error(set_num_threads(1))
+    expect_no_error(set_num_threads(2))
+  } else {
+    expect_warning(set_num_threads(1), "not compiled with OpenMP")
+    expect_warning(set_num_threads(2), "not compiled with OpenMP")
+  }
 })
 
 test_that("set_num_threads updates reported OpenMP max threads", {
@@ -383,7 +388,11 @@ test_that("set_num_threads updates reported OpenMP max threads", {
   }, add = TRUE)
 
   expect_error(set_num_threads(0), "`n_threads` must be a positive integer", fixed = TRUE)
-  expect_no_error(set_num_threads(1))
+  if (isTRUE(info_before$openmp_enabled)) {
+    expect_no_error(set_num_threads(1))
+  } else {
+    expect_warning(set_num_threads(1), "not compiled with OpenMP")
+  }
 
   info_after <- thread_info()
   if (isTRUE(info_after$openmp_enabled)) {

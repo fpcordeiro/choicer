@@ -3,11 +3,13 @@
 
 library(data.table)
 
-# CRAN allows at most two simultaneous threads.  These runtime caps cover
-# explicit calls to `set_num_threads()` in individual tests as well as the
-# data.table thread pool; the environment variables in tests/testthat.R cap
-# both libraries before they are loaded.
-set_num_threads(2L)
+# CRAN allows at most two simultaneous threads. The environment variables set
+# in tests/testthat.R reach an OpenMP runtime only if it starts after them, and
+# an OpenMP build of R's BLAS (as Homebrew's OpenBLAS) starts it with R, so
+# both thread counts are set to two here too. Tests that change choicer's
+# threads restore two on exit. set_omp_threads() is in helper-threads.R, which
+# testthat sources before this file.
+set_omp_threads(2L)
 data.table::setDTthreads(2L)
 
 # Helper to create nested logit inputs from prepare_nl_data() (used in multiple test files)

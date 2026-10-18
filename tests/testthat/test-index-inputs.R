@@ -77,8 +77,8 @@ with_input <- function(f, ...) {
 }
 
 test_that("the MNL kernels give identical results for double-typed indices", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L) # one thread: two calls sum in the same order
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L) # one thread: two calls sum in the same order
   for (ioo in c(FALSE, TRUE)) {
     for (use_asc in c(TRUE, FALSE)) {
       f <- idx_fixture(11L + ioo, ioo = ioo, use_asc = use_asc)
@@ -229,10 +229,10 @@ test_that("MNL kernels validate and add ASCs in parallel above 10^6 rows", {
                  sprintf("alt_idx must use 1-based alternative indices (found %s).",
                          if (is.na(bad)) "NA" else bad), fixed = TRUE)
   }
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   u1 <- mnl_predict(theta, X, alt, M, TRUE, TRUE)$utility
-  set_num_threads(2L)
+  set_omp_threads(2L)
   u2 <- mnl_predict(theta, X, alt, M, TRUE, TRUE)$utility
   expect_identical(u2, u1)
   expect_equal(as.numeric(u1), as.numeric(X) * 0.3 - 0.2)
@@ -271,8 +271,8 @@ test_that("MNL kernels never modify their index vectors", {
   }
   # A compact sequence (ALTREP) is read like any integer vector: one
   # alternative per situation, no ASCs.
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   n <- 25L
   set.seed(42)
   X <- matrix(rnorm(2L * n), n, 2L)
@@ -358,8 +358,8 @@ nl_err <- function(k, f) {
 }
 
 test_that("the NL kernels give identical results for double-typed indices", {
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L) # one thread: two calls sum in the same order
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L) # one thread: two calls sum in the same order
   for (ioo in c(FALSE, TRUE)) {
     for (use_asc in c(TRUE, FALSE)) {
       f <- nl_idx_fixture(61L + ioo, ioo = ioo, use_asc = use_asc)

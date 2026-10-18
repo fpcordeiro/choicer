@@ -75,8 +75,8 @@ newdata_check <- function(fit_fun, ref, ref_data, price_var) {
 # kernels' reductions can differ in the last bits from run to run, which
 # moves MXL shares and is enough to stop an NL refit elsewhere.
 expect_newdata_immune <- function(fit_fun, data, args, renames, price_var) {
-  set_num_threads(1L)
-  on.exit(set_num_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   ref <- suppressMessages(do.call(fit_fun, c(list(data), args)))
   check <- newdata_check(fit_fun, ref, data, price_var)
   expect_identical(rename_failures(data, args, renames, check), character(0))
