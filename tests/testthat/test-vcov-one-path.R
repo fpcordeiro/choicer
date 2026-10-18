@@ -1,6 +1,6 @@
 # One variance path: a fit's variance is the one vcov(fit, type = se_method)
-# returns post hoc, computed at the natural estimates in natural units, and a
-# scaled fit's information is inverted equilibrated (Jacobi, by powers of two).
+# returns post hoc, computed at the natural estimates in natural units, and
+# every fit's information is inverted equilibrated (Jacobi, by powers of two).
 
 # A symmetric positive definite A with a known inverse, and the badly scaled
 # D A D with D spanning 18 orders of magnitude: its reciprocal condition
@@ -44,13 +44,11 @@ test_that("the Jacobi scale is a power of two that brings the diagonal near one"
                    c(2^500, 2^-500))
 })
 
-test_that("an equilibrated inversion recovers a badly scaled inverse solve() refuses", {
+test_that("the equilibrated inversion recovers a badly scaled inverse solve() refuses", {
   bp <- vop_bad_pair(2L)
   V_true <- solve(bp$A) / tcrossprod(bp$s)
-  raw <- vop_msgs(choicer:::invert_hessian(bp$H))
-  expect_null(raw$value$vcov)
-  expect_match(raw$messages[1], "likely singular")
-  eq <- vop_msgs(choicer:::invert_hessian(bp$H, equilibrate = TRUE))
+  expect_error(solve(bp$H), "computationally singular")
+  eq <- vop_msgs(choicer:::invert_hessian(bp$H))
   expect_length(eq$messages, 0L)
   expect_lt(vop_err(eq$value$vcov, V_true), 1e-12)
   expect_lt(max(abs(eq$value$se / sqrt(diag(V_true)) - 1)), 1e-12)
@@ -63,7 +61,7 @@ test_that("an equilibrated inversion reports negative variances and singularity"
   A <- matrix(c(-1, 0.2, 0.1, 0.2, 2, 0.3, 0.1, 0.3, 3), 3)
   s <- c(1e9, 1, 1)
   H <- A * tcrossprod(s)
-  r <- vop_msgs(choicer:::invert_hessian(H, equilibrate = TRUE))
+  r <- vop_msgs(choicer:::invert_hessian(H))
   expect_match(r$messages[1], "not positive definite; 1 variance")
   V_true <- solve(A) / tcrossprod(s)
   expect_lt(max(abs(r$value$vcov - V_true) / sqrt(abs(tcrossprod(diag(V_true))))),
@@ -72,21 +70,141 @@ test_that("an equilibrated inversion reports negative variances and singularity"
   expect_equal(r$value$se[2:3], sqrt(diag(V_true)[2:3]), tolerance = 1e-12)
   # A singular matrix stays singular.
   S <- matrix(c(1, 2, 2, 4), 2) * tcrossprod(c(1e6, 1))
-  r <- vop_msgs(choicer:::invert_hessian(S, equilibrate = TRUE))
+  r <- vop_msgs(choicer:::invert_hessian(S))
   expect_null(r$value$vcov)
   expect_match(r$messages[1], "likely singular")
   expect_true(all(is.na(r$value$se)))
-  r <- vop_msgs(choicer:::.sandwich_combine(S, diag(2), equilibrate = TRUE))
+  r <- vop_msgs(choicer:::.sandwich_combine(S, diag(2)))
   expect_null(r$value$vcov)
   expect_match(r$messages[1], "likely singular")
 })
 
-test_that("without equilibration the inversion is solve() on the raw matrix", {
-  # Two LAPACK calls on one matrix: bit for bit on reference BLAS, OpenBLAS
-  # and Accelerate, not promised everywhere.
-  skip_on_cran()
+test_that("the equilibrated inverse and sandwich are the two-step formulas", {
+  # The scaled matrix factored in one working copy (the sandwich solved
+  # twice against the factors, without an explicit inverse), against R's
+  # solve() of the scaled matrices and their products.
+  bp <- vop_bad_pair(5L)
+  set.seed(6)
+  B <- crossprod(matrix(rnorm(36), 6)) * tcrossprod(bp$s)
+  An <- bp$H                       # and a bread that is not symmetric
+  An[2, 5] <- An[2, 5] * (1 + 1e-3)
+  for (A in list(bp$H, An)) {
+    D <- choicer:::.jacobi_scale(A)
+    S <- tcrossprod(D)
+    V <- choicer:::equilibrated_inverse(A, D)
+    expect_lt(vop_err(V, solve(A * S) * S), 1e-13)
+    Ai <- solve(A * S)
+    W <- Ai %*% (B * S) %*% Ai
+    W <- (W + t(W)) / 2 * S
+    V <- choicer:::equilibrated_sandwich(A, B, D)
+    expect_identical(V, t(V))
+    expect_lt(vop_err(V, W), 1e-13)
+  }
+  # Unit scales: the plain inverse, and the input is left as it was.
   H0 <- vop_bad_pair(2L)$A + diag(6)
-  expect_identical(choicer:::invert_hessian(H0)$vcov, solve(H0))
+  H0_copy <- H0 + 0
+  expect_lt(vop_err(choicer:::equilibrated_inverse(H0, rep(1, 6)), solve(H0)),
+            1e-14)
+  expect_identical(H0, H0_copy)
+})
+
+test_that("the equilibrated helpers hold past one 64 x 64 tile", {
+  # The sandwich transposes and symmetrizes by tiles of 64 x 64 (columns of
+  # tiles in parallel from order 256): orders at, just past and well past a
+  # tile boundary, and past the parallel threshold; a badly scaled bread,
+  # symmetric and not, and a positive semi-definite meat of lower rank.
+  vop_big <- function(p, seed) {
+    set.seed(seed)
+    Q <- qr.Q(qr(matrix(rnorm(p * p), p)))
+    A <- Q %*% diag(seq(1, 20, length.out = p)) %*% t(Q)
+    A <- (A + t(A)) / 2
+    s <- 10^runif(p, -4, 4)
+    G <- matrix(rnorm(p * (p - 3L)), p)
+    list(A = A * tcrossprod(s), B = tcrossprod(G) * tcrossprod(s))
+  }
+  for (p in c(64L, 65L, 130L, 300L)) {
+    bp <- vop_big(p, p)
+    An <- bp$A
+    An[2, p] <- An[2, p] * (1 + 1e-3)
+    # Observed errors are at most about 3e-15 (OpenBLAS, reference LAPACK).
+    for (k in 1:2) {
+      A <- list(bp$A, An)[[k]]
+      what <- sprintf("p = %d, %s bread", p, c("symmetric", "non-symmetric")[k])
+      A0 <- A + 0
+      B0 <- bp$B + 0
+      D <- choicer:::.jacobi_scale(A)
+      S <- tcrossprod(D)
+      Ai <- solve(A * S)
+      W <- Ai %*% (bp$B * S) %*% Ai
+      W <- (W + t(W)) / 2 * S
+      V <- choicer:::equilibrated_sandwich(A, bp$B, D)
+      expect_identical(V, t(V), label = paste("sandwich symmetric,", what))
+      expect_lt(vop_err(V, W), 1e-12, label = paste("sandwich error,", what))
+      expect_lt(vop_err(choicer:::equilibrated_inverse(A, D), Ai * S), 1e-12,
+                label = paste("inverse error,", what))
+      expect_identical(A, A0, label = paste("bread unchanged,", what))
+      expect_identical(bp$B, B0, label = paste("meat unchanged,", what))
+    }
+  }
+})
+
+test_that("the equilibrated inverse is solve() on the scaled matrix, bit for bit", {
+  # The same LAPACK calls (dgetrf, then dgetrs on the identity) on the same
+  # values: bit for bit on reference BLAS, OpenBLAS and Accelerate, not
+  # promised everywhere.
+  skip_on_cran()
+  for (seed in 7:9) {
+    bp <- vop_bad_pair(seed)
+    D <- choicer:::.jacobi_scale(bp$H)
+    S <- tcrossprod(D)
+    expect_identical(choicer:::equilibrated_inverse(bp$H, D),
+                     solve(bp$H * S) * S)
+  }
+})
+
+# The outcome of an inversion: its value, or its error message with the
+# LAPACK routine's name dropped (solve() calls dgesv, the helpers dgetrf).
+vop_outcome <- function(expr) {
+  tryCatch(list(value = expr), error = function(e) {
+    list(error = sub("dgesv|dgetrf", "LU", conditionMessage(e)))
+  })
+}
+
+test_that("the equilibrated inverse keeps solve()'s checks", {
+  # Errors where solve() errors (an exact zero pivot; a reciprocal condition
+  # number below the machine epsilon), and the same value where it does not.
+  cases <- list(singular = matrix(c(1, 2, 2, 4), 2),
+                near_singular = diag(c(1, 1e-17)), one = matrix(4))
+  for (nm in names(cases)) {
+    M <- cases[[nm]]
+    expect_identical(
+      vop_outcome(choicer:::equilibrated_inverse(M, rep(1, nrow(M)))),
+      vop_outcome(solve(M)), label = nm)
+  }
+  expect_error(choicer:::equilibrated_inverse(matrix(0, 0, 0), numeric(0)),
+               "0-diml")
+  expect_error(choicer:::equilibrated_inverse(matrix(1, 2, 3), c(1, 1)),
+               "must be square")
+  expect_error(choicer:::equilibrated_inverse(diag(2), 1), "length 2")
+  expect_error(choicer:::equilibrated_sandwich(diag(2), diag(3), c(1, 1)),
+               "order of `A`")
+  expect_error(choicer:::equilibrated_sandwich(cases$singular, diag(2), c(1, 1)),
+               "exactly singular")
+})
+
+test_that("the equilibrated inverse treats non-finite matrices as solve() does", {
+  # solve() estimates the condition only for finite factors; a non-finite
+  # pivot's fate is the BLAS's (both call the same LU factorization).
+  skip_on_cran()
+  cases <- list(nan_pivot = diag(c(NaN, 1)),
+                nan_offdiag = matrix(c(1, NaN, NaN, 1), 2),
+                inf = diag(c(Inf, 1)), na = matrix(NA_real_, 1, 1))
+  for (nm in names(cases)) {
+    M <- cases[[nm]]
+    expect_identical(
+      vop_outcome(choicer:::equilibrated_inverse(M, rep(1, nrow(M)))),
+      vop_outcome(solve(M)), label = nm)
+  }
 })
 
 test_that("an equilibrated sandwich recovers a badly scaled A^-1 B A^-1", {
@@ -97,10 +215,8 @@ test_that("an equilibrated sandwich recovers a badly scaled A^-1 B A^-1", {
   B <- B0 * tcrossprod(bp$s)
   Ainv <- solve(bp$A)
   V_true <- (Ainv %*% B0 %*% Ainv) / tcrossprod(bp$s)
-  raw <- vop_msgs(choicer:::.sandwich_combine(bp$H, B))
-  expect_null(raw$value$vcov)
-  expect_match(raw$messages[1], "likely singular")
-  eq <- vop_msgs(choicer:::.sandwich_combine(bp$H, B, equilibrate = TRUE))
+  expect_error(solve(bp$H), "computationally singular")
+  eq <- vop_msgs(choicer:::.sandwich_combine(bp$H, B))
   expect_length(eq$messages, 0L)
   expect_lt(vop_err(eq$value$vcov, V_true), 1e-12)
   expect_identical(eq$value$vcov, t(eq$value$vcov))
@@ -146,8 +262,8 @@ test_that("a mixed logit's variance is the one vcov() returns post hoc", {
   skip_on_cran()
   mxlp_threads(1L)
   on.exit(mxlp_threads(2L), add = TRUE)
-  # A design whose unscaled fits' matrices invert with a raw solve() (with
-  # seed 11 the unscaled BHHH is singular to it: a variance near zero). The
+  # A design whose unscaled fits' matrices invert (with seed 11 the unscaled
+  # BHHH is singular: a variance near zero). The
   # unscaled fits start where 0.2.x did: from the default, the unscaled
   # optimizer drives w2's variance onto its zero plateau, where the
   # information is singular. The layout: x1, x2; L_11, L_21, L_22; constants.
@@ -258,6 +374,20 @@ test_that("scaled fits of badly scaled designs invert where solve() fails", {
   post <- vop_msgs(vcov(fm, type = "hessian"))
   expect_length(post$messages, 0L)
   expect_identical(post$value, fm$vcov)
+
+  # The inversion does not depend on scale_vars: the same fit, marked
+  # unscaled, inverts its information as the scaled one did, where solve()
+  # refuses it.
+  for (f in list(fit, fm)) {
+    f0 <- f
+    f0$scale_vars <- "none"
+    f0["vcov"] <- list(NULL)
+    f0["se"] <- list(NULL)
+    lazy <- vop_msgs(vcov(f0))
+    expect_length(lazy$messages, 0L)
+    expect_identical(lazy$value, f$vcov)
+    expect_error(solve(choicer:::.compute_bread(f0)), "singular")
+  }
 })
 
 test_that("fit objects keep their shape and their own draws", {
@@ -278,7 +408,7 @@ test_that("fit objects keep their shape and their own draws", {
   expect_identical(unname(none$param_shift), rep(0, length(coef(none))))
 
   # Objects without the new fields (fitted before them) still work: the
-  # variance reads scale_vars, not param_scale.
+  # variance reads neither the map nor scale_vars.
   old <- with_data
   old$param_scale <- NULL
   old$param_shift <- NULL
@@ -310,5 +440,5 @@ test_that("fit objects keep their shape and their own draws", {
     eta_draws = eta, rc_dist = c(0L, 0L), rc_correlation = FALSE,
     rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE)
   expect_identical(unname(fa$vcov),
-                   unname(choicer:::invert_hessian(H, equilibrate = TRUE)$vcov))
+                   unname(choicer:::invert_hessian(H)$vcov))
 })

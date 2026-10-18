@@ -399,18 +399,18 @@ ensure_vcov <- function(object) {
     # cluster = NULL routes to the stored, already-aligned fit-time labels.
     .assemble_score_vcov(object, type = "cluster")
   } else {
-    invert_hessian(compute_hessian(object), equilibrate = .is_scaled(object))
+    invert_hessian(compute_hessian(object))
   }
 
+  # Named before the fit holds it: naming a matrix that two objects share
+  # copies it (one p x p matrix, 2.3 GB at 17,000 parameters).
+  if (!is.null(result$vcov)) {
+    nms <- names(object$coefficients)
+    dimnames(result$vcov) <- list(nms, nms)
+    names(result$se) <- nms
+  }
   object$vcov <- result$vcov
   object$se <- result$se
-
-  if (!is.null(object$vcov)) {
-    nms <- names(object$coefficients)
-    rownames(object$vcov) <- nms
-    colnames(object$vcov) <- nms
-    names(object$se) <- nms
-  }
 
   object
 }
@@ -724,31 +724,27 @@ compute_hessian <- function(object) {
 #' Accepts either a negated-Hessian or a BHHH/OPG estimate of the observed
 #' information matrix and returns its inverse plus standard errors.
 #'
-#' With `equilibrate`, it inverts \eqn{D H D} and returns
-#' \eqn{D (D H D)^{-1} D}, with \eqn{D} the Jacobi scale of `.jacobi_scale()`
-#' (powers of two, so the products with \eqn{D} are exact and only `solve()`
-#' rounds). A scaled fit's information is in natural units, whose curvatures
-#' can span many orders of magnitude; equilibrated, it inverts as accurately
-#' as its well-scaled equivalent instead of failing as computationally
-#' singular. Without it, the raw matrix goes to `solve()`.
+#' The matrix is inverted equilibrated: \eqn{V = D (D H D)^{-1} D}, with
+#' \eqn{D} the Jacobi scale of `.jacobi_scale()` (powers of two, so the
+#' products with \eqn{D} are exact and only the inversion rounds), by
+#' `equilibrated_inverse()`, which scales and factors one working copy and
+#' solves for the result, with `solve()`'s checks. An information matrix in
+#' natural units can have curvatures spanning many orders of magnitude
+#' (columns in different units, a rarely chosen alternative's constant);
+#' equilibrated, it inverts as accurately as its well-scaled equivalent
+#' instead of losing digits or failing as computationally singular.
 #'
 #' @param hess Observed information matrix (negated Hessian or BHHH/OPG).
-#' @param equilibrate Whether to invert the Jacobi-equilibrated matrix
-#'   (scaled fits, `.is_scaled()`).
 #' @returns List with vcov (matrix or NULL) and se (numeric vector).
 #' @noRd
-invert_hessian <- function(hess, equilibrate = FALSE) {
+invert_hessian <- function(hess) {
   p_len <- nrow(hess)
   vcov_mat <- NULL
   se <- rep(NA_real_, p_len)
-  D <- if (equilibrate) .jacobi_scale(hess)
 
   singular_flag <- FALSE
   tryCatch({
-    # tcrossprod(D) formed at each use, so that no extra p x p matrix lives
-    # through solve()
-    vcov_mat <- if (is.null(D)) solve(hess) else
-      solve(hess * tcrossprod(D)) * tcrossprod(D)
+    vcov_mat <- equilibrated_inverse(hess, .jacobi_scale(hess))
   }, error = function(e) {
     singular_flag <<- TRUE
     message("Error inverting information matrix (likely singular): ", e$message)
@@ -778,32 +774,24 @@ invert_hessian <- function(hess, equilibrate = FALSE) {
 #' Forms \code{V = A^{-1} B A^{-1}} from the (weighted) negated Hessian
 #' \code{A} (bread) and the (weight-squared) outer-product-of-gradients
 #' \code{B} (meat), with the same singular / not-positive-definite guards as
-#' \code{invert_hessian()}. With `equilibrate`, \eqn{D} is the Jacobi scale
-#' of the bread, and the inner product is formed on \eqn{D A D} and
-#' \eqn{D B D}: \eqn{V = D [(DAD)^{-1} (DBD) (DAD)^{-1}] D}, the inner matrix
-#' symmetrized before the exact products with \eqn{D}.
+#' \code{invert_hessian()}. Equilibrated by the Jacobi scale \eqn{D} of the
+#' bread: \eqn{V = D [(DAD)^{-1} (DBD) (DAD)^{-1}] D}, the inner matrix
+#' symmetrized before the exact products with \eqn{D}, by
+#' `equilibrated_sandwich()` (two solves with the bread's LU factors, no
+#' explicit inverse).
 #'
 #' @param A Bread matrix (observed information; weighted negated Hessian).
 #' @param B Meat matrix (weighted outer product of per-individual scores).
-#' @param equilibrate Whether to equilibrate by the bread's Jacobi scale
-#'   (scaled fits, `.is_scaled()`).
 #' @returns List with \code{vcov} (matrix or NULL) and \code{se} (numeric).
 #' @noRd
-.sandwich_combine <- function(A, B, equilibrate = FALSE) {
+.sandwich_combine <- function(A, B) {
   p_len <- nrow(A)
   vcov_mat <- NULL
   se <- rep(NA_real_, p_len)
-  D <- if (equilibrate) .jacobi_scale(A)
 
   singular_flag <- FALSE
   tryCatch({
-    if (is.null(D)) {
-      Ainv <- solve(A)
-      vcov_mat <- Ainv %*% B %*% Ainv
-    } else {
-      Ainv <- solve(A * tcrossprod(D))
-      vcov_mat <- Ainv %*% (B * tcrossprod(D)) %*% Ainv
-    }
+    vcov_mat <- equilibrated_sandwich(A, B, .jacobi_scale(A))
   }, error = function(e) {
     singular_flag <<- TRUE
     message("Error inverting information (bread) matrix (likely singular): ",
@@ -811,8 +799,6 @@ invert_hessian <- function(hess, equilibrate = FALSE) {
   })
 
   if (!singular_flag && !is.null(vcov_mat)) {
-    vcov_mat <- (vcov_mat + t(vcov_mat)) / 2   # symmetrize away FP asymmetry
-    if (!is.null(D)) vcov_mat <- vcov_mat * tcrossprod(D)
     diag_vcov <- diag(vcov_mat)
     neg <- !is.na(diag_vcov) & diag_vcov < 0
     if (any(neg)) {
@@ -839,7 +825,12 @@ invert_hessian <- function(hess, equilibrate = FALSE) {
 #' clamped, the scaled matrix's diagonal is within a factor of two of one in
 #' magnitude. The magnitude, so that a matrix that is not positive definite
 #' away from the optimum (a negative diagonal entry) is equilibrated too and
-#' its negative variances are reported rather than a singular inversion.
+#' its negative variances are reported rather than a singular inversion. For
+#' a positive semi-definite matrix \eqn{|A_{ij}| \le \sqrt{A_{ii} A_{jj}}},
+#' so no entry of \eqn{D A D} exceeds about 2 in magnitude (about
+#' \eqn{2^{24}} where a scale is clamped); an indefinite
+#' one whose \eqn{|A_{ij}| / \sqrt{|A_{ii} A_{jj}|}} exceeds about 1e308
+#' overflows, and its variances then come out NaN without a message.
 #'
 #' @param A Square matrix.
 #' @returns Numeric vector of scales.
@@ -850,18 +841,6 @@ invert_hessian <- function(hess, equilibrate = FALSE) {
   D <- rep(1, length(d))
   D[ok] <- 2^round(-0.5 * log2(abs(d[ok])))
   pmin(pmax(D, 2^-500), 2^500)
-}
-
-#' Whether a fit was estimated with `scale_vars`
-#'
-#' Its variances are then inverted equilibrated (`invert_hessian()`,
-#' `.sandwich_combine()`), at fit time and post hoc alike.
-#'
-#' @param object A fitted object.
-#' @returns `TRUE` or `FALSE`.
-#' @noRd
-.is_scaled <- function(object) {
-  !identical(object$scale_vars %||% "none", "none")
 }
 
 #' Robust (Huber-White) sandwich vcov for a fitted logit model
@@ -1201,8 +1180,8 @@ compute_scores <- function(object) {
 #' \code{compute_sandwich_vcov()}, and a mixed logit's variance at fit time.
 #' Operates entirely in natural space: the stored data and coefficients are
 #' natural-scale even when the fit used \code{scale_vars}, so no
-#' back-transform is needed; a scaled fit's matrices are inverted
-#' equilibrated (\code{.is_scaled()}).
+#' back-transform is needed; every matrix is inverted equilibrated
+#' (\code{invert_hessian()}, \code{.sandwich_combine()}).
 #'
 #' @param object A fitted \code{choicer_fit} (MNL / MXL / NL) with
 #'   \code{keep_data = TRUE}.
@@ -1229,9 +1208,8 @@ compute_scores <- function(object) {
          "mixed (MXL) and nested (NL) logit only.")
   }
 
-  eq <- .is_scaled(object)
   if (identical(type, "hessian")) {
-    return(invert_hessian(.compute_bread(object, gp), equilibrate = eq))
+    return(invert_hessian(.compute_bread(object, gp)))
   }
 
   # Scores, weights and cluster labels are per likelihood unit: choice
@@ -1251,20 +1229,20 @@ compute_scores <- function(object) {
       gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(d)))
     }
     B <- .mxl_score_meat(object, gp, type, cluster)
-    if (identical(type, "bhhh")) return(invert_hessian(B, equilibrate = eq))
-    return(.sandwich_combine(.compute_bread(object, gp), B, equilibrate = eq))
+    if (identical(type, "bhhh")) return(invert_hessian(B))
+    return(.sandwich_combine(.compute_bread(object, gp), B))
   }
 
   w <- d$weights[.unit_first(d)]
   S <- compute_scores(object)
 
   if (identical(type, "bhhh")) {
-    return(invert_hessian(.score_meat(S, w, "bhhh"), equilibrate = eq))
+    return(invert_hessian(.score_meat(S, w, "bhhh")))
   }
 
   if (identical(type, "cluster")) cluster <- .unit_clusters(object, cluster, what)
   B <- .score_meat(S, w, type, cluster)
-  .sandwich_combine(.compute_bread(object), B, equilibrate = eq)
+  .sandwich_combine(.compute_bread(object), B)
 }
 
 #' Cluster labels of a fit's likelihood units
