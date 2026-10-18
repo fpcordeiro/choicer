@@ -107,13 +107,16 @@
   used to invert the information of the scaled design and transform the result
   back, while `vcov(fit, type = )` inverted the natural information as it was;
   both lost digits when the design's columns span orders of magnitude (post
-  hoc, the inversion failed as computationally singular on such a design, and
-  a mixed logit's robust variance from the tests was off by 1.6e-8 relative;
-  now within 1e-15 of an independent computation). A mixed logit's variance at
-  fit time is computed by the route `vcov(fit, type = )` takes post hoc
-  (`"robust"` for `se_method = "sandwich"`), with the fit's own draws, so the
-  two agree, bit for bit on one thread (draws supplied through `eta_draws` are
-  not regenerated post hoc). An unscaled fit's inversion is unchanged.
+  hoc, the inversion failed as computationally singular on such a design; for
+  one of the tests' mixed logit robust variances, whose information had
+  condition number 1.2e12, the standard errors computed raw were off by 2.1e-7
+  relative against an exact computation, equilibrated by 9e-16). A mixed
+  logit's variance at fit time is computed by the route `vcov(fit, type = )`
+  takes post hoc (`"robust"` for `se_method = "sandwich"`), with the fit's own
+  draws, so the two agree, bit for bit on one thread (draws supplied through
+  `eta_draws` are not regenerated post hoc). Unscaled fits now take the same
+  route (see "Every fit's information is equilibrated before it is inverted",
+  below).
 - The extra gradient pass of `"bhhh"` counts in the reported optimization
   time. A scaled fit's `theta_init` must have one finite value per parameter;
   a shorter or longer vector used to be recycled.
@@ -789,6 +792,61 @@
   convergence codes are unchanged, bit for bit on one thread. nloptr, the
   default optimizer, takes the objective and the gradient from one function
   and is unchanged.
+
+## Every fit's information is equilibrated before it is inverted
+
+- The standard errors of every fit of `run_mnlogit()`, `run_mxlogit()` and
+  `run_nestlogit()`, scaled or not (`run_nestlogit()`'s default
+  `scale_vars = "none"` included), now come from the information matrix
+  equilibrated before it is inverted, as those of scaled fits already did
+  (above): scaled on both sides by the powers of two nearest (on a log scale)
+  the inverse square roots of its diagonal's magnitudes, which adds no
+  rounding, inverted, and scaled back. This holds at fit time and post hoc
+  (`vcov(fit, type = )`, `wesml_vcov()`), for the inverse of the Hessian or
+  BHHH information and for the sandwich. The estimator is unchanged. In
+  natural units an information matrix's curvatures can span many orders of
+  magnitude (columns in different units, the constants of rarely and often
+  chosen alternatives); inverted as it was, such a matrix could fail as
+  computationally singular, leaving the standard errors `NA`, and a sandwich
+  built on it could lose digits.
+- Against an exact computation on 963 inversions from our reference battery
+  and the test suite (477 distinct matrices, of 2 to 13 parameters), the
+  equilibrated inversion recovers 23 of the 30 that the old route refused, all
+  23 from unscaled fits (condition numbers from 6e18 to 1.2e28; equilibrated,
+  from 5 to 15), with standard errors within about 1e-15 relative of exact.
+  The other seven, singular to working precision, fail either way. Of the
+  rest, a scaled fit's inverse is the same to the last bit (with R's own
+  LAPACK), and where an inversion changed (476 inversions: unscaled fits and
+  every sandwich) its error is at most 2.7 times the old one, smaller by more
+  than half in 12 and larger by more than double in three. Where the
+  information is ill-conditioned for reasons no rescaling removes (a
+  likelihood nearly flat in some direction), standard errors keep only the
+  digits its conditioning allows, as before, and the last of them move: among
+  the test suite's fits by up to 1e-4 relative, on nested logits whose
+  equilibrated information had condition numbers near 1e10. Where the
+  information is not positive definite (a nested logit stopped short of a
+  maximum, say), a variance that is zero in exact arithmetic comes out as
+  rounding noise of either sign: a standard error near 1e-8 of the others may
+  now be `NA`, with a message, or the reverse.
+- The inversion holds less memory and takes no longer. The equilibrated
+  matrix is LU-factored in one working copy and the identity solved against
+  the factors into the result (the factorization and solve of `solve()`,
+  with its checks), so an inverse holds two parameters-by-parameters
+  matrices besides the information where `solve()` held three, and four or
+  more with the equilibration. The sandwich is solved twice against the
+  bread's factors without forming its inverse, and holds two besides the
+  bread and the meat where it held four, and five with the equilibration.
+  At 17,000 parameters each such matrix takes 2.3 GB: an inverse holds 4.6
+  GB besides the information, against 6.9 GB unscaled and 11.6 GB scaled
+  before, and a sandwich 4.6 GB, against 9.2 and 11.6 GB. On a census-style
+  mixed logit with 2,620 parameters (9.8 million rows, prepared data), a fit
+  stopped after one likelihood evaluation peaked at 0.24 GB of heap, its
+  BHHH variance included, scaled or not, against 0.40 GB unscaled and 0.55
+  GB scaled before: more than the matrices above account for, since R's own
+  temporaries of the old inversion stayed in the heap until a garbage
+  collection. The inverse took the time of `solve()`, and the
+  sandwich, at 2,620 parameters, 29% and 38% less at one and four threads
+  (medians of three alternated runs).
 
 ## Corrections
 
