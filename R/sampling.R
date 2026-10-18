@@ -8,8 +8,10 @@
 
 #' Resolve fitted-model sampling provenance and weighted-inference guards
 #'
-#' Called after optimization and before covariance assembly so all logit
-#' wrappers retain the same warning and error order.
+#' Called by `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` once
+#' their inputs are resolved and before the optimizer runs, so that its
+#' warnings come (printed at once), and its error stops the call, before the
+#' fit, at the same point in all three.
 #' @param weights Resolved per-situation fitting weights.
 #' @param se_method Selected standard-error method.
 #' @param cs_meta Original choice-sampling provenance, or NULL.
@@ -20,17 +22,20 @@
 .resolve_choice_sampling <- function(weights, se_method, cs_meta, has_input,
                                      prepare_fn) {
   weights_nonuniform <- length(unique(weights)) > 1
+  # immediate.: the fit that follows can take hours (unless the user ignores
+  # warnings, options(warn = -1), which it would override)
+  now <- !isTRUE(getOption("warn") < 0)
   if (weights_nonuniform && se_method == "bhhh") {
     warning("Non-uniform weights detected with se_method = 'bhhh': BHHH/OPG ",
             "standard errors use the w^1 meat (sum w_i s_i s_i')^{-1}, which is ",
             "NOT a valid choice-based-sampling (WESML) correction; the correct ",
             "sandwich meat is w^2. Use se_method = 'sandwich' for valid WESML ",
             "inference.",
-            call. = FALSE)
+            call. = FALSE, immediate. = now)
   } else if (weights_nonuniform && !se_method %in% c("sandwich", "cluster")) {
     warning("Non-uniform weights detected. If these are sampling/WESML ",
             "weights, use se_method = 'sandwich' for valid inference.",
-            call. = FALSE)
+            call. = FALSE, immediate. = now)
   }
   choice_sampling <- if (!is.null(cs_meta)) {
     utils::modifyList(as.list(cs_meta),
@@ -54,7 +59,7 @@
     }
     warning("WESML provenance is present but the applied weights are uniform; the fit ",
             "is effectively unweighted and is NOT a WESML-corrected estimator.",
-            call. = FALSE)
+            call. = FALSE, immediate. = now)
   }
   choice_sampling
 }

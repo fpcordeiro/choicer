@@ -1013,7 +1013,8 @@ compute_scores <- function(object) {
 #' Check cluster labels, one per likelihood unit
 #'
 #' The checks of the cluster meat, shared by \code{.score_meat()} and the
-#' mixed logit kernels' route.
+#' mixed logit kernels' route, which the \code{run_*()} wrappers also run on
+#' their fit-time labels before the optimizer.
 #'
 #' @param cluster Cluster labels, one per likelihood unit (or \code{NULL}).
 #' @param n_units Number of likelihood units.

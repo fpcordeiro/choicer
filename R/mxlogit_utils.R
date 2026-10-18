@@ -627,6 +627,26 @@ run_mxlogit <- function(
          "`upper` must not be -Inf.", call. = FALSE)
   }
 
+  # The variance's inputs, checked here, before the draws, the column scales,
+  # the "bhhh" pass and the optimizer, as the variance step checks them: the
+  # weights against se_method and the choice-based-sampling provenance, then
+  # the cluster labels, one per likelihood unit (nesting decision makers with
+  # person_col). A Ti that does not split the situations into decision makers
+  # is left to the kernels, which report it at their first call, as before.
+  choice_sampling <- .resolve_choice_sampling(
+    weights = input_data$weights, se_method = se_method,
+    cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mxl_data"
+  )
+  Ti <- input_data$Ti
+  if (se_method == "cluster" &&
+      (is.null(Ti) || (is.numeric(Ti) && !anyNA(Ti) && all(Ti >= 1) &&
+                       isTRUE(sum(as.numeric(Ti)) == length(input_data$M))))) {
+    .check_cluster_labels(
+      .to_units(input_data$cluster, input_data, "`cluster_col`"),
+      length(.unit_first(input_data))
+    )
+  }
+
   # Draws for the convenience workflow, built once the inputs have passed
   # the checks above: a store-mode cube can take gigabytes.
   if (has_data) {
@@ -773,12 +793,6 @@ run_mxlogit <- function(
   # Estimate at the optimum (natural units)
   theta_hat <- opt$par
   names(theta_hat) <- param_names
-
-  # Choice-based-sampling provenance and a guardrail for weighted inference.
-  choice_sampling <- .resolve_choice_sampling(
-    weights = input_data$weights, se_method = se_method,
-    cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mxl_data"
-  )
 
   # Reconstruct Sigma for display (from the natural-scale L params)
   L_params <- theta_hat[param_map$sigma]

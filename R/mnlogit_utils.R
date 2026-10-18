@@ -229,6 +229,18 @@ run_mnlogit <- function(
   param_map <- list(beta = seq_len(K_x))
   if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
 
+  # The variance's inputs, checked here, before the column scales, the
+  # "bhhh" pass and the optimizer, as the variance step checks them: the
+  # weights against se_method and the choice-based-sampling provenance, then
+  # the cluster labels, one per choice situation.
+  choice_sampling <- .resolve_choice_sampling(
+    weights = input_list$weights, se_method = se_method,
+    cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mnl_data"
+  )
+  if (se_method == "cluster") {
+    .check_cluster_labels(input_list$cluster, length(input_list$M))
+  }
+
   # --- The optimizer's coordinates: column scales (scale_vars) ----------------
   # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
   # (.coordinate_map()); the kernels evaluate the model at theta on the
@@ -284,12 +296,6 @@ run_mnlogit <- function(
 
   theta_hat <- opt$par
   names(theta_hat) <- param_names
-
-  # Choice-based-sampling provenance and a guardrail for weighted inference.
-  choice_sampling <- .resolve_choice_sampling(
-    weights = input_list$weights, se_method = se_method,
-    cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_mnl_data"
-  )
 
   # Compute vcov eagerly using the selected SE method. For "sandwich"
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted

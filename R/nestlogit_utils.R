@@ -259,6 +259,18 @@ run_nestlogit <- function(
   param_map$lambda <- K_x + seq_len(K_l)
   if (n_asc > 0) param_map$asc <- K_x + K_l + seq_len(n_asc)
 
+  # The variance's inputs, checked here, before the column scales, the
+  # "bhhh" pass and the optimizer, as the variance step checks them: the
+  # weights against se_method and the choice-based-sampling provenance, then
+  # the cluster labels, one per choice situation.
+  choice_sampling <- .resolve_choice_sampling(
+    weights = input_data$weights, se_method = se_method,
+    cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_nl_data"
+  )
+  if (se_method == "cluster") {
+    .check_cluster_labels(input_data$cluster, length(input_data$M))
+  }
+
   # The model's objective and gradient at theta; `...` takes opg_diag
   model_f <- function(theta, ...) {
     nl_loglik_gradient_parallel(
@@ -311,12 +323,6 @@ run_nestlogit <- function(
 
   # Extract lambda values
   lambda <- theta_hat[param_map$lambda]
-
-  # Choice-based-sampling provenance and a guardrail for weighted inference.
-  choice_sampling <- .resolve_choice_sampling(
-    weights = input_data$weights, se_method = se_method,
-    cs_meta = cs_meta, has_input = has_input, prepare_fn = "prepare_nl_data"
-  )
 
   # Compute vcov eagerly using the selected SE method. For "sandwich"
   # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
