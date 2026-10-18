@@ -1239,6 +1239,16 @@ unless it says otherwise.
   variance for their standard errors. It now reports the covariance matrix and
   `exp(Mu)` whether or not the variance is available, with `NA` standard
   errors where it is not.
+- `blp()` on a model fitted without constants (`use_asc = FALSE`) and with
+  the outside option (`include_outside_option = TRUE`) started its
+  contraction from one zero too many, counting the outside option, which
+  has no constant, among the alternatives. The multinomial and nested logit
+  methods stopped with an error that blamed `target_shares` ("must have the
+  same length as the total number of alternatives") ever since `blp()`
+  gained them (the multinomial logit in 0.1.0, the nested logit in 0.2.0);
+  the mixed logit's had the same start, which no fit of a released version
+  reached. The contraction now starts from one zero per inside alternative;
+  other fits are unchanged.
 
 # choicer 0.2.1
 

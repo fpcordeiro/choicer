@@ -22,7 +22,8 @@ Length \code{J_inside} when no outside option, or \code{J_inside + 1}
 \code{include_outside_option = TRUE}.}
 
 \item{delta_init}{Initial guess for delta (ASC) values. If \code{NULL},
-uses the estimated ASCs from the fitted model.}
+uses the estimated ASCs from the fitted model (zeros for a model fitted
+without them, \code{use_asc = FALSE}).}
 
 \item{tol}{Convergence tolerance (default 1e-8).}
 

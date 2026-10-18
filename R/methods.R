@@ -1439,7 +1439,8 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #'   (with the outside option's share at index 1) when
 #'   \code{include_outside_option = TRUE}.
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
-#'   uses the estimated ASCs from the fitted model.
+#'   uses the estimated ASCs from the fitted model (zeros for a model fitted
+#'   without them, \code{use_asc = FALSE}).
 #' @param tol Convergence tolerance (default 1e-8).
 #' @param max_iter Maximum iterations (default 1000).
 #' @param ... Additional arguments (ignored).
@@ -1466,7 +1467,9 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
   pm <- object$param_map
   beta <- object$coefficients[pm$beta]
 
-  J <- nrow(object$alt_mapping)
+  # One constant per inside alternative; alt_mapping also has a row for the
+  # outside option, when there is one
+  J_inside <- nrow(object$alt_mapping) - isTRUE(object$include_outside_option)
   if (is.null(delta_init)) {
     if (!is.null(pm$asc)) {
       delta_init <- if (object$include_outside_option) {
@@ -1475,7 +1478,7 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
         c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
       }
     } else {
-      delta_init <- rep(0, J)
+      delta_init <- rep(0, J_inside)
     }
   }
 
@@ -1646,7 +1649,8 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   (with the outside option's share at index 1) when
 #'   \code{include_outside_option = TRUE}.
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
-#'   uses the estimated ASCs from the fitted model.
+#'   uses the estimated ASCs from the fitted model (zeros for a model fitted
+#'   without them, \code{use_asc = FALSE}).
 #' @param tol Convergence tolerance (default 1e-8).
 #' @param max_iter Maximum iterations (default 1000).
 #' @param keep_draws_bytes Most memory, in bytes, that the contraction may use
@@ -1712,7 +1716,9 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
   mu <- if (!is.null(pm$mu)) object$coefficients[pm$mu] else rep(0, object$draws_info$K_w)
   L_params <- object$coefficients[pm$sigma]
 
-  J <- nrow(object$alt_mapping)
+  # One constant per inside alternative; alt_mapping also has a row for the
+  # outside option, when there is one
+  J_inside <- nrow(object$alt_mapping) - isTRUE(object$include_outside_option)
   if (is.null(delta_init)) {
     if (!is.null(pm$asc)) {
       delta_init <- if (object$include_outside_option) {
@@ -1721,7 +1727,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
         c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
       }
     } else {
-      delta_init <- rep(0, J)
+      delta_init <- rep(0, J_inside)
     }
   }
 
@@ -1946,7 +1952,8 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #'   (with the outside option's share at index 1) when
 #'   \code{include_outside_option = TRUE}.
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
-#'   uses the estimated ASCs from the fitted model.
+#'   uses the estimated ASCs from the fitted model (zeros for a model fitted
+#'   without them, \code{use_asc = FALSE}).
 #' @param damping Contraction damping factor in (0, 1] (default 1).
 #' @param tol Convergence tolerance (default 1e-8).
 #' @param max_iter Maximum iterations (default 1000).
@@ -1984,7 +1991,9 @@ blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
   non_singleton <- which(nest_counts > 1)
   lambda_full[non_singleton] <- object$coefficients[pm$lambda]
 
-  J <- nrow(object$alt_mapping)
+  # One constant per inside alternative; alt_mapping also has a row for the
+  # outside option, when there is one
+  J_inside <- nrow(object$alt_mapping) - isTRUE(object$include_outside_option)
   if (is.null(delta_init)) {
     if (!is.null(pm$asc)) {
       delta_init <- if (object$include_outside_option) {
@@ -1993,7 +2002,7 @@ blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
         c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
       }
     } else {
-      delta_init <- rep(0, J)
+      delta_init <- rep(0, J_inside)
     }
   }
 
