@@ -69,8 +69,8 @@ test_that("the map round-trips, exactly for powers of two", {
 
 test_that("the coordinate objective's gradient is the chain rule's", {
   skip_if_not_installed("numDeriv")
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   fx <- mxlp_fixture("coord", 41L, rc_dist = c(0L, 1L), rc_mean = TRUE,
                      rc_correlation = TRUE, include_outside_option = TRUE,
                      weight_type = "person")
@@ -86,8 +86,8 @@ test_that("the coordinate objective's gradient is the chain rule's", {
 })
 
 test_that("the coordinate objective is the scaled design's objective", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   for (cfg in list(list(rc_dist = c(0L, 0L), corr = TRUE, mean = FALSE, panel = TRUE),
                    list(rc_dist = c(0L, 1L), corr = FALSE, mean = TRUE, panel = FALSE))) {
     fx <- mxlp_fixture("eqv", 45L, rc_dist = cfg$rc_dist,
@@ -155,8 +155,8 @@ sc_fit <- function(dt, panel = FALSE, ...) {
 
 test_that("\"bhhh\" fits reach the unscaled optimum", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   cases <- list(
     list(panel = FALSE, ioo = FALSE, args = list(rc_correlation = TRUE)),
     list(panel = TRUE, ioo = TRUE,
@@ -198,8 +198,8 @@ test_that("\"bhhh\" fits reach the unscaled optimum", {
 })
 
 test_that("\"bhhh\" leaves the parameters unscaled where the likelihood overflows", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- sc_data(60L, 1L, 61L)
   th <- c(4e306, 0, log(0.5), log(0.5), 0, 0, 0)  # x1's coefficient overflows
   msgs <- capture_messages(
@@ -211,8 +211,8 @@ test_that("\"bhhh\" leaves the parameters unscaled where the likelihood overflow
 })
 
 test_that("\"none\" hands the optimizer the natural problem", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- sc_data(60L, 1L, 71L)
   seen <- NULL
   local_mocked_bindings(run_optimizer = function(optimizer, theta_init, eval_f,
@@ -241,8 +241,8 @@ test_that("\"none\" hands the optimizer the natural problem", {
 })
 
 test_that("\"bhhh\" hands the optimizer mapped start values and bounds", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- sc_data(60L, 1L, 71L)
   seen <- NULL
   local_mocked_bindings(run_optimizer = function(optimizer, theta_init, eval_f,
@@ -278,8 +278,8 @@ test_that("\"bhhh\" hands the optimizer mapped start values and bounds", {
 })
 
 test_that("\"sd\" hands the optimizer the column map's start values and bounds", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- sc_data(60L, 1L, 71L)
   seen <- NULL
   local_mocked_bindings(run_optimizer = function(optimizer, theta_init, eval_f,
@@ -317,8 +317,8 @@ test_that("\"sd\" hands the optimizer the column map's start values and bounds",
 
 test_that("a \"bhhh\" fit keeps its natural bounds", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- sc_data(200L, 1L, 51L)
   free <- sc_fit(dt, scale_vars = "bhhh")
   ub <- coef(free)[["x2"]] - 1  # binds: one unit below the free estimate
@@ -332,8 +332,8 @@ test_that("a \"bhhh\" fit keeps its natural bounds", {
 })
 
 test_that("multinomial scaled fits reach the unscaled optimum", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_mnl_data(N = 300, J = 4, seed = 81, outside_option = TRUE)
   dm <- data.table::as.data.table(sim$data)
   dm[, x1 := x1 * 100]
@@ -360,8 +360,8 @@ test_that("multinomial scaled fits reach the unscaled optimum", {
 
 test_that("a scaled fit's kernels evaluate the natural design", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   ns <- asNamespace("choicer")
   kernels <- c("mxl_loglik_gradient_parallel", "mxl_hessian_parallel",
                "mxl_bhhh_parallel", "mxl_cluster_meat_parallel")
@@ -410,8 +410,8 @@ nl_sc_data <- function(N, seed) {
 }
 
 test_that("nested logit scale_vars fits reach the unscaled optimum", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- nl_sc_data(600L, 21L)
   fit <- function(sv, ...) suppressMessages(run_nestlogit(
     dt, "id", "j", "choice", c("X", "W"), "nest", scale_vars = sv,
@@ -439,8 +439,8 @@ test_that("nested logit scale_vars fits reach the unscaled optimum", {
 })
 
 test_that("nested logit \"bhhh\" maps the start values and the nest parameters' bound", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- nl_sc_data(200L, 22L)
   th0 <- c(0.005, -0.3, 0.7, 0.4, 0, 0.1, -0.1, 0.2, 0.1)
   seen <- NULL
@@ -467,8 +467,8 @@ test_that("nested logit \"bhhh\" maps the start values and the nest parameters' 
 })
 
 test_that("a scaled fit's start values must have one value per parameter", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   # The default ("bhhh") checks them before its gradient pass.
   dm <- sc_data(60L, 1L, 71L)
   fit_x <- function(th) run_mxlogit(dm, "id", "alt", "choice", c("x1", "x2"),
@@ -480,8 +480,8 @@ test_that("a scaled fit's start values must have one value per parameter", {
 })
 
 test_that("a scaled nested logit's start values must have one value per parameter", {
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- nl_sc_data(200L, 22L)
   expect_error(suppressMessages(run_nestlogit(
     dt, "id", "j", "choice", c("X", "W"), "nest", scale_vars = "sd",

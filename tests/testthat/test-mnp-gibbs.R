@@ -65,15 +65,15 @@ test_that("mnp_gibbs counts kept draws without int overflow", {
 })
 
 test_that("mnp_gibbs draws are seed-reproducible and thread-invariant", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(set_omp_threads(2L), add = TRUE)
 
   dt <- create_small_mnl_data()
   d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))
   args <- make_gibbs_args(d)
 
-  set_num_threads(1)
+  set_omp_threads(1)
   out1 <- do.call(mnp_gibbs, args)
-  set_num_threads(2)
+  set_omp_threads(2)
   out2 <- do.call(mnp_gibbs, args)
 
   # Bitwise identical across thread counts: each (iteration, observation)

@@ -220,8 +220,8 @@ test_that("the default start is in the columns' units", {
 
 test_that("from the default start a fit reaches the same maximum in any units", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_mxl_data(N = 1000L, J = 4L, beta = c(0.8, -0.5),
                            Sigma = diag(c(1, 0.6)), outside_option = FALSE,
                            seed = 1L)
@@ -246,8 +246,8 @@ test_that("from the default start a fit reaches the same maximum in any units", 
 
 test_that("a fit whose default start lies outside the bounds starts at the bound", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_mxl_data(N = 400L, J = 3L, beta = c(0.8, -0.5),
                            Sigma = diag(c(1, 0.6)), outside_option = FALSE,
                            seed = 9L)

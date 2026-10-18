@@ -453,8 +453,8 @@ for (draws in c("store", "generate")) {
 test_that("a panel of single-situation decision makers reproduces the cross-sectional fit", {
   # One thread makes the reductions deterministic, so both optimizer runs
   # see the same objective.
-  set_num_threads(1L)
-  on.exit(set_num_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- data.table::copy(.pnl_base()$dt)
   dt[, pid1 := id]
   f_cs <- pnl_fit(dt)
@@ -476,8 +476,8 @@ test_that("a panel of single-situation decision makers reproduces the cross-sect
 
 test_that("clustering a panel fit on its decision makers gives the robust variance", {
   # One thread: the two calls below then share a bit-identical bread.
-  set_num_threads(1L)
-  on.exit(set_num_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   b <- .pnl_base()
   f <- b$fit
   # Each decision maker is already one score row.
@@ -876,8 +876,8 @@ test_that("decision-maker weights enter scores, variances and tastes per unit", 
 
   # The C++ unit collapse (sandwich meat from the BHHH kernel with squared
   # weights) equals the R collapse (clustering the unit scores on persons).
-  set_num_threads(1L)
-  on.exit(set_num_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   f <- fits$sandwich
   expect_equal(vcov(f, type = "cluster", cluster = pnl_labels(wf$dt, "person")),
                f$vcov, tolerance = 1e-10)

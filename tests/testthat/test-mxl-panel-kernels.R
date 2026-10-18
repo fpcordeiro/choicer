@@ -295,8 +295,8 @@ test_that("the batched path is taken, and chosen automatically past the budget",
   # row-draws that fit the score kernels' budget, so they split its draws on
   # their own, into batches of 300 and 301 draws; one forced batch of all S
   # draws is the reference.
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   fx <- mxlp_long_panel_fixture()
   expect_false(identical(mxlp_call("gradient", fx, draw_batch = 1L),
                          mxlp_call("gradient", fx)))
@@ -676,8 +676,8 @@ test_that("overflowing utilities trigger the sentinel, the Hessian skip and NA t
 test_that("the kernels accept double-typed index vectors", {
   # The integer inputs are read in place when they are integer (the output of
   # prepare_mxl_data()) and coerced once per call when they are not.
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   fx <- mxlp_long_panel_fixture()
   fd <- fx
   fd$alt_idx <- as.double(fx$alt_idx)

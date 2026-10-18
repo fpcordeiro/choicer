@@ -329,21 +329,21 @@ test_that("a situation's predictions do not depend on the thread count", {
   set.seed(2)
   d <- mxp_data(50, sample(2:20, 300, replace = TRUE), J = 25L, K_w = 3L,
                 S = 7L, ioo = TRUE, rc_dist = c(0L, 1L, 0L), rc_corr = TRUE)
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(set_omp_threads(2L), add = TRUE)
   gen <- function(k) k(d, gen_seed = 3L, gen_scramble = 1L, gen_S = 7L)
-  set_num_threads(1L)
+  set_omp_threads(1L)
   p1 <- mxp_predict(d); l1 <- mxp_logsum(d)
   gp1 <- gen(mxp_predict); gl1 <- gen(mxp_logsum)
-  set_num_threads(2L)
+  set_omp_threads(2L)
   expect_identical(mxp_predict(d), p1)
   expect_identical(mxp_logsum(d), l1)
   expect_identical(gen(mxp_predict), gp1)
   expect_identical(gen(mxp_logsum), gl1)
   # Shares add situations up in each thread, so only the rounding of the sum
   # depends on the thread count
-  set_num_threads(1L)
+  set_omp_threads(1L)
   s1 <- mxp_shares(d); e1 <- mxp_elas(d, 2L, TRUE); r1 <- mxp_dr(d, 1L, FALSE)
-  set_num_threads(2L)
+  set_omp_threads(2L)
   expect_equal(mxp_shares(d), s1, tolerance = 1e-13)
   expect_equal(mxp_elas(d, 2L, TRUE), e1, tolerance = 1e-13)
   expect_equal(mxp_dr(d, 1L, FALSE), r1, tolerance = 1e-13)
@@ -355,8 +355,8 @@ test_that("double-typed alternative codes give the integer result", {
   dd$alt_idx <- as.double(d$alt_idx)
   expect_identical(mxp_predict(dd), mxp_predict(d))
   expect_identical(mxp_logsum(dd), mxp_logsum(d))
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)  # one thread: sums over situations in a fixed order
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)  # one thread: sums over situations in a fixed order
   expect_identical(mxp_shares(dd), mxp_shares(d))
   target <- as.numeric(mxp_shares(d))
   expect_identical(mxp_blp(dd, target, rep(0, 4L)), mxp_blp(d, target, rep(0, 4L)))
@@ -557,10 +557,10 @@ test_that("elasticities and diversion ratios of no situations or of one", {
   o$X <- o$X[1:2, , drop = FALSE]; o$W <- o$W[1:2, , drop = FALSE]
   o$alt_idx <- o$alt_idx[1:2]; o$M <- o$M[1]; o$weights <- o$weights[1]
   o$eta <- o$eta[, , 1, drop = FALSE]
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   e1 <- mxp_elas(o, 1L, FALSE); r1 <- mxp_dr(o, 2L, TRUE); s1 <- mxp_shares(o)
-  set_num_threads(2L)
+  set_omp_threads(2L)
   expect_identical(mxp_elas(o, 1L, FALSE), e1)
   expect_identical(mxp_dr(o, 2L, TRUE), r1)
   expect_identical(mxp_shares(o), s1)
@@ -579,8 +579,8 @@ test_that("elasticities and diversion ratios check their variable first", {
                "the model has no fixed coefficients (K_x = 0)", fixed = TRUE)
   # The unused choice_idx is never converted (one thread: sums over
   # situations in a fixed order)
-  on.exit(set_num_threads(2L), add = TRUE)
-  set_num_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
   expect_identical(
     choicer:::mxl_elasticities_parallel(d$theta, d$X, d$W, d$alt_idx, NULL,
                                         d$M, d$weights, d$eta, d$rc_dist, 1L,

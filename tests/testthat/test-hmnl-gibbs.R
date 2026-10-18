@@ -71,14 +71,14 @@ test_that("hmnl_gibbs returns correctly shaped, finite draws", {
 })
 
 test_that("hmnl_gibbs draws are seed-reproducible and thread-invariant", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(set_omp_threads(2L), add = TRUE)
 
   fx <- make_hmnl_fixture()
   args <- make_hmnl_args(fx$d)
 
-  set_num_threads(1)
+  set_omp_threads(1)
   out1 <- do.call(hmnl_gibbs, args)
-  set_num_threads(2)
+  set_omp_threads(2)
   out2 <- do.call(hmnl_gibbs, args)
 
   # Bitwise identical across thread counts: per-(iteration, unit) RNG
@@ -99,7 +99,7 @@ test_that("hmnl_gibbs draws are seed-reproducible and thread-invariant", {
 })
 
 test_that("hmnl_gibbs is thread-invariant in the J > N regime", {
-  on.exit(set_num_threads(2L), add = TRUE)
+  on.exit(set_omp_threads(2L), add = TRUE)
 
   # 10 respondents, 25 alternatives: the master RNG tags (2N + J + 0..3)
   # sit beyond every delta tag only because the base is 2N + J, not 3N.
@@ -110,9 +110,9 @@ test_that("hmnl_gibbs is thread-invariant in the J > N regime", {
   expect_true(d$J > d$N_persons)
   args <- make_hmnl_args(d, R = 100, burn = 30)
 
-  set_num_threads(1)
+  set_omp_threads(1)
   out1 <- do.call(hmnl_gibbs, args)
-  set_num_threads(2)
+  set_omp_threads(2)
   out2 <- do.call(hmnl_gibbs, args)
   expect_identical(out1$bdraw, out2$bdraw)
   expect_identical(out1$deltadraw, out2$deltadraw)

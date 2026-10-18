@@ -260,8 +260,8 @@ vop_lazy <- function(fit) {
 
 test_that("a mixed logit's variance is the one vcov() returns post hoc", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   # A design whose unscaled fits' matrices invert (with seed 11 the unscaled
   # BHHH is singular: a variance near zero). The
   # unscaled fits start where 0.2.x did: from the default, the unscaled
@@ -302,8 +302,8 @@ test_that("a mixed logit's variance is the one vcov() returns post hoc", {
 
 test_that("multinomial and nested logit variances follow their post-hoc routes", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   sim <- simulate_mnl_data(N = 300, J = 4, seed = 21, outside_option = FALSE)
   dm <- data.table::as.data.table(sim$data)
   dm[, x1 := x1 * 100]
@@ -353,8 +353,8 @@ test_that("multinomial and nested logit variances follow their post-hoc routes",
 
 test_that("scaled fits of badly scaled designs invert where solve() fails", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- vop_mxl_data(300L, 1L, 31L, bad = TRUE)
   fit <- vop_mxl_fit(dt, scale_vars = "sd", control = list(maxeval = 300L))
   expect_true(all(is.finite(fit$se)))
@@ -392,8 +392,8 @@ test_that("scaled fits of badly scaled designs invert where solve() fails", {
 
 test_that("fit objects keep their shape and their own draws", {
   skip_on_cran()
-  mxlp_threads(1L)
-  on.exit(mxlp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
   dt <- vop_mxl_data(200L, 1L, 41L)
   with_data <- vop_mxl_fit(dt, scale_vars = "sd")
   no_data <- vop_mxl_fit(dt, scale_vars = "sd", keep_data = FALSE)
