@@ -67,7 +67,14 @@
 #'   Mutually exclusive with \code{weights}. All weights must be finite and strictly
 #'   positive. Used for choice-based / WESML
 #'   weighting; pair with \code{se_method = "sandwich"} for valid inference.
-#' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
+#' @param outside_opt_label The label of the outside option or of the base
+#'   alternative, given in the class of the alternative column. With
+#'   \code{include_outside_option = TRUE} it labels the outside option, which
+#'   the model adds: rows of the data that carry it are dropped, and it names
+#'   the outside option's row of \code{alt_mapping}. Without the outside option
+#'   it names the base alternative, coded first (with constants, its constant is
+#'   normalized to 0); it must be one of the alternatives, and \code{NULL} (the
+#'   default) makes the first alternative in sort order the base.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param use_asc Logical indicating whether to include alternative-specific constants (ASCs) in the model.
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in the
@@ -430,7 +437,14 @@ run_mnlogit <- function(
 #'   weights. The column must be constant within each `id_col` (one weight per
 #'   choice situation) and is collapsed accordingly. Mutually exclusive with
 #'   `weights`. All weights must be finite and strictly positive.
-#' @param outside_opt_label Label for the outside option (if any). If `NULL`, no outside option is assumed.
+#' @param outside_opt_label The label of the outside option or of the base
+#'   alternative, given in the class of the alternative column. With
+#'   `include_outside_option = TRUE` it labels the outside option, which the
+#'   model adds: rows of the data that carry it are dropped, and it names the
+#'   outside option's row of `alt_mapping`. Without the outside option it names
+#'   the base alternative, coded first (with constants, its constant is
+#'   normalized to 0); it must be one of the alternatives, and `NULL` (the
+#'   default) makes the first alternative in sort order the base.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param cluster_col Optional name of a column in `data` holding cluster labels
 #'   for cluster-robust standard errors (e.g. a person id when the same decision
@@ -558,13 +572,18 @@ prepare_mnl_data <- function(
 
   ## Create integer alternative codes ------------------------------------------
 
-  if (!is.null(outside_opt_label) && include_outside_option==FALSE) {
+  base_label <- !is.null(outside_opt_label) && include_outside_option==FALSE
+  if (base_label) {
     levels <- c(outside_opt_label, sort(setdiff(unique(dt[[alt_col]]), outside_opt_label)))
   } else {
     levels <- sort(unique(dt[[alt_col]]))
   }
 
   dt <- .code_alternatives(dt, alt_col, levels)
+  if (base_label) {
+    .check_base_codes(dt$.choicer_alt_int, outside_opt_label, dt[[alt_col]],
+                      alt_col, length(ids_to_drop))
+  }
 
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id

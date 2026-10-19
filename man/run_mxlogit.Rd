@@ -220,7 +220,13 @@ equal weights are used. All weights must be finite and strictly positive.
 With \code{person_col} they are decision-maker weights, constant within
 each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.}
 
-\item{outside_opt_label}{Label for the outside option (convenience workflow).}
+\item{outside_opt_label}{(Convenience workflow.) The label of the outside
+option or of the base alternative, given in the class of the alternative
+column. With \code{include_outside_option = TRUE} it names the outside
+option's row of \code{alt_mapping}. Without the outside option it names the
+base alternative, coded first (with constants, its constant is normalized
+to 0); it must be one of the alternatives, and \code{NULL} (the default)
+makes the first alternative in sort order the base.}
 
 \item{include_outside_option}{Logical whether to include an outside option
 (convenience workflow).}
