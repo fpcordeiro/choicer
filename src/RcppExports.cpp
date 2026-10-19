@@ -1171,6 +1171,20 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// newton_step
+Rcpp::List newton_step(SEXP H, SEXP g, SEXP D, SEXP free_idx, double lambda);
+RcppExport SEXP _choicer_newton_step(SEXP HSEXP, SEXP gSEXP, SEXP DSEXP, SEXP free_idxSEXP, SEXP lambdaSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type H(HSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type g(gSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type D(DSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type free_idx(free_idxSEXP);
+    Rcpp::traits::input_parameter< double >::type lambda(lambdaSEXP);
+    rcpp_result_gen = Rcpp::wrap(newton_step(H, g, D, free_idx, lambda));
+    return rcpp_result_gen;
+END_RCPP
+}
 // prep_gather_design
 SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base);
 RcppExport SEXP _choicer_prep_gather_design(SEXP colsSEXP, SEXP rowsSEXP, SEXP baseSEXP) {
@@ -1311,6 +1325,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_nl_elasticities_parallel", (DL_FUNC) &_choicer_nl_elasticities_parallel, 10},
     {"_choicer_nl_diversion_ratios_parallel", (DL_FUNC) &_choicer_nl_diversion_ratios_parallel, 8},
     {"_choicer_nl_blp_contraction", (DL_FUNC) &_choicer_nl_blp_contraction, 13},
+    {"_choicer_newton_step", (DL_FUNC) &_choicer_newton_step, 5},
     {"_choicer_prep_gather_design", (DL_FUNC) &_choicer_prep_gather_design, 3},
     {"_choicer_design_column_step", (DL_FUNC) &_choicer_design_column_step, 1},
     {"_choicer_thread_info", (DL_FUNC) &_choicer_thread_info, 0},

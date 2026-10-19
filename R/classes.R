@@ -592,6 +592,357 @@ normalize_optim_result <- function(result) {
   )
 }
 
+# --- The Newton phase (polish) -----------------------------------------------
+
+#' Settings of the Newton phase
+#'
+#' `polish_control` of `run_mxlogit()`: a named list whose entries replace
+#' the defaults, `max_iter` (20; a whole number, 0 certifies the start
+#' without stepping), `tol_decrement` (1e-8, in log-likelihood units) and
+#' `tol_step` (1e-12, relative). A NULL entry keeps the default.
+#'
+#' @param control A named list, or NULL.
+#' @returns The complete settings.
+#' @noRd
+.polish_control <- function(control) {
+  ctl <- list(max_iter = 20L, tol_decrement = 1e-8, tol_step = 1e-12)
+  if (is.null(control)) return(ctl)
+  if (!is.list(control)) stop("`polish_control` must be a list.", call. = FALSE)
+  nms <- names(control)
+  if (length(control) && (is.null(nms) || anyNA(nms) || !all(nzchar(nms)))) {
+    stop("`polish_control` must be a named list.", call. = FALSE)
+  }
+  bad <- setdiff(nms, names(ctl))
+  if (length(bad)) {
+    stop("Unknown `polish_control` setting(s): ", paste(bad, collapse = ", "),
+         ". Valid: ", paste(names(ctl), collapse = ", "), ".", call. = FALSE)
+  }
+  dup <- unique(nms[duplicated(nms)])
+  if (length(dup)) {
+    stop("Duplicate `polish_control` setting(s): ", paste(dup, collapse = ", "),
+         ".", call. = FALSE)
+  }
+  control <- control[!vapply(control, is.null, TRUE)]
+  ctl[names(control)] <- control
+  m <- ctl$max_iter
+  if (!is.numeric(m) || length(m) != 1L || !is.finite(m) || m < 0 ||
+      m != round(m) || m > .Machine$integer.max) {
+    stop("`polish_control$max_iter` must be a whole number >= 0.", call. = FALSE)
+  }
+  ctl$max_iter <- as.integer(m)
+  for (nm in c("tol_decrement", "tol_step")) {
+    v <- ctl[[nm]]
+    if (!is.numeric(v) || length(v) != 1L || !is.finite(v) || v <= 0) {
+      stop("`polish_control$", nm, "` must be a positive number.", call. = FALSE)
+    }
+  }
+  ctl
+}
+
+#' Polish an optimizer's solution by damped Newton steps
+#'
+#' The Newton phase of `run_mxlogit(polish = )`. From the optimizer's
+#' solution it takes damped Newton steps on the curvature `curv_f` returns,
+#' the information (the Hessian of the negated log-likelihood) or the BHHH
+#' matrix, until the Newton decrement, half of g' C^-1 g with g the gradient
+#' and C the curvature, falls below `tol_decrement`. On a positive definite
+#' Hessian the decrement estimates the log-likelihood the remaining Newton
+#' step would gain, and sqrt(2 decrement) is the distance to the maximum of
+#' the quadratic model in Hessian standard errors (Cauchy-Schwarz in the
+#' C^-1 inner product bounds every linear combination's), so a converged
+#' polish certifies the maximum the optimizer approached. BHHH is positive
+#' semi-definite everywhere: where the Hessian H is positive definite its
+#' sqrt(2 decrement) is that distance in the standard errors of the sandwich
+#' H^-1 B H^-1, but on its own it certifies only a stationary point. The
+#' estimator does not change.
+#'
+#' Each iteration works in natural units. Damped by Marquardt's diagonal the
+#' Newton step does not depend on a diagonal rescaling of the parameters, to
+#' within the factor of two of D's rounding; the cap, epsilon and `tol_step`
+#' below are measured in the fit's coordinates (m, `scale`).
+#' * The curvature at the current point, scaled by its Jacobi scale D
+#'   (`.jacobi_scale()`, powers of two). The previous curvature is released
+#'   before the next is computed.
+#' * Bounds, by two-metric projection (Bertsekas 1982): a parameter within
+#'   epsilon of a bound that its gradient points across is epsilon-active
+#'   and moves to P(theta - D^2 g), onto the bound; epsilon =
+#'   m min(1e-3, max |w / m|) over the parameters not held, with
+#'   w = theta - P(theta - m^2 g) the projected gradient step, shrinks to
+#'   zero at a stationary point. The other parameters are free, except those
+#'   `fixed` and the flat ones, whose curvature column and gradient are zero
+#'   (no information at this point, as where a log-Cholesky diagonal has gone
+#'   so far toward -Inf that its derivatives underflow).
+#' * A Newton step on the free set (`newton_step()`), (D C_FF D + lambda I) y
+#'   = -D g_F, undamped (lambda = 0) when the free block's diagonal is
+#'   positive and its Cholesky factorization succeeds with a reciprocal
+#'   condition number above the machine epsilon. Otherwise, and when the step
+#'   is not finite or its line search fails, Levenberg-Marquardt damping from
+#'   max(1e-6, lambda_prev / 100) in factors of 10 up to 1e10; lambda I on the
+#'   scaled block is Marquardt's lambda |diag C|, to within a factor of two.
+#' * A free parameter whose step is longer than ten maximum steps (below),
+#'   100 m, on a curvature that has all but vanished (|C_kk| m_k^2 below 1e-4
+#'   times the free parameters' median) is held for the iteration (stalled)
+#'   and the step solved again without it. BHHH's curvature vanishes so, like
+#'   exp(4 L), on a log-Cholesky diagonal L whose variance goes to zero:
+#'   shortened to the maximum step, its step would shorten every other
+#'   parameter's by more than ten, freezing them. A step that is long because
+#'   the start is far from the maximum is shortened instead.
+#' * Before any step: converged when the undamped decrement is below
+#'   `tol_decrement`, the epsilon-active parameters sit on their bounds and no
+#'   parameter is flat or stalled (so the certificate is for the point
+#'   returned; a flat or stalled parameter stops the polish unconverged,
+#'   named in the message); then the iteration limit; then a step below
+#'   `tol_step` relative to |theta| + m.
+#' * A free step longer than 10 units of the fit's coordinates (|step| / m),
+#'   the maximum step, is shortened to that length, direction kept (as in
+#'   Dennis and Schnabel's methods and `nlm()`'s `stepmax`). Near a maximum
+#'   the steps are far shorter.
+#' * A line search on the projected path P(theta + alpha step), halving
+#'   alpha up to 40 times (also where the projected step is not yet a descent
+#'   direction, which it becomes for small alpha): Armijo's condition with
+#'   1e-4; or, only where the predicted gain -g'd is within the objective's
+#'   rounding allowance eps_f = 1e-10 max(|f|, 1), the approximate Armijo
+#'   condition of Hager and Zhang (2005), the upper half of their approximate
+#'   Wolfe conditions: f(alpha) <= f + eps_f with g(alpha)'d <= -0.8 g'd.
+#'   Near the maximum of a likelihood summed over millions of units, rounding
+#'   in f can exceed the gain of a correct step; the gradient carries no such
+#'   noise. A trial point whose objective overflows (`overflow`), or whose
+#'   objective or gradient is not finite, fails.
+#'
+#' An error from `eval_f`, `curv_f` or the step (a kernel's memory check, an
+#' allocation) ends the polish at the last accepted point, with the error's
+#' message in the result. A point worse than the start by more than eps_f
+#' (gated steps of the second rule that add up) is not returned: the start
+#' is, while `iterations` and the rest describe the path abandoned.
+#'
+#' @param theta Start, the optimizer's solution, in natural units.
+#' @param eval_f Function of theta returning `list(objective, gradient,
+#'   overflow)`: the negated log-likelihood, its gradient, and whether the
+#'   objective overflowed.
+#' @param curv_f Function of theta returning the curvature matrix.
+#' @param lower,upper Bounds, or NULL.
+#' @param scale The fit's coordinate scales m (`param_scale`), or NULL (1s).
+#' @param control From `.polish_control()`.
+#' @param method The curvature's name for the result: "newton" or "bhhh".
+#' @param fixed Positions of the parameters held at their values.
+#' @returns List: `method`; `par` (named as `theta`) and `value`; `converged`;
+#'   `iterations` (steps taken) and `damped` (those with lambda > 0);
+#'   `decrement`, the undamped decrement at the last curvature evaluated, over
+#'   the parameters not stalled (NA where the undamped block was not positive
+#'   definite, or singular to working precision), and `lambda`, the damping of
+#'   the last step tried; `message`, why the polish stopped;
+#'   `evaluations`, the objective's and the curvature's calls; `active`,
+#'   `held` and `flat`, the names of the parameters on a bound, held, and
+#'   left out of the last iteration's steps (flat or stalled); `improvement`,
+#'   the objective's decrease; `error`, NULL or the message of the error that
+#'   stopped it.
+#' @references Bertsekas, D. P. (1982). Projected Newton methods for
+#'   optimization problems with simple constraints. SIAM Journal on Control
+#'   and Optimization 20(2), 221-246.
+#'
+#'   Dennis, J. E. and Schnabel, R. B. (1983). Numerical Methods for
+#'   Unconstrained Optimization and Nonlinear Equations. Prentice-Hall.
+#'
+#'   Hager, W. W. and Zhang, H. (2005). A new conjugate gradient method with
+#'   guaranteed descent and an efficient line search. SIAM Journal on
+#'   Optimization 16(1), 170-192.
+#' @noRd
+run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
+                       scale = NULL, control = .polish_control(NULL),
+                       method = "newton", fixed = integer()) {
+  n <- length(theta)
+  nm <- names(theta) %||% as.character(seq_len(n))
+  lower <- lower %||% rep(-Inf, n)
+  upper <- upper %||% rep(Inf, n)
+  m <- scale %||% rep(1, n)
+  clip <- function(x) pmin(pmax(x, lower), upper)
+  rel <- function(d, x, mm = m) max(abs(d) / (abs(x) + mm))
+  held <- seq_len(n) %in% fixed
+  dname <- if (identical(method, "bhhh")) "BHHH decrement" else "Newton decrement"
+  armijo <- 1e-4
+  wolfe <- 0.1
+  halvings <- 40L
+  lambda0 <- 1e-6
+  lambda_max <- 1e10
+  max_step <- 10
+  stall_ratio <- 10 * max_step
+  collapse <- 1e-4
+
+  n_f <- 0L
+  n_c <- 0L
+  evaluate <- function(x) {
+    n_f <<- n_f + 1L
+    eval_f(x)
+  }
+  theta_in <- theta
+  theta <- clip(theta)
+  theta0 <- theta
+  f <- NA_real_
+  f0 <- NA_real_
+  g <- NULL
+  eps_f <- NA_real_
+  iter <- 0L
+  damped <- 0L
+  decrement <- NA_real_
+  lambda <- NA_real_
+  lambda_prev <- 0
+  converged <- FALSE
+  flat <- integer()
+  stalled <- integer()
+
+  # A trial point P(theta + alpha step), alpha halved until a rule accepts
+  line_search <- function(step) {
+    alpha <- 1
+    for (k in 0:halvings) {
+      x <- clip(theta + alpha * step)
+      d <- x - theta
+      if (rel(d, theta) < control$tol_step) return(NULL)
+      gd <- sum(g * d)
+      if (isTRUE(gd < 0)) {
+        e <- evaluate(x)
+        if (!isTRUE(e$overflow) && is.finite(e$objective) &&
+            all(is.finite(e$gradient)) &&
+            (e$objective <= f + armijo * gd ||
+             (-gd <= eps_f && e$objective <= f + eps_f &&
+              sum(e$gradient * d) <= -(1 - 2 * wolfe) * gd))) {
+          return(list(theta = x, f = e$objective, g = e$gradient))
+        }
+      }
+      alpha <- alpha / 2
+    }
+    NULL
+  }
+
+  # Steps until a stop; returns why it stopped
+  run <- function() {
+    e <- evaluate(theta)
+    if (isTRUE(e$overflow) || !is.finite(e$objective)) {
+      return("the objective is not finite at the start")
+    }
+    if (!all(is.finite(e$gradient))) {
+      return("the gradient is not finite at the start")
+    }
+    f0 <<- f <<- e$objective
+    g <<- e$gradient
+    eps_f <<- 1e-10 * max(abs(f0), 1)
+    repeat {
+      C <- NULL
+      n_c <<- n_c + 1L
+      C <- curv_f(theta)
+      D <- .jacobi_scale(C)
+      dC <- diag(C)
+      w <- theta - clip(theta - m^2 * g)
+      eps <- m * min(1e-3, max(c(0, abs(w[!held] / m[!held]))))
+      act <- !held & ((theta - lower <= eps & g > 0) |
+                        (upper - theta <= eps & g < 0))
+      zero <- which(!held & dC == 0 & g == 0)
+      flat <<- zero[vapply(zero, function(k) isTRUE(all(C[, k] == 0)), TRUE)]
+      stalled <<- integer()
+      decrement <<- NA_real_
+      free <- which(!held & !act & !seq_len(n) %in% flat)
+      lam <- if (isTRUE(all(dC[free] > 0))) 0 else max(lambda0, lambda_prev / 100)
+      repeat {
+        repeat {
+          r <- newton_step(C, g, D, free, lam)
+          if (r$info != 0L) break
+          # a free parameter whose step runs past ten maximum steps on a
+          # curvature that has all but vanished (in the fit's coordinates,
+          # 1e4 times below the free parameters' median) is held, the step
+          # re-solved
+          kap <- abs(dC[free]) * m[free]^2
+          off <- free[which(abs(r$step[free]) / m[free] > stall_ratio &
+                              kap < collapse * stats::median(kap))]
+          if (!length(off)) break
+          stalled <<- c(stalled, off)
+          free <- setdiff(free, off)
+        }
+        if (r$info < 0L) return("the curvature is not finite")
+        ok <- r$info == 0L
+        if (ok) {
+          step <- r$step
+          step[act] <- (clip(theta - D^2 * g) - theta)[act]
+          dec <- -0.5 * sum(g[free] * step[free])
+          ok <- all(is.finite(step)) && is.finite(dec)
+        }
+        if (ok) {
+          lambda <<- lam
+          if (lam == 0) decrement <<- dec
+          if (lam == 0 && dec < control$tol_decrement &&
+              (!any(act) ||
+               rel(step[act], theta[act], m[act]) < control$tol_step)) {
+            out <- c(flat, stalled)
+            if (length(out)) {
+              return(paste0(
+                if (length(free)) {
+                  paste("the", dname, "over the other parameters is below",
+                        "tol_decrement, but ")
+                },
+                paste(nm[sort(out)], collapse = ", "),
+                if (length(out) == 1L) " has" else " have",
+                " no usable curvature at this point (",
+                if (length(flat)) "no information",
+                if (length(flat) && length(stalled)) "; ",
+                if (length(stalled)) {
+                  "a curvature all but vanished, a step more than 100 times its scale"
+                },
+                ")"))
+            }
+            converged <<- TRUE
+            return(paste("the", dname, "is below tol_decrement"))
+          }
+          if (iter >= control$max_iter) {
+            return("the iteration limit (max_iter) is reached")
+          }
+          if (rel(step, theta) < control$tol_step) {
+            return("the step is below tol_step")
+          }
+          big <- max(c(0, abs(step[free]) / m[free]))
+          if (big > max_step) step[free] <- step[free] * (max_step / big)
+          ls <- line_search(step)
+          if (!is.null(ls)) {
+            theta <<- ls$theta
+            f <<- ls$f
+            g <<- ls$g
+            iter <<- iter + 1L
+            if (lam > 0) damped <<- damped + 1L
+            lambda_prev <<- lam
+            break
+          }
+        }
+        lam <- if (lam == 0) max(lambda0, lambda_prev / 100) else 10 * lam
+        if (lam > lambda_max) {
+          return(if (ok) "the line search failed"
+                 else "no damping makes the curvature positive definite")
+        }
+      }
+    }
+  }
+
+  err <- NULL
+  why <- tryCatch(run(), error = function(e) {
+    err <<- conditionMessage(e)
+    paste0("an error: ", err)
+  })
+  if (!is.finite(f)) {
+    # nothing was accepted, not even the start
+    theta <- theta_in
+  } else if (f > f0 + eps_f) {
+    theta <- theta0
+    f <- f0
+    converged <- FALSE
+    why <- paste0(why, "; the last point was worse than the start, which ",
+                  "is returned")
+  }
+  names(theta) <- names(theta_in)
+  list(method = method, par = theta, value = f, converged = converged,
+       iterations = iter, damped = damped, decrement = decrement,
+       lambda = lambda, message = why,
+       evaluations = c(objective = n_f, curvature = n_c),
+       active = nm[theta <= lower | theta >= upper],
+       held = nm[held], flat = nm[sort(c(flat, stalled))],
+       improvement = f0 - f, error = err)
+}
+
 # --- Hessian / vcov helpers --------------------------------------------------
 
 #' Compute Hessian from stored data (no closure needed)
