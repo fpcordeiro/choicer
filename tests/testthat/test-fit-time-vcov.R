@@ -29,6 +29,10 @@ vf_fit <- function(model, dt, ...) {
     mxl = run_mxlogit(data = dt, id_col = "id", alt_col = "alt",
                       choice_col = "choice", covariate_cols = "x1",
                       random_var_cols = "x2", rc_mean = TRUE, S = 20L, ...),
+    mxl_noasc = run_mxlogit(data = dt, id_col = "id", alt_col = "alt",
+                            choice_col = "choice", covariate_cols = "x1",
+                            random_var_cols = "x2", rc_mean = TRUE, S = 20L,
+                            use_asc = FALSE, ...),
     nl = run_nestlogit(data = dt, id_col = "id", alt_col = "alt",
                        choice_col = "choice", covariate_cols = c("x1", "x2"),
                        nest_col = "nest", ...)
@@ -180,16 +184,19 @@ test_that("the weights' guard runs before any likelihood evaluation", {
   }
 })
 
+# The models and their se_method; mxl_noasc is the mixed logit without
+# constants (use_asc = FALSE), whose parameter vector has no asc block
 vf_methods <- list(
   mnl = c("hessian", "bhhh", "sandwich", "cluster"),
   mxl = c("hessian", "bhhh", "sandwich", "cluster"),
+  mxl_noasc = c("hessian", "bhhh", "sandwich", "cluster"),
   nl = c("hessian", "numeric", "bhhh", "sandwich", "cluster")
 )
 
 # The kernel behind each model's fit-time variance (the meat's, for the
 # sandwich), and the vcov(type = ) that recomputes it
 vf_kernel <- function(model, se_method) {
-  switch(paste(model, se_method),
+  switch(paste(sub("_noasc$", "", model), se_method),
     "mnl hessian" = "mnl_loglik_hessian_parallel",
     "mnl bhhh" = , "mnl sandwich" = "mnl_bhhh_parallel",
     "mnl cluster" = "mnl_scores_parallel",
