@@ -35,7 +35,9 @@ run_mxlogit(
   nloptr_opts = NULL,
   weights_col = NULL,
   cluster_col = NULL,
-  person_col = NULL
+  person_col = NULL,
+  polish = c("none", "newton", "bhhh"),
+  polish_control = list()
 )
 }
 \arguments{
@@ -334,6 +336,19 @@ across the data set. \code{NULL} (default) makes each choice situation its
 own decision maker (cross-sectional likelihood). Convenience workflow
 only; in the advanced workflow pass \code{person_col} to
 \code{\link{prepare_mxl_data}}.}
+
+\item{polish}{A Newton phase after the optimizer (see the section
+below): \code{"none"} (default) has none; \code{"newton"} steps on the
+analytic Hessian of the simulated log-likelihood, \code{"bhhh"} on the
+BHHH (outer product of the gradients) matrix, both with the fit's draws
+and weights.}
+
+\item{polish_control}{List of settings of the Newton phase, any of
+\code{max_iter} (20; 0 evaluates the decrement at the optimizer's solution
+without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8}, in
+log-likelihood units) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
+shorter than this, relative to the parameters' magnitudes plus their
+scales in the optimizer's coordinates, stops the polish unconverged).}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).
@@ -349,7 +364,25 @@ without it (\code{vcov} \code{NULL}, \code{NA} standard errors, the
 error's message in \code{variance_error}) and warns, naming the
 \code{vcov(fit, type = )} that computes the variance later from a fit
 that keeps its data (\code{keep_data = TRUE}); the memory check's message
-names the threads that fit or how to lift its limit.
+names the threads that fit or how to lift its limit. With \code{polish},
+\code{fit$optimizer$polish} records the Newton phase: \code{method},
+\code{converged}, \code{iterations} (steps taken) and \code{damped},
+\code{decrement} (\code{NA} where the curvature on the parameters moved
+was not positive definite) and \code{lambda} (its damping) at the last
+curvature evaluated, \code{message} (why it stopped),
+\code{evaluations} (of the objective and the curvature), \code{active},
+\code{held} and \code{flat} (the parameters on a bound, held, and left
+out of the last steps for want of usable curvature), \code{improvement}
+(the log-likelihood gained), \code{error}, \code{elapsed_time} (the
+polish's seconds, which \code{fit$optimizer$elapsed_time} includes), and
+\code{optimizer}, the optimizer's own \code{convergence},
+\code{message}, \code{iterations} and \code{elapsed_time}. A converged
+polish sets \code{convergence} to the optimizer's success code (1 for
+nloptr, 0 for optim and a custom optimizer) and leads \code{message}
+with its verdict; otherwise both keep the optimizer's, the polish's
+reason appended to the message. A polish that stops with an error (the
+Hessian's memory check, say) keeps its last accepted point and warns
+(class \code{choicer_polish_failed}).
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.
@@ -386,6 +419,62 @@ standard errors must be clustered by decision maker (\code{cluster_col}),
 and its log-likelihood, AIC and BIC are not comparable with those of the
 panel fit.
 }
+\section{Newton phase (polish)}{
+
+The polish does not change the estimator. From wherever the optimizer
+stopped (at its tolerance or at \code{maxeval}), it finishes the climb to
+the maximum the optimizer approached, which first-order methods such as
+L-BFGS reach slowly when curvatures differ by orders of magnitude
+(thousands of constants, say), and certifies it. It converges when the
+Newton decrement
+\eqn{\nu = \frac{1}{2} g^\top C^{-1} g}{nu = g' C^-1 g / 2}, with \eqn{g}
+the gradient and \eqn{C} the curvature on the parameters it moves, falls
+below \code{tol_decrement}. On a positive definite Hessian,
+\eqn{\sqrt{2\nu}}{sqrt(2 nu)} is the distance from the estimates to the
+maximum of the log-likelihood's quadratic model in Hessian standard
+errors: at the default \eqn{10^{-8}}{1e-8}, every linear combination of
+the estimates lies within \eqn{1.4 \times 10^{-4}}{1.4e-4} of its standard
+error of that maximum. BHHH is positive semi-definite everywhere and
+cheaper per step, but converges linearly; where the Hessian \eqn{H} is
+positive definite, its \eqn{\sqrt{2\nu}}{sqrt(2 nu)} is that distance in
+the standard errors of the sandwich \eqn{H^{-1} B H^{-1}}{H^-1 B H^-1}
+(the robust standard errors of an unweighted fit), but on its own it shows
+a stationary point, not a maximum. \code{"bhhh"} needs at least as many
+likelihood units as the parameters it moves.
+
+Where the curvature is not positive definite the steps are damped
+(Levenberg-Marquardt); they respect \code{lower}/\code{upper} and pass a
+line search. The constants of inside alternatives without a finite
+estimate (see \code{use_asc}) are held at the optimizer's values, and the
+certificate concerns the other parameters given them. Where the base
+alternative or the outside option is the one without, the other constants
+diverge together, and the polish does not report convergence, unless the
+reference is never chosen and the constant of an alternative that is
+chosen is held or bounded above, which stops them. A random coefficient
+whose variance's maximum is at zero drives its log-Cholesky diagonal
+toward \eqn{-\infty} by Newton steps of \eqn{\frac{1}{2}}{1/2} to 1, each
+shrinking the decrement by a factor of about \eqn{e}: \code{"newton"} may
+certify a point where the variance is negligible but that diagonal, and
+its standard error, depend on \code{tol_decrement}; \code{"bhhh"}, whose
+curvature in that direction vanishes faster, comes to hold the diagonal
+and stops unconverged. A parameter without usable curvature (no
+information at the point, or a curvature that has all but vanished, giving
+a step more than 100 times its scale in the optimizer's coordinates) is
+held for the step and stops the polish unconverged. Under
+\code{scale_vars = "none"} those scales are the parameters' natural units,
+so a badly scaled column far from its maximum can be held as if its
+curvature had vanished; the default \code{"bhhh"} scaling avoids this. The
+standard errors are computed at the polished estimates, by
+\code{se_method}.
+
+Each step costs a curvature evaluation and a line search. A smaller
+\code{maxeval} (nloptr) or \code{maxit} (optim) in \code{control} hands
+the polish a point sooner, which saves time where the optimizer's last
+iterations creep; from farther away the steps are shortened (and damped
+where the curvature is not positive definite), and more of them are
+needed.
+}
+
 \section{Column names}{
 
 No column the model uses (the id, alternative, choice, covariate, weight,
