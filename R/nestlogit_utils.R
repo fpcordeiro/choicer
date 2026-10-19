@@ -25,7 +25,16 @@
 #' @param input_data List containing prepared input data for estimation
 #'   (advanced workflow). Mutually exclusive with \code{data}.
 #' @param use_asc Logical indicating whether to include alternative specific
-#'   constants (ASCs).
+#'   constants (ASCs). An alternative's constant has no finite
+#'   maximum-likelihood estimate when the alternative is chosen in every
+#'   choice situation that offers it, or is never chosen in the data (the
+#'   likelihood keeps rising as the constant grows, or falls); when the
+#'   outside option or the base alternative is chosen wherever it is offered,
+#'   or never chosen, the other constants have none together. For a
+#'   never-chosen alternative, the base included, this holds while the
+#'   parameter of its nest is at most 1. The fit then warns (class
+#'   \code{choicer_unbounded_constants}) before the optimizer runs, naming
+#'   them.
 #' @param theta_init Optional initial parameter vector in natural units,
 #'   ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one
 #'   per nest of two or more alternatives) and the constants. If \code{NULL}:
@@ -284,6 +293,10 @@ run_nestlogit <- function(
   if (se_method == "cluster") {
     .check_cluster_labels(input_data$cluster, length(input_data$M))
   }
+
+  # Constants without a finite estimate (alternatives never chosen, or chosen
+  # wherever offered), warned before the fit
+  if (n_asc > 0) .warn_unbounded_constants(input_data$alt_mapping)
 
   # The model's objective and gradient at theta; `...` takes opg_diag
   model_f <- function(theta, ...) {

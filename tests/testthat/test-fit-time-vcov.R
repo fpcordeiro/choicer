@@ -513,9 +513,14 @@ test_that("the mixed logit's memory check stopping the variance keeps the estima
   fit_at <- function(limit) {
     old <- options(choicer.max_memory = limit)
     on.exit(options(old))
-    suppressMessages(vf_capture(run_mxlogit(
-      input_data = input, eta_draws = eta, control = list(maxeval = 20L)
-    )))
+    # Most of the 400 alternatives are never chosen, or chosen wherever they
+    # are offered: their constants have no finite estimate, which this test
+    # does not concern
+    suppressWarnings(classes = "choicer_unbounded_constants",
+                     suppressMessages(vf_capture(run_mxlogit(
+                       input_data = input, eta_draws = eta,
+                       control = list(maxeval = 20L)
+                     ))))
   }
   # What the gradient (with the B pass's diagonal) and the Hessian need, from
   # their own messages at a limit of one byte

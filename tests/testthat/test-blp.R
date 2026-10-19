@@ -313,14 +313,18 @@ create_mxl_outside_data <- function(seed = 42, N = 40, J_inside = 3) {
 test_that("blp.choicer_mxl works with include_outside_option = TRUE", {
   dt <- create_mxl_outside_data(seed = 42, N = 40, J_inside = 3)
 
-  fit <- run_mxlogit(
+  # The data hold the outside option's own rows (alt 0), which
+  # prepare_mxl_data() keeps as an alternative: the outside option that
+  # include_outside_option adds is then never chosen, and the fit warns that
+  # the constants have no finite estimate
+  expect_warning(fit <- run_mxlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
     covariate_cols = "x1", random_var_cols = c("w1", "w2"),
     S = 10L,
     outside_opt_label = 0L,
     include_outside_option = TRUE,
     control = list(maxeval = 30L)
-  )
+  ), "The outside option is never chosen", class = "choicer_unbounded_constants")
 
   J_total <- nrow(fit$alt_mapping)        # inside + outside
   J_inside <- J_total - 1L
@@ -339,7 +343,9 @@ test_that("blp.choicer_mxl works with include_outside_option = TRUE", {
 test_that("blp.choicer_mxl with outside option round-trips own predicted shares", {
   dt <- create_mxl_outside_data(seed = 7, N = 50, J_inside = 3)
 
-  fit <- run_mxlogit(
+  # As above: the outside option added to data that hold its own rows is
+  # never chosen
+  expect_warning(fit <- run_mxlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
     covariate_cols = "x1", random_var_cols = c("w1", "w2"),
     S = 20L,
@@ -347,7 +353,7 @@ test_that("blp.choicer_mxl with outside option round-trips own predicted shares"
     include_outside_option = TRUE,
     rc_correlation = FALSE,
     control = list(maxeval = 60L)
-  )
+  ), "The outside option is never chosen", class = "choicer_unbounded_constants")
 
   J_total <- nrow(fit$alt_mapping)
   J_inside <- J_total - 1L

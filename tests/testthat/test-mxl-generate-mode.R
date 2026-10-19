@@ -39,7 +39,8 @@ TOL_GRAD_GEN <- 1e-5
 TOL_POST <- 1e-10
 
 # ---------------------------------------------------------------------------
-# Shared fixture: a small identified MXL dataset + converged store-mode fit
+# Shared fixture: a small MXL dataset + converged store-mode fit (its third
+# alternative is never chosen, so its constant has no finite estimate)
 # ---------------------------------------------------------------------------
 
 .gen_mode_fixture <- local({
@@ -59,8 +60,11 @@ TOL_POST <- 1e-10
     dt   <- sim$data
     S_val <- 50L
 
-    # Store-mode fit (converged)
-    fit_s <- run_mxlogit(
+    # Store-mode fit (converged). `delta` has one entry fewer than the
+    # alternatives, so the third has no constant in the simulation and is
+    # never chosen: the fit warns that its constant has no finite estimate,
+    # which these tests do not concern
+    fit_s <- suppressWarnings(classes = "choicer_unbounded_constants", run_mxlogit(
       data            = dt,
       id_col          = "id",
       alt_col         = "alt",
@@ -76,7 +80,7 @@ TOL_POST <- 1e-10
       draws           = "store",
       se_method       = "hessian",
       control         = list(print_level = 0L, maxeval = 1000L)
-    )
+    ))
 
     # Prepare the same inputs for C++ kernel calls
     inputs <- prepare_mxl_data(
@@ -584,7 +588,8 @@ test_that("vcov bhhh matches between store and generate modes at same theta", {
   # We only need a fit object with se_method="bhhh" at the same coefficients.
   # Use the converged theta as init and maxeval=1 to get a fresh BHHH vcov;
   # then construct fit_g_bhhh as a copy with draws_info switched to generate.
-  fit_s_bhhh <- run_mxlogit(
+  # (The fixture's third alternative is never chosen; see .gen_mode_fixture().)
+  fit_s_bhhh <- suppressWarnings(classes = "choicer_unbounded_constants", run_mxlogit(
     data=dt, id_col="id", alt_col="alt", choice_col="choice",
     covariate_cols="x1", random_var_cols="w1",
     S=S, rc_correlation=FALSE, rc_mean=FALSE, rc_dist=rep(0L,K_w),
@@ -592,7 +597,7 @@ test_that("vcov bhhh matches between store and generate modes at same theta", {
     draws="store", se_method="bhhh",
     theta_init=theta_conv,
     control=list(print_level=0L, maxeval=1L)
-  )
+  ))
 
   # NIT-3 fix: construct generate-mode twin via copy + draws_info swap.
   # Coefficients are byte-identical; only the draw acquisition path differs.
