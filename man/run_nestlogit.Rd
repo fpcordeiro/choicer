@@ -49,7 +49,16 @@ named like a generated parameter: \code{Lambda_<k>}, or
 (advanced workflow). Mutually exclusive with \code{data}.}
 
 \item{use_asc}{Logical indicating whether to include alternative specific
-constants (ASCs).}
+constants (ASCs). An alternative's constant has no finite
+maximum-likelihood estimate when the alternative is chosen in every
+choice situation that offers it, or is never chosen in the data (the
+likelihood keeps rising as the constant grows, or falls); when the
+outside option or the base alternative is chosen wherever it is offered,
+or never chosen, the other constants have none together. For a
+never-chosen alternative, the base included, this holds while the
+parameter of its nest is at most 1. The fit then warns (class
+\code{choicer_unbounded_constants}) before the optimizer runs, naming
+them.}
 
 \item{theta_init}{Optional initial parameter vector in natural units,
 ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one

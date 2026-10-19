@@ -774,6 +774,177 @@ label_matrix <- function(mat, alt_mapping) {
   counts
 }
 
+#' Alternatives whose constants have no finite maximum-likelihood estimate
+#'
+#' The score of alternative j's constant sums, over the choice situations
+#' that offer j, the indicator that j was chosen less its probability (in the
+#' mixed logit, averaged over the draws with positive weights). If j is never
+#' chosen in the sample every term is negative, and if it is chosen in every
+#' situation that offers it every term is positive, at any value of the
+#' parameters: the likelihood keeps rising as the constant falls (or grows),
+#' toward a supremum it never reaches, so the constant has no finite
+#' estimate. At that supremum the other parameters take the values that
+#' maximize the likelihood without the never-chosen alternative (or without
+#' the situations that offer the always-chosen one). In the nested logit a
+#' never-chosen alternative's terms are negative while its nest's parameter
+#' is at most 1; an always-chosen alternative's are positive for any nest
+#' parameter. The same holds for the reference, whose constant is
+#' normalized: if the outside option, or the base alternative, is never
+#' chosen, or chosen wherever it is offered, the other constants move off
+#' together.
+#'
+#' Read from the counts `alt_mapping` holds, by row. An alternative listed
+#' twice in one choice situation counts twice in `N_OBS`, so such an
+#' alternative chosen wherever offered is missed. One offered only in
+#' situations with no other alternative is reported as chosen wherever
+#' offered, although its likelihood is flat (the constant unidentified)
+#' rather than rising.
+#'
+#' @param alt_mapping A preparation's `alt_mapping`.
+#' @param asc_lower,asc_upper Optional bounds on the constants, one per row of
+#'   `alt_mapping` after the first (the mixed logit's `lower`/`upper` at
+#'   `param_map$asc`): a finite lower bound holds a never-chosen alternative's
+#'   constant, a finite upper bound an always-chosen one's, so such an
+#'   alternative is not reported.
+#' @returns NULL when every constant has a finite estimate, or when the counts
+#'   are absent (a hand-built `input_data`); otherwise a list with `never` and
+#'   `always`, the rows of `alt_mapping` other than the reference's that are
+#'   never chosen, or chosen in every situation that offers them; `ref`, the
+#'   reference's row (the outside option's, `alt_int` 0, else the base
+#'   alternative's, `alt_int` 1; NA if neither is found); `ref_never` and
+#'   `ref_always`, the same two conditions for the reference; and `outside`,
+#'   whether the reference is the outside option.
+#' @noRd
+.unbounded_constants <- function(alt_mapping, asc_lower = NULL,
+                                 asc_upper = NULL) {
+  if (!all(c("alt_int", "N_OBS", "N_CHOICES") %in% names(alt_mapping))) {
+    return(NULL)
+  }
+  code <- alt_mapping[["alt_int"]]
+  n_ch <- alt_mapping[["N_CHOICES"]]
+  never <- (n_ch == 0) %in% TRUE
+  always <- (n_ch == alt_mapping[["N_OBS"]]) %in% TRUE & !never
+  # a finite bound holds the constant of row r >= 2 (asc[r - 1])
+  bounded <- function(b) {
+    c(FALSE, is.finite(b %||% rep(-Inf, length(code) - 1L)))
+  }
+  never <- never & !bounded(asc_lower)
+  always <- always & !bounded(asc_upper)
+  outside <- any(code == 0L, na.rm = TRUE)
+  ref <- match(if (outside) 0L else 1L, code)
+  not_ref <- seq_along(code) != ref | is.na(ref)
+  u <- list(never = which(never & not_ref), always = which(always & not_ref),
+            ref = ref, ref_never = isTRUE(never[ref]),
+            ref_always = isTRUE(always[ref]), outside = outside)
+  if (!length(u$never) && !length(u$always) && !u$ref_never && !u$ref_always) {
+    return(NULL)
+  }
+  u
+}
+
+#' Warn of constants without a finite maximum-likelihood estimate
+#'
+#' Called by `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` when the
+#' model has constants, before the optimizer: one warning of class
+#' `choicer_unbounded_constants`, one line per kind
+#' (`.unbounded_constants()`), naming up to five alternatives each and what
+#' to change, printed at once (`.warn_now()`), since the fit that follows can
+#' take hours. The remedies reach a fit with finite constants: dropping a
+#' never-chosen alternative, or pooling it with a chosen one (the base
+#' included: naming another base only moves the divergence to the old base's
+#' constant); dropping the situations that offer an always-chosen one, or
+#' pooling it with one that is not chosen wherever offered; and fitting
+#' without an outside option that is never chosen (the likelihood's supremum
+#' is the model without it).
+#'
+#' @param alt_mapping A preparation's `alt_mapping`.
+#' @param asc_lower,asc_upper As for `.unbounded_constants()`.
+#' @returns `.unbounded_constants()`'s result, invisibly.
+#' @noRd
+.warn_unbounded_constants <- function(alt_mapping, asc_lower = NULL,
+                                      asc_upper = NULL) {
+  u <- .unbounded_constants(alt_mapping, asc_lower, asc_upper)
+  if (is.null(u)) return(invisible(NULL))
+  labels <- alt_mapping[[2L]]
+  fmt <- function(rows) {
+    x <- labels[rows]
+    s <- if (is.character(x) || is.factor(x)) {
+      encodeString(as.character(x), quote = '"')
+    } else {
+      as.character(x)
+    }
+    paste0(paste(utils::head(s, 5L), collapse = ", "),
+           if (length(s) > 5L) paste0(" and ", length(s) - 5L, " more"))
+  }
+  base <- if (!u$outside && !is.na(u$ref)) {
+    paste0("The base alternative ", fmt(u$ref), " (its constant normalized ",
+           "to 0)")
+  }
+  msg <- c(
+    paste0("Some alternative-specific constants have no finite ",
+           "maximum-likelihood estimate: the likelihood keeps rising as they ",
+           "diverge, so the optimizer stops them wherever its tolerance does ",
+           "and their standard errors are not meaningful."),
+    if (length(u$never)) {
+      paste0("Never chosen in the data (their constants fall without ",
+             "bound): ", fmt(u$never), ". Drop these alternatives, or pool ",
+             "each with one that is chosen.")
+    },
+    if (length(u$always)) {
+      paste0("Chosen in every choice situation that offers them (their ",
+             "constants rise without bound): ", fmt(u$always), ". Drop the ",
+             "situations that offer them, or pool each with one that is not ",
+             "chosen wherever offered.")
+    },
+    if (u$ref_never && u$outside) {
+      paste0("The outside option is never chosen, so every constant rises ",
+             "without bound: fit without it (include_outside_option = ",
+             "FALSE). Data that hold the outside option's own rows leave the ",
+             "one include_outside_option adds never chosen.")
+    },
+    if (u$ref_always && u$outside) {
+      paste0("The outside option is chosen in every choice situation, so ",
+             "every constant falls without bound.")
+    },
+    if (u$ref_never && !is.null(base)) {
+      paste0(base, " is never chosen, so the other constants rise together ",
+             "without bound: drop it, or pool it with a chosen alternative ",
+             "(naming another base only moves the divergence to this ",
+             "alternative's own constant).")
+    },
+    if (u$ref_always && !is.null(base)) {
+      paste0(base, " is chosen in every choice situation that offers it, so ",
+             "the other constants fall together without bound: drop the ",
+             "situations that offer it, or pool it with an alternative that is ",
+             "not chosen wherever offered.")
+    })
+  .warn_now(warningCondition(paste(msg, collapse = "\n"),
+                             class = "choicer_unbounded_constants"))
+  invisible(u)
+}
+
+#' Signal a warning condition at once
+#'
+#' `warning()` prints a condition object only when the top-level call returns
+#' (its `immediate.` applies to a message, not to a condition), so a warning
+#' raised before a long fit would print after it. While warnings are deferred
+#' (`options(warn = 0)`, the default), this sets `warn = 1`, which prints a
+#' warning as it occurs, for the signal only. Calling handlers see the
+#' condition first, so `suppressWarnings()` and `expect_warning()` muffle it
+#' as before; any other `warn` is left as it is. A warning printed this way
+#' is not collected for `warnings()` (as with `immediate. = TRUE`), and it
+#' prints before warnings deferred earlier in the same call.
+#'
+#' @param cond A warning condition.
+#' @noRd
+.warn_now <- function(cond) {
+  if (isTRUE(getOption("warn") == 0)) {
+    old <- options(warn = 1)
+    on.exit(options(old))
+  }
+  warning(cond)
+}
+
 #' Copy the named columns of the user's data into a new data.table
 #'
 #' Deep-copies only the columns of `data` named in `cols`, in input order, so

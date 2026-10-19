@@ -77,7 +77,15 @@ default) makes the first alternative in sort order the base.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
 
-\item{use_asc}{Logical indicating whether to include alternative-specific constants (ASCs) in the model.}
+\item{use_asc}{Logical indicating whether to include alternative-specific
+constants (ASCs) in the model. An alternative's constant has no finite
+maximum-likelihood estimate when the alternative is never chosen in the
+data, or is chosen in every choice situation that offers it (the
+likelihood keeps rising as the constant falls, or grows); when the
+outside option or the base alternative is never chosen, or chosen
+wherever it is offered, the other constants have none together. The fit
+then warns (class \code{choicer_unbounded_constants}) before the
+optimizer runs, naming them.}
 
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in the
 returned object for \code{predict()} and post-estimation functions.}

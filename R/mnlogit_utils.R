@@ -76,7 +76,15 @@
 #'   normalized to 0); it must be one of the alternatives, and \code{NULL} (the
 #'   default) makes the first alternative in sort order the base.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
-#' @param use_asc Logical indicating whether to include alternative-specific constants (ASCs) in the model.
+#' @param use_asc Logical indicating whether to include alternative-specific
+#'   constants (ASCs) in the model. An alternative's constant has no finite
+#'   maximum-likelihood estimate when the alternative is never chosen in the
+#'   data, or is chosen in every choice situation that offers it (the
+#'   likelihood keeps rising as the constant falls, or grows); when the
+#'   outside option or the base alternative is never chosen, or chosen
+#'   wherever it is offered, the other constants have none together. The fit
+#'   then warns (class \code{choicer_unbounded_constants}) before the
+#'   optimizer runs, naming them.
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in the
 #'   returned object for \code{predict()} and post-estimation functions.
 #' @param se_method Method for computing standard errors: \code{"hessian"}
@@ -254,6 +262,10 @@ run_mnlogit <- function(
   if (se_method == "cluster") {
     .check_cluster_labels(input_list$cluster, length(input_list$M))
   }
+
+  # Constants without a finite estimate (alternatives never chosen, or chosen
+  # wherever offered), warned before the fit
+  if (n_asc > 0) .warn_unbounded_constants(input_list$alt_mapping)
 
   # --- The optimizer's coordinates: column scales (scale_vars) ----------------
   # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c

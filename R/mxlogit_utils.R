@@ -188,7 +188,18 @@
 #'   given, else the first label in \code{sort()} order, which for a factor
 #'   is the first of its levels present), whose constant is normalized to 0.
 #'   With \code{FALSE} the utilities have no constants, so alternatives
-#'   differ only through their covariates.
+#'   differ only through their covariates. An alternative's constant has no
+#'   finite maximum-likelihood estimate when the alternative is never chosen
+#'   in the data, or is chosen in every choice situation that offers it (the
+#'   likelihood keeps rising as the constant falls, or grows); when the
+#'   outside option or the base alternative is never chosen, or chosen
+#'   wherever it is offered, the other constants have none together. The fit
+#'   then warns (class \code{choicer_unbounded_constants}) before the
+#'   optimizer runs, naming them; a finite bound in the direction a constant
+#'   diverges (\code{lower} for a never-chosen alternative's, \code{upper}
+#'   for an always-chosen one's) holds it, and that alternative is not named
+#'   (the outside option's and the base's cases, which move every constant
+#'   together, are named whatever the bounds).
 #' @param theta_init Initial parameter vector in natural-scale units. If
 #'   \code{NULL} (default), the start is in the columns' units: zero for the
 #'   \eqn{\beta}, \eqn{\mu} and ASC blocks and the Cholesky factor's
@@ -670,6 +681,15 @@ run_mxlogit <- function(
       .to_units(input_data$cluster, input_data, "`cluster_col`"),
       length(.unit_first(input_data))
     )
+  }
+
+  # Constants without a finite estimate (alternatives never chosen, or chosen
+  # wherever offered), warned before a fit that can take hours; a finite bound
+  # in the direction a constant diverges holds it
+  if (n_asc > 0) {
+    .warn_unbounded_constants(input_data$alt_mapping,
+                              asc_lower = lower[param_map$asc],
+                              asc_upper = upper[param_map$asc])
   }
 
   # Draws for the convenience workflow, built once the inputs have passed
