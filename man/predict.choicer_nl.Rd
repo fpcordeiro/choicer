@@ -46,10 +46,13 @@ apply).}
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-For "probabilities": a list with \code{choice_prob} and \code{utility} vectors.
-For "shares": a named numeric vector of market shares per alternative.
-With a data.frame \code{newdata}, rows are ordered by id, then by fit-time
-alternative code (\code{alt_int} in \code{object$alt_mapping}).
+For "probabilities": a list with \code{choice_prob} and \code{utility},
+one-column matrices with one row per row of the data; with a data.frame
+\code{newdata}, rows are ordered by id, then by fit-time alternative code
+(\code{alt_int} in \code{object$alt_mapping}). For "shares": the market shares as
+a one-column matrix with one row per alternative of \code{object$alt_mapping},
+in its order (the outside option's first when it is modelled), 0 for an
+alternative that \code{newdata} does not offer.
 }
 \description{
 Computes choice probabilities or aggregate market shares, either for the

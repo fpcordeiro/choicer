@@ -46,15 +46,20 @@ apply).}
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-For "probabilities": a list with \code{choice_prob} and \code{utility}
-vectors averaged across simulation draws. For "shares": a named numeric
-vector of simulated market shares per alternative. With a data.frame
-\code{newdata}, rows are ordered by id, then by fit-time alternative code
-(\code{alt_int} in \code{object$alt_mapping}); for a panel fit whose \code{person_col}
-is present in \code{newdata}, by decision maker first, which reproduces the
-in-sample row order. Predictions are unconditional: each choice
-situation integrates over the population taste distribution (see
-\code{\link[=conditional_tastes]{conditional_tastes()}} for tastes conditional on observed choices).
+For "probabilities": a list with \code{choice_prob} and \code{utility},
+one-column matrices averaged across simulation draws with one row per
+row of the data, and with the outside option \code{choice_prob_outside}, one
+row per choice situation; with a data.frame \code{newdata}, rows are ordered
+by id, then by fit-time alternative code (\code{alt_int} in
+\code{object$alt_mapping}), and for a panel fit whose \code{person_col} is present
+in \code{newdata}, by decision maker first, which reproduces the in-sample row
+order. For "shares": the simulated market
+shares as a one-column matrix with one row per alternative of
+\code{object$alt_mapping}, in its order (the outside option's first when it
+is modelled), 0 for an alternative that \code{newdata} does not offer.
+Predictions are unconditional: each choice situation integrates over the
+population taste distribution (see \code{\link[=conditional_tastes]{conditional_tastes()}} for tastes
+conditional on observed choices).
 }
 \description{
 Computes simulated choice probabilities or aggregate market shares using

@@ -315,6 +315,28 @@ validate_newdata_list <- function(object, newdata, weights = NULL) {
   )
 }
 
+#' Predicted shares, one per alternative of the fit
+#'
+#' The share kernels number the inside alternatives up to the largest code
+#' in their data (the mixed logit's with constants, up to the constants'
+#' count), so data that lack the last-coded alternatives, as in an exit
+#' counterfactual, gave fewer shares than the fit has alternatives, and a
+#' comparison with the baseline's shares by position was misaligned. Zero
+#' shares are appended up to one per row of `alt_mapping`, whose order the
+#' kernels follow (the outside option's first when there is one). Prediction
+#' data cannot hold codes beyond the fit's (both `newdata` paths check them),
+#' so nothing is cut.
+#'
+#' @param shares The share kernel's one-column matrix.
+#' @param object The fitted `choicer_fit` object.
+#' @returns `shares`, with zero rows appended up to `nrow(object$alt_mapping)`.
+#' @noRd
+.pad_shares <- function(shares, object) {
+  n_absent <- NROW(object$alt_mapping) - NROW(shares)
+  if (n_absent <= 0L) return(shares)
+  matrix(c(shares, numeric(n_absent)), ncol = 1L)
+}
+
 #' Dispatch newdata to the data.frame or list pathway
 #'
 #' @param object A fitted `choicer_fit` object.
