@@ -898,6 +898,101 @@
   they use, and check that the labels are constant within each choice
   situation and, with `person_col`, within each decision maker.
 
+## Mixed logit — a Newton phase after the optimizer (`polish`)
+
+- `run_mxlogit()` gains `polish` and `polish_control`, its last arguments.
+  With `polish = "newton"` the optimizer is followed by Newton steps on the
+  analytic Hessian of the simulated log-likelihood, and with `"bhhh"` on the
+  BHHH (outer product of the gradients) matrix, both with the fit's own draws
+  and weights, from wherever the optimizer stopped. The estimator does not
+  change: the polish finishes the climb to the maximum the optimizer
+  approached, which L-BFGS reaches slowly where curvatures differ by orders of
+  magnitude (thousands of constants, say), and certifies it. It converges when
+  the Newton decrement nu = g'C^-1 g / 2 (g the gradient, C the curvature)
+  falls below `polish_control$tol_decrement`, 1e-8 by default. On a positive
+  definite Hessian every linear combination of the estimates then lies within
+  sqrt(2 nu) Hessian standard errors (1.4e-4 at the default) of the maximum of
+  the log-likelihood's quadratic model, whatever the sample size. BHHH is
+  positive semi-definite everywhere and cheaper per step, but converges
+  linearly, and its decrement on its own shows only a stationary point. The
+  default, `"none"`, leaves every fit as it was, bit for bit.
+- A converged polish sets `convergence` to the optimizer's success code (1 for
+  nloptr, 0 for optim and a custom optimizer) and leads `message` with its
+  verdict. `fit$optimizer$polish` records the phase (steps, decrement,
+  damping, evaluations, the parameters on a bound or held, the log-likelihood
+  gained, its run time) and the optimizer's own code, message, iterations and
+  run time. A polish that stops short keeps the optimizer's code and says why;
+  one that stops with an error (the Hessian's memory check, say) keeps its
+  last accepted point and warns (class `choicer_polish_failed`). The standard
+  errors are computed at the polished estimates, by `se_method`, as before.
+- Where the curvature is not positive definite the steps are damped
+  (Levenberg-Marquardt, on the information equilibrated by powers of two, so
+  that a step does not depend on the parameters' units). They respect `lower`
+  and `upper` (projected Newton, Bertsekas 1982), and they pass a line search
+  that, near the maximum of a likelihood summed over millions of units, also
+  accepts a step whose gain is below the objective's rounding by reading the
+  gradient (Hager and Zhang 2005). Each step is solved in one working copy of
+  the information: at 17,000 parameters the step's peak heap besides the
+  information was 2.3 GB, against 4.6 GB for a scaled copy factored by
+  `chol()`, in about the same time.
+- The documentation (`?run_mxlogit`, and §5.7 of the mixed logit's math
+  article) states the limits. The constants of inside alternatives that have
+  no finite estimate (next section) are held at the optimizer's values, and
+  the certificate concerns the other parameters given them; where the outside
+  option or the base alternative is the one without, the polish does not
+  report convergence (unless, the reference never chosen, a chosen
+  alternative's constant held or bounded above stops the others). A random
+  coefficient whose variance's maximum is at zero drives its log-Cholesky
+  diagonal toward -Inf: the Newton polish may certify a point whose diagonal,
+  and its standard error, are set by `tol_decrement`, and the BHHH polish,
+  whose curvature there vanishes faster, holds the diagonal and stops
+  unconverged. `"bhhh"` needs at least as many likelihood units as the
+  parameters it moves.
+- On simulated data, at 11 threads on a loaded machine (indicative): for a
+  census-style design (20,000 decision makers in 24,560 choice situations over
+  2,512 alternatives, the never-chosen ones dropped; 2,530 parameters; 50
+  stored draws) the Newton polish certified the default optimizer's solution
+  at once (one Hessian, 3 s, after a 10 s fit); from a stop after 15
+  evaluations it reached the same maximum in six steps (24 s), where BHHH
+  stayed 0.33 log-likelihood units short after 20. For a claims-style design
+  (15,000 decision makers in 153,721 situations, 8.7 million rows, over 500
+  alternatives; 518 parameters) Newton (48 s) and BHHH (3 s) certified in one
+  step the solution of a 184 s fit (174 iterations); from a stop after 15
+  evaluations, 8,750 log-likelihood units short, 20 steps of either, each
+  shortened to 10 units of the optimizer's coordinates, closed about 4,000 and
+  stopped 4,706 and 4,781 short. The polish finishes and certifies an
+  optimizer's work; it does not replace it.
+
+## Constants without a finite maximum-likelihood estimate: a warning
+
+- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` now warn (class
+  `choicer_unbounded_constants`), before the optimizer runs, when the counts
+  in `alt_mapping` show that an alternative's constant has no finite
+  maximum-likelihood estimate: the alternative is never chosen in the data, or
+  is chosen in every choice situation that offers it. The score of its
+  constant then has one sign at every value of the parameters, so the
+  likelihood keeps rising as the constant falls (or grows): the optimizer
+  stops it wherever its tolerance does, and its standard error means nothing,
+  while the other parameters approach the maximum without that alternative (or
+  without the situations that offer it). Where the outside option or the base
+  alternative is never chosen, or chosen wherever it is offered, the other
+  constants diverge together. Other patterns of choices can leave constants
+  without a finite estimate too (a group of alternatives chosen only in
+  situations that offer no alternative outside the group, say); the counts do
+  not reveal them, and the warning does not detect them. The estimates are
+  unchanged.
+- The warning names up to five alternatives of each kind and says how to
+  reach finite constants: drop a never-chosen alternative or pool it with a
+  chosen one; drop the situations that offer an always-chosen one or pool it
+  with one that is not chosen wherever offered; and fit without an outside
+  option that is never chosen, as happens when the data hold the outside
+  option's own rows and `include_outside_option = TRUE` adds another. Naming
+  another base only moves the divergence of a never-chosen base to its own
+  constant. In the mixed logit a finite bound in the direction a constant
+  diverges holds it, and that alternative is not named. In the nested logit
+  the never-chosen case needs the nest's dissimilarity parameter at most 1.
+  The warning is printed as it occurs, before a fit that can take hours.
+
 ## Corrections
 
 The following were found while implementing the panel likelihood above and
