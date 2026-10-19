@@ -1734,6 +1734,32 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, n
     .Call(`_choicer_nl_blp_contraction`, delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, damping, tol, max_iter)
 }
 
+#' One damped Newton step on the free parameters (internal)
+#'
+#' Solves \eqn{(D H_{FF} D + \lambda I) y = -D g_F} by Cholesky (`dpotrf`,
+#' `dpotrs`) in one working copy, and returns the step \eqn{D_F y} on the
+#' free set \eqn{F}, 0 elsewhere.
+#'
+#' @param H Square double matrix: the information (Hessian of the negated
+#'   log-likelihood, or BHHH). Only its upper triangle is read.
+#' @param g Double vector: the gradient of the negated log-likelihood.
+#' @param D Double vector of scales, powers of two (`.jacobi_scale(H)`).
+#' @param free_idx Integer vector: the free parameters' positions, 1-based
+#'   and strictly increasing.
+#' @param lambda Damping added to the scaled block's diagonal, finite and
+#'   nonnegative.
+#' @returns List with `step` (double, one entry per parameter, 0 off the free
+#'   set) and `info`: 0 when solved; k > 0 when the scaled block is not
+#'   positive definite (its leading minor of order k), or `length(free_idx)
+#'   + 1` when it is but its reciprocal condition number is below the
+#'   machine epsilon; -1 when the scaled block or the scaled gradient holds a
+#'   value that is not finite (an overflow of the scaling included). Without
+#'   free parameters the step is 0 and `info` 0.
+#' @noRd
+newton_step <- function(H, g, D, free_idx, lambda) {
+    .Call(`_choicer_newton_step`, H, g, D, free_idx, lambda)
+}
+
 #' Gather rows of numeric columns into a double design matrix
 #'
 #' `X[i, k] = cols[[k]][rows[i]]`, written column by column straight from the
