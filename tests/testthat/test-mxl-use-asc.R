@@ -23,7 +23,10 @@ uasc_fit <- function(data, ..., use_asc = FALSE, quiet = TRUE) {
       S = 20L, use_asc = use_asc, ...
     )
   }
-  if (quiet) suppressMessages(fit()) else fit()
+  res <- if (quiet) suppressMessages(fit()) else fit()
+  # the variance computed at fit time (one that fails only warns)
+  expect_null(res$variance_error)
+  res
 }
 
 # A custom optimizer that returns its start: the fit is held there.

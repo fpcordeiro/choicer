@@ -506,6 +506,7 @@ test_that("blp() starts a fit without constants at one zero per inside alternati
   mnl <- suppressMessages(do.call(run_mnlogit, args))
   nl <- suppressMessages(do.call(run_nestlogit, c(args, nest_col = "nest")))
   for (fit in list(mnl, nl)) {
+    expect_null(fit$variance_error)  # the variance computed at fit time
     d <- fit$data
     s <- as.vector(predict(fit, type = "shares"))
     target <- (s + rev(s)) / 2  # the outside option first, then 1, 2, 3

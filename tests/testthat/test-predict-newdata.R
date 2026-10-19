@@ -598,6 +598,8 @@ shares_fits <- function(oo) {
     fits[[paste("mxl", tag)]] <- suppressMessages(do.call(
       run_mxlogit, c(a, list(random_var_cols = c("w1", "w2"), S = 10L))))
   }
+  # every variance computed at fit time (one that fails only warns)
+  for (nm in names(fits)) expect_null(fits[[nm]]$variance_error, label = nm)
   list(fits = fits, dt = dt)
 }
 
