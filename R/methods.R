@@ -1041,10 +1041,13 @@ print_footer <- function(x) {
 #'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
 #'   apply).
 #' @param ... Additional arguments (ignored).
-#' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
-#'   For "shares": a named numeric vector of market shares per alternative.
-#'   With a data.frame `newdata`, rows are ordered by id, then by fit-time
-#'   alternative code (`alt_int` in `object$alt_mapping`).
+#' @returns For "probabilities": a list with `choice_prob` and `utility`,
+#'   one-column matrices with one row per row of the data; with a data.frame
+#'   `newdata`, rows are ordered by id, then by fit-time alternative code
+#'   (`alt_int` in `object$alt_mapping`). For "shares": the market shares as
+#'   a one-column matrix with one row per alternative of `object$alt_mapping`,
+#'   in its order (the outside option's first when it is modelled), 0 for an
+#'   alternative that `newdata` does not offer.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1088,7 +1091,7 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
       include_outside_option = object$include_outside_option
     )
   } else {
-    mnl_predict_shares(
+    .pad_shares(mnl_predict_shares(
       theta = theta,
       X = d$X,
       alt_idx = d$alt_idx,
@@ -1096,7 +1099,7 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
       weights = d$weights,
       use_asc = object$use_asc,
       include_outside_option = object$include_outside_option
-    )
+    ), object)
   }
 }
 
@@ -1133,15 +1136,20 @@ predict.choicer_mnl <- function(object, type = c("probabilities", "shares"),
 #'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
 #'   apply).
 #' @param ... Additional arguments (ignored).
-#' @returns For "probabilities": a list with `choice_prob` and `utility`
-#'   vectors averaged across simulation draws. For "shares": a named numeric
-#'   vector of simulated market shares per alternative. With a data.frame
-#'   `newdata`, rows are ordered by id, then by fit-time alternative code
-#'   (`alt_int` in `object$alt_mapping`); for a panel fit whose `person_col`
-#'   is present in `newdata`, by decision maker first, which reproduces the
-#'   in-sample row order. Predictions are unconditional: each choice
-#'   situation integrates over the population taste distribution (see
-#'   [conditional_tastes()] for tastes conditional on observed choices).
+#' @returns For "probabilities": a list with `choice_prob` and `utility`,
+#'   one-column matrices averaged across simulation draws with one row per
+#'   row of the data, and with the outside option `choice_prob_outside`, one
+#'   row per choice situation; with a data.frame `newdata`, rows are ordered
+#'   by id, then by fit-time alternative code (`alt_int` in
+#'   `object$alt_mapping`), and for a panel fit whose `person_col` is present
+#'   in `newdata`, by decision maker first, which reproduces the in-sample row
+#'   order. For "shares": the simulated market
+#'   shares as a one-column matrix with one row per alternative of
+#'   `object$alt_mapping`, in its order (the outside option's first when it
+#'   is modelled), 0 for an alternative that `newdata` does not offer.
+#'   Predictions are unconditional: each choice situation integrates over the
+#'   population taste distribution (see [conditional_tastes()] for tastes
+#'   conditional on observed choices).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1203,7 +1211,8 @@ predict.choicer_mxl <- function(object, type = c("probabilities", "shares"),
   if (type == "probabilities") {
     do.call(mxl_predict, args)
   } else {
-    do.call(mxl_predict_shares, c(args, list(weights = d$weights)))
+    shares <- do.call(mxl_predict_shares, c(args, list(weights = d$weights)))
+    .pad_shares(shares, object)
   }
 }
 
@@ -1788,10 +1797,13 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
 #'   equal weights. Ignored when `newdata` is `NULL` (the stored fit weights
 #'   apply).
 #' @param ... Additional arguments (ignored).
-#' @returns For "probabilities": a list with `choice_prob` and `utility` vectors.
-#'   For "shares": a named numeric vector of market shares per alternative.
-#'   With a data.frame `newdata`, rows are ordered by id, then by fit-time
-#'   alternative code (`alt_int` in `object$alt_mapping`).
+#' @returns For "probabilities": a list with `choice_prob` and `utility`,
+#'   one-column matrices with one row per row of the data; with a data.frame
+#'   `newdata`, rows are ordered by id, then by fit-time alternative code
+#'   (`alt_int` in `object$alt_mapping`). For "shares": the market shares as
+#'   a one-column matrix with one row per alternative of `object$alt_mapping`,
+#'   in its order (the outside option's first when it is modelled), 0 for an
+#'   alternative that `newdata` does not offer.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1842,7 +1854,7 @@ predict.choicer_nl <- function(object, type = c("probabilities", "shares"),
       include_outside_option = object$include_outside_option
     )
   } else {
-    nl_predict_shares(
+    .pad_shares(nl_predict_shares(
       theta = theta,
       X = d$X,
       alt_idx = d$alt_idx,
@@ -1851,7 +1863,7 @@ predict.choicer_nl <- function(object, type = c("probabilities", "shares"),
       nest_idx = nest_idx,
       use_asc = object$use_asc,
       include_outside_option = object$include_outside_option
-    )
+    ), object)
   }
 }
 

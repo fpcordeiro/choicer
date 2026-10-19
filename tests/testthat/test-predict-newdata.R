@@ -558,3 +558,85 @@ test_that("newdata is prepared without spare column slots", {
   expect_identical(got[1:2], ref)
   expect_equal(got[[3]], ref_probs, tolerance = 1e-12)
 })
+
+# =============================================================================
+# 11. Shares: one per alternative of the fit, whatever newdata offers
+# =============================================================================
+# The share kernels number the alternatives up to the largest code in their
+# data, so newdata without the last-coded alternatives (an exit
+# counterfactual) gave fewer shares than the fit has alternatives (MNL and NL
+# fits, and MXL fits without constants). predict() now gives one share per
+# row of alt_mapping, 0 for an alternative newdata does not offer.
+
+# MNL, NL and MXL fits with and without constants on three alternatives,
+# with or without the outside option. The labels' sort order differs from the
+# simulated alternatives', so codes (alt_int: a = 1, b = 2, c = 3) and labels
+# differ; the nests are {a, c} and {b}.
+shares_fits <- function(oo) {
+  sim <- simulate_mxl_data(N = 150L, J = 3L, beta = c(0.8, -0.6),
+                           Sigma = diag(c(1, 0.5)), delta = c(0.3, -0.2, 0.1),
+                           outside_option = oo, vary_choice_set = FALSE,
+                           seed = 31L)
+  dt <- data.table::as.data.table(sim$data)
+  if (oo) dt <- dt[alt != 0L]
+  dt[, nest := ifelse(alt <= 2L, 1L, 2L)]
+  dt[, alt := c("c", "a", "b")[alt]]
+  args <- list(data = dt, id_col = "id", alt_col = "alt",
+               choice_col = "choice", covariate_cols = c("x1", "x2"),
+               control = list(maxeval = 50L))
+  if (oo) {
+    args <- c(args, list(include_outside_option = TRUE,
+                         outside_opt_label = "0"))
+  }
+  fits <- list()
+  for (ua in c(TRUE, FALSE)) {
+    a <- c(args, list(use_asc = ua))
+    tag <- if (ua) "asc" else "no asc"
+    fits[[paste("mnl", tag)]] <- suppressMessages(do.call(run_mnlogit, a))
+    fits[[paste("nl", tag)]] <- suppressMessages(do.call(
+      run_nestlogit, c(a, list(nest_col = "nest"))))
+    fits[[paste("mxl", tag)]] <- suppressMessages(do.call(
+      run_mxlogit, c(a, list(random_var_cols = c("w1", "w2"), S = 10L))))
+  }
+  list(fits = fits, dt = dt)
+}
+
+# The shares from the probabilities: each inside alternative's weighted mean
+# probability over the situations, the outside option's share the rest.
+shares_from_probs <- function(fit, nd) {
+  d <- prepare_newdata(fit, nd)
+  p <- as.numeric(predict(fit, newdata = nd)$choice_prob)
+  wp <- rep(d$weights, d$M) * p
+  inside <- vapply(1:3, function(j) sum(wp[d$alt_idx == j]), 0) /
+    sum(d$weights)
+  if (fit$include_outside_option) c(1 - sum(inside), inside) else inside
+}
+
+test_that("predicted shares have one entry per alternative of the fit", {
+  for (oo in c(FALSE, TRUE)) {
+    m <- shares_fits(oo)
+    labels <- c("a", "b", "c")
+    offered <- list(all = labels, exit_last = c("a", "b"), exit_last_two = "a",
+                    exit_middle = c("a", "c"), exit_first = c("b", "c"))
+    for (nm in names(m$fits)) {
+      fit <- m$fits[[nm]]
+      expect_equal(nrow(fit$alt_mapping), 3L + oo)
+      for (case in names(offered)) {
+        lab <- paste(nm, if (oo) "outside" else "no outside", case)
+        nd <- m$dt[alt %in% offered[[case]]]
+        s <- suppressMessages(predict(fit, newdata = nd, type = "shares"))
+        expect_equal(dim(s), c(3L + oo, 1L), label = lab)
+        expect_equal(as.vector(s), shares_from_probs(fit, nd),
+                     tolerance = 1e-12, label = lab)
+        absent <- match(setdiff(labels, offered[[case]]), labels) + oo
+        expect_identical(as.vector(s)[absent], rep(0, length(absent)),
+                         label = lab)
+        # the list path gives the same shares
+        d <- prepare_newdata(fit, nd)
+        s_list <- predict(fit, type = "shares", newdata = list(
+          X = d$X, W = d$W, alt_idx = d$alt_idx, M = d$M))
+        expect_equal(s_list, s, tolerance = 1e-14, label = lab)
+      }
+    }
+  }
+})

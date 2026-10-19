@@ -1267,6 +1267,23 @@ unless it says otherwise.
   the mixed logit's had the same start, which no fit of a released version
   reached. The contraction now starts from one zero per inside alternative;
   other fits are unchanged.
+- `predict(type = "shares")` with `newdata` that does not offer the
+  alternatives that come last in `object$alt_mapping`, as when an
+  alternative exits in a counterfactual, returned one share fewer per such
+  alternative for multinomial and nested logit fits, with or without
+  constants, since `newdata` was added in 0.2.0; mixed logit fits without
+  constants, possible since the `use_asc = FALSE` correction above, did the
+  same. The shares were right, but the result stopped at the last
+  alternative that `newdata` offers, so it no longer lined up with the
+  baseline's shares; a mixed logit fit with constants, and any model when an
+  earlier alternative is missing, gave each alternative that `newdata` does
+  not offer a 0. Multinomial, nested and mixed logit fits now return one
+  share per alternative of `object$alt_mapping`, in its order (the outside
+  option's first, when it is modelled), 0 for an alternative that `newdata`
+  does not offer; other predictions are unchanged, bit for bit. The
+  documentation called the result a named numeric vector; it is, as it
+  always was, a one-column matrix without names (the labels are in
+  `object$alt_mapping[[2]]`).
 
 # choicer 0.2.1
 
