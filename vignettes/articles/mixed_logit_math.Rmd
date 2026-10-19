@@ -1135,6 +1135,28 @@ scheduling for load balancing (`#pragma omp for schedule(dynamic)`):
    a false stationary point for the optimizer. These are numerical failure guards, not
    changes to the mathematical criterion in its regular finite region.
 
+6. **Constants without a finite estimate**: By §3.5 the score of alternative $j$'s
+   constant is $\partial \ell / \partial \delta_j = \sum_n w_n \sum_s \omega_{ns}
+   \sum_t (\mathbf{1}_{j = j_{nt}} - P_{ntj}^s)$, with $j_{nt}$ the alternative chosen in
+   situation $t$ of unit $n$ and the inner sum over the situations that offer $j$: a
+   positively weighted sum of terms with $0 < P_{ntj}^s < 1$. If $j$ is
+   never chosen in the data every term is negative, and if it is chosen in every
+   situation that offers it every term is positive, at every value of $\theta$. The
+   likelihood then keeps rising as $\delta_j \to -\infty$ (or $+\infty$), toward a
+   supremum it never attains: $\delta_j$ has no finite maximum-likelihood estimate, the
+   optimizer stops it wherever its tolerance does, and its standard error is not
+   meaningful. At that supremum $j$'s probabilities are 0 (or 1), so the other parameters
+   approach the maximum of the likelihood without alternative $j$ (or without the
+   situations that offer it). The same holds for the reference whose constant is
+   normalized to 0, the outside option or the base alternative: the other constants then
+   diverge together, and with the outside option never chosen the supremum is the model
+   without it. `run_mxlogit()`, like `run_mnlogit()` and `run_nestlogit()`, warns before
+   the optimizer runs, from the counts in `alt_mapping` (class
+   `choicer_unbounded_constants`); a finite bound in the direction a constant diverges
+   (`lower` for a never-chosen alternative's, `upper` for an always-chosen one's) holds
+   it at the bound, and that alternative is not named. The Newton phase (§5.7) holds the
+   named constants of inside alternatives at the optimizer's values.
+
 ### 5.5 Data Layout
 
 - $X$ has $\sum_iM_i$ rows; situation $i$ occupies rows
@@ -1238,6 +1260,158 @@ removes) keeps only the digits its condition number allows, by any inversion, an
 singular to working precision is refused either way.
 
 *Code reference: `invert_hessian()`, `.sandwich_combine()` and `.jacobi_scale()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_inverse()` and `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp).*
+
+### 5.7 Polishing the Optimizer's Solution
+
+`run_mxlogit(polish = )` follows the optimizer with a Newton phase. It does not change the
+estimator: it finishes the climb to the maximum of the same simulated log-likelihood that
+the optimizer approached, and certifies it. L-BFGS converges slowly at the end where the
+curvature spreads over orders of magnitude, as it does across thousands of
+alternative-specific constants (§1.5); near a regular maximum Newton's method converges
+quadratically.
+
+**The certificate.** Write $f(\theta) = -\ell(\theta)$, $g = \nabla f$ at the current
+$\theta$, and $C$ for the curvature: the information $\mathcal{I} = -\nabla^2_\theta \ell$
+of §4 and §5.6 (`polish = "newton"`) or the BHHH matrix $\mathcal{B} = \sum_u w_u\, s_u
+s_u^{\top}$ of §9.5, with the fit's weights (`"bhhh"`). The Newton step is $\Delta =
+-C^{-1} g$, and the Newton decrement
+
+$$
+\nu = \tfrac{1}{2}\, g^{\top} C^{-1} g = -\tfrac{1}{2}\, g^{\top} \Delta
+$$
+
+is the gain in log-likelihood that the quadratic model predicts for that step. On a
+positive definite information, $\Delta$ is the step to the maximum of the quadratic model,
+and since $\Delta^{\top} \mathcal{I} \Delta = 2\nu$, Cauchy–Schwarz in the metric of
+$\mathcal{I}$ gives, for every linear combination $a^{\top}\theta$,
+
+$$
+|a^{\top} \Delta| \le \sqrt{2\nu}\, \sqrt{a^{\top} \mathcal{I}^{-1} a}:
+$$
+
+the remaining step moves each linear combination of the estimates by at most
+$\sqrt{2\nu}$ of its Hessian standard error. The polish has converged when $\nu$, computed
+with the undamped curvature, falls below `tol_decrement` ($10^{-8}$ by default: $1.4 \times
+10^{-4}$ standard errors); it then stops without taking the step, so the certificate is for
+the point returned. With parameters held or on a bound (below), $\nu$ is computed over the
+others, and the bound holds in their standard errors conditional on the rest, which are no
+larger than the reported ones.
+
+BHHH needs no second derivatives and is positive semidefinite everywhere; it can be
+positive definite only with at least as many likelihood units as the parameters it moves,
+which `"bhhh"` requires. Where $\mathcal{I}$ is positive definite, the step
+$\Delta_{\mathcal{I}} = -\mathcal{I}^{-1} g$ to the quadratic model's maximum satisfies
+
+$$
+2\nu_{\mathcal{B}} = g^{\top} \mathcal{B}^{-1} g
+= \Delta_{\mathcal{I}}^{\top}\, \mathcal{I} \mathcal{B}^{-1} \mathcal{I}\,
+\Delta_{\mathcal{I}},
+$$
+
+its squared length in the metric of the sandwich $\mathcal{I}^{-1} \mathcal{B}
+\mathcal{I}^{-1}$, the robust variance of §9.3 for an unweighted fit:
+$\sqrt{2\nu_{\mathcal{B}}}$ bounds the remaining step in robust standard errors. But a
+small $\nu_{\mathcal{B}}$ on its own shows only that $g$ is small, a stationary point,
+which BHHH's positive definiteness cannot tell from a saddle. BHHH's steps converge
+linearly, fast only where the information-matrix equality $\mathcal{B} \approx
+\mathcal{I}$ holds, which finitely many draws and misspecification break.
+
+**The step.** The step solves, by Cholesky, the system equilibrated by the Jacobi scale of
+§5.6 and damped,
+
+$$
+(D\, C_{FF}\, D + \lambda I)\, y = -D\, g_F, \qquad \Delta_F = D\, y,
+$$
+
+on the free parameters $F$ (below). $D$ consists of powers of two, so the scaled block is
+formed exactly, and $\lambda I$ on it is the damping $\lambda\,|\mathrm{diag}\, C|$ of
+Levenberg (1944) and Marquardt (1963) to within a factor of two: the step does not depend
+on the parameters' units. $\lambda = 0$ when the block's diagonal is positive and its
+factorization succeeds with a reciprocal condition number (estimated in the 1-norm, as
+`solve()` does) above the machine epsilon $\varepsilon$. Otherwise (away from the maximum
+the simulated likelihood need not be concave), and also when the step is not finite or its
+line search fails, $\lambda$ starts at $\max(10^{-6}, \lambda_\text{prev}/100)$ and grows
+tenfold, up to $10^{10}$. A step longer than 10 units of the optimizer's coordinates in
+some free parameter ($|\Delta_k| / m_k$, with $m$ the map of §1.5) is shortened to that
+length, its direction kept: a maximum step, as in Dennis and Schnabel's (1983) methods and
+`nlm()`'s `stepmax`. A free parameter whose step exceeds ten maximum steps, $100\, m_k$, on
+a curvature that has all but vanished ($|C_{kk}|\, m_k^2$ below $10^{-4}$ times the free
+parameters' median; see the limits below) is instead held for that iteration and the step
+solved again without it: shortening its step to the maximum would shorten every other
+parameter's by more than ten. A step that is long because the start is far from the
+maximum is shortened. Under `scale_vars = "none"` the scales $m_k$ are the parameters'
+natural units, so a badly scaled column far from its maximum can be held as if its
+curvature had vanished; the default `"bhhh"` map, from the BHHH diagonal at the start
+values, avoids this.
+
+**Bounds.** With `lower`/`upper` the polish projects (Bertsekas 1982). A parameter within
+$\epsilon_k$ of a bound across which its descent direction $-g_k$ points is
+$\epsilon$-active and moves to the projection of its scaled-gradient step,
+$P(\theta_k - D_k^2\, g_k)$, which reaches the bound when that step covers the distance
+(the line search may shorten it); $\epsilon_k = m_k \min(10^{-3}, \max_i |w_i / m_i|)$,
+the maximum over the parameters not held, with $w = \theta - P(\theta - m^2 \circ g)$ the
+projected gradient step, shrinks to zero at a stationary point. The other parameters are
+free. Convergence then requires the $\epsilon$-active parameters on their bounds and the
+decrement over the free ones below the tolerance: the Karush–Kuhn–Tucker conditions of the
+bounded problem.
+
+**The line search.** On the projected path $P(\theta + \alpha \Delta)$, with displacement
+$\Delta_\alpha = P(\theta + \alpha \Delta) - \theta$, $\alpha$ is halved, up to 40 times,
+until Armijo's condition $f(\theta + \Delta_\alpha) \le f(\theta) + 10^{-4}\, g^{\top}
+\Delta_\alpha$ holds. Near the maximum of a likelihood summed over $U$ units the rounding
+in $f$ is about $\sqrt{U}\, \varepsilon\, |f|$, which at population scale reaches the gain
+of a correct step, so Armijo's test can refuse it. Where the predicted gain
+$-g^{\top} \Delta_\alpha$ is within $\varepsilon_f = 10^{-10} \max(|f|, 1)$, a step is also
+accepted on the approximate Armijo condition of Hager and Zhang (2005), the upper half of
+their approximate Wolfe conditions: $f(\theta + \Delta_\alpha) \le f(\theta) +
+\varepsilon_f$ and $\nabla f(\theta + \Delta_\alpha)^{\top} \Delta_\alpha \le -0.8\,
+g^{\top} \Delta_\alpha$, which reads the gradient, accurate where $f$ is not. A trial
+point whose utilities overflow (§5.4), or whose objective or gradient is not finite,
+fails. Should accepted steps add up to a point worse than the start by more than
+$\varepsilon_f$, the start is returned.
+
+**What is held.** The constants of §5.4, item 6, of inside alternatives (never chosen, or
+chosen wherever offered) are held at the optimizer's values: they have no finite estimate,
+and the certificate concerns the other parameters given the held values. Those parameters
+approach the maximum without the alternative (or without the situations that offer it)
+only as the held constants approach their limits, so an optimizer stopped early leaves them
+further from it. When the reference itself, the outside option or the base alternative,
+is never chosen or chosen wherever offered, the other constants diverge together, and the
+polish does not report convergence, whatever its decrement, unless the reference is never
+chosen and the constant of an alternative that is chosen is held or bounded above, which
+stops their rise. A parameter whose curvature column and gradient are exactly zero
+carries no information at the current point (as where a log-Cholesky diagonal has gone so
+far toward $-\infty$ that its derivatives underflow), and one held by the step rule above
+has all but none: either is left out of the steps, and the polish does not report
+convergence.
+
+**Limits.** A random coefficient whose variance's maximum is at zero drives its
+log-Cholesky diagonal $\ell_{pp}$ (§1.4) toward $-\infty$. There $f$ moves with
+$\ell_{pp}$ like $c\, e^{2 \ell_{pp}}$, so the Newton step in $\ell_{pp}$ is about $-1/2$
+and the decrement shrinks by a factor of only about $e$ per step: the polish may stop at
+`max_iter` unconverged, or certify a point where the variance is negligible but
+$\ell_{pp}$, and its standard error, are set by `tol_decrement`. With finitely many draws
+the simulated likelihood can also carry a term linear in the standard deviation, $c\,
+e^{\ell_{pp}}$. Of one sign it sends the supremum to $-\infty$ as before (Newton steps of
+about $-1$); of the other it puts a maximum at a negligible standard deviation, which the
+Newton polish certifies. BHHH's curvature in that direction falls faster than the Hessian's
+(like $e^{4 \ell_{pp}}$ against $e^{2 \ell_{pp}}$ where the quadratic term leads,
+$e^{2 \ell_{pp}}$ against $e^{\ell_{pp}}$ where the linear one does), and its steps grow
+accordingly until the rule above holds $\ell_{pp}$, before they can carry it to where its
+information underflows: the other parameters then reach their maximum given it, and the
+polish stops unconverged. On the shipped `mode_choice` data, with a travel-time
+coefficient of mean zero and free variance (`rc_mean = FALSE`), fixed cost and
+waiting-time coefficients and 50 draws, the simulated likelihood has its maximum at
+$\ell_{11} \approx -11.05$, a standard deviation of about $1.6 \times 10^{-5}$ per minute
+(0.001 to 0.023 in utility over the data's 63 to 1,440 minutes of travel): the Newton
+polish of a loose fit (`maxeval = 10`, $\ell_{11} = -7.44$) certifies it in 11 steps,
+while the BHHH polish holds $\ell_{11}$ at $-9.94$ and stops after 18 steps, $6.5 \times
+10^{-4}$ log-likelihood units short.
+
+The variance is computed afterwards at the polished estimates, by `se_method`, through
+§5.6; `fit$optimizer$polish` records the phase.
+
+*Code reference: `run_polish()` and `.polish_control()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp); the wiring in `run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R).*
 
 ---
 
@@ -1796,6 +1970,11 @@ return `NA` and are dropped from the population summary.
 - Revelt, D., & Train, K. (1998). Mixed logit with repeated choices: households' choices of appliance efficiency level. *Review of Economics and Statistics*, 80(4), 647-657.
 - Revelt, D., & Train, K. (2000). Customer-specific taste parameters and mixed logit: households' choice of electricity supplier. Working Paper E00-274, Department of Economics, University of California, Berkeley.
 - Louis, T. A. (1982). Finding the observed information matrix when using the EM algorithm. *Journal of the Royal Statistical Society: Series B*, 44(2), 226-233.
+- Bertsekas, D. P. (1982). Projected Newton methods for optimization problems with simple constraints. *SIAM Journal on Control and Optimization*, 20(2), 221-246.
+- Dennis, J. E., & Schnabel, R. B. (1983). *Numerical Methods for Unconstrained Optimization and Nonlinear Equations*. Prentice-Hall.
+- Hager, W. W., & Zhang, H. (2005). A new conjugate gradient method with guaranteed descent and an efficient line search. *SIAM Journal on Optimization*, 16(1), 170-192.
+- Levenberg, K. (1944). A method for the solution of certain non-linear problems in least squares. *Quarterly of Applied Mathematics*, 2(2), 164-168.
+- Marquardt, D. W. (1963). An algorithm for least-squares estimation of nonlinear parameters. *Journal of the Society for Industrial and Applied Mathematics*, 11(2), 431-441.
 - Train, K., & Weeks, M. (2005). Discrete choice models in preference space and willingness-to-pay space. In R. Scarpa & A. Alberini (Eds.), *Applications of Simulation Methods in Environmental and Resource Economics* (pp. 1-16). Springer.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
