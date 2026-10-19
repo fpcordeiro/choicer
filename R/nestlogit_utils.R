@@ -45,7 +45,15 @@
 #'   Mutually exclusive with \code{weights}. All weights must be finite and strictly
 #'   positive. Used for choice-based / WESML
 #'   weighting; pair with \code{se_method = "sandwich"} for valid inference.
-#' @param outside_opt_label Label for the outside option (convenience workflow).
+#' @param outside_opt_label (Convenience workflow.) The label of the outside
+#'   option or of the base alternative, given in the class of the alternative
+#'   column. With \code{include_outside_option = TRUE} it labels the outside
+#'   option, which the model adds: rows of the data that carry it are dropped,
+#'   and it names the outside option's row of \code{alt_mapping}. Without the
+#'   outside option it names the base alternative, coded first (with constants,
+#'   its constant is normalized to 0); it must be one of the alternatives, and
+#'   \code{NULL} (the default) makes the first alternative in sort order the
+#'   base.
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
 #' @param keep_data Logical. If \code{TRUE} (default), stores prepared data in
@@ -465,7 +473,14 @@ run_nestlogit <- function(
 #'   weights. The column must be constant within each \code{id_col} (one weight
 #'   per choice situation) and is collapsed accordingly. Mutually exclusive with
 #'   \code{weights}. All weights must be finite and strictly positive.
-#' @param outside_opt_label Label for the outside option (if any). If \code{NULL}, no outside option is assumed.
+#' @param outside_opt_label The label of the outside option or of the base
+#'   alternative, given in the class of the alternative column. With
+#'   \code{include_outside_option = TRUE} it labels the outside option, which
+#'   the model adds: rows of the data that carry it are dropped, and it names
+#'   the outside option's row of \code{alt_mapping}. Without the outside option
+#'   it names the base alternative, coded first (with constants, its constant is
+#'   normalized to 0); it must be one of the alternatives, and \code{NULL} (the
+#'   default) makes the first alternative in sort order the base.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param cluster_col Optional name of a column in \code{data} holding cluster
 #'   labels for cluster-robust standard errors. Must be constant within each

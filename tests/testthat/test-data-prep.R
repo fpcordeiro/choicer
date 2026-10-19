@@ -695,3 +695,128 @@ test_that("column arguments that are not names are reported as missing columns",
                                  person_col = NA_character_),
                missing_na, fixed = TRUE)
 })
+
+test_that("an outside_opt_label that codes no alternative, or leaves some uncoded, is an error", {
+  # Without the outside option the label names the base, the alternative
+  # coded first. A label absent from the data took code 1 with no rows (a
+  # phantom base): fits with constants stopped in the kernels with an error
+  # about the constants' block, nested logit fits without them with one
+  # about the nests, and multinomial and mixed logit fits without them
+  # carried an alternative that is never offered.
+  dt <- create_small_nl_data()  # alternatives 1..6 in nests {1, 2, 3}, {4, 5, 6}
+  msg <- paste0("`outside_opt_label` (99) names none of the alternatives in ",
+                "'alt': 1, 2, 3, 4, 5, 6. Without the outside option it names ",
+                "the base alternative, coded first: name one of these, or ",
+                "leave `outside_opt_label` NULL to make the first in sort order ",
+                "the base.")
+  expect_error(prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"),
+                                outside_opt_label = 99L), msg, fixed = TRUE)
+  expect_error(prepare_nl_data(dt, "id", "alt", "choice", c("x1", "x2"),
+                               "nest", outside_opt_label = 99L),
+               msg, fixed = TRUE)
+  expect_error(prepare_mxl_data(dt, "id", "alt", "choice", "x1", "x2",
+                                outside_opt_label = 99L), msg, fixed = TRUE)
+  for (ua in c(TRUE, FALSE)) {
+    expect_error(run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"),
+                             use_asc = ua, outside_opt_label = 99L),
+                 msg, fixed = TRUE)
+    expect_error(run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"),
+                               "nest", use_asc = ua, outside_opt_label = 99L),
+                 msg, fixed = TRUE)
+    expect_error(run_mxlogit(dt, "id", "alt", "choice", "x1", "x2", S = 5L,
+                             use_asc = ua, outside_opt_label = 99L),
+                 msg, fixed = TRUE)
+  }
+
+  # Labels that coded the alternatives still do, whatever their class: the
+  # check reads the codes, not the labels as text
+  base <- prepare_mnl_data(dt, "id", "alt", "choice", "x1",
+                           outside_opt_label = 2L)
+  expect_identical(base$alt_mapping$alt[1], 2L)
+  for (lab in list(2, "2")) {
+    p <- prepare_mnl_data(dt, "id", "alt", "choice", "x1",
+                          outside_opt_label = lab)
+    expect_identical(p$alt_idx, base$alt_idx)
+    expect_equal(p$alt_mapping, base$alt_mapping)
+  }
+  # Round codes that as.character() prints in scientific notation: an integer
+  # label with a double column, and (as factor() matches numbers as numbers
+  # from R 4.5.0) a double label with an integer column
+  big <- data.table::copy(dt)[, alt := alt * 1e5]
+  expect_identical(prepare_mnl_data(big, "id", "alt", "choice", "x1",
+                                    outside_opt_label = 200000L)$alt_idx,
+                   base$alt_idx)
+  if (getRversion() >= "4.5.0") {
+    big_int <- data.table::copy(dt)[, alt := alt * 100000L]
+    expect_identical(prepare_mnl_data(big_int, "id", "alt", "choice", "x1",
+                                      outside_opt_label = 2e5)$alt_idx,
+                     base$alt_idx)
+  }
+
+  # A label of another class than the column can leave alternatives
+  # without a code (the preparations returned them, and fits stopped)
+  dates <- data.table::copy(dt)[, alt := as.Date("2020-01-01") + alt]
+  expect_error(prepare_mnl_data(dates, "id", "alt", "choice", "x1",
+                                outside_opt_label = "2020-01-03"),
+               paste0("`outside_opt_label` (\"2020-01-03\", of class ",
+                      "character) cannot be combined with the alternatives in ",
+                      "'alt' (of class Date) without leaving some of them ",
+                      "uncoded. Give the label in the class of 'alt'."),
+               fixed = TRUE)
+  expect_identical(prepare_mnl_data(dates, "id", "alt", "choice", "x1",
+                                    outside_opt_label = as.Date("2020-01-03")
+                                    )$alt_idx, base$alt_idx)
+  letters_dt <- data.table::copy(dt)[, alt := letters[alt]]
+  expect_error(prepare_mnl_data(letters_dt, "id", "alt", "choice", "x1",
+                                outside_opt_label = factor("b")),
+               "(\"b\", of class factor) cannot be combined with the",
+               fixed = TRUE)
+  if (requireNamespace("bit64", quietly = TRUE)) {
+    i64 <- data.table::copy(dt)[, alt := bit64::as.integer64(alt)]
+    expect_error(prepare_mnl_data(i64, "id", "alt", "choice", "x1",
+                                  outside_opt_label = 2L),
+                 "(of class integer64) without leaving some", fixed = TRUE)
+  }
+
+  # A factor's labels, a long list shortened, and situations removed for
+  # missing values
+  dt_f <- data.table::copy(dt)[, alt := factor(letters[alt])]
+  expect_error(prepare_mnl_data(dt_f, "id", "alt", "choice", "x1",
+                                outside_opt_label = "z"),
+               paste0("(\"z\") names none of the alternatives in 'alt': ",
+                      "\"a\", \"b\", \"c\", \"d\", \"e\", \"f\"."),
+               fixed = TRUE)
+  expect_identical(as.character(prepare_mnl_data(
+    dt_f, "id", "alt", "choice", "x1", outside_opt_label = "c"
+  )$alt_mapping$alt[1]), "c")
+  dt12 <- data.table::data.table(id = rep(1:4, each = 12L),
+                                 alt = rep(1:12, 4L), x1 = rnorm(48L))
+  dt12[, choice := as.integer(alt == (id %% 12L) + 1L)]
+  expect_error(prepare_mnl_data(dt12, "id", "alt", "choice", "x1",
+                                outside_opt_label = 0L),
+               "'alt': 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 2 more.", fixed = TRUE)
+  extra <- data.table::data.table(id = 1:2, alt = 7L, x1 = NA_real_,
+                                  x2 = 0, nest = 2L, choice = 0L)
+  with_7 <- data.table::rbindlist(list(dt, extra), use.names = TRUE)
+  expect_error(suppressWarnings(prepare_mnl_data(
+    with_7, "id", "alt", "choice", "x1", outside_opt_label = 7L)),
+    paste0("(7) names none of the alternatives in 'alt' that remain after ",
+           "removing the 2 choice situations with missing values: 1, 2, 3, 4, ",
+           "5, 6."), fixed = TRUE)
+
+  # An NA label names no alternative either (factor() dropped it from the
+  # levels, so the first alternative silently became the base); among
+  # others, the absent ones are reported
+  expect_error(prepare_mnl_data(dt, "id", "alt", "choice", "x1",
+                                outside_opt_label = NA),
+               "(NA) names none of the alternatives in 'alt'", fixed = TRUE)
+  expect_error(prepare_mnl_data(dt, "id", "alt", "choice", "x1",
+                                outside_opt_label = c(NA, 3L, 99L)),
+               "(NA, 99) names none of the alternatives in 'alt'", fixed = TRUE)
+
+  # With the outside option the label only names the outside option's row of
+  # alt_mapping, which the data need not contain
+  p <- prepare_mnl_data(dt, "id", "alt", "choice", "x1",
+                        include_outside_option = TRUE, outside_opt_label = 99L)
+  expect_identical(p$alt_mapping$alt[1], 99L)
+})

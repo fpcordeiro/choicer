@@ -1284,6 +1284,29 @@ unless it says otherwise.
   documentation called the result a named numeric vector; it is, as it
   always was, a one-column matrix without names (the labels are in
   `object$alt_mapping[[2]]`).
+- An `outside_opt_label` that names none of the alternatives, without the
+  outside option (`include_outside_option = FALSE`), became a phantom base:
+  the preparations code that label first, so it took code 1 with no rows.
+  Fits with constants then stopped with an error about the constants' block
+  (with three alternatives, "Theta's delta (ASC) block implies 3
+  alternatives but alt_idx references alternative 4"; an Armadillo index
+  error in 0.1.0), nested logit fits without them with an error about the
+  nests (in 0.1.0 R aborted), and multinomial logit fits without constants,
+  like mixed logit fits without them since the `use_asc = FALSE` correction
+  above, carried an alternative that is never offered: a predicted share of
+  0, and elasticity and diversion-ratio matrices with an extra row and
+  column and no labels. An `NA` label silently made the first alternative
+  the base. A label of another class than the alternative column (a
+  character label with a column of dates, a plain number with an
+  `integer64` column, a factor label with a character column) could leave
+  alternatives without a code, which the preparations returned: with dates
+  and a character label, checked on Apple silicon, fits since 0.2.0 stopped
+  with an error about the alternative codes, and 0.1.0 fitted a model
+  without constants on them. `prepare_mnl_data()`, `prepare_nl_data()` and
+  `prepare_mxl_data()`, and the `run_*()` functions that call them, now stop
+  in these cases with an error that says why. Labels that coded the
+  alternatives before still do: the check reads the codes the preparations
+  build.
 
 # choicer 0.2.1
 

@@ -541,6 +541,72 @@ label_matrix <- function(mat, alt_mapping) {
   invisible(NULL)
 }
 
+#' Check a preparation's alternative codes against the base label
+#'
+#' Without the outside option the preparations code `outside_opt_label`
+#' first: `levels <- c(outside_opt_label, ...)`, then `factor()` in
+#' `.code_alternatives()`. The check reads the codes themselves, so it agrees
+#' with the coding on every R version (from R 4.5.0 `factor()` matches
+#' integer, character and logical values directly, so numbers as numbers;
+#' doubles, and every value before 4.5.0, as text). A label code that no row
+#' took is a phantom base: fits with constants stopped in the kernels with an
+#' error about the constants' block, nested logit fits without them with one
+#' about the nests, and the others carried an alternative that is never
+#' offered. An `NA` label names no alternative either (`factor()` drops it
+#' from the levels, so the base silently became the first alternative). A row
+#' without a code is an alternative that `setdiff()` or `c()` changed when
+#' they combined the label with the column: `setdiff()` drops the class of a
+#' column of dates or an integer64 one when the label has another class, and
+#' `c()` turns a factor label into its integer code. The preparation returned
+#' such codes, and fits stopped on them.
+#'
+#' @param codes The alternatives' codes (`.choicer_alt_int`).
+#' @param label `outside_opt_label`.
+#' @param alts The alternative column the codes were built from.
+#' @param alt_col Name of the alternative column.
+#' @param n_dropped Choice situations removed for missing values before the
+#'   coding.
+#' @returns `NULL`, invisibly; errors as above.
+#' @noRd
+.check_base_codes <- function(codes, label, alts, alt_col, n_dropped = 0L) {
+  uncoded <- anyNA(codes)
+  # factor() drops NA labels from the levels: the others keep their order
+  absent <- is.na(label)
+  absent[!absent] <- tabulate(codes, sum(!absent)) == 0L
+  if (!uncoded && !any(absent)) return(invisible(NULL))
+  fmt <- function(x) {
+    if (is.character(x) || is.factor(x)) {
+      encodeString(as.character(x), quote = '"')
+    } else {
+      as.character(x)
+    }
+  }
+  if (uncoded) {
+    stop("`outside_opt_label` (", paste(fmt(label), collapse = ", "),
+         ", of class ", class(label)[1], ") cannot be combined with the ",
+         "alternatives in '", alt_col, "' (of class ", class(alts)[1], ") ",
+         "without leaving some of them uncoded. ",
+         if (identical(class(label)[1], class(alts)[1])) {
+           paste0("Is an alternative in '", alt_col, "' labelled NA?")
+         } else {
+           paste0("Give the label in the class of '", alt_col, "'.")
+         }, call. = FALSE)
+  }
+  found <- sort(unique(alts))
+  shown <- utils::head(found, 10L)
+  stop("`outside_opt_label` (", paste(fmt(label[absent]), collapse = ", "),
+       ") names none of the alternatives in '", alt_col, "'",
+       if (n_dropped > 0) {
+         paste0(" that remain after removing the ", n_dropped, " choice ",
+                if (n_dropped == 1) "situation" else "situations",
+                " with missing values")
+       }, ": ", paste(fmt(shown), collapse = ", "),
+       if (length(found) > 10L) paste0(" and ", length(found) - 10L, " more"),
+       ". Without the outside option it names the base alternative, coded ",
+       "first: name one of these, or leave `outside_opt_label` NULL to make ",
+       "the first in sort order the base.", call. = FALSE)
+}
+
 #' Code the alternatives 1..J in a preparation's working table
 #'
 #' Adds `.choicer_alt_int`, the position of each row's alternative in

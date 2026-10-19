@@ -331,7 +331,13 @@
 #'   constant within each decision maker, and WESML is not supported:
 #'   choice-based weights vary with the chosen alternative across a decision
 #'   maker's situations, so they cannot weight the panel likelihood.
-#' @param outside_opt_label Label for the outside option (convenience workflow).
+#' @param outside_opt_label (Convenience workflow.) The label of the outside
+#'   option or of the base alternative, given in the class of the alternative
+#'   column. With \code{include_outside_option = TRUE} it names the outside
+#'   option's row of \code{alt_mapping}. Without the outside option it names the
+#'   base alternative, coded first (with constants, its constant is normalized
+#'   to 0); it must be one of the alternatives, and \code{NULL} (the default)
+#'   makes the first alternative in sort order the base.
 #' @param include_outside_option Logical whether to include an outside option
 #'   (convenience workflow).
 #' @param draws Draw storage mode. One of \code{"store"} (default) or \code{"generate"}.
@@ -950,7 +956,13 @@ run_mxlogit <- function(
 #'   per-row weight (constant within each choice situation, and within each
 #'   decision maker when \code{person_col} is used; finite and strictly
 #'   positive). Mutually exclusive with \code{weights}.
-#' @param outside_opt_label Label for the outside option (if any). If NULL, no outside option is assumed.
+#' @param outside_opt_label The label of the outside option or of the base
+#'   alternative, given in the class of the alternative column. With
+#'   \code{include_outside_option = TRUE} it names the outside option's row of
+#'   \code{alt_mapping}. Without the outside option it names the base
+#'   alternative, coded first (with constants, its constant is normalized to 0);
+#'   it must be one of the alternatives, and \code{NULL} (the default) makes the
+#'   first alternative in sort order the base.
 #' @param include_outside_option Logical indicating whether to include an outside option in the model.
 #' @param rc_correlation Logical indicating whether random coefficients are correlated. Default is FALSE.
 #' @param cluster_col Optional name of a column in \code{data} holding cluster
@@ -1108,13 +1120,18 @@ prepare_mxl_data <- function(
 
   ## Create integer alternative codes ------------------------------------------
 
-  if (!is.null(outside_opt_label) && include_outside_option==FALSE) {
+  base_label <- !is.null(outside_opt_label) && include_outside_option==FALSE
+  if (base_label) {
     levels <- c(outside_opt_label, sort(setdiff(unique(dt[[alt_col]]), outside_opt_label)))
   } else {
     levels <- sort(unique(dt[[alt_col]]))
   }
 
   dt <- .code_alternatives(dt, alt_col, levels)
+  if (base_label) {
+    .check_base_codes(dt$.choicer_alt_int, outside_opt_label, dt[[alt_col]],
+                      alt_col, length(ids_to_drop))
+  }
 
   ## Order rows ----------------------------------------------------------------
   ##   within each id: ascending alternative id
