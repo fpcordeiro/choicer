@@ -464,13 +464,15 @@ mxlp_weighted <- c("gradient", "hessian", "bhhh", "meat")
 # `acc_bytes` bounds the Hessian's, BHHH's and meat's per-thread accumulators
 # (0 makes the threads share the result). `opg_diag = TRUE` makes the
 # gradient kernel also return the BHHH diagonal.
+# "delta" is the constants' block of the information with the objective
+# and gradient (mxl_delta_hessian_parallel()), weighted like the Hessian.
 mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
                       Ti = fx[["Ti"]], eta = fx$eta, generate = FALSE,
                       draw_batch = NULL, cluster = NULL, acc_bytes = NULL,
                       opg_diag = NULL) {
   args <- list(theta = theta, X = fx$X, W = fx$W, alt_idx = fx$alt_idx,
                choice_idx = fx$choice_idx, M = fx$M)
-  if (kernel %in% mxlp_weighted) args$weights <- weights
+  if (kernel %in% c(mxlp_weighted, "delta")) args$weights <- weights
   if (kernel == "meat") {
     args$cluster <- if (is.null(cluster)) {
       seq_len(if (is.null(Ti)) length(fx$M) else length(Ti))
@@ -498,6 +500,7 @@ mxlp_call <- function(kernel, fx, theta = fx$theta, weights = fx$weights,
     scores   = mxl_scores_parallel,
     tastes   = mxl_conditional_tastes_parallel,
     meat     = mxl_cluster_meat_parallel,
+    delta    = mxl_delta_hessian_parallel,
     stop("unknown kernel: ", kernel)
   )
   do.call(fn, args)

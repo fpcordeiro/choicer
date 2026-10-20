@@ -776,3 +776,151 @@ test_that("mixed logit cluster labels are checked before any draws are built", {
                "must be constant within each decision maker", fixed = TRUE)
   expect_equal(n_cubes, 0L)
 })
+
+# --- The constants' block of the information --------------------------------
+# mxl_delta_hessian_parallel() gives the profile likelihood's inner Newton
+# solve, in one pass, the objective and the gradient (the gradient kernel's,
+# bit for bit at one thread) and the information's block on the free
+# constants, which must be the full Hessian's ASC rows and columns to
+# rounding (BLAS on a sub-block): over every cell of the many-alternative
+# designs (the normalized reference, the outside option, panels, a repeated
+# alternative, the reference never offered, trailing constants that no row
+# carries, situations with the reference only), on-the-fly draws, units split
+# into draw batches, weights that vary or vanish, an alternative-level W, two
+# threads and the shared accumulator.
+
+cdx_asc <- function(fx) seq.int(cdx_delta_start(fx), length(fx$theta))
+
+cdx_delta_cfgs <- function(fx) {
+  unit <- if (is.null(fx$Ti)) seq_along(fx$M) else rep(seq_along(fx$Ti), fx$Ti)
+  w0 <- fx$weights
+  w0[unit %% 3L == 0L] <- 0
+  list(base = list(), generate = list(generate = TRUE),
+       batches = list(draw_batch = 3L), zero_weights = list(weights = w0))
+}
+
+test_that("the constants' block is the Hessian's, the objective the gradient kernel's", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (fx in cdx_cells()) {
+    if (!fx$use_asc) next
+    d <- cdx_asc(fx)
+    for (nm in names(cfgs <- cdx_delta_cfgs(fx))) {
+      cfg <- cfgs[[nm]]
+      what <- sprintf("[%s, %s]", fx$name, nm)
+      r <- do.call(mxlp_call, c(list("delta", fx), cfg))
+      g <- do.call(mxlp_call, c(list("gradient", fx), cfg))
+      expect_identical(r[c("objective", "gradient", "overflow")], g,
+                       label = paste(what, "objective and gradient"))
+      expect_false(r$nonfinite, label = what)
+      expect_identical(dim(r$hessian), c(length(d), length(d)), label = what)
+      expect_identical(r$hessian, t(r$hessian), label = paste(what, "symmetric"))
+      H <- do.call(mxlp_call, c(list("hessian", fx), cfg))
+      mxlp_expect_close(r$hessian, H[d, d, drop = FALSE], 1e-13,
+                        paste(what, "block vs the Hessian's"))
+    }
+  }
+})
+
+test_that("the constants' block holds across threads, accumulators and W layouts", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  cells <- cdx_cells()
+  for (fx in cells[vapply(cells, function(f) f$name %in% c(
+    "xsec", "panel, outside option", "panel, repeated alternative",
+    "xsec, shuffled rows, repeated alternatives"), TRUE)]) {
+    d <- cdx_asc(fx)
+    set_omp_threads(1L)
+    r1 <- mxlp_call("delta", fx)
+    set_omp_threads(2L)
+    r2 <- mxlp_call("delta", fx)
+    mxlp_expect_close(r2$hessian, r1$hessian, 1e-13,
+                      sprintf("[%s] 2 vs 1 threads", fx$name))
+    rs <- mxlp_call("delta", fx, acc_bytes = 0)
+    mxlp_expect_close(rs$hessian, r1$hessian, 1e-13,
+                      sprintf("[%s] shared accumulator", fx$name))
+    expect_identical(rs$hessian, t(rs$hessian))
+    # an alternative-level W (one row per alternative)
+    set_omp_threads(1L)
+    fy <- fx
+    set.seed(1031)
+    fy$W <- matrix(stats::rnorm(fx$J * fx$K_w), fx$J, fx$K_w)
+    ry <- mxlp_call("delta", fy)
+    mxlp_expect_close(ry$hessian, mxlp_call("hessian", fy)[d, d, drop = FALSE],
+                      1e-13, sprintf("[%s] alternative-level W", fx$name))
+    expect_identical(ry[c("objective", "gradient", "overflow")],
+                     mxlp_call("gradient", fy))
+  }
+})
+
+test_that("the constants' block under non-finite weights, overflows and scores", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  fx <- cdx_fixture("panel", 1003)
+  w <- fx$weights
+  w[seq_len(fx$Ti[1L])] <- NaN  # the first decision maker's weight
+  r <- mxlp_call("delta", fx, weights = w)
+  expect_true(all(is.nan(r$hessian)))
+  expect_identical(r[c("objective", "gradient", "overflow")],
+                   mxlp_call("gradient", fx, weights = w))
+  expect_true(r$overflow)
+  # utilities that overflow (the largest double times the covariates): the
+  # objective is the sentinel, as the gradient's
+  th <- fx$theta
+  th[1L] <- .Machine$double.xmax
+  r <- mxlp_call("delta", fx, theta = th)
+  expect_true(r$overflow)
+  expect_identical(r$objective, 1e10)
+  expect_identical(r[c("objective", "gradient", "overflow")],
+                   mxlp_call("gradient", fx, theta = th))
+
+  # A decision maker whose utilities overflow is left out, so its weight,
+  # finite or not, spreads nothing (bit for bit at one thread)
+  fx <- cdx_fixture("skipped unit", 1022)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- 3L
+  fx$theta[1L] <- 2
+  fx$X[row_off[first[u]] + fx$choice_idx[first[u]], 1L] <- -1e308
+  r1 <- mxlp_call("delta", fx)
+  expect_true(r1$overflow)
+  expect_true(all(is.finite(r1$hessian)))
+  fx$weights[first[u] - 1L + seq_len(fx$Ti[u])] <- Inf
+  expect_identical(mxlp_call("delta", fx)$hessian, r1$hessian,
+                   label = "skipped unit with an infinite weight")
+
+  # A score entry past the largest double with finite utilities (the
+  # "infinite score" construction above): the objective is finite, beta_1's
+  # gradient entry is set to 0 and flagged, and the constants' block, which
+  # the infinite entry does not reach, is the Hessian's
+  fx <- cdx_fixture("infinite score", 1023)
+  first <- cumsum(c(1L, fx$Ti[-length(fx$Ti)]))
+  row_off <- c(0L, cumsum(fx$M))
+  u <- which(fx$Ti >= 2L)[1L]
+  fx$theta[1L] <- 1e-306
+  for (t in first[u] - 1L + seq_len(fx$Ti[u])) {
+    other <- setdiff(seq_len(fx$M[t]), fx$choice_idx[t])[1L]
+    fx$X[row_off[t] + other, 1L] <- 1e308
+  }
+  r <- mxlp_call("delta", fx)
+  expect_false(r$overflow)
+  expect_true(r$nonfinite)
+  expect_identical(r[c("objective", "gradient", "overflow")],
+                   mxlp_call("gradient", fx))
+  d <- cdx_asc(fx)
+  H <- mxlp_call("hessian", fx)
+  expect_true(all(is.finite(H[d, d])))
+  mxlp_expect_close(r$hessian, H[d, d, drop = FALSE], 1e-13, "infinite score")
+})
+
+test_that("the constants' block needs constants and checks its memory", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  fx <- cdx_fixture("panel, no ASCs", 1009, use_asc = FALSE)
+  expect_error(mxlp_call("delta", fx), "needs the constants (use_asc = TRUE)",
+               fixed = TRUE)
+  fx <- cdx_fixture("panel", 1003)
+  old <- options(choicer.max_memory = 1e3)
+  on.exit(options(old), add = TRUE)
+  expect_error(mxlp_call("delta", fx), "The Hessian of the constants needs about",
+               fixed = TRUE)
+})
