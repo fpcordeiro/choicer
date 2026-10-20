@@ -457,6 +457,35 @@ test_that("an inner solve that fails is an overflow to the optimizer", {
   expect_identical(fit$optimizer$concentration$failed, 1L)
   expect_lt(-fit$loglik, f0)
   expect_false(grepl("profile likelihood", fit$message, fixed = TRUE))
+  # a late failure names its own error, not one the line search backtracked
+  # from before the best point improved
+  n <- 0L
+  opt_late <- function(theta_init, eval_f, ...) {
+    e <- eval_f(theta_init)
+    eval_f(theta_init + 0.1)  # the second solve: fails with an error
+    x <- theta_init - 0.01 * e$gradient / sqrt(sum(e$gradient^2))
+    eval_f(x)
+    eval_f(x + 0.2)           # the fourth: fails without one
+    list(par = x, value = eval_f(x)$objective, convergence = 0L)
+  }
+  local_mocked_bindings(.mxl_profile_solver = function(...) {
+    s <- real_solver(...)
+    function(theta_c, delta0, max_iter) {
+      n <<- n + 1L
+      r <- s(theta_c, delta0, max_iter)
+      # n = 1 is the start's solve
+      if (n == 2L) {
+        r$converged <- FALSE
+        r$error <- "an early error"
+      }
+      if (n == 4L) r$converged <- FALSE
+      r
+    }
+  })
+  w <- expect_warning(do.call(prf_fit, c(list(dt, optimizer = opt_late), PRF)),
+                      "1 of the inner solves after the optimizer's best point",
+                      class = "choicer_profile_unconverged")
+  expect_false(grepl("an early error", conditionMessage(w), fixed = TRUE))
   # a first solve that fails stops the fit
   local_mocked_bindings(.mxl_profile_solver = function(...) {
     s <- real_solver(...)
@@ -510,15 +539,19 @@ test_that("the constants are solved at the point the optimizer returns", {
         s0 <<- r
         t0 <<- theta_c
       }
-      if (n == 2L) r$converged <- FALSE
+      if (n == 2L) {
+        r$converged <- FALSE
+        r$error <- "the kernel ran out of memory"
+      }
       r
     }
   })
   s0 <- NULL
   t0 <- NULL
   expect_warning(f2 <- do.call(prf_fit, c(list(dt, optimizer = opt_away), PRF)),
-                 "could not be solved at the optimizer's solution, so the best point",
-                 class = "choicer_profile_unconverged")
+                 paste("could not be solved at the optimizer's solution (the kernel",
+                       "ran out of memory), so the best point"),
+                 fixed = TRUE, class = "choicer_profile_unconverged")
   expect_identical(n, 2L)
   expect_identical(unname(coef(f2)[f2$param_map$asc]), s0$delta)
   expect_identical(unname(coef(f2)[-f2$param_map$asc]), unname(t0))

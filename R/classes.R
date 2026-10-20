@@ -1071,7 +1071,8 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #'   gradient, overflow)`; `state`, an environment holding `best` and the
 #'   counts (`evaluations`, `solves`, `failed`, `failed_late` (since the best
 #'   point last improved), `hits`, `inner_iterations`, `passes`,
-#'   `max_residual`), and `error`, the last error that ended a solve.
+#'   `max_residual`), and `error`, the last error that ended a solve since
+#'   the best point last improved.
 #' @noRd
 .profile_objective <- function(solve, c_idx, start) {
   st <- new.env(parent = emptyenv())
@@ -1110,6 +1111,7 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
                       gradient = s$gradient, residual = s$residual,
                       decrement = s$decrement)
       st$failed_late <- 0L
+      st$error <- NULL
     }
     list(objective = s$value, gradient = s$gradient[c_idx], overflow = FALSE)
   }

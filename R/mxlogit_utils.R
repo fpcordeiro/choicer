@@ -1368,6 +1368,7 @@ run_mxlogit <- function(
         }
       }
       final_ok <- isTRUE(s_hat$converged)
+      final_error <- if (!final_ok) s_hat$error
       theta_c_hat <- if (final_ok) opt$par else best$theta_c
       if (!final_ok) s_hat <- c(best, list(converged = TRUE))
       opt$par <- numeric(n_params)
@@ -1412,7 +1413,9 @@ run_mxlogit <- function(
         if (st$failed_late > 0L && !final_ok) "; ",
         if (!final_ok) {
           paste0("the constants could not be solved at the optimizer's ",
-                 "solution, so the best point solved is returned")
+                 "solution",
+                 if (!is.null(final_error)) paste0(" (", final_error, ")"),
+                 ", so the best point solved is returned")
         })
       opt$message <- paste0(paste(as.character(opt$message), collapse = "; "),
                             "; profile likelihood: ", why)
