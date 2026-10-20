@@ -924,7 +924,16 @@
   run time. A polish that stops short keeps the optimizer's code and says why;
   one that stops with an error (the Hessian's memory check, say) keeps its
   last accepted point and warns (class `choicer_polish_failed`). The standard
-  errors are computed at the polished estimates, by `se_method`, as before.
+  errors are computed at the polished estimates, by `se_method`. The polish
+  decides every stop at the point whose curvature it has just evaluated, so,
+  unless it returns the start or its curvature fails, that matrix serves as
+  the variance's own wherever `se_method` needs it, rather than being
+  evaluated again: after `"newton"`, the Hessian of `"hessian"` and the bread
+  of `"sandwich"` and `"cluster"`; after `"bhhh"`, the BHHH matrix of
+  `"bhhh"` (the sandwich's meat squares the weights, so it is computed).
+  There, a polish that certifies the optimizer's solution at once costs one
+  evaluation of the log-likelihood and its gradient and one factorization of
+  the curvature beyond the fit without it.
 - Where the curvature is not positive definite the steps are damped
   (Levenberg-Marquardt, on the information equilibrated by powers of two, so
   that a step does not depend on the parameters' units). They respect `lower`
@@ -952,7 +961,8 @@
   census-style design (20,000 decision makers in 24,560 choice situations over
   2,512 alternatives, the never-chosen ones dropped; 2,530 parameters; 50
   stored draws) the Newton polish certified the default optimizer's solution
-  at once (one Hessian, 3 s, after a 10 s fit); from a stop after 15
+  at once (one Hessian, 3 s, after a 10 s fit; the variance then uses that
+  Hessian rather than computing its own); from a stop after 15
   evaluations it reached the same maximum in six steps (24 s), where BHHH
   stayed 0.33 log-likelihood units short after 20. For a claims-style design
   (15,000 decision makers in 153,721 situations, 8.7 million rows, over 500

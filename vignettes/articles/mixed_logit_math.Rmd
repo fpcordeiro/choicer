@@ -1409,7 +1409,15 @@ while the BHHH polish holds $\ell_{11}$ at $-9.94$ and stops after 18 steps, $6.
 10^{-4}$ log-likelihood units short.
 
 The variance is computed afterwards at the polished estimates, by `se_method`, through
-§5.6; `fit$optimizer$polish` records the phase.
+§5.6. Since every stop is decided at the point whose curvature the polish has just
+evaluated, that matrix is the variance's own at the estimates returned (unless the start
+is returned, as above, or the curvature itself fails) wherever `se_method` needs it, and
+is not evaluated again: after a Newton polish, $\mathcal{I}$ for `"hessian"` and as the
+bread of `"sandwich"` and `"cluster"`; after a BHHH polish, $\mathcal{B}$ for `"bhhh"` (the
+sandwich's meat squares the weights, so it is computed). There, a polish that certifies the
+optimizer's solution at once costs one evaluation of the log-likelihood and its gradient
+and one Cholesky factorization of the curvature beyond the fit without it.
+`fit$optimizer$polish` records the phase.
 
 *Code reference: `run_polish()` and `.polish_control()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp); the wiring in `run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R).*
 

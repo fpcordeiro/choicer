@@ -469,7 +469,17 @@
 #' so a badly scaled column far from its maximum can be held as if its
 #' curvature had vanished; the default \code{"bhhh"} scaling avoids this. The
 #' standard errors are computed at the polished estimates, by
-#' \code{se_method}.
+#' \code{se_method}. The polish evaluates its curvature at the point it
+#' returns before it stops (unless it returns the start, or the curvature
+#' itself failed), so that matrix serves the variance whenever it is the one
+#' \code{se_method} needs, instead of being evaluated again: after
+#' \code{"newton"}, the Hessian of \code{"hessian"} and the bread of
+#' \code{"sandwich"} and \code{"cluster"}; after \code{"bhhh"}, the BHHH
+#' matrix of \code{"bhhh"} (the sandwich's meat squares the weights, so it is
+#' computed). Where it serves so, a polish that certifies the optimizer's
+#' solution at once costs one evaluation of the log-likelihood and its
+#' gradient and one factorization of the curvature more than the fit without
+#' it.
 #'
 #' Each step costs a curvature evaluation and a line search. A smaller
 #' \code{maxeval} (nloptr) or \code{maxit} (optim) in \code{control} hands
@@ -949,6 +959,7 @@ run_mxlogit <- function(
   # point. The estimator is unchanged. A converged polish reports the
   # optimizer's success code; the optimizer's own status is kept in the record.
   polish_record <- NULL
+  curv <- NULL
   if (polish != "none") {
     curv_kernel <- if (polish == "newton") mxl_hessian_parallel else mxl_bhhh_parallel
     curv_f <- function(theta) {
@@ -963,12 +974,26 @@ run_mxlogit <- function(
         gen_S = gen_S_cpp, Ti = input_data$Ti
       )
     }
+    # The polish's last curvature, evaluated at the point it returns (unless
+    # it returns the start, or its curvature fails), is the variance's own
+    # matrix there when se_method needs that one: the Hessian as the bread of
+    # "hessian", "sandwich" and "cluster", the BHHH matrix with the weights
+    # unsquared for "bhhh" (the robust meat squares them). Only then is it
+    # kept, and taken out of the result at once; otherwise it is released
+    # with the polish. The variance's peak then does not grow for "hessian"
+    # and "bhhh"; for "sandwich" and "cluster" the bread is held while the
+    # meat is computed, which adds at most one p x p where the meat's own
+    # buffers (the squared weights; the cluster kernel's 8 (U + 2G) bytes and
+    # labels) outweigh the Hessian kernel's.
+    reuse <- switch(polish, newton = se_method != "bhhh", bhhh = se_method == "bhhh")
     t_pol <- system.time(
       pol <- run_polish(stats::setNames(opt$par, param_names), model_f, curv_f,
                         lower = lower, upper = upper, scale = map$scale,
                         control = polish_control, method = polish,
-                        fixed = held),
+                        fixed = held, keep_curvature = reuse),
       gcFirst = FALSE)
+    curv <- pol$curvature_at_par
+    pol$curvature_at_par <- NULL
     # Where the reference (the outside option, or the base alternative) is
     # never chosen, or chosen wherever offered, the other constants diverge
     # together (up, or down): there is no maximum to certify. A rise stops
@@ -1120,19 +1145,24 @@ run_mxlogit <- function(
   # "cluster", the meat is the outer product of within-cluster sums of
   # weighted scores, summed in C++ without the U x p score matrix. Scores,
   # weights and cluster labels are per likelihood unit (decision maker with
-  # person_col). An error here (a kernel's memory check, say) returns the
-  # estimates without a variance, with a warning (.vcov_failed()).
+  # person_col). After a polish, its last curvature stands in for the matrix
+  # the variance would otherwise evaluate at the same point (curv, above). An
+  # error here (a kernel's memory check, say) returns the estimates without a
+  # variance, with a warning (.vcov_failed()).
   vcov_result <- tryCatch(
     .assemble_score_vcov(
       fit, type = if (se_method == "sandwich") "robust" else se_method,
       gp = list(eta_draws = eta_draws, gen_seed = gen_seed_cpp,
                 gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp),
-      what = "`cluster_col`"
+      what = "`cluster_col`",
+      bread = if (polish == "newton") curv,
+      bhhh = if (polish == "bhhh") curv
     ),
     error = function(e) {
       .vcov_failed(e, se_method, param_names, keep_data)
     }
   )
+  curv <- NULL
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names

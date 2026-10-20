@@ -465,7 +465,17 @@ held for the step and stops the polish unconverged. Under
 so a badly scaled column far from its maximum can be held as if its
 curvature had vanished; the default \code{"bhhh"} scaling avoids this. The
 standard errors are computed at the polished estimates, by
-\code{se_method}.
+\code{se_method}. The polish evaluates its curvature at the point it
+returns before it stops (unless it returns the start, or the curvature
+itself failed), so that matrix serves the variance whenever it is the one
+\code{se_method} needs, instead of being evaluated again: after
+\code{"newton"}, the Hessian of \code{"hessian"} and the bread of
+\code{"sandwich"} and \code{"cluster"}; after \code{"bhhh"}, the BHHH
+matrix of \code{"bhhh"} (the sandwich's meat squares the weights, so it is
+computed). Where it serves so, a polish that certifies the optimizer's
+solution at once costs one evaluation of the log-likelihood and its
+gradient and one factorization of the curvature more than the fit without
+it.
 
 Each step costs a curvature evaluation and a line search. A smaller
 \code{maxeval} (nloptr) or \code{maxit} (optim) in \code{control} hands
