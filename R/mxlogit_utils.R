@@ -112,6 +112,234 @@
   theta
 }
 
+#' The profile likelihood's requirements on the constants
+#'
+#' `concentrate_out_asc = "profile_likelihood"` solves the constants'
+#' first-order condition at every value of the other parameters, without
+#' bounds, factoring their block of the information densely: it needs
+#' constants, none of them bounded (or pinned), each with a finite
+#' maximum-likelihood estimate (every case `.unbounded_constants()` flags is
+#' an error, with the warning's remedies), and at most `max_dense` of them.
+#' An alternative listed twice in a situation counts twice in
+#' `alt_mapping$N_OBS`, which can hide one chosen wherever it is offered, so
+#' the inside alternatives' counts are taken from the data instead
+#' (`.unchosen_offers()`). Checked before the draws.
+#'
+#' @param n_asc Number of free constants.
+#' @param asc_lower,asc_upper Their bounds.
+#' @param asc_names Their names.
+#' @param alt_mapping The preparation's `alt_mapping`.
+#' @param ctl From `.concentrate_control()`.
+#' @param d The prepared `input_data`.
+#' @returns NULL, invisibly.
+#' @noRd
+.check_profile_inputs <- function(n_asc, asc_lower, asc_upper, asc_names,
+                                  alt_mapping, ctl, d) {
+  what <- "concentrate_out_asc = \"profile_likelihood\""
+  if (n_asc == 0L) {
+    stop(what, " concentrates the alternative-specific constants out of the ",
+         "likelihood, so it needs them: use_asc = TRUE and more than one ",
+         "alternative.", call. = FALSE)
+  }
+  b <- is.finite(asc_lower) | is.finite(asc_upper)
+  if (any(b)) {
+    stop(what, " solves the constants' first-order condition without bounds, ",
+         "but `lower`/`upper` bound ",
+         paste(utils::head(asc_names[b], 5L), collapse = ", "),
+         if (sum(b) > 5L) paste0(" and ", sum(b) - 5L, " more"),
+         ". Remove those bounds, or fit without concentrate_out_asc.",
+         call. = FALSE)
+  }
+  am <- alt_mapping
+  if (all(c("alt_int", "N_OBS", "N_CHOICES") %in% names(am))) {
+    am <- as.list(am)
+    code <- am$alt_int
+    inside <- code >= 1L & !is.na(code)
+    un <- .unchosen_offers(d, max(c(0L, code[inside])))
+    # chosen wherever offered: no row in a situation that chose another
+    am$N_OBS[inside] <- am$N_CHOICES[inside] + un[code[inside]]
+  }
+  u <- .unbounded_constants(am)
+  if (!is.null(u)) {
+    msg <- .unbounded_constants_text(u, alt_mapping)
+    stop(errorCondition(paste(c(paste0(
+      what, " needs every alternative-specific constant to have a finite ",
+      "maximum-likelihood estimate, so that the constants' first-order ",
+      "condition has a solution at every value of the other parameters."),
+      msg[-1L]), collapse = "\n"),
+      class = "choicer_unbounded_constants", call = NULL))
+  }
+  if (n_asc > ctl$max_dense) {
+    stop(what, " factors the constants' block of the information densely, up ",
+         "to concentrate_control$max_dense = ", ctl$max_dense, " constants; ",
+         "this model has ", n_asc, ". A solve holds two J x J matrices (8 J^2 ",
+         "bytes each) and each Newton step factors one (about J^3 / 3 ",
+         "operations): raise max_dense, or fit without concentrate_out_asc.",
+         call. = FALSE)
+  }
+  invisible(NULL)
+}
+
+#' Rows of each alternative in situations that chose another
+#'
+#' For each inside alternative code, the rows that carry it in the choice
+#' situations whose chosen alternative is another (or the outside option): 0
+#' exactly when the alternative is chosen in every situation that offers it,
+#' however often a situation lists it. In blocks of about 2^22 rows.
+#'
+#' @param d A prepared `input_data`.
+#' @param J The largest inside code.
+#' @returns Numeric vector of length J.
+#' @noRd
+.unchosen_offers <- function(d, J) {
+  M <- d$M
+  n <- length(M)
+  out <- numeric(J)
+  if (!n || !J) return(out)
+  off <- c(0, cumsum(as.numeric(M)))
+  inside <- d$choice_idx > 0L
+  chosen <- integer(n)
+  chosen[inside] <- d$alt_idx[off[which(inside)] + d$choice_idx[inside]]
+  step <- max(1, floor(2^22 / max(1, off[n + 1L] / n)))
+  lo <- 1
+  while (lo <= n) {
+    hi <- min(n, lo + step - 1)
+    code <- d$alt_idx[seq.int(off[lo] + 1, off[hi + 1L])]
+    other <- code != rep.int(chosen[lo:hi], M[lo:hi])
+    out <- out + tabulate(code[other], J)
+    lo <- hi + 1
+  }
+  out
+}
+
+#' Weighted chosen counts of the free constants
+#'
+#' The data side of the constants' first-order condition: for each free
+#' constant (`param_map$asc`'s order), the summed weights of the choice
+#' situations whose chosen alternative carries it, and the same sum for the
+#' reference (the outside option, or the base alternative, coded 1), whose
+#' constant is normalized.
+#'
+#' @param d A prepared `input_data`.
+#' @param n_asc Number of free constants.
+#' @returns List with `obs` (n_asc) and `ref`.
+#' @noRd
+.chosen_counts <- function(d, n_asc) {
+  M <- d$M
+  first <- c(0, cumsum(as.numeric(M)))[seq_along(M)]
+  inside <- d$choice_idx > 0L
+  code <- integer(length(M))
+  code[inside] <- d$alt_idx[first[inside] + d$choice_idx[inside]]
+  # the free constant of the chosen alternative; 0 for the reference
+  k <- if (isTRUE(d$include_outside_option)) code else code - 1L
+  w <- as.numeric(d$weights)
+  free <- k >= 1L
+  obs <- numeric(n_asc)
+  if (any(free)) {
+    s <- rowsum(w[free], k[free])
+    obs[as.integer(rownames(s))] <- s[, 1L]
+  }
+  list(obs = obs, ref = sum(w[!free]))
+}
+
+#' The inner solve of the mixed logit's profile likelihood
+#'
+#' The maximum over the free constants at fixed continuous parameters
+#' theta_c, by `run_polish()` on delta: Newton steps on the constants' block
+#' of the information, Levenberg-Marquardt damping where it is not positive
+#' definite, and the line search that, near the maximum of a likelihood
+#' summed over millions of units, also accepts a step whose gain is below
+#' the objective's rounding by reading the gradient. The kernel's one pass
+#' gives the objective, the full gradient and the block, so a trial point
+#' the line search accepts is the next step's curvature; the pass is kept
+#' (one point, the previous result released before the next call) and never
+#' carried from one solve to the next. A solve stops converged when the
+#' Newton decrement over the mean weight falls below `tol_decrement` (so that
+#' the rule does not depend on the weights' scale), or when every constant's
+#' score, and the reference's (minus their sum: the scores of all the
+#' alternatives' constants sum to zero), is below `tol_residual` relative to
+#' its weighted chosen count plus the mean weight; within `max_iter` steps
+#' and three kernel passes per step.
+#'
+#' @param kernel_f Function of the full parameter vector returning the
+#'   kernel's `list(objective, gradient, overflow, nonfinite, hessian)`.
+#' @param c_idx,d_idx Positions of theta_c and of the free constants.
+#' @param obs Weighted chosen counts of the free constants.
+#' @param ref The reference's weighted chosen count.
+#' @param w_bar Mean weight.
+#' @param ctl From `.concentrate_control()`.
+#' @returns Function(theta_c, delta0, max_iter) returning `list(converged,
+#'   value, delta, gradient, iterations, passes, residual, decrement,
+#'   message, error)`: the negated log-likelihood, the constants and the full
+#'   gradient at the point returned (value and gradient only for a converged
+#'   solve), and the error that ended the solve, if one did.
+#' @noRd
+.mxl_profile_solver <- function(kernel_f, c_idx, d_idx, obs, ref, w_bar, ctl) {
+  n <- length(c_idx) + length(d_idx)
+  force(kernel_f)
+  residual <- function(g) {
+    max(abs(g) / (obs + w_bar), abs(sum(g)) / (ref + w_bar))
+  }
+  function(theta_c, delta0, max_iter) {
+    full <- numeric(n)
+    full[c_idx] <- theta_c
+    stash <- NULL
+    passes <- 0L
+    budget <- 3 * max_iter + 1
+    spent <- FALSE
+    at <- function(dl, within_budget = TRUE) {
+      if (!is.null(stash) && identical(dl, stash$delta, num.eq = FALSE)) {
+        return(stash$r)
+      }
+      stash <<- NULL
+      if (within_budget && passes >= budget) {
+        spent <<- TRUE
+        stop("the budget is spent")
+      }
+      passes <<- passes + 1L
+      th <- full
+      th[d_idx] <- dl
+      r <- kernel_f(th)
+      stash <<- list(delta = dl, r = r)
+      r
+    }
+    eval_f <- function(dl) {
+      r <- at(dl)
+      list(objective = r$objective, gradient = r$gradient[d_idx],
+           overflow = isTRUE(r$overflow) || isTRUE(r$nonfinite))
+    }
+    curv_f <- function(dl) at(dl)$hessian
+    stop_f <- function(dl, g) {
+      if (residual(g) < ctl$tol_residual) {
+        "every constant's score is below tol_residual"
+      }
+    }
+    pol <- run_polish(delta0, eval_f, curv_f,
+                      control = .polish_control(list(
+                        max_iter = max_iter,
+                        tol_decrement = ctl$tol_decrement * w_bar)),
+                      method = "newton", stop_f = stop_f)
+    # the budget's stop is a failure to converge, not an error
+    out <- list(converged = FALSE, value = NA_real_, delta = pol$par,
+                gradient = NULL, iterations = pol$iterations, passes = passes,
+                residual = NA_real_, decrement = pol$decrement / w_bar,
+                message = if (spent) {
+                  paste0("the solve used its ", budget, " passes")
+                } else pol$message,
+                error = if (!spent) pol$error)
+    if (!isTRUE(pol$converged) || !is.null(pol$error) || !is.finite(pol$value)) {
+      return(out)
+    }
+    r <- at(pol$par, within_budget = FALSE)
+    out$converged <- !isTRUE(r$overflow) && !isTRUE(r$nonfinite)
+    out$value <- r$objective
+    out$gradient <- r$gradient
+    out$passes <- passes
+    out$residual <- residual(r$gradient[d_idx])
+    out
+  }
+}
+
 #' Runs mixed logit estimation
 #'
 #' Estimates a mixed logit model via simulated maximum likelihood.
@@ -424,6 +652,29 @@
 #' log-likelihood units) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
 #' shorter than this, relative to the parameters' magnitudes plus their
 #' scales in the optimizer's coordinates, stops the polish unconverged).
+#' @param concentrate_out_asc How the alternative-specific constants are
+#'   estimated (see the section below). \code{"none"} (default): with the
+#'   other parameters, by the optimizer. \code{"profile_likelihood"}: the
+#'   optimizer moves the other parameters only, and at each of its points the
+#'   constants are solved from their first-order condition; the estimator, and
+#'   so the estimates and their standard errors, are the same. \code{"blp"} is
+#'   reserved for matching aggregate shares instead, a different estimator,
+#'   and is not implemented.
+#' @param concentrate_control List of settings of the constants' inner
+#'   solve, any of \code{max_iter} (25 Newton steps per solve; the first, from
+#'   the start values, may take four times as many), \code{tol_residual}
+#'   (\eqn{10^{-10}}{1e-10}: the solve stops when every constant's score, and
+#'   the reference's, is below it relative to its alternative's weighted
+#'   chosen count plus the mean weight), \code{tol_decrement}
+#'   (\eqn{10^{-12}}{1e-12}: or when the Newton decrement over the mean
+#'   weight falls below it, in log-likelihood units of weights with mean one,
+#'   so that neither rule depends on the weights' scale) and
+#'   \code{max_dense} (10000: the most constants whose block of the
+#'   information is formed and factored densely; for \eqn{J}{J} constants a
+#'   solve holds two \eqn{J \times J}{J x J} matrices, \eqn{8 J^2}{8 J^2} bytes
+#'   each (0.8 GB at \eqn{J = 10^4}{J = 1e4}), besides the kernel's
+#'   accumulators, and each Newton step factors one, about
+#'   \eqn{J^3 / 3}{J^3 / 3} operations).
 #' @section Newton phase (polish):
 #' The polish does not change the estimator. From wherever the optimizer
 #' stopped (at its tolerance or at \code{maxeval}), it finishes the climb to
@@ -487,6 +738,46 @@
 #' iterations creep; from farther away the steps are shortened (and damped
 #' where the curvature is not positive definite), and more of them are
 #' needed.
+#' @section Profile likelihood of the constants (concentrate_out_asc):
+#' With many alternatives the constants \eqn{\delta}{delta} are most of the
+#' parameters. \code{concentrate_out_asc = "profile_likelihood"} maximizes the
+#' profile log-likelihood
+#' \eqn{\ell^*(\theta_c) = \max_\delta \ell(\theta_c, \delta)}{l*(theta_c) =
+#' max_delta l(theta_c, delta)} over the other parameters \eqn{\theta_c}{theta_c},
+#' so the optimizer works on those alone. The estimator does not change: the
+#' profile's maximizer is the joint one, and the variance is the joint fit's,
+#' computed at \eqn{(\hat\theta_c, \hat\delta)}{(theta_c_hat, delta_hat)}
+#' from the full matrices. The full Hessian's inverse gives
+#' \eqn{\theta_c}{theta_c} the inverse of the Schur complement
+#' \eqn{H_{cc} - H_{c\delta} H_{\delta\delta}^{-1} H_{\delta c}}{H_cc - H_cd
+#' H_dd^-1 H_dc}, the curvature of the profile; the inverse of
+#' \eqn{H_{cc}}{H_cc} alone would treat the constants as known and
+#' understate the standard errors. At each point the optimizer tries, the
+#' constants solve their first-order condition: each alternative's weighted
+#' chosen count equals its predicted count, the probabilities weighted by
+#' each decision maker's posterior over the draws given their choices (not
+#' the unconditional shares that BLP share matching equates). The solve takes
+#' damped Newton steps on the constants' block of the information,
+#' warm-started from the best point the optimizer has reached, and the
+#' optimizer's gradient is the joint gradient at the solution (the envelope
+#' theorem). A solve that does not converge is an overflow to the optimizer,
+#' which then backtracks, and is counted; the fit warns (class
+#' \code{choicer_profile_unconverged}) when such solves come after the
+#' optimizer's best point, which may have stopped it, or when the constants
+#' cannot be solved at its solution.
+#'
+#' Every constant needs a finite maximum-likelihood estimate: with an
+#' alternative never chosen, or chosen wherever it is offered, or such a
+#' reference (see \code{use_asc}), the fit stops before the draws (class
+#' \code{choicer_unbounded_constants}), and so it does with bounds on the
+#' constants (bounds on the other parameters go to the optimizer). The counts
+#' do not reveal every such pattern (a group of alternatives chosen only
+#' where nothing outside the group is offered, say): the constants then drift
+#' as in a joint fit, and their standard errors are huge or missing. Each of
+#' the optimizer's evaluations costs an inner solve, a few passes over the
+#' data and a dense factorization of the constants' block, so profiling pays
+#' only where the joint optimizer needs many more evaluations; with
+#' \code{polish = "newton"} the joint maximum is certified after it.
 #' @returns A \code{choicer_mxl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
@@ -518,7 +809,17 @@
 #'   with its verdict; otherwise both keep the optimizer's, the polish's
 #'   reason appended to the message. A polish that stops with an error (the
 #'   Hessian's memory check, say) keeps its last accepted point and warns
-#'   (class \code{choicer_polish_failed}).
+#'   (class \code{choicer_polish_failed}). With \code{concentrate_out_asc},
+#'   \code{fit$optimizer} describes the optimizer over the other parameters,
+#'   and \code{fit$optimizer$concentration} records the inner solves:
+#'   \code{method}, \code{evaluations} (the optimizer's), \code{solves},
+#'   \code{failed} (solves at the optimizer's points that did not converge),
+#'   \code{inner_iterations} (Newton steps), \code{passes} (of the
+#'   constants' kernel), \code{max_residual} (the largest relative score of
+#'   the constants at a converged solve, above \code{tol_residual} where the
+#'   decrement stopped the solve), \code{residual} and \code{decrement} (over
+#'   the mean weight; NA where the residual rule stopped the solve) at the
+#'   profile's solution, before any polish, and \code{elapsed_time}.
 #' @references Revelt, D. and Train, K. (1998). Mixed logit with repeated
 #'   choices: households' choices of appliance efficiency level.
 #'   \emph{Review of Economics and Statistics} 80(4), 647-657.
@@ -576,7 +877,9 @@ run_mxlogit <- function(
     cluster_col = NULL,
     person_col = NULL,
     polish = c("none", "newton", "bhhh"),
-    polish_control = list()
+    polish_control = list(),
+    concentrate_out_asc = c("none", "profile_likelihood", "blp"),
+    concentrate_control = list()
 ) {
   cl <- match.call()
 
@@ -586,6 +889,28 @@ run_mxlogit <- function(
   scale_vars <- match.arg(scale_vars)
   polish <- match.arg(polish)
   polish_control <- .polish_control(polish_control)
+  concentrate_out_asc <- match.arg(concentrate_out_asc)
+  concentrate_control <- .concentrate_control(concentrate_control)
+  # The concentration of the constants, by method. "profile_likelihood"
+  # maximizes over them at every value of the other parameters (an inner
+  # Newton solve of their first-order condition: observed counts equal to
+  # posterior-weighted predicted counts), which leaves the estimator
+  # unchanged, and differentiates the profile by the envelope theorem.
+  # "blp" is reserved for matching aggregate shares instead (Berry,
+  # Levinsohn and Pakes 1995), which changes the estimator: its inner solve
+  # would be a share contraction such as mxl_blp_contraction()'s, but on the
+  # estimation's draws (a panel fit's are per decision maker, the
+  # contraction's per choice situation) and to a tight tolerance (Dube, Fox
+  # and Su 2012); the outer gradient would need the implicit-function term
+  # -(ds/d delta)^-1 ds/d theta_c, since the shares' solution does not set
+  # the likelihood's score of the constants to zero; and the variance would
+  # be that of the share-constrained (micro-BLP) estimator.
+  if (identical(concentrate_out_asc, "blp")) {
+    stop("concentrate_out_asc = \"blp\" is reserved for a share-matching ",
+         "(BLP) concentration of the constants, which is not implemented.",
+         call. = FALSE)
+  }
+  profile <- identical(concentrate_out_asc, "profile_likelihood")
   draws   <- match.arg(draws)
   scramble <- match.arg(scramble)
   if (identical(scramble, "owen")) {
@@ -784,10 +1109,18 @@ run_mxlogit <- function(
   # in the direction a constant diverges holds it. A polish holds the constants
   # of the alternatives named, the reference's case aside, which moves every
   # constant together (row r >= 2 of alt_mapping has the constant asc[r - 1]).
-  unbounded <- if (n_asc > 0) {
-    .warn_unbounded_constants(input_data$alt_mapping,
-                              asc_lower = lower[param_map$asc],
-                              asc_upper = upper[param_map$asc])
+  # The profile likelihood needs every constant to have a finite estimate:
+  # those cases are errors there, and so are bounds on the constants.
+  unbounded <- NULL
+  if (profile) {
+    .check_profile_inputs(n_asc, lower[param_map$asc], upper[param_map$asc],
+                          param_names[param_map$asc], input_data$alt_mapping,
+                          concentrate_control, input_data)
+    if (!is.null(theta_init)) .check_theta_init(theta_init, n_params)
+  } else if (n_asc > 0) {
+    unbounded <- .warn_unbounded_constants(input_data$alt_mapping,
+                                           asc_lower = lower[param_map$asc],
+                                           asc_upper = upper[param_map$asc])
   }
   held <- integer()
   if (polish != "none" && !is.null(unbounded)) {
@@ -873,7 +1206,8 @@ run_mxlogit <- function(
   # units (.mxl_default_start()), moved to the nearest bound where it falls
   # outside the box (the optimizer refuses a start outside it), with a
   # message. A supplied theta_init is used as given.
-  if (is.null(theta_init)) {
+  start_default <- is.null(theta_init)
+  if (start_default) {
     theta_init <- .mxl_default_start(n_params, param_map, input_data$W,
                                      rc_dist, rc_correlation)
     moved <- theta_init < lower | theta_init > upper
@@ -919,6 +1253,55 @@ run_mxlogit <- function(
     )
   }
 
+  # --- The profile likelihood of the constants (concentrate_out_asc) ---------
+  # The constants delta are solved at the start's continuous parameters
+  # theta_c, from the log ratio of each alternative's weighted chosen count to
+  # the reference's under the default start (theta_init's constants
+  # otherwise), so that the "bhhh" pass and the outer optimizer start on the
+  # profile.
+  if (profile) {
+    c_idx <- setdiff(seq_len(n_params), param_map$asc)
+    d_idx <- param_map$asc
+    cc <- .chosen_counts(input_data, n_asc)
+    if (start_default) theta_init[d_idx] <- log(cc$obs / cc$ref)
+    delta_kernel <- function(theta) {
+      mxl_delta_hessian_parallel(
+        theta = theta, X = input_data$X, W = input_data$W,
+        alt_idx = input_data$alt_idx, choice_idx = input_data$choice_idx,
+        M = input_data$M, weights = input_data$weights, eta_draws = eta_draws,
+        rc_dist = rc_dist, rc_correlation = rc_correlation, rc_mean = rc_mean,
+        use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option,
+        gen_seed = gen_seed_cpp, gen_scramble = gen_scramble_cpp,
+        gen_S = gen_S_cpp, Ti = input_data$Ti
+      )
+    }
+    profile_solve <- .mxl_profile_solver(delta_kernel, c_idx, d_idx, cc$obs,
+                                         cc$ref, mean(input_data$weights),
+                                         concentrate_control)
+    t_first <- system.time(
+      s0 <- profile_solve(theta_init[c_idx], theta_init[d_idx],
+                          min(4 * concentrate_control$max_iter,
+                              .Machine$integer.max)),
+      gcFirst = FALSE)
+    if (!is.null(s0$error)) {
+      # an error, not a failure to converge (a kernel's memory check, say)
+      stop("concentrate_out_asc = \"profile_likelihood\": the constants' ",
+           "solve at the start values stopped with an error: ", s0$error,
+           call. = FALSE)
+    }
+    if (!s0$converged) {
+      stop(errorCondition(paste0(
+        "concentrate_out_asc = \"profile_likelihood\": the constants could ",
+        "not be solved at the start values (", s0$message, "). Start ",
+        "elsewhere (theta_init), allow more steps ",
+        "(concentrate_control$max_iter), or fit without ",
+        "concentrate_out_asc."), class = "choicer_profile_unconverged",
+        call = NULL))
+    }
+    theta_init[d_idx] <- s0$delta
+  }
+
   # --- The optimizer's coordinates --------------------------------------------
   #   theta_natural = map$scale * theta_t + map$shift
   # "bhhh": the BHHH diagonal at the start values, from one gradient pass;
@@ -941,14 +1324,104 @@ run_mxlogit <- function(
   # Run the optimizer in the map's coordinates on the objective with the
   # kernel's overflow sentinel kept above the path
   elapsed <- system.time({
-    opt <- .optimize_in_coordinates(
-      map = if (scale_vars != "none") map, optimizer = optimizer,
-      theta_init = theta_init, eval_f = .lift_sentinel(model_f),
-      lower = lower, upper = upper, control = control
-    )
+    if (!profile) {
+      opt <- .optimize_in_coordinates(
+        map = if (scale_vars != "none") map, optimizer = optimizer,
+        theta_init = theta_init, eval_f = .lift_sentinel(model_f),
+        lower = lower, upper = upper, control = control
+      )
+    } else {
+      # The outer problem: the optimizer on theta_c alone, in the map's
+      # coordinates restricted to it, on the negated profile log-likelihood
+      # and its envelope gradient (.profile_objective()), warm-started from
+      # the best converged point.
+      prof <- .profile_objective(
+        function(theta_c, delta0) {
+          profile_solve(theta_c, delta0, concentrate_control$max_iter)
+        },
+        c_idx, list(theta_c = theta_init[c_idx], value = s0$value,
+                    delta = s0$delta, gradient = s0$gradient,
+                    residual = s0$residual, decrement = s0$decrement))
+      opt <- .optimize_in_coordinates(
+        map = if (scale_vars != "none") {
+          list(scale = map$scale[c_idx], shift = map$shift[c_idx])
+        },
+        optimizer = optimizer, theta_init = theta_init[c_idx],
+        eval_f = .lift_sentinel(prof$f, f_max = max(0, s0$value)),
+        lower = lower[c_idx], upper = upper[c_idx], control = control
+      )
+      # The constants at the optimizer's solution: the best point's, when it
+      # is that point; solved from it otherwise; the best point itself when
+      # that solve fails (the optimizer then returned a point it never
+      # evaluated well)
+      st <- prof$state
+      best <- st$best
+      if (identical(unname(opt$par), unname(best$theta_c), num.eq = FALSE)) {
+        s_hat <- c(best, list(converged = TRUE))
+      } else {
+        s_hat <- profile_solve(opt$par, best$delta, concentrate_control$max_iter)
+        st$solves <- st$solves + 1L
+        st$inner_iterations <- st$inner_iterations + s_hat$iterations
+        st$passes <- st$passes + s_hat$passes
+        if (isTRUE(s_hat$converged)) {
+          st$max_residual <- max(st$max_residual, s_hat$residual)
+        }
+      }
+      final_ok <- isTRUE(s_hat$converged)
+      theta_c_hat <- if (final_ok) opt$par else best$theta_c
+      if (!final_ok) s_hat <- c(best, list(converged = TRUE))
+      opt$par <- numeric(n_params)
+      opt$par[c_idx] <- theta_c_hat
+      opt$par[d_idx] <- s_hat$delta
+      opt$value <- s_hat$value
+    }
   })
 
   elapsed <- elapsed + t_bpass  # "bhhh"'s gradient pass counts
+  conc_record <- NULL
+  if (profile) {
+    elapsed <- elapsed + t_first
+    conc_record <- list(
+      method = "profile_likelihood", evaluations = st$evaluations,
+      solves = st$solves + 1L, failed = st$failed,
+      inner_iterations = st$inner_iterations + s0$iterations,
+      passes = st$passes + s0$passes,
+      max_residual = max(st$max_residual, s0$residual),
+      residual = s_hat$residual, decrement = s_hat$decrement,
+      elapsed_time = elapsed[["elapsed"]])
+    message("Profile likelihood: ", st$evaluations, " evaluations of the ",
+            "optimizer, ", conc_record$solves, " inner solves (",
+            conc_record$inner_iterations, " Newton steps, ",
+            conc_record$passes, " passes)",
+            if (st$failed > 0L) {
+              paste0(", ", st$failed, " of them unconverged at trial points ",
+                     "(overflows to the optimizer)")
+            })
+    # Failed solves before the best point's last improvement are the line
+    # search's ordinary backtracking; later ones may have stopped the optimizer
+    if (st$failed_late > 0L || !final_ok) {
+      why <- paste0(
+        if (st$failed_late > 0L) {
+          paste0(st$failed_late, " of the inner solves after the optimizer's ",
+                 "best point did not converge (it saw them as overflows, so ",
+                 "its success code can mislead",
+                 if (!is.null(st$error)) {
+                   paste0("; the last error: ", st$error)
+                 }, ")")
+        },
+        if (st$failed_late > 0L && !final_ok) "; ",
+        if (!final_ok) {
+          paste0("the constants could not be solved at the optimizer's ",
+                 "solution, so the best point solved is returned")
+        })
+      opt$message <- paste0(paste(as.character(opt$message), collapse = "; "),
+                            "; profile likelihood: ", why)
+      warning(warningCondition(paste0(
+        "concentrate_out_asc = \"profile_likelihood\": ", why,
+        ". polish = \"newton\" certifies the maximum, or not."),
+        class = "choicer_profile_unconverged"))
+    }
+  }
   message("Optimization run time ", convertTime(elapsed))
 
   # --- The Newton phase (polish) ----------------------------------------------
@@ -1091,6 +1564,7 @@ run_mxlogit <- function(
     iterations = opt$iterations
   )
   if (!is.null(polish_record)) opt_info$polish <- polish_record
+  if (!is.null(conc_record)) opt_info$concentration <- conc_record
 
   # Build S3 object. It holds the data until its variance is computed below.
   fit <- new_choicer_mxl(
@@ -1691,10 +2165,12 @@ get_halton_normals <- function(S, N, K_w) {
 #' below 1e10; objectives are negated log-likelihoods, hence nonnegative.
 #'
 #' @param eval_f Function of theta returning `list(objective, gradient, overflow)`.
+#' @param f_max The largest objective known before the first call (the
+#'   profile likelihood's solved start), 0 by default.
 #' @returns The wrapped function.
 #' @noRd
-.lift_sentinel <- function(eval_f) {
-  f_max <- 0
+.lift_sentinel <- function(eval_f, f_max = 0) {
+  force(f_max)
   function(theta) {
     res <- eval_f(theta)
     if (isTRUE(res$overflow)) {

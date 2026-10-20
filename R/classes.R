@@ -719,8 +719,9 @@ normalize_optim_result <- function(result) {
 #' before a step is tried, or after its line search or damping failed, or on
 #' an error in a trial evaluation, all at that point. So the last curvature is
 #' at the point returned, unless the final guard returns the start after
-#' steps, `curv_f` itself failed, or the start could not be evaluated (an
-#' error, or an objective or gradient that is not finite there). With
+#' steps, `curv_f` itself failed, the start could not be evaluated (an
+#' error, or an objective or gradient that is not finite there), or `stop_f`
+#' stopped the polish after a step, before the curvature there. With
 #' `keep_curvature` the result then carries it, for a caller whose
 #' variance needs that matrix at that point (the fit's Hessian or BHHH
 #' matrix); without, the matrix is released with the polish.
@@ -736,11 +737,18 @@ normalize_optim_result <- function(result) {
 #' @param method The curvature's name for the result: "newton" or "bhhh".
 #' @param fixed Positions of the parameters held at their values.
 #' @param keep_curvature Whether to return the last curvature (see above).
+#' @param stop_f NULL, or a function of theta and the gradient (the point
+#'   reached and its gradient, after the start's evaluation and after every
+#'   accepted step) returning NULL to go on, or the reason to stop converged
+#'   before the curvature is evaluated there (`decrement` is then NA): a
+#'   caller's own convergence rule beside the decrement (the profile
+#'   likelihood's residual rule).
 #' @returns List: `method`; `par` (named as `theta`) and `value`; `converged`;
 #'   `iterations` (steps taken) and `damped` (those with lambda > 0);
 #'   `decrement`, the undamped decrement at the last curvature evaluated, over
 #'   the parameters not stalled (NA where the undamped block was not positive
-#'   definite, or singular to working precision), and `lambda`, the damping of
+#'   definite, or singular to working precision, and after a stop by
+#'   `stop_f`), and `lambda`, the damping of
 #'   the last step tried; `message`, why the polish stopped;
 #'   `evaluations`, the objective's and the curvature's calls; `active`,
 #'   `held` and `flat`, the names of the parameters on a bound, held, and
@@ -762,7 +770,7 @@ normalize_optim_result <- function(result) {
 run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
                        scale = NULL, control = .polish_control(NULL),
                        method = "newton", fixed = integer(),
-                       keep_curvature = FALSE) {
+                       keep_curvature = FALSE, stop_f = NULL) {
   n <- length(theta)
   nm <- names(theta) %||% as.character(seq_len(n))
   lower <- lower %||% rep(-Inf, n)
@@ -843,6 +851,15 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
     g <<- e$gradient
     eps_f <<- 1e-10 * max(abs(f0), 1)
     repeat {
+      if (!is.null(stop_f)) {
+        why <- stop_f(theta, g)
+        if (!is.null(why)) {
+          # no curvature at this point: no decrement either
+          decrement <<- NA_real_
+          converged <<- TRUE
+          return(why)
+        }
+      }
       # the previous curvature is released before the next is computed
       C <<- NULL
       n_c <<- n_c + 1L
@@ -963,6 +980,140 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
        active = nm[theta <= lower | theta >= upper],
        held = nm[held], flat = nm[sort(c(flat, stalled))],
        improvement = f0 - f, error = err, curvature_at_par = curvature_at_par)
+}
+
+# --- The profile likelihood of the constants (concentrate_out_asc) -----------
+
+#' Settings of the profile likelihood's inner solve
+#'
+#' `concentrate_control` of `run_mxlogit()`: a named list whose entries
+#' replace the defaults, `max_iter` (25, a whole number >= 1: Newton steps per
+#' inner solve; the first solve, from a cold start, may take four times as
+#' many), `tol_residual` (1e-10: the solve stops when every constant's score,
+#' and the reference's, is below it relative to its weighted chosen count plus
+#' the mean weight), `tol_decrement` (1e-12: or when the Newton decrement over
+#' the mean weight is) and `max_dense` (10000: the most constants whose block
+#' is factored densely). A NULL entry keeps the default.
+#'
+#' @param control A named list, or NULL.
+#' @returns The complete settings.
+#' @noRd
+.concentrate_control <- function(control) {
+  ctl <- list(max_iter = 25L, tol_residual = 1e-10, tol_decrement = 1e-12,
+              max_dense = 10000L)
+  if (is.null(control)) return(ctl)
+  if (!is.list(control)) stop("`concentrate_control` must be a list.", call. = FALSE)
+  nms <- names(control)
+  if (length(control) && (is.null(nms) || anyNA(nms) || !all(nzchar(nms)))) {
+    stop("`concentrate_control` must be a named list.", call. = FALSE)
+  }
+  bad <- setdiff(nms, names(ctl))
+  if (length(bad)) {
+    stop("Unknown `concentrate_control` setting(s): ", paste(bad, collapse = ", "),
+         ". Valid: ", paste(names(ctl), collapse = ", "), ".", call. = FALSE)
+  }
+  dup <- unique(nms[duplicated(nms)])
+  if (length(dup)) {
+    stop("Duplicate `concentrate_control` setting(s): ", paste(dup, collapse = ", "),
+         ".", call. = FALSE)
+  }
+  control <- control[!vapply(control, is.null, TRUE)]
+  ctl[names(control)] <- control
+  for (nm in c("max_iter", "max_dense")) {
+    m <- ctl[[nm]]
+    if (!is.numeric(m) || length(m) != 1L || !is.finite(m) || m < 1 ||
+        m != round(m) || m > .Machine$integer.max) {
+      stop("`concentrate_control$", nm, "` must be a whole number >= 1.", call. = FALSE)
+    }
+    ctl[[nm]] <- as.integer(m)
+  }
+  for (nm in c("tol_residual", "tol_decrement")) {
+    v <- ctl[[nm]]
+    if (!is.numeric(v) || length(v) != 1L || !is.finite(v) || v <= 0) {
+      stop("`concentrate_control$", nm, "` must be a positive number.", call. = FALSE)
+    }
+  }
+  ctl
+}
+
+#' The profile objective for the outer optimizer
+#'
+#' The negated profile log-likelihood -l*(theta_c) = -max_delta l(theta_c,
+#' delta) as a function of the continuous parameters, its gradient by the
+#' envelope theorem (the gradient of the joint objective at (theta_c,
+#' delta_hat(theta_c)), restricted to theta_c), and the bookkeeping that keeps
+#' the inner solves safe. Generic: `solve(theta_c, delta0)` is the model's
+#' inner solve.
+#' * Warm starts come from the best outer point so far, the one with the
+#'   lowest objective among those whose inner solve converged. The optimizer
+#'   does not say which evaluations its line search accepted, but under a
+#'   monotone line search the best point is the current iterate, or a better
+#'   trial on its line; a rejected trial, being worse, never seeds the next
+#'   solve (the audit's experiment, warm-started from every evaluated point,
+#'   let the constants drift by 66.5 against their pinned reference).
+#' * A theta_c bitwise equal to the best point returns its stored result
+#'   without solving.
+#' * A solve that does not converge returns the overflow sentinel, so that
+#'   the optimizer backtracks; it updates neither the warm start nor the
+#'   cache: at an unconverged delta the objective is only an upper bound, and
+#'   the gradient not the profile's. Such solves are counted, in all and
+#'   since the best point last improved: early ones are the line search's
+#'   ordinary backtracking, late ones may have stopped the optimizer.
+#'
+#' @param solve Function(theta_c, delta0) returning `list(converged, value,
+#'   delta, gradient, iterations, passes, residual, decrement)`: the negated
+#'   joint log-likelihood at the solution, the constants there, and the full
+#'   gradient there.
+#' @param c_idx Positions of theta_c in the full parameter vector.
+#' @param start The solved start: `list(theta_c, value, delta, gradient,
+#'   residual, decrement)`.
+#' @returns List: `f`, the objective of theta_c returning `list(objective,
+#'   gradient, overflow)`; `state`, an environment holding `best` and the
+#'   counts (`evaluations`, `solves`, `failed`, `failed_late` (since the best
+#'   point last improved), `hits`, `inner_iterations`, `passes`,
+#'   `max_residual`), and `error`, the last error that ended a solve.
+#' @noRd
+.profile_objective <- function(solve, c_idx, start) {
+  st <- new.env(parent = emptyenv())
+  st$best <- start
+  st$evaluations <- 0L
+  st$solves <- 0L
+  st$failed <- 0L
+  st$failed_late <- 0L
+  st$error <- NULL
+  st$hits <- 0L
+  st$inner_iterations <- 0L
+  st$passes <- 0L
+  st$max_residual <- 0
+  f <- function(theta_c) {
+    st$evaluations <- st$evaluations + 1L
+    b <- st$best
+    if (identical(theta_c, b$theta_c, num.eq = FALSE)) {
+      st$hits <- st$hits + 1L
+      return(list(objective = b$value, gradient = b$gradient[c_idx],
+                  overflow = FALSE))
+    }
+    s <- solve(theta_c, b$delta)
+    st$solves <- st$solves + 1L
+    st$inner_iterations <- st$inner_iterations + s$iterations
+    st$passes <- st$passes + s$passes
+    if (!isTRUE(s$converged)) {
+      st$failed <- st$failed + 1L
+      st$failed_late <- st$failed_late + 1L
+      if (!is.null(s$error)) st$error <- s$error
+      return(list(objective = 1e10, gradient = rep(0, length(c_idx)),
+                  overflow = TRUE))
+    }
+    st$max_residual <- max(st$max_residual, s$residual)
+    if (s$value < b$value) {
+      st$best <- list(theta_c = theta_c, value = s$value, delta = s$delta,
+                      gradient = s$gradient, residual = s$residual,
+                      decrement = s$decrement)
+      st$failed_late <- 0L
+    }
+    list(objective = s$value, gradient = s$gradient[c_idx], overflow = FALSE)
+  }
+  list(f = f, state = st)
 }
 
 # --- Hessian / vcov helpers --------------------------------------------------
