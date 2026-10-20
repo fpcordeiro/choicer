@@ -908,11 +908,14 @@
   change: the polish finishes the climb to the maximum the optimizer
   approached, which L-BFGS reaches slowly where curvatures differ by orders of
   magnitude (thousands of constants, say), and certifies it. It converges when
-  the Newton decrement nu = g'C^-1 g / 2 (g the gradient, C the curvature)
-  falls below `polish_control$tol_decrement`, 1e-8 by default. On a positive
-  definite Hessian every linear combination of the estimates then lies within
-  sqrt(2 nu) Hessian standard errors (1.4e-4 at the default) of the maximum of
-  the log-likelihood's quadratic model, whatever the sample size. BHHH is
+  the Newton decrement nu = g'C^-1 g / 2 (g the gradient, C the curvature),
+  over the mean weight, falls below `polish_control$tol_decrement`, 1e-8 by
+  default; the weights' scale does not matter (in raw log-likelihood units,
+  weights summing to one would loosen the rule by the sample size). On a
+  positive definite Hessian of weights with mean one, every linear
+  combination of the estimates then lies within sqrt(2 nu) Hessian standard
+  errors (1.4e-4 at the default) of the maximum of the log-likelihood's
+  quadratic model, whatever the sample size. BHHH is
   positive semi-definite everywhere and cheaper per step, but converges
   linearly, and its decrement on its own shows only a stationary point. The
   default, `"none"`, leaves every fit as it was, bit for bit.

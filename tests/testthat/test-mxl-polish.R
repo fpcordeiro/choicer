@@ -234,8 +234,9 @@ test_that("the BHHH rank check counts only the parameters the polish moves", {
   expect_identical(coef(fit)[["x1"]], 0.8)
 })
 
-# Half of g' C^-1 g at the fit's estimates, with g the gradient and C the
-# Hessian (or BHHH) computed afresh from the fit's stored data and draws
+# Half of g' C^-1 g at the fit's estimates, over the mean weight, with g the
+# gradient and C the Hessian (or BHHH) computed afresh from the fit's stored
+# data and draws
 mxp_decrement <- function(fit, curvature) {
   d <- fit$data
   gp <- .mxl_gen_params(fit$draws_info, N = length(.unit_first(d)))
@@ -248,7 +249,7 @@ mxp_decrement <- function(fit, curvature) {
     gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
     Ti = d$Ti)$gradient
   fit$se_method <- if (curvature == "bhhh") "bhhh" else "hessian"
-  0.5 * sum(g * solve(compute_hessian(fit), g))
+  0.5 * sum(g * solve(compute_hessian(fit), g)) / mean(d$weights)
 }
 
 test_that("the polish's curvature takes the fit's draws, weights and panel", {
@@ -453,6 +454,37 @@ mxp_panel_fit <- function(dt, se, ...) {
       }
     })
 }
+
+test_that("the polish's decrement rule does not depend on the weights' scale", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  dt <- mxp_panel()
+  dt16 <- data.table::copy(dt)[, w := 16 * w]
+  hold <- function(theta_init, eval_f, ...) {
+    list(par = theta_init, value = eval_f(theta_init)$objective,
+         convergence = 0L)
+  }
+  # the polish from the same loose point at both scales, in the columns'
+  # coordinates, which do not move with the weights
+  start <- unname(coef(mxp_panel_fit(dt, "hessian", control = list(maxeval = 25L))))
+  run <- function(d, ctl) {
+    mxp_panel_fit(d, "hessian", optimizer = hold, theta_init = start,
+                  scale_vars = "sd", polish = "newton", polish_control = ctl)
+  }
+  # the decrement over the mean weight, bit for bit at a power of two
+  nu <- run(dt, list(max_iter = 0L))$optimizer$polish$decrement
+  expect_true(is.finite(nu) && nu > 0)
+  expect_identical(run(dt16, list(max_iter = 0L))$optimizer$polish$decrement, nu)
+  # a tolerance twice that certifies at once at both scales, where one in
+  # raw log-likelihood units would not at 16 times the weights
+  ctl <- list(tol_decrement = 2 * nu)
+  a <- run(dt, ctl)$optimizer$polish
+  b <- run(dt16, ctl)$optimizer$polish
+  expect_true(a$converged)
+  expect_identical(a$iterations, 0L)
+  expect_identical(b[c("converged", "iterations", "decrement")],
+                   a[c("converged", "iterations", "decrement")])
+})
 
 test_that("the polish keeps its curvature only for a variance that needs it", {
   dt <- mxp_panel()
