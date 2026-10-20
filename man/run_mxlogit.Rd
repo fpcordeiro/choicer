@@ -37,7 +37,9 @@ run_mxlogit(
   cluster_col = NULL,
   person_col = NULL,
   polish = c("none", "newton", "bhhh"),
-  polish_control = list()
+  polish_control = list(),
+  concentrate_out_asc = c("none", "profile_likelihood", "blp"),
+  concentrate_control = list()
 )
 }
 \arguments{
@@ -349,6 +351,31 @@ without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8}, in
 log-likelihood units) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
 shorter than this, relative to the parameters' magnitudes plus their
 scales in the optimizer's coordinates, stops the polish unconverged).}
+
+\item{concentrate_out_asc}{How the alternative-specific constants are
+estimated (see the section below). \code{"none"} (default): with the
+other parameters, by the optimizer. \code{"profile_likelihood"}: the
+optimizer moves the other parameters only, and at each of its points the
+constants are solved from their first-order condition; the estimator, and
+so the estimates and their standard errors, are the same. \code{"blp"} is
+reserved for matching aggregate shares instead, a different estimator,
+and is not implemented.}
+
+\item{concentrate_control}{List of settings of the constants' inner
+solve, any of \code{max_iter} (25 Newton steps per solve; the first, from
+the start values, may take four times as many), \code{tol_residual}
+(\eqn{10^{-10}}{1e-10}: the solve stops when every constant's score, and
+the reference's, is below it relative to its alternative's weighted
+chosen count plus the mean weight), \code{tol_decrement}
+(\eqn{10^{-12}}{1e-12}: or when the Newton decrement over the mean
+weight falls below it, in log-likelihood units of weights with mean one,
+so that neither rule depends on the weights' scale) and
+\code{max_dense} (10000: the most constants whose block of the
+information is formed and factored densely; for \eqn{J}{J} constants a
+solve holds two \eqn{J \times J}{J x J} matrices, \eqn{8 J^2}{8 J^2} bytes
+each (0.8 GB at \eqn{J = 10^4}{J = 1e4}), besides the kernel's
+accumulators, and each Newton step factors one, about
+\eqn{J^3 / 3}{J^3 / 3} operations).}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).
@@ -382,7 +409,17 @@ nloptr, 0 for optim and a custom optimizer) and leads \code{message}
 with its verdict; otherwise both keep the optimizer's, the polish's
 reason appended to the message. A polish that stops with an error (the
 Hessian's memory check, say) keeps its last accepted point and warns
-(class \code{choicer_polish_failed}).
+(class \code{choicer_polish_failed}). With \code{concentrate_out_asc},
+\code{fit$optimizer} describes the optimizer over the other parameters,
+and \code{fit$optimizer$concentration} records the inner solves:
+\code{method}, \code{evaluations} (the optimizer's), \code{solves},
+\code{failed} (solves at the optimizer's points that did not converge),
+\code{inner_iterations} (Newton steps), \code{passes} (of the
+constants' kernel), \code{max_residual} (the largest relative score of
+the constants at a converged solve, above \code{tol_residual} where the
+decrement stopped the solve), \code{residual} and \code{decrement} (over
+the mean weight; NA where the residual rule stopped the solve) at the
+profile's solution, before any polish, and \code{elapsed_time}.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.
@@ -483,6 +520,49 @@ the polish a point sooner, which saves time where the optimizer's last
 iterations creep; from farther away the steps are shortened (and damped
 where the curvature is not positive definite), and more of them are
 needed.
+}
+
+\section{Profile likelihood of the constants (concentrate_out_asc)}{
+
+With many alternatives the constants \eqn{\delta}{delta} are most of the
+parameters. \code{concentrate_out_asc = "profile_likelihood"} maximizes the
+profile log-likelihood
+\eqn{\ell^*(\theta_c) = \max_\delta \ell(\theta_c, \delta)}{l*(theta_c) =
+max_delta l(theta_c, delta)} over the other parameters \eqn{\theta_c}{theta_c},
+so the optimizer works on those alone. The estimator does not change: the
+profile's maximizer is the joint one, and the variance is the joint fit's,
+computed at \eqn{(\hat\theta_c, \hat\delta)}{(theta_c_hat, delta_hat)}
+from the full matrices. The full Hessian's inverse gives
+\eqn{\theta_c}{theta_c} the inverse of the Schur complement
+\eqn{H_{cc} - H_{c\delta} H_{\delta\delta}^{-1} H_{\delta c}}{H_cc - H_cd
+H_dd^-1 H_dc}, the curvature of the profile; the inverse of
+\eqn{H_{cc}}{H_cc} alone would treat the constants as known and
+understate the standard errors. At each point the optimizer tries, the
+constants solve their first-order condition: each alternative's weighted
+chosen count equals its predicted count, the probabilities weighted by
+each decision maker's posterior over the draws given their choices (not
+the unconditional shares that BLP share matching equates). The solve takes
+damped Newton steps on the constants' block of the information,
+warm-started from the best point the optimizer has reached, and the
+optimizer's gradient is the joint gradient at the solution (the envelope
+theorem). A solve that does not converge is an overflow to the optimizer,
+which then backtracks, and is counted; the fit warns (class
+\code{choicer_profile_unconverged}) when such solves come after the
+optimizer's best point, which may have stopped it, or when the constants
+cannot be solved at its solution.
+
+Every constant needs a finite maximum-likelihood estimate: with an
+alternative never chosen, or chosen wherever it is offered, or such a
+reference (see \code{use_asc}), the fit stops before the draws (class
+\code{choicer_unbounded_constants}), and so it does with bounds on the
+constants (bounds on the other parameters go to the optimizer). The counts
+do not reveal every such pattern (a group of alternatives chosen only
+where nothing outside the group is offered, say): the constants then drift
+as in a joint fit, and their standard errors are huge or missing. Each of
+the optimizer's evaluations costs an inner solve, a few passes over the
+data and a dense factorization of the constants' block, so profiling pays
+only where the joint optimizer needs many more evaluations; with
+\code{polish = "newton"} the joint maximum is certified after it.
 }
 
 \section{Column names}{

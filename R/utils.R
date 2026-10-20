@@ -865,6 +865,24 @@ label_matrix <- function(mat, alt_mapping) {
                                       asc_upper = NULL) {
   u <- .unbounded_constants(alt_mapping, asc_lower, asc_upper)
   if (is.null(u)) return(invisible(NULL))
+  msg <- .unbounded_constants_text(u, alt_mapping)
+  .warn_now(warningCondition(paste(msg, collapse = "\n"),
+                             class = "choicer_unbounded_constants"))
+  invisible(u)
+}
+
+#' The lines of the unbounded-constants warning
+#'
+#' What `.warn_unbounded_constants()` says, and the profile likelihood's
+#' error repeats after its own first line: a first line on what the missing
+#' estimates do to a fit, then one line per kind with up to five labels and
+#' the remedies.
+#'
+#' @param u `.unbounded_constants()`'s result (not NULL).
+#' @param alt_mapping A preparation's `alt_mapping`.
+#' @returns Character vector, the first line first.
+#' @noRd
+.unbounded_constants_text <- function(u, alt_mapping) {
   labels <- alt_mapping[[2L]]
   fmt <- function(rows) {
     x <- labels[rows]
@@ -918,9 +936,7 @@ label_matrix <- function(mat, alt_mapping) {
              "situations that offer it, or pool it with an alternative that is ",
              "not chosen wherever offered.")
     })
-  .warn_now(warningCondition(paste(msg, collapse = "\n"),
-                             class = "choicer_unbounded_constants"))
-  invisible(u)
+  msg
 }
 
 #' Signal a warning condition at once
