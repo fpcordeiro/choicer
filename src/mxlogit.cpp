@@ -1194,7 +1194,8 @@ inline void mxl_unit_score_local(const MxlUnitData& ud, MxlUnitScratch& sc,
 // private only the rows of the continuous parameters, which every unit
 // touches, packed like the triangle's first K_c rows (mxl_acc_col_off()) and
 // added up in thread order at the end, and adds the ASC block into the result
-// atomically. Threads seldom meet there when units face few alternatives (a
+// atomically (with K_c = 0, the constants' block alone, every addition).
+// Threads seldom meet there when units face few alternatives (a
 // unit touches a_u (a_u + 1) / 2 of its (n - K_c) (n - K_c + 1) / 2 entries);
 // a unit with a non-finite score or weight, or a cluster with a wide
 // support, adds over many of them. Everything is allocated here, on the
@@ -2076,6 +2077,281 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
   acc.finish(true);  // the negated Hessian
   mxl_apply_nonfinite(acc, nonfinite);
   return acc.result;
+}
+
+// ============================================================================
+// The constants' block of the information, for the profile likelihood
+//
+// run_mxlogit(concentrate_out_asc = "profile_likelihood") maximizes over the
+// constants delta at fixed theta_c = [beta | mu | L] by Newton's method, which
+// needs, at each step, the objective, its gradient and H_dd, the block of the
+// information on the free constants. A unit's part of it is the delta rows
+// and columns of its compact Hessian (mxl_hessian_parallel()):
+//   H_u,dd = sum_s omega_s (H_s,dd + (g_s - g_bar)(g_s - g_bar)'),
+//   H_s,dd = -sum_t (diag(P_ts) - P_ts P_ts'),   g_s = sum_t (e_jt - P_ts),
+// over the unit's free-constant slots (the probabilities of the rows in a
+// slot summed: an alternative listed twice). It needs no continuous block:
+// no per-alternative K_c-vector and K_c x K_c outer product, which dominate
+// the full Hessian. One pass gives the objective and the gradient by the
+// gradient kernel's own routines (bit for bit at one thread) and then, per
+// unit, the block: per situation F_t (a_t x S, sqrt(omega_s) times the slot
+// probabilities) and F_t F_t'; per unit G (a_u x S, the per-draw scores of
+// the constants), centered as the full kernel centers it, scaled by
+// sqrt(omega), and G G'; less the diagonal sum_ts omega_s P_ts. For a unit
+// in one draw batch the probabilities come from pass 1's residuals (DiffW
+// holds 1{r = j_t} - P for every draw: exact for the rows not chosen, the
+// chosen row's 1 - DiffW within an ulp of 1); a unit split into batches
+// forms each situation's W_t Gamma again, as the Hessian does. The block
+// differs from the full Hessian's in rounding only (BLAS on a sub-block), and
+// the chosen row's probability, read back as 1 - DiffW, by up to 2^-54 in
+// absolute terms: it is for Newton steps, while the variance takes the full
+// Hessian. A unit whose log-likelihood is not finite (its utilities
+// overflowed) is left out, and a non-finite weight on any other unit makes
+// the whole block NaN: either makes the objective non-finite (overflow). A
+// split unit's probabilities formed again that are not finite make it NaN as
+// well. So where overflow is FALSE the block is complete, or NaN throughout;
+// its one reader, the inner Newton solve, evaluates it only where nonfinite
+// is FALSE as well (a trial point with either fails).
+// ============================================================================
+
+// Bytes of one thread's buffers for the constants' block at the largest
+// unit: G (a x S) and its product (a x a), one situation's F (a_t x S) and
+// its product, the diagonal sums, the unit's score and the thread's
+// gradient (n each), and, for a unit split into batches, one situation's
+// W_t (m_t x K_w) and W_t Gamma (m_t x S).
+inline double mxl_delta_unit_bytes(const MxlUnitData& ud) {
+  const double J_d = ud.n_params - ud.par.idx_delta_start;
+  const double a = std::min(J_d, static_cast<double>(ud.lay.max_unit_rows));
+  const double m_t = static_cast<double>(ud.lay.max_m);
+  const double a_t = std::min(a, m_t);
+  return sizeof(double) * (a * ud.S + 2.0 * a * a + a_t * ud.S + a_t * a_t +
+                           2.0 * a + 2.0 * ud.n_params +
+                           m_t * (ud.S + ud.W.n_cols));
+}
+
+//' The objective, gradient and constants' block of the information (internal)
+//'
+//' For the inner Newton solve of \code{run_mxlogit(concentrate_out_asc =
+//' "profile_likelihood")}: the negated simulated log-likelihood and its
+//' gradient, as \code{mxl_loglik_gradient_parallel()} returns them (bit for
+//' bit at one thread), and the block of the information (the Hessian of the
+//' negated log-likelihood) on the free constants, as
+//' \code{mxl_hessian_parallel()} would return it in those rows and columns,
+//' to rounding. Takes \code{mxl_hessian_parallel()}'s arguments;
+//' \code{use_asc} must be TRUE. With no continuous rows, a shared
+//' accumulator (above \code{acc_bytes}) makes every addition atomic.
+//' @returns List: \code{objective}, \code{gradient} and \code{overflow} as
+//'   the gradient kernel returns them; \code{nonfinite}, whether a gradient
+//'   entry was not finite, with a finite objective, before it was set to 0;
+//'   \code{hessian}, the J_d x J_d block: complete where \code{overflow}
+//'   is FALSE, unless NaN throughout (a split unit's probabilities formed
+//'   again that are not finite); with \code{overflow}, a unit whose
+//'   log-likelihood is not finite is left out, and a non-finite weight on any
+//'   other makes it NaN.
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List mxl_delta_hessian_parallel(
+    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
+    const Rcpp::IntegerVector &M, const arma::vec &weights,
+    const arma::cube &eta_draws, const arma::uvec &rc_dist,
+    const bool rc_correlation = true, const bool rc_mean = false,
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
+  if (!use_asc) {
+    Rcpp::stop("mxl_delta_hessian_parallel() needs the constants (use_asc = TRUE).");
+  }
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_delta_hessian_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
+  const int J_d = n_params - ud.par.idx_delta_start;
+  const int Sdraw = ud.S;
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+  const double log_S = std::log(static_cast<double>(Sdraw));
+
+  // The block and the threads' accumulators and slot maps, all allocated
+  // here on the primary thread
+  const int n_threads = mxl_team_threads(lay.U);
+  mxl_check_memory("Hessian of the constants", n_threads,
+                   ud.scratch_bytes() + mxl_map_bytes(ud) + mxl_delta_unit_bytes(ud),
+                   [&](const int t) {
+                     return mxl_acc_need(J_d, 0, t, acc_bytes) + 16.0 * n_params;
+                   });
+  MxlSymAcc acc(J_d, n_threads, 0, "Hessian of the constants", acc_bytes);
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+
+  double global_loglik = 0.0;
+  arma::vec global_grad = arma::zeros(n_params);
+  bool nonfinite_block = false;
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+  {
+    const int tid = mxl_thread_num();
+    MxlUnitMap& mp = *maps[tid];
+    double* acc_t = acc.base(tid);
+    MxlUnitScratch sc;
+    double local_loglik = 0.0;
+    arma::vec local_grad = arma::zeros(n_params);
+    arma::vec s_u;            // the unit's score (pass 1)
+    arma::mat G;              // a_u x S: per-draw scores of the constants
+    arma::mat F;              // a_t x S: slot probabilities, then sqrt(omega_s) times
+    arma::mat H_u;            // a_u x a_u: the unit's block (of the log-likelihood)
+    arma::mat prod_buf;
+    arma::vec diag_u;         // a_u: sum_ts omega_s P_ts by slot
+    arma::vec g_bar;
+    arma::rowvec sqrt_omega(Sdraw);
+    bool local_nonfinite = false;
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (mxl_off u = 0; u < lay.U; ++u) {
+      // --- Pass 1: the gradient kernel's unit ---
+      mxl_unit_load(ud, u, sc, 2);
+      const double lse = mxl_unit_simulate(ud, sc, true);
+      mxl_unit_score(ud, sc, s_u);
+      const double w_u = weights[lay.unit_first(u)];
+      local_loglik += w_u * (lse - log_S);
+      local_grad += w_u * s_u;
+      // A unit whose utilities overflowed has no block (the objective is not
+      // finite, which the caller sees); a non-finite weight spoils the block
+      if (!std::isfinite(lse)) continue;
+      if (!std::isfinite(w_u)) {
+        local_nonfinite = true;
+        continue;
+      }
+
+      // --- Pass 2: the block on the unit's slots ---
+      mxl_unit_map(ud, sc, mp);
+      const int a_u = mp.a;
+      if (a_u == 0) {
+        mxl_unit_map_clear(mp);
+        continue;
+      }
+      G.zeros(a_u, Sdraw);
+      H_u.zeros(a_u, a_u);
+      diag_u.zeros(a_u);
+      for (int s = 0; s < Sdraw; ++s) sqrt_omega[s] = std::sqrt(sc.omega[s]);
+      const bool one_batch = sc.nb == 1;  // DiffW holds every draw
+      for (mxl_off t = sc.t0; t < sc.t1; ++t) {
+        const int m_t = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
+        const mxl_off first = lay.row_off[t] - sc.r0;  // first row in the unit
+        mxl_situation_map(ud, sc, t, mp);
+        const int a_t = mp.a_t;
+        if (a_t == 0) {
+          mxl_situation_map_clear(mp);
+          continue;
+        }
+        if (!one_batch) mxl_situation_wgamma(sc, first, m_t);
+        const int chosen = lay.chosen(t);  // slot in P (0: the outside option)
+        F.zeros(a_t, Sdraw);
+        for (int s = 0; s < Sdraw; ++s) {
+          const double* P = nullptr;
+          const double* dw = nullptr;
+          if (one_batch) {
+            dw = sc.DiffW.colptr(s) + first;
+          } else {
+            mxl_situation_probs(ud, sc, t, s);
+            P = sc.P.memptr() + o;
+          }
+          double* f_s = F.colptr(s);
+          for (int a = 0; a < m_t; ++a) {
+            const int q = mp.row_sit[a];
+            if (q < 0) continue;
+            const bool is_chosen = (o + a) == chosen;
+            if (one_batch) {
+              // DiffW = 1{chosen} - P is the score's entry itself (and
+              // 1 - (1 - DiffW) is DiffW exactly)
+              f_s[q] += is_chosen ? 1.0 - dw[a] : -dw[a];
+              G(mp.sit_slot[q], s) += dw[a];
+            } else {
+              f_s[q] += P[a];
+              G(mp.sit_slot[q], s) += (is_chosen ? 1.0 : 0.0) - P[a];
+            }
+          }
+        }
+        // The diagonal sum_s omega_s P by slot; then F F' with sqrt(omega)
+        for (int q = 0; q < a_t; ++q) {
+          double v = 0.0;
+          for (int s = 0; s < Sdraw; ++s) v += sc.omega[s] * F(q, s);
+          diag_u(mp.sit_slot[q]) += v;
+        }
+        F.each_row() %= sqrt_omega;
+        // F and G can be non-finite only through a split unit's probabilities
+        // formed again, at the edge of overflow (pass 1's lse was finite)
+        if (!F.is_finite()) local_nonfinite = true;
+        prod_buf = F * F.t();
+        for (int j = 0; j < a_t; ++j) {
+          const int uj = mp.sit_slot[j];
+          for (int i = 0; i < a_t; ++i) H_u(mp.sit_slot[i], uj) += prod_buf(i, j);
+        }
+        mxl_situation_map_clear(mp);
+      }
+      // G G', centered as the full kernel centers it: the highest-weight
+      // draw's score removed before the weighted mean
+      g_bar = G.col(sc.omega.index_max());
+      G.each_col() -= g_bar;
+      g_bar = G * sc.omega;
+      G.each_col() -= g_bar;
+      G.each_row() %= sqrt_omega;
+      if (!G.is_finite()) local_nonfinite = true;
+      prod_buf = G * G.t();
+      H_u += prod_buf;
+      H_u.diag() -= diag_u;
+      // w_u H_u into the accumulator's upper triangle (K_c = 0: the slots'
+      // global indices are the constants')
+      if (acc.shared) {
+        mxl_hessian_add<true>(acc, acc_t, mp, 0, H_u, w_u);
+      } else {
+        mxl_hessian_add<false>(acc, acc_t, mp, 0, H_u, w_u);
+      }
+      mxl_unit_map_clear(mp);
+    }
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_loglik += local_loglik;
+      global_grad += local_grad;
+      nonfinite_block = nonfinite_block || local_nonfinite;
+    }
+  }
+
+  acc.finish(true);  // the information: the Hessian of the negated log-likelihood
+  if (nonfinite_block) {
+    std::fill(acc.result.begin(), acc.result.end(),
+              std::numeric_limits<double>::quiet_NaN());
+  }
+
+  // The objective and the gradient as the gradient kernel returns them
+  double obj = -global_loglik;
+  arma::vec grad = -global_grad;
+  const bool overflow = !std::isfinite(obj);
+  bool nonfinite = false;
+  if (overflow) {
+    obj = 1e10;
+    grad.zeros();
+  } else {
+    const arma::uvec bad = arma::find_nonfinite(grad);
+    nonfinite = bad.n_elem > 0;
+    grad.elem(bad).zeros();
+  }
+  return Rcpp::List::create(Rcpp::Named("objective") = obj,
+                            Rcpp::Named("gradient") = grad,
+                            Rcpp::Named("overflow") = overflow,
+                            Rcpp::Named("nonfinite") = nonfinite,
+                            Rcpp::Named("hessian") = acc.result);
 }
 
 // Add w_u s_u s_u', s_u the unit's compact score, into the accumulator's

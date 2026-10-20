@@ -959,6 +959,30 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
+#' The objective, gradient and constants' block of the information (internal)
+#'
+#' For the inner Newton solve of \code{run_mxlogit(concentrate_out_asc =
+#' "profile_likelihood")}: the negated simulated log-likelihood and its
+#' gradient, as \code{mxl_loglik_gradient_parallel()} returns them (bit for
+#' bit at one thread), and the block of the information (the Hessian of the
+#' negated log-likelihood) on the free constants, as
+#' \code{mxl_hessian_parallel()} would return it in those rows and columns,
+#' to rounding. Takes \code{mxl_hessian_parallel()}'s arguments;
+#' \code{use_asc} must be TRUE. With no continuous rows, a shared
+#' accumulator (above \code{acc_bytes}) makes every addition atomic.
+#' @returns List: \code{objective}, \code{gradient} and \code{overflow} as
+#'   the gradient kernel returns them; \code{nonfinite}, whether a gradient
+#'   entry was not finite, with a finite objective, before it was set to 0;
+#'   \code{hessian}, the J_d x J_d block: complete where \code{overflow}
+#'   is FALSE, unless NaN throughout (a split unit's probabilities formed
+#'   again that are not finite); with \code{overflow}, a unit whose
+#'   log-likelihood is not finite is left out, and a non-finite weight on any
+#'   other makes it NaN.
+#' @noRd
+mxl_delta_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_delta_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
+}
+
 #' BHHH (outer product of gradients) information matrix for Mixed Logit
 #'
 #' Computes the BHHH approximation to the observed information matrix for the
