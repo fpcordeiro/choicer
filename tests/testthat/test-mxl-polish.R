@@ -337,6 +337,7 @@ test_that("keep_data = FALSE and the advanced pathway polish the same fit", {
   expect_identical(coef(fa), coef(fit))
   expect_identical(fa$optimizer$polish$decrement,
                    fit$optimizer$polish$decrement)
+  expect_identical(fa$vcov, fit$vcov)
 })
 
 test_that("the polish gets the fit's coordinates, bounds and settings", {
@@ -424,21 +425,187 @@ test_that("an optimizer's message of any length leads into the polish's", {
   expect_match(fit$message, "^one; two; Newton polish not converged")
 })
 
-test_that("each se_method's variance at the polished estimates is vcov()'s", {
-  skip_on_cran()
+# A weighted panel with clusters of decision makers, for the variance after a
+# polish: unit weights would hide B(w) standing in for the robust meat B(w^2)
+mxp_panel <- function() {
+  sim <- simulate_mxl_data(N = 120L, T = 3L, J = 5L, beta = c(0.8, -0.6),
+                           Sigma = diag(c(1, 0.5)), outside_option = FALSE,
+                           seed = 21L)
+  dt <- data.table::as.data.table(sim$data)
+  set.seed(22)
+  wt <- stats::runif(120L, 0.5, 2)
+  dt[, w := wt[pid]]
+  dt[, cl := pid %% 15L]
+  dt[]
+}
+# Non-uniform weights make hessian/bhhh fits warn that they are not WESML
+# corrections; that advice is beside the point here, and only it is muffled
+mxp_panel_fit <- function(dt, se, ...) {
+  withCallingHandlers(
+    suppressMessages(run_mxlogit(
+      data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+      covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"),
+      S = 20L, person_col = "pid", weights_col = "w", se_method = se,
+      cluster_col = if (se == "cluster") "cl", ...)),
+    warning = function(w) {
+      if (startsWith(conditionMessage(w), "Non-uniform weights detected")) {
+        invokeRestart("muffleWarning")
+      }
+    })
+}
+
+test_that("the polish keeps its curvature only for a variance that needs it", {
+  dt <- mxp_panel()
+  polish_fn <- run_polish
+  kept <- NULL
+  local_mocked_bindings(run_polish = function(...) {
+    kept <<- list(...)$keep_curvature
+    polish_fn(...)
+  })
+  for (pm in c("newton", "bhhh")) {
+    for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
+      kept <- NULL
+      mxp_panel_fit(dt, se, control = list(maxeval = 10L), polish = pm,
+                    polish_control = list(max_iter = 1L))
+      want <- if (pm == "newton") se != "bhhh" else se == "bhhh"
+      expect_identical(kept, want, label = paste(pm, se))
+    }
+  }
+})
+
+test_that("the variance reuses the polish's last curvature where se_method needs it", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  dt <- mxp_panel()
+  # the real kernels, counted
+  real_h <- mxl_hessian_parallel
+  real_b <- mxl_bhhh_parallel
+  n_h <- 0L
+  n_b <- 0L
+  local_mocked_bindings(
+    mxl_hessian_parallel = function(...) {
+      n_h <<- n_h + 1L
+      real_h(...)
+    },
+    mxl_bhhh_parallel = function(...) {
+      n_b <<- n_b + 1L
+      real_b(...)
+    })
+  for (pm in c("newton", "bhhh")) {
+    for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
+      lab <- paste(pm, se)
+      n_h <- 0L
+      n_b <- 0L
+      fit <- mxp_panel_fit(dt, se, control = list(maxeval = 10L), polish = pm,
+                           polish_control = list(max_iter = 3L))
+      k <- fit$optimizer$polish$evaluations[["curvature"]]
+      expect_gt(k, 1L, label = lab)
+      # Newton's Hessian is the bread of every variance but "bhhh"'s; BHHH's
+      # matrix (weights unsquared) is the "bhhh" variance's, never the
+      # sandwich's meat (weights squared, computed); the cluster meat has its
+      # own kernel
+      reuse <- if (pm == "newton") se != "bhhh" else se == "bhhh"
+      want_h <- (pm == "newton") * k + (se != "bhhh" && !reuse)
+      want_b <- (pm == "bhhh") * k + (se == "sandwich") +
+        (se == "bhhh" && !reuse)
+      expect_identical(c(n_h, n_b), as.integer(c(want_h, want_b)), label = lab)
+      type <- switch(se, sandwich = "robust", se)
+      expect_identical(suppressMessages(vcov(fit, type = type)), fit$vcov,
+                       label = lab)
+      expect_false(any(vapply(fit$optimizer$polish, is.matrix, TRUE)),
+                   label = lab)
+    }
+  }
+})
+
+test_that("a polish that takes no step leaves the fit's variance as it was", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  dt <- mxp_panel()
+  for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
+    f0 <- mxp_panel_fit(dt, se, control = list(maxeval = 10L))
+    for (pm in c("newton", "bhhh")) {
+      lab <- paste(pm, se)
+      f1 <- mxp_panel_fit(dt, se, control = list(maxeval = 10L), polish = pm,
+                          polish_control = list(max_iter = 0L))
+      expect_identical(coef(f1), coef(f0), label = lab)
+      expect_identical(f1$vcov, f0$vcov, label = lab)
+      expect_identical(f1$se, f0$se, label = lab)
+    }
+  }
+})
+
+test_that("a polish whose curvature fails leaves the variance its own", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  dt <- mxp_panel()
+  real_h <- mxl_hessian_parallel
+  n_h <- 0L
+  # the Hessian fails at the polish's second evaluation: the polish ends at
+  # the point it reached, whose curvature it never had (the failing call
+  # cleared the last one; that run_polish() keeps no curvature from another
+  # point is test-polish.R's)
+  local_mocked_bindings(mxl_hessian_parallel = function(...) {
+    n_h <<- n_h + 1L
+    if (n_h == 2L) stop("cannot allocate the Hessian")
+    real_h(...)
+  })
+  expect_warning(fit <- mxp_panel_fit(dt, "hessian",
+                                      control = list(maxeval = 10L),
+                                      polish = "newton"),
+                 class = "choicer_polish_failed")
+  expect_identical(fit$optimizer$polish$iterations, 1L)
+  expect_identical(n_h, 3L)
+  expect_identical(suppressMessages(vcov(fit, type = "hessian")), fit$vcov)
+})
+
+test_that("a polish that hands back no curvature leaves the variance its own", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  dt <- mxp_panel()
+  real_h <- mxl_hessian_parallel
+  real_polish <- run_polish
+  n_h <- 0L
+  # as when the polish's final guard returns the start
+  local_mocked_bindings(
+    mxl_hessian_parallel = function(...) {
+      n_h <<- n_h + 1L
+      real_h(...)
+    },
+    run_polish = function(...) {
+      r <- real_polish(...)
+      r$curvature_at_par <- NULL
+      r
+    })
+  fit <- mxp_panel_fit(dt, "hessian", control = list(maxeval = 10L),
+                       polish = "newton", polish_control = list(max_iter = 2L))
+  k <- fit$optimizer$polish$evaluations[["curvature"]]
+  expect_identical(n_h, k + 1L)
+  expect_identical(suppressMessages(vcov(fit, type = "hessian")), fit$vcov)
+})
+
+test_that("a reused curvature whose inversion fails takes the fallback", {
   set_omp_threads(1L)
   on.exit(set_omp_threads(2L), add = TRUE)
   dt <- mxp_data()
-  dt[, cl := id %% 20L]
-  for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
-    fit <- mxp_fit(dt, control = MXP_LOOSE, polish = "newton", se_method = se,
-                   cluster_col = if (se == "cluster") "cl",
-                   polish_control = MXP_STEPS)
-    expect_true(fit$optimizer$polish$converged, label = se)
-    type <- switch(se, sandwich = "robust", se)
-    expect_identical(suppressMessages(vcov(fit, type = type)), fit$vcov,
-                     label = se)
-  }
+  f0 <- mxp_fit(dt, control = MXP_LOOSE, polish = "newton")
+  real_h <- mxl_hessian_parallel
+  n_h <- 0L
+  local_mocked_bindings(
+    equilibrated_inverse = function(A, D) {
+      stop("cannot allocate a working copy of 2.3 Gb")
+    },
+    mxl_hessian_parallel = function(...) {
+      n_h <<- n_h + 1L
+      real_h(...)
+    })
+  expect_warning(f1 <- mxp_fit(dt, control = MXP_LOOSE, polish = "newton"),
+                 "cannot allocate a working copy", class = "choicer_vcov_failed")
+  # the variance evaluated no Hessian of its own: it inverted the polish's
+  expect_identical(n_h, f1$optimizer$polish$evaluations[["curvature"]])
+  expect_identical(coef(f1), coef(f0))
+  expect_null(f1$vcov)
+  expect_match(f1$variance_error, "cannot allocate a working copy")
 })
 
 test_that("an error in the curvature keeps the optimizer's estimates", {

@@ -715,6 +715,16 @@ normalize_optim_result <- function(result) {
 #' (gated steps of the second rule that add up) is not returned: the start
 #' is, while `iterations` and the rest describe the path abandoned.
 #'
+#' Every stop is decided at the point whose curvature was evaluated last:
+#' before a step is tried, or after its line search or damping failed, or on
+#' an error in a trial evaluation, all at that point. So the last curvature is
+#' at the point returned, unless the final guard returns the start after
+#' steps, `curv_f` itself failed, or the start could not be evaluated (an
+#' error, or an objective or gradient that is not finite there). With
+#' `keep_curvature` the result then carries it, for a caller whose
+#' variance needs that matrix at that point (the fit's Hessian or BHHH
+#' matrix); without, the matrix is released with the polish.
+#'
 #' @param theta Start, the optimizer's solution, in natural units.
 #' @param eval_f Function of theta returning `list(objective, gradient,
 #'   overflow)`: the negated log-likelihood, its gradient, and whether the
@@ -725,6 +735,7 @@ normalize_optim_result <- function(result) {
 #' @param control From `.polish_control()`.
 #' @param method The curvature's name for the result: "newton" or "bhhh".
 #' @param fixed Positions of the parameters held at their values.
+#' @param keep_curvature Whether to return the last curvature (see above).
 #' @returns List: `method`; `par` (named as `theta`) and `value`; `converged`;
 #'   `iterations` (steps taken) and `damped` (those with lambda > 0);
 #'   `decrement`, the undamped decrement at the last curvature evaluated, over
@@ -735,7 +746,8 @@ normalize_optim_result <- function(result) {
 #'   `held` and `flat`, the names of the parameters on a bound, held, and
 #'   left out of the last iteration's steps (flat or stalled); `improvement`,
 #'   the objective's decrease; `error`, NULL or the message of the error that
-#'   stopped it.
+#'   stopped it; `curvature_at_par`, with `keep_curvature` the last curvature
+#'   evaluated when it was evaluated at `par` (bit for bit), otherwise NULL.
 #' @references Bertsekas, D. P. (1982). Projected Newton methods for
 #'   optimization problems with simple constraints. SIAM Journal on Control
 #'   and Optimization 20(2), 221-246.
@@ -749,7 +761,8 @@ normalize_optim_result <- function(result) {
 #' @noRd
 run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
                        scale = NULL, control = .polish_control(NULL),
-                       method = "newton", fixed = integer()) {
+                       method = "newton", fixed = integer(),
+                       keep_curvature = FALSE) {
   n <- length(theta)
   nm <- names(theta) %||% as.character(seq_len(n))
   lower <- lower %||% rep(-Inf, n)
@@ -789,6 +802,10 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
   converged <- FALSE
   flat <- integer()
   stalled <- integer()
+  # The last curvature and the point it was evaluated at (run() assigns
+  # them here)
+  C <- NULL
+  theta_C <- NULL
 
   # A trial point P(theta + alpha step), alpha halved until a rule accepts
   line_search <- function(step) {
@@ -826,9 +843,11 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
     g <<- e$gradient
     eps_f <<- 1e-10 * max(abs(f0), 1)
     repeat {
-      C <- NULL
+      # the previous curvature is released before the next is computed
+      C <<- NULL
       n_c <<- n_c + 1L
-      C <- curv_f(theta)
+      C <<- curv_f(theta)
+      theta_C <<- theta
       D <- .jacobi_scale(C)
       dC <- diag(C)
       w <- theta - clip(theta - m^2 * g)
@@ -934,13 +953,16 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
                   "is returned")
   }
   names(theta) <- names(theta_in)
+  # The last curvature, when it was evaluated at the point returned
+  curvature_at_par <- if (keep_curvature && !is.null(C) &&
+                          identical(unname(theta_C), unname(theta), num.eq = FALSE)) C
   list(method = method, par = theta, value = f, converged = converged,
        iterations = iter, damped = damped, decrement = decrement,
        lambda = lambda, message = why,
        evaluations = c(objective = n_f, curvature = n_c),
        active = nm[theta <= lower | theta >= upper],
        held = nm[held], flat = nm[sort(c(flat, stalled))],
-       improvement = f0 - f, error = err)
+       improvement = f0 - f, error = err, curvature_at_par = curvature_at_par)
 }
 
 # --- Hessian / vcov helpers --------------------------------------------------
@@ -1617,10 +1639,17 @@ compute_scores <- function(object) {
 #'   \code{NULL} builds them from \code{draws_info}.
 #' @param what The cluster labels' name in messages (the fit itself says
 #'   \code{cluster_col}).
+#' @param bread,bhhh The weighted negated Hessian, and the BHHH matrix with
+#'   the unsquared weights, at the fit's coefficients with its own data and
+#'   draws, when the caller holds them already (a mixed logit polish's last
+#'   curvature): used, unmodified, in place of \code{.compute_bread()} (the
+#'   \code{"hessian"} type and the sandwiches' bread) and of the
+#'   \code{"bhhh"} type's matrix. \code{NULL} computes them.
 #' @returns List with \code{vcov} and \code{se}.
 #' @noRd
 .assemble_score_vcov <- function(object, type, cluster = NULL, gp = NULL,
-                                 what = "`cluster`") {
+                                 what = "`cluster`", bread = NULL,
+                                 bhhh = NULL) {
   if (is.null(object[["data"]])) {
     stop("Cannot compute standard errors: no data stored. ",
          "Refit with keep_data = TRUE.")
@@ -1631,8 +1660,9 @@ compute_scores <- function(object) {
   }
 
   if (identical(type, "hessian")) {
-    return(invert_hessian(.compute_bread(object, gp)))
+    return(invert_hessian(bread %||% .compute_bread(object, gp)))
   }
+  if (identical(type, "bhhh") && !is.null(bhhh)) return(invert_hessian(bhhh))
 
   # Scores, weights and cluster labels are per likelihood unit: choice
   # situations, or decision makers for a panel mixed logit.
@@ -1652,7 +1682,7 @@ compute_scores <- function(object) {
     }
     B <- .mxl_score_meat(object, gp, type, cluster)
     if (identical(type, "bhhh")) return(invert_hessian(B))
-    return(.sandwich_combine(.compute_bread(object, gp), B))
+    return(.sandwich_combine(bread %||% .compute_bread(object, gp), B))
   }
 
   w <- d$weights[.unit_first(d)]
@@ -1664,7 +1694,7 @@ compute_scores <- function(object) {
 
   if (identical(type, "cluster")) cluster <- .unit_clusters(object, cluster, what)
   B <- .score_meat(S, w, type, cluster)
-  .sandwich_combine(.compute_bread(object), B)
+  .sandwich_combine(bread %||% .compute_bread(object), B)
 }
 
 #' Cluster labels of a fit's likelihood units

@@ -639,3 +639,107 @@ test_that("with every parameter flat, no decrement is claimed", {
   expect_identical(r$message,
                    "a, b have no usable curvature at this point (no information)")
 })
+
+test_that("the last curvature comes back when it was evaluated at the point returned", {
+  # A curvature that records where it was evaluated: the result's curvature
+  # must be the one at `par`, for a caller (the fit's variance) that would
+  # otherwise evaluate it there again
+  tag <- function(curv) function(x) structure(curv(x), at = x)
+  rp <- function(...) run_polish(..., keep_curvature = TRUE)
+  here <- function(r, C, what) {
+    expect_identical(r$curvature_at_par, C(r$par), label = what)
+  }
+  q <- pol_quad(matrix(c(4, 1, 1, 3), 2), c(1, 2))
+  Cq <- tag(q$C)
+  Cr <- tag(pol_rosen$C)
+
+  r <- rp(c(a = 5, b = -3), q$f, Cq)
+  expect_true(r$converged)
+  here(r, Cq, "converged")
+  # it is released with the polish unless the caller keeps it
+  expect_null(run_polish(c(a = 5, b = -3), q$f, Cq)$curvature_at_par)
+  r <- rp(c(0, 1), pol_rosen$f, Cr,
+          control = .polish_control(list(max_iter = 2L)))
+  expect_match(r$message, "iteration limit")
+  expect_identical(r$iterations, 2L)
+  here(r, Cr, "the iteration limit after steps")
+  r <- rp(c(0, 1), pol_rosen$f, Cr,
+          control = .polish_control(list(max_iter = 0L)))
+  expect_identical(r$par, c(0, 1))
+  here(r, Cr, "max_iter = 0")
+  r <- rp(c(0, 0), q$f, Cq,
+          control = .polish_control(list(tol_step = 1e3)))
+  expect_match(r$message, "step is below tol_step")
+  here(r, Cq, "a step below tol_step")
+  # every point but the start overflows: the line search fails at the start
+  x0 <- c(1, 1)
+  f_over <- function(x) {
+    if (!identical(x, x0)) return(pol_obj(1e10, c(0, 0), overflow = TRUE))
+    pol_obj(1, c(1, 1))
+  }
+  C1 <- tag(function(x) diag(2))
+  r <- rp(x0, f_over, C1)
+  expect_identical(r$message, "the line search failed")
+  here(r, C1, "a failed line search")
+  # a flat parameter stops the certificate where its curvature was evaluated
+  A3 <- matrix(c(4, 1, 0, 1, 3, 0, 0, 0, 0), 3)
+  q3 <- pol_quad(A3, c(1, 2, 0))
+  C3 <- tag(q3$C)
+  r <- rp(c(a = 0, b = 0, c = 7), q3$f, C3)
+  expect_identical(r$flat, "c")
+  here(r, C3, "a flat parameter")
+  # a curvature that is not finite is returned as evaluated
+  Cnan <- tag(function(x) matrix(NaN, 2, 2))
+  r <- rp(c(0, 0), q$f, Cnan)
+  expect_match(r$message, "curvature is not finite")
+  here(r, Cnan, "a curvature that is not finite")
+  # an error in a trial evaluation ends at the last accepted point, whose
+  # curvature was evaluated before the step was tried: with the curvature
+  # twice too large each step goes halfway and is accepted, so the fourth
+  # evaluation is the third step's trial
+  C2A <- tag(function(x) 2 * matrix(c(4, 1, 1, 3), 2))
+  k <- 0L
+  f_err <- function(x) {
+    k <<- k + 1L
+    if (k == 4L) stop("cannot allocate the gradient")
+    q$f(x)
+  }
+  r <- rp(c(0, 0), f_err, C2A)
+  expect_identical(r$error, "cannot allocate the gradient")
+  expect_identical(r$iterations, 2L)
+  here(r, C2A, "an error in a trial evaluation")
+
+  # No curvature at the point returned: the start returned by the final
+  # guard (the curvature was evaluated after the steps it abandons) ...
+  C0 <- 1e9
+  n <- 0L
+  f_up <- function(x) {
+    n <<- n + 1L
+    pol_obj(C0 + 0.5 * (x - 1)^2 + 0.06 * (n - 1L), x - 1)
+  }
+  C2 <- tag(function(x) matrix(2))
+  r <- rp(1 - 0.005, f_up, C2,
+          control = .polish_control(list(max_iter = 3L)))
+  expect_match(r$message, "worse than the start, which is returned")
+  expect_null(r$curvature_at_par)
+  # ... an error in the curvature itself, at the start or after a step ...
+  C_err <- function(at_call) {
+    m <- 0L
+    function(x) {
+      m <<- m + 1L
+      if (m == at_call) stop("cannot allocate the Hessian")
+      Cq(x)
+    }
+  }
+  r <- rp(c(0, 0), q$f, C_err(1L))
+  expect_identical(r$error, "cannot allocate the Hessian")
+  expect_identical(r$iterations, 0L)
+  expect_null(r$curvature_at_par)
+  r <- rp(c(0, 0), q$f, C_err(2L))
+  expect_identical(r$iterations, 1L)
+  expect_null(r$curvature_at_par)
+  # ... and a start whose objective is not finite
+  r <- rp(c(0, 0), function(x) pol_obj(Inf, c(0, 0)), Cq)
+  expect_match(r$message, "objective is not finite at the start")
+  expect_null(r$curvature_at_par)
+})
