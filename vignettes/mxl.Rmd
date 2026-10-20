@@ -341,6 +341,87 @@ regression is unavoidable, propagate the uncertainty with a
 decision-maker-level bootstrap rather than treating conditional means as if
 they were data.
 
+## Many alternatives: constants, convergence and standard errors
+
+With thousands of alternatives (schools, hospitals, products in many markets) the
+alternative-specific constants are most of the parameters, and they absorb every
+alternative-level unobservable. The other parameters are identified only from what the
+constants cannot absorb: variation across decision makers within an alternative
+(distance, interactions of an alternative's traits with a decision maker's) and, for the
+random coefficients, how choices covary across a decision maker's situations or choice
+sets. A trait that varies only between alternatives has no fixed coefficient, nor a
+random coefficient's mean, of its own once the constants are in: that mean effect is in
+the constants (a random coefficient on the trait keeps its spread, identified as above, as
+with `random_var_cols` and `rc_mean = FALSE`), and recovering it takes a second step, a
+projection of the estimated constants on the traits, with instruments where a trait is
+endogenous. Three practical questions follow.
+
+**Is the optimizer at the maximum?** L-BFGS stops when its own tolerances say so, which
+need not be at the maximum where curvatures differ by orders of magnitude, as they do
+between a constant chosen ten times and one chosen ten thousand times. `polish = "newton"`
+takes Newton steps on the analytic Hessian from wherever the optimizer stopped and
+certifies the maximum by the Newton decrement: every linear combination of the estimates
+is then within $1.4 \times 10^{-4}$ of its standard error of the maximum of the
+log-likelihood's quadratic model. On simulated census- and claims-style designs with 500
+to 2,600 alternatives, the default fit stopped within $1.1 \times 10^{-4}$ standard errors
+of the maximum, and the polish certified it at once, or in one step, for 0 to 20% of the
+fit's time (its Hessian then serves the standard errors). Stopping the optimizer early to
+hand over to Newton rarely paid (one of ten hand-overs was faster), and once it certified
+another local maximum: let the optimizer stop on its own.
+
+**Can the constants be concentrated out?** `concentrate_out_asc = "profile_likelihood"`
+maximizes over the constants at every value of the other parameters, so the optimizer
+works on a handful of parameters instead of thousands. The estimator does not change: at
+the solution the constants satisfy their own first-order condition,
+$$
+\sum_n w_n \sum_t \mathbf 1\{y_{nt} = j\} = \sum_n w_n \sum_t \sum_s \omega_{ns}\, P^s_{ntj},
+$$
+each alternative's observed count equal to its predicted count, each decision maker's
+probabilities averaged with the weight $\omega_{ns}$ of draw $s$ given their choices. This
+is not BLP's share matching, which equates the *unconditional* predicted shares to the
+observed ones and defines a different estimator; with random coefficients the two differ.
+In the study above the profile reached the same maximum, and ended closer to it, but took
+two to four times as long as the joint fit: each of its evaluations solves for the
+constants anew. It is an expert option.
+
+**Do the standard errors account for the constants?** They must: the constants are
+estimated, and their estimation error moves the other parameters. A profile fit's
+variance is computed from the full information at its estimates, as a joint fit's is; its
+block for the other parameters is the inverse of the profile's curvature (the Schur
+complement). Treating the constants as known, by inverting the other parameters' block of
+the information (the Hessian) alone, understates the standard errors: at the true
+parameters of a
+census-style design, to 45% of the correct standard error for a covariate that varies
+mostly between alternatives and to 91% for an interaction of an alternative's trait with
+a decision maker's, against 98 to 100% for covariates drawn independently of the
+alternative, as `x1` and `x2` in the simulation below (where the Cholesky entries fall to
+about 97%).
+
+```{r many-alternatives}
+set_num_threads(1)  # one thread: the same counts and digits run after run
+sim_j <- simulate_mxl_data(N = 1500, J = 20, seed = 3)
+fit_joint <- run_mxlogit(
+  data = sim_j$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+  covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"), S = 50L,
+  polish = "newton"
+)
+fit_profile <- run_mxlogit(
+  data = sim_j$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+  covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"), S = 50L,
+  concentrate_out_asc = "profile_likelihood", polish = "newton"
+)
+c(joint = fit_joint$optimizer$polish$converged,
+  profile = fit_profile$optimizer$polish$converged)
+# the same estimates, in standard errors
+max(abs(coef(fit_profile) - coef(fit_joint)) / fit_joint$se)
+# standard errors from the full information, and as if the constants were known
+info <- solve(vcov(fit_joint))
+other <- setdiff(seq_along(coef(fit_joint)), fit_joint$param_map$asc)
+cbind(full = fit_joint$se[other],
+      constants_known = sqrt(diag(solve(info[other, other]))))
+set_num_threads(2)
+```
+
 ## A research checklist
 
 For a reportable `run_mxlogit()` application:
@@ -373,6 +454,10 @@ For a reportable `run_mxlogit()` application:
    uncertainty are wanted too.
 7. Compare substitution and welfare with the MNL or NL benchmark and state which
    data variation, rather than the mixing distribution alone, earns the change.
+8. With many alternatives, certify the optimizer's stop with `polish = "newton"`
+   and report standard errors from the full information, which accounts for the
+   constants' estimation; `concentrate_out_asc = "profile_likelihood"` gives the
+   same estimator, at a higher cost.
 
 Bounded/censored mixing distributions, WTP-space estimation, and latent-class
 logit can be useful alternative modeling strategies, but they are **not
