@@ -348,7 +348,9 @@ and weights.}
 \item{polish_control}{List of settings of the Newton phase, any of
 \code{max_iter} (20; 0 evaluates the decrement at the optimizer's solution
 without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8}, in
-log-likelihood units) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
+log-likelihood units of weights with mean one: the decrement is taken
+over the mean weight, so that the rule does not depend on the weights'
+scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
 shorter than this, relative to the parameters' magnitudes plus their
 scales in the optimizer's coordinates, stops the polish unconverged).}
 
@@ -394,8 +396,9 @@ that keeps its data (\code{keep_data = TRUE}); the memory check's message
 names the threads that fit or how to lift its limit. With \code{polish},
 \code{fit$optimizer$polish} records the Newton phase: \code{method},
 \code{converged}, \code{iterations} (steps taken) and \code{damped},
-\code{decrement} (\code{NA} where the curvature on the parameters moved
-was not positive definite) and \code{lambda} (its damping) at the last
+\code{decrement} (over the mean weight; \code{NA} where the curvature
+on the parameters moved was not positive definite) and \code{lambda}
+(its damping) at the last
 curvature evaluated, \code{message} (why it stopped),
 \code{evaluations} (of the objective and the curvature), \code{active},
 \code{held} and \code{flat} (the parameters on a bound, held, and left
@@ -465,8 +468,10 @@ L-BFGS reach slowly when curvatures differ by orders of magnitude
 (thousands of constants, say), and certifies it. It converges when the
 Newton decrement
 \eqn{\nu = \frac{1}{2} g^\top C^{-1} g}{nu = g' C^-1 g / 2}, with \eqn{g}
-the gradient and \eqn{C} the curvature on the parameters it moves, falls
-below \code{tol_decrement}. On a positive definite Hessian,
+the gradient and \eqn{C} the curvature on the parameters it moves, over
+the mean weight (as if the weights had mean one, whatever their scale),
+falls below \code{tol_decrement}. On a positive definite Hessian (of the
+weights scaled to mean one),
 \eqn{\sqrt{2\nu}}{sqrt(2 nu)} is the distance from the estimates to the
 maximum of the log-likelihood's quadratic model in Hessian standard
 errors: at the default \eqn{10^{-8}}{1e-8}, every linear combination of

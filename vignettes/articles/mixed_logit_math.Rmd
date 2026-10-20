@@ -1290,10 +1290,13 @@ $$
 $$
 
 the remaining step moves each linear combination of the estimates by at most
-$\sqrt{2\nu}$ of its Hessian standard error. The polish has converged when $\nu$, computed
-with the undamped curvature, falls below `tol_decrement` ($10^{-8}$ by default: $1.4 \times
-10^{-4}$ standard errors); it then stops without taking the step, so the certificate is for
-the point returned. With parameters held or on a bound (below), $\nu$ is computed over the
+$\sqrt{2\nu}$ of its Hessian standard error. The polish has converged when $\nu /
+\bar w$, computed with the undamped curvature and $\bar w$ the mean weight, falls below
+`tol_decrement` ($10^{-8}$ by default: $1.4 \times 10^{-4}$ standard errors with weights of
+mean one); dividing by $\bar w$ makes the rule independent of the weights' scale, as the
+estimates are, where in raw units weights summing to one would loosen it by the sample
+size. The polish then stops without taking the step, so the certificate is for the point
+returned. With parameters held or on a bound (below), $\nu$ is computed over the
 others, and the bound holds in their standard errors conditional on the rest, which are no
 larger than the reported ones.
 
