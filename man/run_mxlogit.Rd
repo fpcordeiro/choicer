@@ -359,9 +359,9 @@ estimated (see the section below). \code{"none"} (default): with the
 other parameters, by the optimizer. \code{"profile_likelihood"}: the
 optimizer moves the other parameters only, and at each of its points the
 constants are solved from their first-order condition; the estimator, and
-so the estimates and their standard errors, are the same. \code{"blp"} is
-reserved for matching aggregate shares instead, a different estimator,
-and is not implemented.}
+so the estimates and their standard errors, are the same, to the
+optimizers' tolerance. \code{"blp"} is reserved for matching aggregate
+shares instead, a different estimator, and is not implemented.}
 
 \item{concentrate_control}{List of settings of the constants' inner
 solve, any of \code{max_iter} (25 Newton steps per solve; the first, from
@@ -373,7 +373,8 @@ chosen count plus the mean weight), \code{tol_decrement}
 weight falls below it, in log-likelihood units of weights with mean one,
 so that neither rule depends on the weights' scale) and
 \code{max_dense} (10000: the most constants whose block of the
-information is formed and factored densely; for \eqn{J}{J} constants a
+information is formed and factored densely, more being an error before
+the draws; for \eqn{J}{J} constants a
 solve holds two \eqn{J \times J}{J x J} matrices, \eqn{8 J^2}{8 J^2} bytes
 each (0.8 GB at \eqn{J = 10^4}{J = 1e4}), besides the kernel's
 accumulators, and each Newton step factors one, about
@@ -412,17 +413,24 @@ nloptr, 0 for optim and a custom optimizer) and leads \code{message}
 with its verdict; otherwise both keep the optimizer's, the polish's
 reason appended to the message. A polish that stops with an error (the
 Hessian's memory check, say) keeps its last accepted point and warns
-(class \code{choicer_polish_failed}). With \code{concentrate_out_asc},
-\code{fit$optimizer} describes the optimizer over the other parameters,
-and \code{fit$optimizer$concentration} records the inner solves:
-\code{method}, \code{evaluations} (the optimizer's), \code{solves},
+(class \code{choicer_polish_failed}). With
+\code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
+describes the optimizer over the other parameters, and
+\code{fit$optimizer$concentration} records the inner solves:
+\code{method}, \code{evaluations} (the optimizer's calls of the
+profile, the start's and the cached point's included; the optimizer's own
+count is \code{fit$optimizer$iterations}), \code{solves},
 \code{failed} (solves at the optimizer's points that did not converge),
 \code{inner_iterations} (Newton steps), \code{passes} (of the
 constants' kernel), \code{max_residual} (the largest relative score of
 the constants at a converged solve, above \code{tol_residual} where the
 decrement stopped the solve), \code{residual} and \code{decrement} (over
 the mean weight; NA where the residual rule stopped the solve) at the
-profile's solution, before any polish, and \code{elapsed_time}.
+profile's solution, before any polish, and \code{elapsed_time} (the
+optimizer's seconds, its solves and the first one included, as in
+\code{fit$optimizer$elapsed_time} without a polish). Failed solves after
+the optimizer's best point, and a failed solve at its solution, are
+reported in the warning and appended to \code{fit$message}.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.
@@ -484,6 +492,16 @@ the standard errors of the sandwich \eqn{H^{-1} B H^{-1}}{H^-1 B H^-1}
 a stationary point, not a maximum. \code{"bhhh"} needs at least as many
 likelihood units as the parameters it moves.
 
+In a validation study on census- and claims-style designs (see
+\code{news(package = "choicer")}), the default optimizer stopped within
+\eqn{1.1 \times 10^{-4}}{1.1e-4} standard errors of the maximum, and
+\code{polish = "newton"} after it certified that maximum at once, or in
+one step, for 0 to 20\% of the fit's time, its Hessian then serving the
+variance. Handing over to it earlier (a small \code{maxeval}) rarely paid:
+one of ten hand-overs was faster, and one certified another local maximum.
+For a reportable fit with many constants, \code{polish = "newton"} after
+the optimizer's own stop is the recommended check.
+
 Where the curvature is not positive definite the steps are damped
 (Levenberg-Marquardt); they respect \code{lower}/\code{upper} and pass a
 line search. The constants of inside alternatives without a finite
@@ -508,8 +526,10 @@ so a badly scaled column far from its maximum can be held as if its
 curvature had vanished; the default \code{"bhhh"} scaling avoids this. The
 standard errors are computed at the polished estimates, by
 \code{se_method}. The polish evaluates its curvature at the point it
-returns before it stops (unless it returns the start, or the curvature
-itself failed), so that matrix serves the variance whenever it is the one
+returns before it stops (unless it falls back to the optimizer's solution
+after steps that ended worse, the curvature itself failed, or the start
+could not be evaluated), so that matrix serves the variance whenever it is
+the one
 \code{se_method} needs, instead of being evaluated again: after
 \code{"newton"}, the Hessian of \code{"hessian"} and the bread of
 \code{"sandwich"} and \code{"cluster"}; after \code{"bhhh"}, the BHHH
@@ -550,24 +570,32 @@ the unconditional shares that BLP share matching equates). The solve takes
 damped Newton steps on the constants' block of the information,
 warm-started from the best point the optimizer has reached, and the
 optimizer's gradient is the joint gradient at the solution (the envelope
-theorem). A solve that does not converge is an overflow to the optimizer,
-which then backtracks, and is counted; the fit warns (class
-\code{choicer_profile_unconverged}) when such solves come after the
-optimizer's best point, which may have stopped it, or when the constants
-cannot be solved at its solution.
+theorem). The optimizer, its \code{control} and a custom optimizer see the
+other parameters only. Where the constants cannot be solved at the start
+values the fit stops there (class \code{choicer_profile_unconverged}; an
+error inside that solve is reported as itself). A
+later solve that does not converge is an overflow to the optimizer, which
+then backtracks, and is counted; the fit warns (the same class) when such
+solves come after the optimizer's best point, which may have stopped it,
+or when the constants cannot be solved at its solution.
 
 Every constant needs a finite maximum-likelihood estimate: with an
 alternative never chosen, or chosen wherever it is offered, or such a
 reference (see \code{use_asc}), the fit stops before the draws (class
-\code{choicer_unbounded_constants}), and so it does with bounds on the
-constants (bounds on the other parameters go to the optimizer). The counts
+\code{choicer_unbounded_constants}). Bounds on the constants are an error
+too; bounds on the other parameters go to the optimizer. The counts
 do not reveal every such pattern (a group of alternatives chosen only
 where nothing outside the group is offered, say): the constants then drift
-as in a joint fit, and their standard errors are huge or missing. Each of
-the optimizer's evaluations costs an inner solve, a few passes over the
-data and a dense factorization of the constants' block, so profiling pays
-only where the joint optimizer needs many more evaluations; with
-\code{polish = "newton"} the joint maximum is certified after it.
+as in a joint fit, and their standard errors are huge or missing.
+
+It is an expert option. Each of the optimizer's evaluations costs an inner
+solve, whose Newton steps each take a pass of the constants' kernel (about
+three gradient passes) and a dense factorization of their block. On the
+study's census- and claims-style designs the profile reached the joint
+fit's maximum, and ended closer to it, in 21 to 49 evaluations of the
+optimizer, but at 2 to 4 times the joint fit's time, L-BFGS in the default
+coordinates needing 46 to 224 evaluations of the joint problem;
+\code{polish = "newton"} certifies either.
 }
 
 \section{Column names}{

@@ -1420,9 +1420,160 @@ bread of `"sandwich"` and `"cluster"`; after a BHHH polish, $\mathcal{B}$ for `"
 sandwich's meat squares the weights, so it is computed). There, a polish that certifies the
 optimizer's solution at once costs one evaluation of the log-likelihood and its gradient
 and one Cholesky factorization of the curvature beyond the fit without it.
-`fit$optimizer$polish` records the phase.
+`fit$optimizer$polish` records the phase. A profile fit (§5.8) takes its variance the same
+way, from the full matrices at its estimates.
 
 *Code reference: `run_polish()` and `.polish_control()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp); the wiring in `run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R).*
+
+### 5.8 Concentrating Out the Constants
+
+With many alternatives the constants are most of the parameters: 2,511 of 2,530 in a
+census-style design of school choice. `run_mxlogit(concentrate_out_asc =
+"profile_likelihood")` splits $\theta = (\theta_c, \delta)$, with $\theta_c = (\beta, \mu,
+L)$, and maximizes the profile log-likelihood
+
+$$
+\ell^*(\theta_c) = \max_\delta\, \ell(\theta_c, \delta)
+$$
+
+over $\theta_c$ alone. Its maximizer is the $\theta_c$ part of the joint maximizer, and
+$\hat\delta(\hat\theta_c)$ the $\delta$ part: the estimator does not change.
+
+**The constants' first-order condition.** By §3.4.4 and §3.5, with $\omega_{ns}$ the
+posterior draw weights of §2.6,
+
+$$
+\frac{\partial \ell}{\partial \delta_j}
+= \sum_{n=1}^U w_n \sum_{t=1}^{T_n} \Bigl(\mathbf 1\{y_{nt} = j\}
+- \sum_{s=1}^S \omega_{ns}\, P_{ntj}^s\Bigr) = 0:
+$$
+
+each alternative's weighted chosen count equals its predicted count, each decision maker's
+probabilities averaged over the draws with the weight of the draw given their choices. In
+the multinomial logit, without draws, this is the familiar property that the fitted shares
+match the observed ones. With random coefficients it is not BLP's share matching (§8),
+which equates the unconditional shares, with $\omega_{ns}$ replaced by $1/S$, to the observed
+ones: a different estimator, reserved as `concentrate_out_asc = "blp"` and not implemented.
+$j$ runs over the free constants (the outside option's or the base alternative's is
+normalized).
+
+**The envelope gradient.** At an interior maximum $\hat\delta(\theta_c)$ the constants'
+score vanishes, so
+
+$$
+\nabla \ell^*(\theta_c) = \nabla_{\theta_c}\, \ell\bigl(\theta_c, \hat\delta(\theta_c)\bigr):
+$$
+
+the joint gradient's $\theta_c$ part at the solved constants, with no derivative of
+$\hat\delta$.
+
+**The inner solve.** At each $\theta_c$ the optimizer evaluates, the constants are solved
+by the Newton phase of §5.7 on $\delta$ alone: $\theta_c$ held, no bounds, unit scales (the
+maximum step and the stall rule in units of utility), and the decrement over the mean
+weight (§5.7). Its curvature is the information's constants block
+$\mathcal I_{\delta\delta}$, from `mxl_delta_hessian_parallel()` in the same pass as the
+objective and the gradient: minus the $\delta$ rows and columns of §4.5's assembly,
+
+$$
+\mathcal I_{\delta\delta} = \sum_{n=1}^U w_n \Bigl[\mathrm{diag}\Bigl(\sum_{t,s}
+\omega_{ns} P_{nt}^s\Bigr) - \sum_t F_t F_t^\top - G G^\top\Bigr],
+$$
+
+with $F_t$ the situation's slot probabilities scaled by $\sqrt{\omega_{ns}}$ and $G$ the
+decision maker's per-draw scores of the constants, centered at their posterior mean and
+scaled likewise: the complete information less the missing one (Louis 1982, §4.5). It
+needs none of the per-alternative $K_c$-vectors and $K_c \times K_c$ outer products that
+dominate the full Hessian, and costs about three gradient passes. A trial point the line
+search accepts gives the next step's curvature from the same pass. The solve stops when the
+Newton decrement $\nu = \tfrac12\, g_\delta^\top \mathcal I_{\delta\delta}^{-1} g_\delta$ over
+the mean weight falls below `tol_decrement` ($10^{-12}$), or when every constant's score,
+and the reference's (minus their sum: the scores of all the alternatives' constants sum to
+zero), is below `tol_residual` ($10^{-10}$) relative to its alternative's weighted chosen
+count plus the mean weight, a test that needs no factorization; neither rule depends on the
+weights' scale. It fails after `max_iter` (25) steps or $3\,$`max_iter`$\,+ 1$ passes, or
+when it stops otherwise (a failed line search, negligible steps). The first solve, at the
+start values, starts from $\delta_j = \log(c_j / c_0)$, with $c_j$ the weighted chosen
+counts and $c_0$ the reference's (the estimate when the model has constants only and every
+situation offers every alternative), or from a supplied `theta_init`'s constants, and may
+take four times as many steps; where it fails, the fit stops (class
+`choicer_profile_unconverged`; an error inside it is reported as itself).
+
+**How exact the inner solve must be.** Write $\mathcal I$ for the information at
+$(\theta_c, \hat\delta)$, $g_\delta$ for the gradient of $-\ell$ in $\delta$ at a solve's
+constants $\tilde\delta$, and $\nu$ for its decrement. To first order $\tilde\delta -
+\hat\delta = \mathcal I_{\delta\delta}^{-1} g_\delta$, and the envelope gradient errs by $e
+= \mathcal I_{c\delta}\, \mathcal I_{\delta\delta}^{-1} g_\delta$. At the outer maximum this
+moves $\theta_c$ by $-\mathcal S^{-1} e$, where
+
+$$
+\mathcal S = \mathcal I_{cc} - \mathcal I_{c\delta}\, \mathcal I_{\delta\delta}^{-1}\,
+\mathcal I_{\delta c}
+$$
+
+is the profile's curvature (below). A linear combination $a^\top \theta_c$ has standard
+error $(a^\top \mathcal S^{-1} a)^{1/2}$, and by Cauchy–Schwarz it moves by at most
+$(e^\top \mathcal S^{-1} e)^{1/2}$ of it. By the inverse of the partitioned $\mathcal I$,
+
+$$
+e^\top \mathcal S^{-1} e
+= g_\delta^\top \bigl((\mathcal I^{-1})_{\delta\delta} - \mathcal I_{\delta\delta}^{-1}\bigr)
+g_\delta \le (\kappa - 1)\, g_\delta^\top \mathcal I_{\delta\delta}^{-1} g_\delta
+= 2 (\kappa - 1)\, \nu,
+$$
+
+with $\kappa \ge 1$ the largest eigenvalue of $\mathcal I_{\delta\delta}^{1/2}
+(\mathcal I^{-1})_{\delta\delta}\, \mathcal I_{\delta\delta}^{1/2}$, the most by which
+estimating $\theta_c$ inflates the variance of a combination of the constants. The outer
+solution therefore moves by at most $\sqrt{2(\kappa - 1)\nu}$ standard errors: $1.4 \times
+10^{-5}$ at $\nu = 10^{-12}$, even for $\kappa = 100$. The bound is in standard errors of
+the likelihood with weights of mean one, the unit of the decrement over the mean weight.
+Usually the decrement rule stops the solve first.
+
+**Warm starts and failures.** A line search tries points it then rejects, and constants
+solved at a rejected point are a poor start for the next. Every solve starts from the
+constants of the best point so far (the lowest objective among converged solves), which
+under a monotone line search is the current iterate or a better trial on its line. That
+point's value, constants and gradient are kept, so an evaluation at exactly its
+$\theta_c$, as the optimizer's last one often is, needs no solve. A solve that does not
+converge reaches the optimizer as the overflow sentinel of §5.4, so that its line search
+backtracks: at unconverged constants $-\ell$ only bounds $-\ell^*$ from above, and the
+$\theta_c$ part of the gradient is not the profile's. Such failures are counted; the fit
+warns of those after the best point last improved, which may have stopped the optimizer.
+The constants returned are solved at the optimizer's solution.
+
+**The outer problem.** The optimizer works in the coordinates of §1.5 restricted to
+$\theta_c$; under `"bhhh"` the BHHH diagonal is taken at $(\theta_{c,0},
+\hat\delta(\theta_{c,0}))$, after the first solve. Bounds on $\theta_c$ go to the optimizer.
+The constants may not be bounded, and each must have a finite estimate (§5.4, item 6):
+either case is an error, before the draws.
+
+**The variance.** By the same partitioned inverse, $(\mathcal I^{-1})_{cc} = \mathcal
+S^{-1}$: inverting the full information at $(\hat\theta_c, \hat\delta)$, as §5.6 does for a
+joint fit, gives $\theta_c$ the inverse of the profile's curvature, which accounts for the
+constants being estimated. Inverting $\mathcal I_{cc}$ alone, as if $\delta$ were known,
+gives $\mathcal I_{cc}^{-1} \preceq \mathcal S^{-1}$: standard errors too small. The profile
+fit's variance is therefore the joint fit's, by `se_method`, from the full matrices; after
+a polish, from its last curvature where that is the matrix `se_method` needs (§5.7).
+
+**Cost.** A solve from a warm start takes about two Newton steps, each a pass of the
+constants' kernel (about three gradient passes) and a Cholesky factorization of the
+$J_\delta \times J_\delta$ block ($J_\delta^3/3$ operations: 0.17 s at $J_\delta = 2{,}511$
+on 11 threads, 4 to 5 s at 10,000). In the validation study of NEWS (census- and
+claims-style designs of 518 to 2,620 parameters, two sizes each) the profile took 21 to 49
+evaluations of the optimizer and reached the joint maximum, ending closer to it (the joint
+Newton decrement at its stop $3 \times 10^{-13}$ to $3 \times 10^{-10}$, against
+$10^{-10}$ to $2 \times 10^{-8}$ at the default joint fit's stop), but at 2 to 4 times the
+joint fit's time: L-BFGS in the coordinates of §1.5 needed only 46 to 224 evaluations of
+the joint problem, each about a third of a pass of the constants' kernel. Profiling would
+pay where the joint optimizer needs many more evaluations than that, which the study did
+not find.
+
+*Code reference: `.profile_objective()` and `.concentrate_control()` in
+[R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R);
+`.mxl_profile_solver()`, `.check_profile_inputs()`, `.chosen_counts()` and the wiring in
+`run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R);
+`mxl_delta_hessian_parallel()` in
+[src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp).*
 
 ---
 

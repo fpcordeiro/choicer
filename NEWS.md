@@ -912,13 +912,13 @@
   over the mean weight, falls below `polish_control$tol_decrement`, 1e-8 by
   default; the weights' scale does not matter (in raw log-likelihood units,
   weights summing to one would loosen the rule by the sample size). On a
-  positive definite Hessian of weights with mean one, every linear
-  combination of the estimates then lies within sqrt(2 nu) Hessian standard
-  errors (1.4e-4 at the default) of the maximum of the log-likelihood's
-  quadratic model, whatever the sample size. BHHH is
-  positive semi-definite everywhere and cheaper per step, but converges
-  linearly, and its decrement on its own shows only a stationary point. The
-  default, `"none"`, leaves every fit as it was, bit for bit.
+  positive definite Hessian, every linear combination of the estimates then
+  lies within sqrt(2 nu) Hessian standard errors (computed as if the weights
+  had mean one; 1.4e-4 at the default) of the maximum of the log-likelihood's
+  quadratic model, whatever the sample size. BHHH is positive semi-definite
+  everywhere and cheaper per step, but converges linearly, and its decrement
+  on its own shows only a stationary point. The default, `"none"`, leaves
+  every fit as it was, bit for bit.
 - A converged polish sets `convergence` to the optimizer's success code (1 for
   nloptr, 0 for optim and a custom optimizer) and leads `message` with its
   verdict. `fit$optimizer$polish` records the phase (steps, decrement,
@@ -929,7 +929,9 @@
   last accepted point and warns (class `choicer_polish_failed`). The standard
   errors are computed at the polished estimates, by `se_method`. The polish
   decides every stop at the point whose curvature it has just evaluated, so,
-  unless it returns the start or its curvature fails, that matrix serves as
+  unless it falls back to the optimizer's solution after steps that ended
+  worse, its curvature fails or its start cannot be evaluated, that matrix
+  serves as
   the variance's own wherever `se_method` needs it, rather than being
   evaluated again: after `"newton"`, the Hessian of `"hessian"` and the bread
   of `"sandwich"` and `"cluster"`; after `"bhhh"`, the BHHH matrix of
@@ -960,21 +962,94 @@
   whose curvature there vanishes faster, holds the diagonal and stops
   unconverged. `"bhhh"` needs at least as many likelihood units as the
   parameters it moves.
-- On simulated data, at 11 threads on a loaded machine (indicative): for a
-  census-style design (20,000 decision makers in 24,560 choice situations over
-  2,512 alternatives, the never-chosen ones dropped; 2,530 parameters; 50
-  stored draws) the Newton polish certified the default optimizer's solution
-  at once (one Hessian, 3 s, after a 10 s fit; the variance then uses that
-  Hessian rather than computing its own); from a stop after 15
-  evaluations it reached the same maximum in six steps (24 s), where BHHH
-  stayed 0.33 log-likelihood units short after 20. For a claims-style design
-  (15,000 decision makers in 153,721 situations, 8.7 million rows, over 500
-  alternatives; 518 parameters) Newton (48 s) and BHHH (3 s) certified in one
-  step the solution of a 184 s fit (174 iterations); from a stop after 15
-  evaluations, 8,750 log-likelihood units short, 20 steps of either, each
-  shortened to 10 units of the optimizer's coordinates, closed about 4,000 and
-  stopped 4,706 and 4,781 short. The polish finishes and certifies an
-  optimizer's work; it does not replace it.
+- In a validation study on simulated data (census-style designs of 20,000 and
+  200,000 students choosing among 2,500 to 2,600 schools, 2,530 and 2,620
+  parameters; claims-style panels of 1,500 and 15,000 patients over 500
+  hospitals, 518 parameters; alternatives never chosen dropped, and the
+  situations that offer one chosen wherever offered; 50 stored draws, 11
+  threads), the default fit stopped
+  within 1.1e-4 standard errors of the maximum on all four designs. A Newton
+  polish after it certified that maximum at once on three of them, for about
+  one gradient pass and one factorization more (0 to 3% of the fit, since its
+  Hessian then serves the variance), and in one step on the largest
+  claims-style design (+20%). Handing over earlier rarely paid: of ten Newton
+  hand-overs after 25 to 200 evaluations, one was faster (by a fifth) and one
+  as fast. After 25 evaluations Newton took 1.5 to 10 times as long as the
+  default fit, had not certified the larger claims-style design after 50
+  steps, and on the smaller one certified another local maximum, 13.4
+  log-likelihood units lower; from such stops BHHH certified only the larger
+  census-style design within 100 steps. (Times are modeled from the kernels'
+  calls and their per-pass costs, the machine being loaded by other work; the
+  clock was between 30% below and 20% above the model.) So
+  `polish = "newton"`, after the optimizer's own stop, is the recommended
+  check for a reportable fit with many constants; the default stays
+  `"none"`. The polish finishes and certifies an optimizer's work; it does
+  not replace it.
+
+## Mixed logit — the constants concentrated out (`concentrate_out_asc`)
+
+- `run_mxlogit()` gains `concentrate_out_asc` and `concentrate_control`, its
+  last arguments. With `concentrate_out_asc = "profile_likelihood"` the
+  optimizer moves only the other parameters (the fixed coefficients, the
+  random coefficients' means and Cholesky factor) on the profile
+  log-likelihood l*(theta_c) = max_delta l(theta_c, delta): at every point it
+  evaluates, the constants solve their first-order condition, which sets each
+  alternative's weighted chosen count equal to its predicted count, each
+  decision maker's probabilities averaged over the draws with the weight of
+  the draw given their choices. That is not BLP's share matching, which
+  equates unconditional shares and defines another estimator (`"blp"` is
+  reserved for it, and stops). The optimizer's gradient is the joint gradient
+  at the solved constants (the envelope theorem). The estimator does not
+  change: the profile's maximizer is the joint one, and the standard errors
+  are computed from the full information at the estimates, as for a joint
+  fit, so the estimation of the constants enters the other parameters'
+  standard errors. Treating the constants as known (inverting the other
+  parameters' block of the Hessian alone) would understate them: at
+  the true parameters of a census-style design, to 45% of the correct
+  standard error for a covariate that varies mostly between alternatives and
+  91% for an alternative x decision-maker interaction. The default, `"none"`,
+  leaves every fit as it was, bit for bit.
+- Each solve takes damped Newton steps (the Newton phase's machinery, on the
+  constants alone) on the constants' block of the information, which an
+  internal kernel forms in one pass with the objective and the gradient, for
+  about three gradient passes (the full Hessian costs about 30 to 40). It starts
+  from the constants of the best point the optimizer has reached and stops
+  when the Newton decrement over the mean weight falls below 1e-12, or when
+  every constant's score, and the reference's, is below 1e-10 of its
+  alternative's weighted chosen count plus the mean weight
+  (`concentrate_control`): at that decrement the other parameters' solution
+  moves by at most 1.4e-5 standard errors, even where estimating the other
+  parameters inflates the constants' variance a hundredfold (§5.8 of the
+  mixed logit's math article). Where the constants cannot be solved at the
+  start values the fit stops there (class `choicer_profile_unconverged`; an
+  error inside that solve is reported as itself). A
+  solve that does not converge later reaches the optimizer as an overflow,
+  so that it backtracks, and is counted; the fit warns (same class) when
+  such solves come after the optimizer's best point, or when the constants
+  cannot be solved at its solution. `fit$optimizer$concentration` records
+  the solves.
+- Every constant needs a finite estimate (see "Constants without a finite
+  maximum-likelihood estimate" below): under the profile, an alternative (or
+  the outside option, or the base alternative) that is never chosen, or
+  chosen wherever it is offered, is an error (class
+  `choicer_unbounded_constants`) before the draws, with the warning's
+  remedies, counted by choice situation, so that an alternative listed twice
+  in a situation cannot hide it. Bounds on the constants are an error too;
+  bounds on the other parameters go to the optimizer. The constants' block is
+  factored densely, up to `concentrate_control$max_dense = 10000` constants
+  (more is an error, before the draws; a solve holds two J x J matrices, 0.8
+  GB each at J = 10,000).
+- It is an expert option. In the validation study of the previous section
+  (census-style and claims-style designs, 518 to 2,620 parameters), the
+  profile reached the maximum the joint fit reached and ended closer to it
+  (the joint Newton decrement at its stop 3e-13 to 3e-10, against 1e-10 to
+  2e-8 at the default fit's; `polish = "newton"` certifies either), in 21 to
+  49 evaluations of the optimizer, with about two Newton steps per solve,
+  but took 2.0 to 3.8 times the joint fit's time (modeled; 1.8 to 4.9 times
+  on the clock): every evaluation costs a few passes of the constants'
+  kernel and factorizations of their block, while L-BFGS in the default
+  `scale_vars = "bhhh"` coordinates converged on the joint problem in 46 to
+  224 evaluations.
 
 ## Constants without a finite maximum-likelihood estimate: a warning
 
