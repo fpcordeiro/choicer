@@ -662,11 +662,15 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
 // Threads and per-thread buffers (estimation and prediction kernels)
 // ============================================================================
 
-// The team of a kernel's parallel regions, and so the number of scratch sets
-// or accumulators it allocates: OpenMP's next team, within the thread limit,
-// and at most one thread per work item (likelihood unit or choice situation),
-// but two for a single item, so that the region stays active and, as before,
-// an OpenMP-built BLAS runs the item's products single-threaded.
+// The team of the parallel regions that size per-thread buffers by it, and so
+// the number of scratch sets or accumulators they allocate, and the thread
+// count every estimation kernel's memory check assumes: OpenMP's next team,
+// within the thread limit, and at most one thread per work item (likelihood
+// unit or choice situation), but two for a single item, so that the region
+// stays active and, as before, an OpenMP-built BLAS runs the item's products
+// single-threaded. The gradient, score and tastes kernels run on OpenMP's
+// default team; where it has more threads than items, the extra ones hold
+// only their few n-vectors.
 inline int mxl_team_threads(const mxl_off n_items) {
 #ifdef _OPENMP
   mxl_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
@@ -2733,7 +2737,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
   // units in increasing order.
   std::vector<mxl_off> off(static_cast<std::size_t>(G) + 1, 0);
   for (mxl_off u = 0; u < U; ++u) ++off[cl[u]];
-  for (int g = 1; g <= G; ++g) off[g] += off[g - 1];
+  for (mxl_off g = 1; g <= G; ++g) off[g] += off[g - 1];
   std::vector<mxl_off> order(static_cast<std::size_t>(U));
   {
     std::vector<mxl_off> next(off.begin(), off.end() - 1);

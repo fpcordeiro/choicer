@@ -11,12 +11,12 @@
 // no step either: its step would be dominated by rounding.
 //
 // Memory, as in vcov.cpp: every R allocation comes first (the inputs'
-// pointers, the result list with its step and info, and LAPACK's small
-// arrays from R_alloc()), because an R allocation that fails jumps past C++
-// destructors. The n_F x n_F working copy, with the right-hand side after it,
-// then comes from new[], whose failure is a C++ exception, and is freed as
-// the call returns; nothing after it calls R. LAPACK's xerbla is unreachable
-// with these arguments.
+// pointers, LAPACK's small arrays from R_alloc(), then the result list with
+// its step and info, which Rcpp preserves until its destructors run), because
+// an R allocation that fails jumps past C++ destructors. The n_F x n_F
+// working copy, with the right-hand side after it, then comes from new[],
+// whose failure is a C++ exception, and is freed as the call returns; nothing
+// after it calls R. LAPACK's xerbla is unreachable with these arguments.
 #include <RcppArmadillo.h>
 #include <cfloat>
 #include <cmath>
@@ -92,18 +92,23 @@ Rcpp::List newton_step(SEXP H, SEXP g, SEXP D, SEXP free_idx, double lambda) {
   }
 
   // Every R allocation first: the inputs' data (which an ALTREP vector
-  // would materialize), the result, LAPACK's small arrays
+  // would materialize), LAPACK's small arrays, then the result, last so that
+  // a failed R_alloc() leaves nothing preserved
   const double* h = REAL(H);
   const double* gv = REAL(g);
   const double* d = REAL(D);
+  const std::size_t m = static_cast<std::size_t>(nf);
+  double* lwork = nullptr;
+  blas_int* iwork = nullptr;
+  if (m > 0) {
+    lwork = reinterpret_cast<double*>(R_alloc(3 * m, sizeof(double)));
+    iwork = reinterpret_cast<blas_int*>(R_alloc(m, sizeof(blas_int)));
+  }
   Rcpp::NumericVector step(n);
   Rcpp::IntegerVector info(1);
   Rcpp::List out = Rcpp::List::create(Rcpp::Named("step") = step,
                                       Rcpp::Named("info") = info);
   if (nf == 0) return out;
-  const std::size_t m = static_cast<std::size_t>(nf);
-  double* lwork = reinterpret_cast<double*>(R_alloc(3 * m, sizeof(double)));
-  blas_int* iwork = reinterpret_cast<blas_int*>(R_alloc(m, sizeof(blas_int)));
 
   std::unique_ptr<double[]> work = newton_working_copy(m * m + m);
   double* a = work.get();
