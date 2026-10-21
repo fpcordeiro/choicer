@@ -85,7 +85,9 @@ likelihood keeps rising as the constant falls, or grows); when the
 outside option or the base alternative is never chosen, or chosen
 wherever it is offered, the other constants have none together. The fit
 then warns (class \code{choicer_unbounded_constants}) before the
-optimizer runs, naming them.}
+optimizer runs, naming them. It counts rows (\code{alt_mapping}), so an
+alternative listed twice in a choice situation can hide being chosen
+wherever it is offered.}
 
 \item{keep_data}{Logical. If \code{TRUE} (default), stores prepared data in the
 returned object for \code{predict()} and post-estimation functions.}

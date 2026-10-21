@@ -42,10 +42,12 @@ decision-maker weights and must be constant within each decision maker.}
 \item{outside_opt_label}{The label of the outside option or of the base
 alternative, given in the class of the alternative column. With
 \code{include_outside_option = TRUE} it names the outside option's row of
-\code{alt_mapping}. Without the outside option it names the base
-alternative, coded first (with constants, its constant is normalized to 0);
-it must be one of the alternatives, and \code{NULL} (the default) makes the
-first alternative in sort order the base.}
+\code{alt_mapping}; rows of the data that carry it are kept, unlike in
+\code{prepare_mnl_data()}, as an inside alternative, so drop them first.
+Without the outside option it names the base alternative, coded first
+(with constants, its constant is normalized to 0); it must be one of the
+alternatives, and \code{NULL} (the default) makes the first alternative
+in sort order the base.}
 
 \item{include_outside_option}{Logical indicating whether to include an outside option in the model.}
 

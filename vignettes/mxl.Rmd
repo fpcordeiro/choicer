@@ -101,6 +101,26 @@ have enough independent clusters for its asymptotics.
 > from numerically pathological regions. See
 > `inst/simulations/mxl_simulation.R` for a fully hardened example.
 
+> **At population scale.** With millions of choice situations, prefer
+> `draws = "generate"`: each thread forms a likelihood unit's draws when it
+> needs them, where stored draws are a cube of `8 * K_w * S` bytes per unit
+> (decision maker with `person_col`, choice situation otherwise), held while
+> the model is fitted and rebuilt by `vcov(type = )`, `wesml_vcov()` and
+> `conditional_tastes()`; `run_mxlogit()` warns when it would pass 1 GiB.
+> Generated draws are scrambled by default (`scramble = "permuted"`), so the
+> estimates differ from a store-mode fit's by simulation error (set `seed` to
+> reproduce a fit), and an evaluation can take about 1.35 times as long where
+> forming the draws dominates, as with small choice sets. Before allocating,
+> the mixed logit's estimation routines compare an upper estimate of their
+> memory with the machine's total physical memory and stop with the number of
+> threads that fits (`?set_num_threads`; `options(choicer.max_memory = )` sets
+> the limit for a container or a batch job). `blp()` keeps up to
+> `keep_draws_bytes` of draws across its iterations (4 GiB by default); on
+> Linux and macOS a budget above the free memory can end the R session. With
+> many alternatives, see
+> [Many alternatives](#many-alternatives-constants-convergence-and-standard-errors)
+> below for convergence and standard errors.
+
 ## Parameter recovery
 
 ```{r recovery}
@@ -354,7 +374,9 @@ random coefficient's mean, of its own once the constants are in: that mean effec
 the constants (a random coefficient on the trait keeps its spread, identified as above, as
 with `random_var_cols` and `rc_mean = FALSE`), and recovering it takes a second step, a
 projection of the estimated constants on the traits, with instruments where a trait is
-endogenous. Three practical questions follow.
+endogenous. Three practical questions follow; §5.6 to §5.8 of the
+[math companion](https://fpcordeiro.github.io/choicer/articles/mixed_logit_math.html) give
+the details, and [Which standard errors, and when](inference.html) the variance routes.
 
 **Is the optimizer at the maximum?** L-BFGS stops when its own tolerances say so, which
 need not be at the maximum where curvatures differ by orders of magnitude, as they do
@@ -381,8 +403,8 @@ probabilities averaged with the weight $\omega_{ns}$ of draw $s$ given their cho
 is not BLP's share matching, which equates the *unconditional* predicted shares to the
 observed ones and defines a different estimator; with random coefficients the two differ.
 In the study above the profile reached the same maximum, and ended closer to it, but took
-two to four times as long as the joint fit: each of its evaluations solves for the
-constants anew. It is an expert option.
+two to four times as long as the joint fit (modeled from the kernels' calls; 1.8 to 4.9
+times on the clock): each of its evaluations solves for the constants anew. It is an expert option.
 
 **Do the standard errors account for the constants?** They must: the constants are
 estimated, and their estimation error moves the other parameters. A profile fit's
@@ -428,10 +450,12 @@ For a reportable `run_mxlogit()` application:
 
 1. Fit a transparent MNL benchmark and use its estimates to inform explicit
    `theta_init` values. The default start moves with the covariates' units (a
-   normal random coefficient's standard deviation starts at one over its
+   normal random coefficient's standard deviation starts at 1/h, h its
    covariate's typical step: 1 for a dummy, the standard deviation for a
-   dense covariate), so the optimizer's path barely depends on them (exactly
-   so, in exact arithmetic, under `scale_vars = "sd"`); a shifted log-normal
+   dense covariate), so under the default `scale_vars = "bhhh"` the
+   optimizer's path depends on them only through the power-of-two rounding of
+   its scales and nloptr's relative step test (not at all, in exact
+   arithmetic, under `scale_vars = "sd"`); a shifted log-normal
    coefficient's random part, though, has median one in its covariate's units:
    put such a covariate in units where the coefficient is of order one.
 2. Run several manually supplied starting values and retain their objective,

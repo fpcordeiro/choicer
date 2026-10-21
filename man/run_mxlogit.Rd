@@ -107,7 +107,9 @@ optimizer runs, naming them; a finite bound in the direction a constant
 diverges (\code{lower} for a never-chosen alternative's, \code{upper}
 for an always-chosen one's) holds it, and that alternative is not named
 (the outside option's and the base's cases, which move every constant
-together, are named whatever the bounds).}
+together, are named whatever the bounds). It counts rows
+(\code{alt_mapping}), so an alternative listed twice in a choice
+situation can hide being chosen wherever it is offered.}
 
 \item{theta_init}{Initial parameter vector in natural-scale units. If
 \code{NULL} (default), the start is in the columns' units: zero for the
@@ -126,7 +128,11 @@ part, which has no units (that random part has median 1 in the column's
 units, so a log-normal covariate belongs in units where its coefficient is
 of order one). Where the default start falls outside
 \code{lower}/\code{upper}, it is moved to the nearest bound, with a
-message. A supplied \code{theta_init} is used as given.}
+message. A supplied \code{theta_init} is used as given. With
+\code{concentrate_out_asc = "profile_likelihood"} the constants start
+instead at the first inner solve's solution, from the log ratios of the
+alternatives' weighted chosen counts to the reference's (default start)
+or from \code{theta_init}'s constants.}
 
 \item{lower, upper}{Optional parameter bounds for the optimizer, in
 natural-scale units (mapped to the optimizer's coordinates when
@@ -238,9 +244,11 @@ each decision maker: the objective is \eqn{\sum_n w_n \log L_n}.}
 \item{outside_opt_label}{(Convenience workflow.) The label of the outside
 option or of the base alternative, given in the class of the alternative
 column. With \code{include_outside_option = TRUE} it names the outside
-option's row of \code{alt_mapping}. Without the outside option it names the
-base alternative, coded first (with constants, its constant is normalized
-to 0); it must be one of the alternatives, and \code{NULL} (the default)
+option's row of \code{alt_mapping}; rows of the data that carry it are
+kept, unlike in \code{prepare_mnl_data()}, as an inside alternative, so
+drop them first. Without the outside option it names the base
+alternative, coded first (with constants, its constant is normalized to
+0); it must be one of the alternatives, and \code{NULL} (the default)
 makes the first alternative in sort order the base.}
 
 \item{include_outside_option}{Logical whether to include an outside option
@@ -420,7 +428,8 @@ describes the optimizer over the other parameters, and
 \code{method}, \code{evaluations} (the optimizer's calls of the
 profile, the start's and the cached point's included; the optimizer's own
 count is \code{fit$optimizer$iterations}), \code{solves},
-\code{failed} (solves at the optimizer's points that did not converge),
+\code{failed} (solves at the points the optimizer tried that did not
+converge; the final solve, at its solution, is reported below),
 \code{inner_iterations} (Newton steps), \code{passes} (of the
 constants' kernel), \code{max_residual} (the largest relative score of
 the constants at a converged solve, above \code{tol_residual} where the
@@ -541,10 +550,10 @@ it.
 
 Each step costs a curvature evaluation and a line search. A smaller
 \code{maxeval} (nloptr) or \code{maxit} (optim) in \code{control} hands
-the polish a point sooner, which saves time where the optimizer's last
-iterations creep; from farther away the steps are shortened (and damped
-where the curvature is not positive definite), and more of them are
-needed.
+the polish a point sooner, but from farther away its steps are shortened
+(and damped where the curvature is not positive definite) and more of them
+are needed: in the study above that rarely paid, which is why the polish
+is recommended after the optimizer's own stop.
 }
 
 \section{Profile likelihood of the constants (concentrate_out_asc)}{
@@ -593,7 +602,8 @@ solve, whose Newton steps each take a pass of the constants' kernel (about
 three gradient passes) and a dense factorization of their block. On the
 study's census- and claims-style designs the profile reached the joint
 fit's maximum, and ended closer to it, in 21 to 49 evaluations of the
-optimizer, but at 2 to 4 times the joint fit's time, L-BFGS in the default
+optimizer, but at 2 to 4 times the joint fit's time (modeled from the
+kernels' calls; 1.8 to 4.9 times on the clock), L-BFGS in the default
 coordinates needing 46 to 224 evaluations of the joint problem;
 \code{polish = "newton"} certifies either.
 }
@@ -633,5 +643,8 @@ choices: households' choices of appliance efficiency level.
 }
 \seealso{
 \code{\link{conditional_tastes}}, \code{\link{run_hmnlogit}} (the
-hierarchical Bayes counterpart)
+hierarchical Bayes counterpart), \code{\link{set_num_threads}} (threads
+and the memory check of the compiled routines),
+\code{vignette("mxl")} (many alternatives: constants, convergence and
+standard errors)
 }
