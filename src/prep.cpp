@@ -101,7 +101,9 @@ SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
       const double* in = REAL_RO(c);
       int large = 0;
       if (diff) {
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(static) reduction(|:large) if (n > 100000)
+        #endif
         for (R_xlen_t i = 0; i < n; ++i) {
           const double v = int64_value(in, r[i] - 1);
           const double w = int64_value(in, b[i] - 1);
@@ -109,7 +111,9 @@ SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
           large |= std::fabs(v) >= kExactInt || std::fabs(w) >= kExactInt;
         }
       } else {
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(static) reduction(|:large) if (n > 100000)
+        #endif
         for (R_xlen_t i = 0; i < n; ++i) {
           o[i] = int64_value(in, r[i] - 1);
           large |= std::fabs(o[i]) >= kExactInt;
@@ -120,16 +124,22 @@ SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
     } else if (TYPEOF(c) == REALSXP) {
       const double* in = REAL_RO(c);
       if (diff) {
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(static) if (n > 100000)
+        #endif
         for (R_xlen_t i = 0; i < n; ++i) o[i] = in[r[i] - 1] - in[b[i] - 1];
       } else {
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(static) if (n > 100000)
+        #endif
         for (R_xlen_t i = 0; i < n; ++i) o[i] = in[r[i] - 1];
       }
     } else {
       const int* in = INTEGER_RO(c);
       if (diff) {
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(static) if (n > 100000)
+        #endif
         for (R_xlen_t i = 0; i < n; ++i) {
           const int v = in[r[i] - 1], w = in[b[i] - 1];
           o[i] = (v == NA_INTEGER || w == NA_INTEGER)
@@ -137,7 +147,9 @@ SEXP prep_gather_design(SEXP cols, SEXP rows, SEXP base = R_NilValue) {
             : static_cast<double>(v) - static_cast<double>(w);
         }
       } else {
+        #ifdef _OPENMP
         #pragma omp parallel for schedule(static) if (n > 100000)
+        #endif
         for (R_xlen_t i = 0; i < n; ++i) {
           const int v = in[r[i] - 1];
           o[i] = (v == NA_INTEGER) ? NA_REAL : static_cast<double>(v);
