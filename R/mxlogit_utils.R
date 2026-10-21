@@ -1050,6 +1050,15 @@ run_mxlogit <- function(
     if (is.null(eta_draws)) {
       stop("'eta_draws' is required when using 'input_data' (advanced workflow).")
     }
+    # The kernels read the cube in place as doubles: one stored as integers
+    # would be converted into a temporary that R may free while they read it.
+    if (!is.double(eta_draws) || inherits(eta_draws, "integer64")) {
+      if (!is.integer(eta_draws) && !is.logical(eta_draws)) {
+        stop("`eta_draws` must be a numeric array of draws (K_w x S x units).",
+             call. = FALSE)
+      }
+      storage.mode(eta_draws) <- "double"
+    }
     # `S` is a convenience-workflow argument; record the draws actually used so
     # post-hoc methods regenerate the same Halton blocks.
     S <- dim(eta_draws)[2L]

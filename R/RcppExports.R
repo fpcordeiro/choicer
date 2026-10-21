@@ -1272,7 +1272,9 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
 #' @param M N x 1 vector with number of alternatives for each individual
 #' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with draws; K_w x S x N
+#' @param eta_draws Array with draws; K_w x S x N, stored as double: an
+#'   integer array is read from a temporary copy that R may free during
+#'   the call (convert it with \code{storage.mode(x) <- "double"})
 #' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
 #' @param rc_correlation whether random coefficients are correlated
 #' @param rc_mean whether mu parameters represent means (TRUE) or are zero (FALSE)

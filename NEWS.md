@@ -1162,6 +1162,15 @@ unless it says otherwise.
   set from the one used in estimation. `draws_info$S` now records
   `dim(eta_draws)[2]`. Post-hoc methods reproduce the estimation draws only
   when `eta_draws` was built with `get_halton_normals(S, U, K_w)`.
+- `run_mxlogit()`'s advanced workflow (`input_data` with `eta_draws`) passed
+  the cube of draws to its compiled routines through RcppArmadillo's
+  conversion, which reads a cube stored as integers, rather than doubles, from
+  a temporary copy that R may free while the routines read it: such a fit
+  could be computed from freed memory, or crash. `get_halton_normals()`
+  returns doubles, so only a cube built otherwise (an integer array) was
+  exposed. `run_mxlogit()` now converts such a cube to double first. The
+  exported `mxl_blp_contraction()` still reads its cube as given: convert an
+  integer array with `storage.mode(x) <- "double"` before passing it.
 - The data preparations (`prepare_mnl_data()`, `prepare_mxl_data()`,
   `prepare_nl_data()`, `prepare_mnp_data()`, `prepare_hmnl_data()`,
   `prepare_hmnp_data()`, and the `run_*()` functions that call them) could

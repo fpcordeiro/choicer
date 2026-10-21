@@ -3,7 +3,10 @@
 # scale_vars = "sd", "mad" and "iqr" (with their check) and checks a supplied
 # start, all before it builds the cube; the three wrappers check that every
 # parameter has a name before the optimizer runs (they used to fail when
-# naming the estimates, after it).
+# naming the estimates, after it). An eta_draws cube stored as integers
+# reaches the mixed logit's kernels as doubles: they read the cube in place,
+# and RcppArmadillo's conversion of an integer cube is a temporary that R may
+# free while they read it; a cube of another type is an error.
 
 cbd_data <- function(seed = 11L) {
   set.seed(seed)
@@ -99,6 +102,55 @@ test_that("run_mxlogit() checks a store-mode cube's size before the column scale
       draws = "store", scale_vars = "sd")),
     "A store-mode draw cube needs S \\* N"
   )
+})
+
+test_that("an integer eta_draws cube reaches the kernels as doubles", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)  # so that the two fits agree bit for bit
+  dt <- cbd_data()
+  inp <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "x2")
+  eta <- get_halton_normals(20L, length(inp$M), 1L)
+  eta_int <- array(as.integer(round(2 * eta)), dim(eta))
+  eta_dbl <- array(as.double(eta_int), dim(eta))
+  types <- character()
+  real <- get("mxl_loglik_gradient_parallel", envir = asNamespace("choicer"))
+  local_mocked_bindings(mxl_loglik_gradient_parallel = function(..., eta_draws) {
+    types <<- c(types, typeof(eta_draws))
+    real(..., eta_draws = eta_draws)
+  })
+  f_int <- suppressMessages(run_mxlogit(input_data = inp, eta_draws = eta_int,
+                                        se_method = "bhhh"))
+  expect_true(length(types) > 0L)
+  expect_true(all(types == "double"))
+  f_dbl <- suppressMessages(run_mxlogit(input_data = inp, eta_draws = eta_dbl,
+                                        se_method = "bhhh"))
+  expect_identical(coef(f_int), coef(f_dbl))
+  expect_identical(f_int$loglik, f_dbl$loglik)
+  expect_identical(f_int$vcov, f_dbl$vcov)
+})
+
+test_that("an eta_draws cube that is not numeric stops before the kernels", {
+  dt <- cbd_data()
+  counter <- cbd_count_evals()
+  inp <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "x2")
+  eta <- get_halton_normals(10L, length(inp$M), 1L)
+  eta_chr <- array(format(eta), dim(eta))
+  expect_error(suppressMessages(run_mxlogit(input_data = inp, eta_draws = eta_chr)),
+               "`eta_draws` must be a numeric array")
+  expect_identical(counter$n, 0L)
+})
+
+test_that("an integer64 eta_draws cube stops before the kernels", {
+  skip_if_not_installed("bit64")
+  dt <- cbd_data()
+  counter <- cbd_count_evals()
+  inp <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "x2")
+  eta <- get_halton_normals(10L, length(inp$M), 1L)
+  eta_i64 <- bit64::as.integer64(round(eta))
+  dim(eta_i64) <- dim(eta)
+  expect_error(suppressMessages(run_mxlogit(input_data = inp, eta_draws = eta_i64)),
+               "`eta_draws` must be a numeric array")
+  expect_identical(counter$n, 0L)
 })
 
 test_that("every parameter needs a name before the optimizer runs", {
