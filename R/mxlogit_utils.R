@@ -40,7 +40,7 @@
 # L L' it implies.
 .mxl_cov_names <- function(prefix, K_w, rc_correlation) {
   if (!rc_correlation) {
-    return(paste0(prefix, "_", seq_len(K_w), seq_len(K_w)))
+    return(paste0(prefix, "_", seq_len(K_w), seq_len(K_w), recycle0 = TRUE))
   }
   i <- rep(seq_len(K_w), seq_len(K_w))
   sprintf("%s_%d%d", prefix, i, sequence(seq_len(K_w)))
@@ -1090,15 +1090,26 @@ run_mxlogit <- function(
 
   # Parameter names (built early; reused for theta_hat, vcov, se downstream)
   beta_names <- colnames(input_data$X)
-  mu_names <- if (rc_mean) paste0("Mu_", colnames(input_data$W)) else character(0)
+  mu_names <- if (rc_mean) {
+    paste0("Mu_", colnames(input_data$W), recycle0 = TRUE)
+  } else {
+    character(0)
+  }
   sigma_names <- .mxl_cov_names("L", K_w, rc_correlation)
   alt_col <- names(input_data$alt_mapping)[2]
   asc_names <- if (use_asc) {
-    paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
+    paste0("ASC_", input_data$alt_mapping[[alt_col]][seq_len(J)[-1L]],
+           recycle0 = TRUE)
   } else {
     character(0)
   }
   param_names <- c(beta_names, mu_names, sigma_names, asc_names)
+  # A hand-built input_data's X (and W, with rc_mean) needs a name per column:
+  # they name the parameters, before the optimizer rather than after it.
+  if (length(param_names) != n_params) {
+    stop("`input_data$X` and `input_data$W` need one column name per ",
+         "covariate: they name the parameters.", call. = FALSE)
+  }
   # summary() relabels some parameters: its labels may not repeat either
   .check_param_names(
     list(param_names,
@@ -1176,23 +1187,24 @@ run_mxlogit <- function(
     }
   }
 
-  # Draws for the convenience workflow, built once the inputs have passed
-  # the checks above: a store-mode cube can take gigabytes.
-  if (has_data) {
-    if (draws == "store") {
-      # One K_w x S draw block per likelihood unit: per decision maker with
-      # person_col, per choice situation otherwise.
-      n_units <- length(.unit_first(input_data))
-      .warn_store_cube(S, n_units, K_w, !is.null(input_data$Ti))
-      eta_draws <- get_halton_normals(S, n_units, K_w)
-    } else {
-      # generate mode: no cube ever materialized; empty placeholder
-      eta_draws <- array(0, dim = c(K_w, 0L, 0L))
-      # Draw seed from R RNG when not supplied (like run_mnprobit)
-      if (is.null(seed)) {
-        seed <- sample.int(.Machine$integer.max, 1L)
-      }
+  # Store-mode draws: their checks and the size warning before the column
+  # scales below, the cube itself after them
+  if (has_data && draws == "store") {
+    n_units <- length(.unit_first(input_data))
+    if (!.whole_number(S)) {
+      stop("`S` must be a single positive whole number.", call. = FALSE)
     }
+    if (!.halton_points_ok(S, n_units)) {
+      stop(.halton_points_msg(as.numeric(S) * n_units), call. = FALSE)
+    }
+    .warn_store_cube(S, n_units, K_w, !is.null(input_data$Ti))
+  }
+
+  # A supplied start must have one finite value per parameter where the
+  # optimizer works in scaled coordinates (checked again once the map is
+  # built); with scale_vars = "none" the kernels check its length.
+  if (!profile && !is.null(theta_init) && scale_vars != "none") {
+    .check_theta_init(theta_init, n_params)
   }
 
   # --- The optimizer's coordinates: column scales (scale_vars) ----------------
@@ -1237,6 +1249,24 @@ run_mxlogit <- function(
       }
     }
   }
+  # Draws for the convenience workflow, built once the inputs have passed
+  # the checks above (the column scales' among them): a store-mode cube can
+  # take gigabytes.
+  if (has_data) {
+    if (draws == "store") {
+      # One K_w x S draw block per likelihood unit: per decision maker with
+      # person_col, per choice situation otherwise (n_units, above).
+      eta_draws <- get_halton_normals(S, n_units, K_w)
+    } else {
+      # generate mode: no cube ever materialized; empty placeholder
+      eta_draws <- array(0, dim = c(K_w, 0L, 0L))
+      # Draw seed from R RNG when not supplied (like run_mnprobit)
+      if (is.null(seed)) {
+        seed <- sample.int(.Machine$integer.max, 1L)
+      }
+    }
+  }
+
   # Resolve theta_init (natural units). The default start is in the columns'
   # units (.mxl_default_start()), moved to the nearest bound where it falls
   # outside the box (the optimizer refuses a start outside it), with a
