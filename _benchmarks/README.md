@@ -40,6 +40,15 @@ aggregate CSVs are reconciled from completed partials. `--max-run-sec` sets an
 optional per-attempt child-process timeout; omit it or set it to `Inf` to run
 without a timeout.
 
+## Population-scale benchmarks
+
+`scale/` holds the benchmarks of the mixed logit at population scale: its
+compiled kernels, fits and data preparations on synthetic claims- and
+census-style data of 10^6 to 10^8 stacked rows, two builds alternated, with the
+malloc-counting shim for memory on macOS; and two runs meant for a many-core
+server, `budget_sweep.R` (the kernels' draw-batch budget) and `layout_cost.R`
+(the per-call layout at 10^9 rows). See `scale/README.md`.
+
 ## Legacy Benchmarks
 
 The older ad hoc scripts remain available through their original top-level
