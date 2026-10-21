@@ -48,7 +48,9 @@ mxl_blp_contraction(
 
 \item{weights}{N x 1 vector with weights for each observation}
 
-\item{eta_draws}{Array with draws; K_w x S x N}
+\item{eta_draws}{Array with draws; K_w x S x N, stored as double: an
+integer array is read from a temporary copy that R may free during
+the call (convert it with \code{storage.mode(x) <- "double"})}
 
 \item{rc_dist}{K_w vector indicating distribution (0=normal, 1=log-normal)}
 
