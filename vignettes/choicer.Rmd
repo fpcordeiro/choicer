@@ -19,8 +19,10 @@ options(digits = 4)
 
 **choicer** estimates discrete-choice models for applied economics. The
 likelihoods, analytical gradients and Hessians are written in C++ with OpenMP parallelization,
-so estimation is fast and scales to specifications with hundreds of
-alternative-specific constants. Just as important, *one consistent
+so estimation is fast and, for the mixed logit, scales to specifications
+with thousands of alternative-specific constants (see
+[Many alternatives](mxl.html#many-alternatives-constants-convergence-and-standard-errors)
+in the mixed logit vignette). Just as important, *one consistent
 post-estimation interface* takes you from a fitted model to the quantities you
 actually report: fitted shares (population shares when the sampling design
 supports that interpretation), elasticities, diversion ratios,

@@ -1171,10 +1171,11 @@ scheduling for load balancing (`#pragma omp for schedule(dynamic)`):
   decision makers under `person_col`, choice situations otherwise). Generate-mode kernels
   receive an empty placeholder cube plus `gen_seed`, `gen_scramble`, and `gen_S`.
 - Prediction kernels read one block per choice situation: situation $i$ gets points
-  $(i-1)S+1,\ldots,iS$ of the Halton sequence. With stored draws the prediction-type
-  functions (`predict()`, `logsum()`, `elasticities()`, `diversion_ratios()`, `blp()`, and
-  through them `consumer_surplus()` and `gof()`) never build that $K_w\times S\times N$
-  cube (though `blp()` may keep the draws across its iterations, §8.4): they pass an empty
+  $(i-1)S+1,\ldots,iS$ of the Halton sequence. With stored draws and up to 128 random
+  coefficients (the on-the-fly generator's limit; beyond it they build the cube), the
+  prediction-type functions (`predict()`, `logsum()`, `elasticities()`,
+  `diversion_ratios()`, `blp()`, and through them `consumer_surplus()` and `gof()`) never
+  build that $K_w\times S\times N$ cube (though `blp()` may keep the draws across its iterations, §8.4): they pass an empty
   placeholder and `gen_scramble = 2`, and each thread forms its
   situation's block on the fly from `HaltonGen`'s identity-permutation uniforms, which
   are `randtoolbox::halton()`'s points, mapped to normals by R's `qnorm()`
@@ -1185,9 +1186,7 @@ scheduling for load balancing (`#pragma omp for schedule(dynamic)`):
   are compiled with the same floating-point contraction: both add each digit's term
   $d_j b^{-(j+1)}$ to the radical inverse in the same order, and agree bit for bit when
   both fuse those multiply-adds or neither does, as on CRAN's platforms. Otherwise under
-  1% of the uniforms, all of bases 5 and up, differ in their last bit. The on-the-fly
-  generator covers up to 128 random coefficients; beyond them the functions build the
-  cube.
+  1% of the uniforms, all of bases 5 and up, differ in their last bit.
 
 ### 5.6 Inverting the Information
 
@@ -1563,7 +1562,7 @@ claims-style designs of 518 to 2,620 parameters, two sizes each) the profile too
 evaluations of the optimizer and reached the joint maximum, ending closer to it (the joint
 Newton decrement at its stop $3 \times 10^{-13}$ to $3 \times 10^{-10}$, against
 $10^{-10}$ to $2 \times 10^{-8}$ at the default joint fit's stop), but at 2 to 4 times the
-joint fit's time: L-BFGS in the coordinates of §1.5 needed only 46 to 224 evaluations of
+joint fit's time (modeled from the kernels' calls; 1.8 to 4.9 times on the clock): L-BFGS in the coordinates of §1.5 needed only 46 to 224 evaluations of
 the joint problem, each about a third of a pass of the constants' kernel. Profiling would
 pay where the joint optimizer needs many more evaluations than that, which the study did
 not find.

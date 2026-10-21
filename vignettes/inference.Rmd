@@ -43,6 +43,13 @@ bootstrap, or randomization inference. Those designs require an external
 small-sample procedure or a research design with a defensible higher-level
 sampling argument.
 
+With thousands of alternative-specific constants, each estimator above uses the
+full information, the constants' block included: the constants are estimated,
+and their estimation error enters the other parameters' standard errors (see
+[Many alternatives](mxl.html#many-alternatives-constants-convergence-and-standard-errors) in the
+mixed logit vignette, which also covers checking that the optimizer reached the
+maximum).
+
 ```{r setup}
 library(choicer)
 set_num_threads(2)

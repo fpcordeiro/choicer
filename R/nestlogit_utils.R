@@ -34,7 +34,8 @@
 #'   never-chosen alternative, the base included, this holds while the
 #'   parameter of its nest is at most 1. The fit then warns (class
 #'   \code{choicer_unbounded_constants}) before the optimizer runs, naming
-#'   them.
+#'   them. It counts rows (\code{alt_mapping}), so an alternative listed
+#'   twice in a choice situation can hide being chosen wherever it is offered.
 #' @param theta_init Optional initial parameter vector in natural units,
 #'   ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one
 #'   per nest of two or more alternatives) and the constants. If \code{NULL}:

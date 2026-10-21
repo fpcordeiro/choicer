@@ -19,9 +19,10 @@ Set the number of OpenMP threads used by choicer
 The setting applies to every choicer kernel run afterwards in the
 session (it calls \code{omp_set_num_threads()}); \code{\link[=thread_info]{thread_info()}} reports it.
 Each thread of the mixed logit's compiled routines (behind the
-log-likelihood and its gradient, the Hessian, the BHHH matrix, the robust
-and clustered meats and the conditional tastes) needs its own working
-memory, besides what they share. Before allocating it, they compare an
+log-likelihood and its gradient, the Hessian and the profile likelihood's
+block of the constants, the BHHH matrix, the score matrix, the robust and
+clustered meats and the conditional tastes) needs its own working memory,
+besides what they share. Before allocating it, they compare an
 upper estimate of the call's total with the machine's total physical
 memory and, when it would not fit, stop with an error that gives the
 number of threads that fits; they do not lower the thread count to make
@@ -33,4 +34,8 @@ is no check.
 \verb{options(choicer.max_memory = <bytes>)} sets the limit instead, for a
 container or a cluster job with less memory than the machine, and \code{Inf}
 lifts the check.
+}
+\seealso{
+\code{\link[=thread_info]{thread_info()}}; \code{\link[=run_mxlogit]{run_mxlogit()}}, whose \code{draws = "generate"}
+holds no draw cube in memory.
 }

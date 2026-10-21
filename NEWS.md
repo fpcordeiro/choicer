@@ -1,218 +1,484 @@
 # choicer (development version)
 
-## Scaling the optimizer's coordinates (`scale_vars`): `"bhhh"` is the new default
+## Population-scale mixed logit
 
-- **Default change.** `run_mxlogit()` and `run_mnlogit()` now default to
-  `scale_vars = "bhhh"`, below; `run_nestlogit()` gains `scale_vars` (its last
-  argument) and keeps `"none"`. A fit that uses the default reaches the same
-  estimator's maximum through other coordinates, so its estimates, iteration
-  counts and convergence codes change. With any `scale_vars` but `"none"` (so
-  now by default for the mixed and multinomial logits), settings in parameter
-  units in `control` (nloptr's `xtol_abs`; optim's `parscale`, and `pgtol` for
-  the mixed and nested logits, which optim fits by L-BFGS-B) and custom
-  optimizers act on the scaled coordinates. `scale_vars = "none"` restores the
-  0.2.x path, for a mixed logit together with the 0.2.x start values (next
-  section); for a saved fit, `update(fit, scale_vars = "none")` (and, for a
-  mixed logit, `theta_init`).
-- `scale_vars` chooses how the optimizer's coordinates are scaled; it never
-  changes the estimator or the data. The likelihood is evaluated at the
-  parameters, on the design as supplied, while the optimizer works on rescaled
-  parameters, theta = m * theta_t + c, with the gradient rescaled by the chain
-  rule. Start values and bounds are given in natural units and mapped;
-  estimates and standard errors are reported in natural units.
-- `scale_vars = "bhhh"` scales each parameter by the inverse square root of
-  the diagonal of the BHHH (outer product of gradients) matrix at the start
-  values, rounded to a power of two, from one extra gradient pass. L-BFGS
-  starts every iteration from a single multiple of the identity as its
-  curvature, and in a model with many alternatives the curvatures of the
-  constants (large and small alternatives) and of the Cholesky entries spread
-  over orders of magnitude that no column scale reaches. On simulated designs
-  (census-style, claims-style and small) and on the shipped `mode_choice`
-  data, with the default optimizer (nloptr L-BFGS) and a budget of 2,000
-  likelihood evaluations, `"bhhh"` reached the maximum (log-likelihood within
-  1e-6 of a Newton-polished reference, Newton decrement below 1e-6) in (base
-  runs from the 0.2.x start values, which the mixed logit's default no longer
-  uses (next section); reruns from starts perturbed by 1e-13 moved the counts
-  by up to a quarter, never their order):
-  - mixed logit, census-style (20,000 and 200,000 students, 2,530 and 2,620
-    parameters): 42 and 49 evaluations, where `"none"` and `"sd"` had not
-    arrived after 2,000 (they stopped up to 90 log-likelihood units short, and
-    one of those runs reported convergence);
-  - mixed logit, claims-style (518 parameters): 198, against 988 for `"none"`
-    and 998 for `"sd"`;
-  - multinomial logit (509 and 2,521 parameters): 26 and 39, against 787 and
-    1,358 for `"none"`;
-  - small models, `mode_choice` included: 11 to 30, against 19 to 108 for
-    `"none"` and 20 to 31 for `"sd"`; on a small mixed logit `"none"` and
-    `"sd"` both failed at once.
+This release reworks the mixed logit for the data it is most needed on:
+health-claims and school-census records with 10^8 stacked rows, thousands of
+alternative-specific constants and many threads. The estimator is unchanged.
+Two defaults change the optimizer's path (the coordinates it works in, and its
+start): on the designs we measured, a fit that uses them moved within the
+optimizer's tolerance or reached a maximum it used to stop short of, with the
+exceptions stated below; and every fit's information is now equilibrated
+before it is inverted, which moves standard errors by rounding, more where the
+information is ill-conditioned ("Estimation and inference in every model",
+below). The rest leaves results as they were, up to the rounding stated, or
+adds an option: `polish`, a Newton phase that finishes and certifies the
+optimizer's maximum; `concentrate_out_asc`, the profile likelihood of the
+constants; `blp(keep_draws_bytes = )`; and `options(choicer.max_memory = )`.
+`vignette("mxl")` ("Many alternatives: constants, convergence and standard
+errors") puts them to work, and `?set_num_threads` covers threads and memory.
+Unless stated otherwise, the figures below come from simulated designs:
+claims-style panels of patients choosing among 20 to 200 of 500 hospitals, up
+to 500 visits each (518 parameters), and census-style data of students
+choosing among 10 to 100 of 2,500 to 2,600 schools (2,530 or 2,620 parameters,
+depending on the study), with three correlated random coefficients, timed at
+eleven threads, mostly as medians of runs alternated with the previous code,
+some as single runs; the multinomial and nested logits' figures come from
+designs of their own, described where they appear.
 
-  Over the test suite's default fits, those capped by a test's evaluation
-  limit included, `"bhhh"` took 20% fewer iterations for the multinomial logit
-  (1,532 against 1,915 over 149 fits) and 6% fewer for the mixed logit (3,591
-  against 3,832 over 146, from the 0.2.x start). The scales fix the
-  optimizer's metric, not a start that is wrong in a column's units: with the
-  census-style design's columns rescaled by 10^3 or 10^-3, no choice reached
-  the mixed logit's maximum in 2,000 evaluations from the 0.2.x start
-  (Cholesky diagonal 0.5 in every column's units), which is why the mixed
-  logit's default start is now in the columns' units (next section); from the
-  new start `"bhhh"` reaches the maximum in 54 evaluations (`"sd"` and
-  `"none"` still do not). The multinomial logit, whose start does not depend
-  on units, reached its own maximum on that design with `"bhhh"` in 38
-  evaluations, against about 1,300 with `"sd"`, while `"none"` reported
-  convergence 1,920 log-likelihood units short. Where the diagonal is unusable
-  at the start values (no finite, positive entry, as when the likelihood
-  overflows there), the parameters are left unscaled, with a message.
-- **What moves with the default.** Where the likelihood is well identified,
-  estimates move within the optimizer's tolerance, and on the designs above
-  (the rescaled one from a start in its units) fits that stopped short of the
-  maximum, or reported a convergence they had not reached, reached it.
-  Standard errors are computed from the equilibrated information (below); they
+### Defaults that move estimates
+
+- **`scale_vars = "bhhh"` is the default** of `run_mxlogit()`, as of
+  `run_mnlogit()` (below). The optimizer works on rescaled parameters, theta =
+  m * theta_t + c, each scaled by the inverse square root of the diagonal of
+  the BHHH (outer product of gradients) matrix at the start values, rounded to
+  a power of two, from one extra gradient pass. The likelihood is evaluated at
+  the parameters, on the design as supplied; start values, bounds, estimates
+  and standard errors are in natural units. L-BFGS starts every iteration from
+  a multiple of the identity as its curvature, and with thousands of constants
+  the curvatures of large and small alternatives' constants and of the
+  Cholesky entries span orders of magnitude that no column scale reaches. With
+  the default optimizer, 50 draws, a budget of 2,000 likelihood evaluations
+  and the 0.2.x start values, `"bhhh"` reached the maximum (log-likelihood
+  within 1e-6 of a Newton-polished reference) in 42 and 49 evaluations on
+  census-style designs of 20,000 and 200,000 students, where `"none"` and
+  `"sd"` had not arrived after 2,000 (up to 90 log-likelihood units short; one
+  run reported convergence), and in 198 on the claims-style panel, against 988
+  for `"none"`; from the new start (below), in 56, 44 and 157. A fit that uses
+  the default reaches the same maximum through other coordinates: where the
+  likelihood is well identified its estimates move within the optimizer's
+  tolerance, and on the designs above fits that stopped short of the maximum,
+  or reported a convergence they had not reached, reached it. Standard errors
   move with the estimates, and where the information is near singular (a
-  variance at its boundary) they can differ widely. Where the data barely
-  identify a direction, estimates can move along it: on a 60-person panel in
-  our reference battery, the constants moved together by 1.0, 0.0005 standard
-  errors, at log-likelihoods 1e-7 apart. On small, degenerate likelihoods the
-  two paths can stop at different points: among the test suite's fits,
-  `"bhhh"` reached a log-likelihood 0.96 higher in one fit whose coefficients
-  diverge (the data separate) and stopped short in two (by 0.09 and 0.02; an
-  alternative never chosen, a random coefficient's variance going to zero).
-- With `optimizer = "optim"`, BFGS for the multinomial logit (its stopping
-  rule `reltol`, relative to the log-likelihood, about 1.5e-8 of its value)
-  and L-BFGS-B for the mixed and nested logits (`factr`, about 2.2e-9) can
-  stop before the accuracy above, scaled or not: on the claims-style
-  multinomial logit, optim reported convergence 0.44 log-likelihood units
-  short with `"bhhh"` (23 evaluations), and 0.52 short with `"none"` (778
-  evaluations, with `maxit` raised to 2,000). `control = list(reltol = )` or
-  `list(factr = )` tightens them; `maxit` (100 by default) caps the
-  iterations.
-- `run_nestlogit()` keeps `"none"` as its default. Its `"bhhh"` scales are
-  fixed at the start values, and when the nest parameters end far from their
-  start (0.5) they can mislead the optimizer: over the test suite's nested
-  logit fits, `"bhhh"` took 14% more iterations than `"none"` (21,190 against
-  18,650 over 102 fits; one fit 540 against 29, to the same maximum), although
-  on one simulated design with a covariate in large units `"none"` failed
-  where `"bhhh"` converged in 27 evaluations, and `"sd"` in 35.
-- `"sd"`, `"mad"` and `"iqr"` keep their meaning (the optimizer works on the
-  parameters the design would have with its columns divided by their scales)
-  but take the same route: the data are never divided, and `run_mnlogit()` no
-  longer holds a scaled copy of `X` while it fits (on the claims-style
-  design's 8.7 million rows and 10 fixed-coefficient columns, a scaled fit's
-  peak heap fell from 1.39 to 0.10 GB, close to an unscaled fit's 0.08 GB).
-  Their estimates move within 1.7e-5 standard errors on our reference battery
-  (1.2e-6 over the test suite's fits).
-- The standard errors of a scaled fit are computed in natural units, at the
-  natural estimates, and its information matrix is equilibrated before it is
-  inverted: scaled by the powers of two nearest (on a log scale) the inverse
-  square roots of its diagonal's magnitudes, which adds no rounding. A fit
-  used to invert the information of the scaled design and transform the result
-  back, while `vcov(fit, type = )` inverted the natural information as it was;
-  both lost digits when the design's columns span orders of magnitude (post
-  hoc, the inversion failed as computationally singular on such a design; for
-  one of the tests' mixed logit robust variances, whose information had
-  condition number 1.2e12, the standard errors computed raw were off by 2.1e-7
-  relative against an exact computation, equilibrated by 9e-16). A mixed
-  logit's variance at fit time is computed by the route `vcov(fit, type = )`
-  takes post hoc (`"robust"` for `se_method = "sandwich"`), with the fit's own
-  draws, so the two agree, bit for bit on one thread (draws supplied through
-  `eta_draws` are not regenerated post hoc). Unscaled fits now take the same
-  route (see "Every fit's information is equilibrated before it is inverted",
-  below).
-- The extra gradient pass of `"bhhh"` counts in the reported optimization
-  time. A scaled fit's `theta_init` must have one finite value per parameter;
-  a shorter or longer vector used to be recycled.
-- Fits record the map in `param_scale` and `param_shift` (1s and 0s for
-  `"none"`); `sX` and `sW` hold the column scales under `"sd"`, `"mad"` and
-  `"iqr"`, and 1s otherwise.
+  variance at its boundary) they can differ widely; where the data barely
+  identify a direction, estimates can move along it; and on small, degenerate
+  likelihoods the two paths can stop at different points (among the test
+  suite's fits `"bhhh"` stopped short in two, by 0.09 and 0.02 log-likelihood
+  units: an alternative never chosen, a random coefficient's variance going to
+  zero). `scale_vars = "none"` with the 0.2.x start (below) restores the 0.2.x
+  path. With any other choice, settings in parameter units in `control`
+  (nloptr's `xtol_abs`; optim's `parscale` and `pgtol`) and custom optimizers
+  act on the scaled coordinates. `"sd"`, `"mad"` and `"iqr"` keep their
+  meaning and take the same route, so the data are never divided and a scaled
+  fit no longer holds a scaled copy of `X` and `W` (0.9 to 1.0 GB at 10^7
+  rows). Where the diagonal is unusable at the start values, the parameters
+  are left unscaled, with a message. Fits record the map in `param_scale` and
+  `param_shift`; a scaled fit's `theta_init` must have one finite value per
+  parameter (a vector of another length used to be recycled).
+- **The default start is in the columns' units.** With `theta_init = NULL`,
+  each normal random coefficient starts at L_pp = 1 / h_p on the Cholesky
+  diagonal, h_p the typical step of its column: the distance between its two
+  values for a column with two (1 for a dummy), the mean distance of the other
+  rows from a value that fills more than half of the column, and its standard
+  deviation otherwise. It started at 0.5 whatever the column's units. A step
+  of h_p now moves the utility by a random amount with standard deviation 1 at
+  the start, whether a price is in cents or in thousands, and rescaling a
+  column moves the start with it. The coordinates above cannot repair a start
+  in the wrong units: with a census-style design's columns rescaled by 10^3
+  and 10^-3 the 0.2.x start stopped 233 log-likelihood units short of the
+  maximum, where the new one reaches it in 54 evaluations (56 in the original
+  units). Over 16 designs and rescalings the new start took at most 1.35 times
+  the evaluations of the best of five starts we compared, while the 0.2.x
+  start missed four of them. A log-normal coefficient keeps L_pp = 0.5, the
+  standard deviation of the logarithm of its random part, which has no units;
+  such a covariate still belongs in units where its coefficient is of order
+  one. Over the test suite's default-start fits, those that reached the same
+  maximum took 6.2% fewer iterations; 14 reached a higher log-likelihood (by
+  up to 0.81), and five, all with `scale_vars = "none"` on deliberately badly
+  scaled designs, a lower one (by 0.18 to 0.27), where the unscaled optimizer
+  can drive a variance toward zero. On a weakly identified design whose
+  supremum lies on the boundary (a degenerate covariance), `"none"` and `"sd"`
+  now stop at the interior maximum that `"bhhh"` reaches, 0.021 below the
+  supremum, where the second random coefficient's variance given the first
+  (L_22^2) is about 1.4 instead of nearly zero. A default start outside
+  `lower`/`upper` is moved to the nearest bound, with a message (nloptr used
+  to refuse it), and bounds that hold no start (`lower` above `upper`,
+  `lower = Inf`, `upper = -Inf`) stop the call before the fit. A `theta_init`
+  of zeros with log(0.5) on the Cholesky diagonal restores the 0.2.x start.
 
-## Mixed logit — the default start is in the columns' units
+### Convergence with thousands of constants
 
-- **Default change.** With `theta_init = NULL`, `run_mxlogit()` now starts
-  each normal random coefficient at L_pp = 1 / h_p on the Cholesky diagonal,
-  where h_p is the typical step of its column: the distance between its values
-  for a column with two (a dummy: 1), the mean distance from a value that
-  fills more than half of the column over the other rows (a mostly-zero
-  column), and its standard deviation otherwise. It started at 0.5 whatever
-  the column's units. At the start, a step of h_p in a column now moves the
-  utility by a random amount with standard deviation 1 (the logit error's is
-  about 1.28), whether a price is in cents or in thousands. Rescaling a column
-  divides its row of the Cholesky factor (and its mean, with `rc_mean = TRUE`)
-  by the same factor and changes nothing else, and the start now moves with
-  it: in exact arithmetic, with `scale_vars = "sd"`, `"mad"` or `"iqr"` the
-  optimizer's problem is the same in any units, and with `"bhhh"` the same up
-  to the power-of-two rounding of its scales. A log-normal coefficient keeps
-  L_pp = 0.5, the standard deviation of the logarithm of its random part,
-  which has no units; that random part has median one in the covariate's
-  units, though, so a log-normal covariate still belongs in units where its
-  coefficient is of order one. The estimator is unchanged: a fit that uses the
-  default start reaches the same maximum within the optimizer's tolerance,
-  except where one start or the other stops short of it, or the likelihood has
-  another local maximum or its supremum on a boundary (below). A `theta_init`
-  of zeros with log(0.5) on the Cholesky diagonal restores the 0.2.x start,
-  and with `scale_vars = "none"` the 0.2.x path.
-- **Why.** The optimizer's coordinates (`scale_vars`, above) cannot repair a
-  start in the wrong units. On simulated designs whose columns we rescaled by
-  up to 10^±3 (census-style with 20,000 students, a cross-section of 10^6
-  rows) and on rescaled versions of the shipped `mode_choice` data, the
-  default `"bhhh"` from the 0.2.x start stopped 233 to 1,730 log-likelihood
-  units short of the maximum in 4 of 10 rescalings, three of them reporting
-  convergence (the fourth ran out of the budget), and needed 167 evaluations
-  in a fifth, against 42 on the original units. From the new start it reached
-  the maximum in all 10: in 0.84 to 1.09 times the evaluations it took on the
-  original units in 9 of them (54 on the census-style design rescaled by 10^3
-  and 10^-3, against 56 on its original units), and in 1.8 times as many in
-  the tenth, a rescaling of `mode_choice` (58 against 32; `"bhhh"`'s scales
-  round, and its stopping rule stops, differently in other units, while under
-  `"sd"` every rescaling of `mode_choice` took 29). Over these and the
-  original designs, 16 in all (claims-style with 518 parameters and
-  census-style with 200,000 students included; nloptr, 50 draws, a budget of
-  2,000 evaluations, the accuracy criterion above), the new start took at most
-  1.35 times the evaluations of the best of the five starts we compared on
-  each; the 0.2.x start missed 4 and took up to 3.9 times elsewhere. Against
-  the 0.2.x start: 157 against 219 on the claims-style design (213 in a
-  replicate; 198 in the study above), 44 against 49 on the census-style design
-  at 200,000 students, 56 against 42 at 20,000. Every column of these designs
-  has many values, so their step is the standard deviation.
-- **Dummies.** For a dummy with a share q of ones the standard deviation,
-  sqrt(q (1 - q)), understates the step its coefficient multiplies. On the
-  census-style design with a dummy marking one alternative per situation among
-  the random coefficients, 1 / sd(W_p) starts its L_pp at 6.4 and took 90 and
-  108 evaluations (the dummy's coefficient with standard deviation 1 and 2),
-  against 44 and 66 from the 0.2.x start and 54 and 64 from the new start,
-  whose step for a dummy is 1. In the test suite's fits every random
-  coefficient's column has at least 10 distinct values, none filling more
-  than 29% of the rows, so its step is its standard deviation.
-- **Why not a smaller start.** `"bhhh"` fixes its scales at the start, and
-  with too little heterogeneity there they are too generous for the Cholesky
-  diagonal, whose curvature grows with L_pp: from 0.25 / sd(W_p) `"bhhh"`
-  reported convergence on the cross-section 554 log-likelihood units short.
-  `"none"` and `"sd"` have no such scales, but from 0.5 / sd(W_p) both failed
-  at once on that design, where from 1 / sd(W_p) both reached the maximum (in
-  43 evaluations).
-- **What moves.** Over the test suite's 177 distinct default-start mixed logit
-  fits, those that reached the same maximum took 6.2% fewer iterations.
-  Fourteen, all with the default `"bhhh"`, reached a higher log-likelihood (up
-  to 0.81 higher, on a 30-situation design where the 0.2.x start reported
-  convergence short of it); five, all with `scale_vars = "none"` on
-  deliberately badly scaled designs, a lower one (0.18 to 0.27 lower): there
-  the unscaled optimizer can drive a random coefficient's variance toward
-  zero, where the likelihood flattens and its gradient vanishes. On a weakly
-  identified design in our reference battery whose supremum lies on the
-  boundary (a degenerate covariance), `"none"` and `"sd"` now stop at the
-  interior maximum that `"bhhh"` reached before and still reaches, 0.021 below
-  the supremum: the second random coefficient's variance given the first
-  (L_22²) moves there from nearly zero to about 1.4.
-- Where the default start falls outside `lower`/`upper`, it is moved to the
-  nearest bound, with a message naming the parameters; with the default
-  optimizer such a call used to stop with an error (nloptr refuses a start
-  outside its box). A supplied `theta_init` is used as given. Bounds that hold
-  no start (`lower` above `upper`, `lower = Inf`, `upper = -Inf`) now stop
-  `run_mxlogit()` before the fit, naming the parameters, whatever the start;
-  before, nloptr stopped with its own error, while optim's L-BFGS-B returned a
-  fit with convergence code 52 for `lower` above `upper` and treated an
-  infinite bound on the wrong side as no bound.
-- The columns' steps are read in place, without copying the design (computing
-  standard deviations with `stats::sd()` a column at a time would copy each
-  column and an index of its rows: 1.2 GB more at 98 million rows).
+- **`polish`: a Newton phase after the optimizer.** `run_mxlogit()` gains
+  `polish` and `polish_control`. With `polish = "newton"` the optimizer is
+  followed by Newton steps on the analytic Hessian of the simulated
+  log-likelihood, and with `"bhhh"` on the BHHH matrix, with the fit's own
+  draws and weights. The estimator does not change: the polish finishes the
+  climb that L-BFGS makes slowly where curvatures differ by orders of
+  magnitude, and certifies the maximum. It converges when the Newton decrement
+  nu = g'C^-1 g / 2 (g the gradient, C the curvature), over the mean weight,
+  falls below `polish_control$tol_decrement` (1e-8); on a positive definite
+  Hessian, every linear combination of the estimates then lies within sqrt(2
+  nu) Hessian standard errors (1.4e-4) of the maximum of the log-likelihood's
+  quadratic model, whatever the sample size. BHHH is positive semi-definite
+  everywhere and cheaper per step, but converges linearly, and its decrement
+  on its own shows only a stationary point; `"bhhh"` needs at least as many
+  likelihood units as the parameters it moves. Where the curvature is not
+  positive definite the steps are damped (Levenberg-Marquardt, on the
+  equilibrated information); they respect `lower` and `upper` (projected
+  Newton, Bertsekas 1982), and near the maximum of a likelihood summed over
+  millions of units a line search that reads the gradient (Hager and Zhang
+  2005) accepts steps whose gain is below the objective's rounding. A
+  converged polish sets `convergence` to the optimizer's success code and
+  leads `message` with its verdict; `fit$optimizer$polish` records the phase
+  and the optimizer's own code, message and iterations. A polish that stops
+  short keeps the optimizer's code and says why; one that fails (the Hessian's
+  memory check, say) keeps its last accepted point and warns (class
+  `choicer_polish_failed`). Its last curvature serves as the variance's own
+  matrix where `se_method` needs it (after `"newton"`, the Hessian of
+  `"hessian"` and the bread of `"sandwich"` and `"cluster"`; after `"bhhh"`,
+  the BHHH matrix of `"bhhh"`), so where it serves the variance, a polish that
+  certifies the optimizer's solution at once adds one evaluation of the
+  log-likelihood and its gradient and one factorization. The constants of
+  inside alternatives that have no finite estimate (see the warning under
+  "Estimation and inference in every model") are held at the optimizer's
+  values; where the outside option or the base alternative is the one without,
+  the polish does not report convergence. A variance whose maximum is at zero
+  drives its log-Cholesky diagonal toward -Inf: Newton may certify a point
+  that `tol_decrement` sets, and BHHH holds the diagonal and stops unconverged
+  (`?run_mxlogit`; §5.7 of the mixed logit's math article). In a validation
+  study (census-style designs of 20,000 and 200,000 students, claims-style
+  panels of 1,500 and 15,000 patients, alternatives never chosen dropped and
+  the situations that offer one chosen wherever offered, 50 stored draws,
+  eleven threads), the default fit stopped within 1.1e-4 standard errors of
+  the maximum on all four designs. A Newton polish after it certified that
+  maximum at once on three of them (0 to 3% of the fit, its Hessian then
+  serving the variance) and in one step on the largest claims-style design
+  (+20%). Handing over earlier rarely paid: of ten Newton hand-overs after 25
+  to 200 evaluations one was faster (by a fifth) and one as fast; after 25
+  evaluations Newton took 1.5 to 10 times as long as the default fit and, on
+  the smaller claims-style design, certified another local maximum, 13.4
+  log-likelihood units lower. (Times are modeled from the kernels' calls and
+  per-pass costs, the machine being loaded by other work.) So
+  `polish = "newton"` after the optimizer's own stop is the recommended check
+  for a reportable fit with many constants; the default stays `"none"`, which
+  leaves every fit as it was, bit for bit.
+- **`concentrate_out_asc`: the constants concentrated out.** With
+  `concentrate_out_asc = "profile_likelihood"` the optimizer moves only the
+  other parameters, on the profile log-likelihood l*(theta_c) = max_delta
+  l(theta_c, delta): at every point it evaluates, the constants solve their
+  first-order condition, which sets each alternative's weighted chosen count
+  equal to its predicted count, each decision maker's probabilities averaged
+  over the draws with the weight of the draw given their choices. That is not
+  BLP's share matching, which equates unconditional shares and defines another
+  estimator (`"blp"` is reserved for it, and stops). The profile's maximizer
+  is the joint one, and the standard errors come from the full information at
+  the estimates, so the estimation of the constants enters the other
+  parameters' standard errors; treating the constants as known would
+  understate them (at the true parameters of a census-style design, to 45% of
+  the correct standard error for a covariate that varies mostly between
+  alternatives, and to 91% for an alternative x decision-maker interaction).
+  Each solve takes damped Newton steps on the constants' block of the
+  information, which an internal kernel forms with the objective and gradient
+  in about three gradient passes (the full Hessian costs 30 to 40), from the
+  constants of the best point the optimizer has reached, until the decrement
+  over the mean weight falls below 1e-12 or every constant's score is below
+  1e-10 of its alternative's weighted chosen count plus the mean weight
+  (`concentrate_control`; at that decrement the other parameters' solution
+  moves by at most 1.4e-5 standard errors, even where estimating the other
+  parameters inflates the constants' variance a hundredfold, §5.8 of the math
+  article). Where the constants cannot be solved at the start values the fit
+  stops (class `choicer_profile_unconverged`); a solve that fails later
+  reaches the optimizer as an overflow, so that it backtracks, is counted in
+  `fit$optimizer$concentration`, and warns (same class) when it comes after
+  the optimizer's best point or at its solution. Every constant needs a finite
+  estimate: an alternative (or the outside option, or the base alternative)
+  never chosen, or chosen wherever it is offered (counted by choice
+  situation), is an error before the draws (class
+  `choicer_unbounded_constants`), and so are bounds on the constants; up to
+  `concentrate_control$max_dense = 10000` constants are factored densely (more
+  is an error, before the draws; a solve holds two J x J matrices, 0.8 GB each
+  at J = 10,000). It is an expert option: in the validation study above the
+  profile reached the joint maximum, ending closer to it, in 21 to 49
+  evaluations of the optimizer, but took 2.0 to 3.8 times the joint fit's time
+  (modeled; 1.8 to 4.9 times on the clock), L-BFGS in the default coordinates
+  needing 46 to 224 evaluations of the joint problem. The default, `"none"`,
+  leaves every fit as it was.
+
+### Standard errors with thousands of constants
+
+- **The Hessian and the BHHH matrix work, per decision maker, on the
+  parameters that decision maker's likelihood involves**: the fixed
+  coefficients, the random coefficients' means and Cholesky factor, and the
+  constants of the alternatives that decision maker faced (59 of 2,620
+  parameters per student on average). They used to carry every constant
+  through every decision maker. The Hessian behind the default standard errors
+  took 0.35 s instead of 24.8 s for 2,000 students (1.9 s instead of 101 s at
+  one thread) and 3.2 s instead of 228 s for 20,000; the BHHH matrix 0.15 s
+  instead of 25.1 s for 20,000 and 1.4 s instead of 246 s for 200,000. On the
+  claims-style panel, where a patient's visits involve about 60 of the
+  hospitals, the Hessian took about half the time (26 s instead of 55 s for
+  15,000 patients).
+- **Robust and clustered variances no longer form the matrix of every decision
+  maker's score** (42 GB for 2 million students with 2,620 parameters, held
+  twice while it was weighted). The robust meat of `vcov(type = "robust")` and
+  `wesml_vcov()` is now the BHHH matrix with squared weights, as that of
+  `se_method = "sandwich"` already was, and the clustered meat of
+  `vcov(type = "cluster")` and `se_method = "cluster"` sums the weighted
+  scores within clusters in C++: for 200,000 students, the robust meat took
+  1.4 s and 0.4 GB of working memory instead of 12.2 s and 8.4 GB. With many
+  thousands of constants the Hessian, the BHHH matrix and the clustered meat
+  keep one copy of the result per thread only while the copies fit in 2 GiB
+  (about 7,000 parameters at eleven threads); above that the threads add into
+  one result: at 17,156 parameters, the Hessian for 20,000 students took 2.9 s
+  and 2.4 GB at eleven threads, where per-thread copies would need 13 GB. The
+  internal score kernel refuses to form a matrix above 2 GiB.
+- The compact blocks and the meats computed in C++ alter standard errors by
+  floating-point rounding only: on our reference battery the Hessian by at
+  most 3.5e-15 relative, the meats by 7e-16, and the BHHH matrix not at all.
+- A mixed logit's variance at fit time is computed by the route
+  `vcov(fit, type = )` takes post hoc (`"robust"` for
+  `se_method = "sandwich"`), with the fit's own draws, so the two agree, bit
+  for bit on one thread (draws supplied through `eta_draws` are not
+  regenerated post hoc). A scaled fit used to invert the information of its
+  scaled design and transform the result back, while `vcov(fit, type = )`
+  inverted the natural information as it was; both lost digits where the
+  columns span orders of magnitude, which the equilibrated inversion
+  ("Estimation and inference in every model") keeps (on one test's robust
+  variance, whose information had condition number 1.2e12, standard errors
+  computed raw were off by 2.1e-7 relative against an exact computation,
+  equilibrated by 9e-16).
+
+### Memory and speed
+
+- **The estimation kernels** keep each thread's working arrays across decision
+  makers, read the stacked design's integer indices in place, and compute each
+  decision maker's base utilities inside the parallel loop, so a likelihood
+  evaluation allocates nothing the length of the design (what remains is 8
+  bytes of row offsets per choice situation, and 8 per decision maker in a
+  panel). Each decision maker's draws are processed in batches within a 4 MiB
+  budget per thread, the score accumulated across batches by a streaming
+  log-sum-exp, so a thread's memory no longer grows with a long panel times
+  `S`. On a claims panel with up to 500 visits per patient, peak working
+  memory at `S = 1000` fell from 6.4 GB to 0.12 GB and an evaluation ran 40%
+  faster; on 10^8-row panels peak working memory fell from about 3 GB to under
+  0.2 GB; the analytic Hessian's heap traffic on a 10^6-row panel fell from
+  106 million allocations per call to about three thousand. These kernel
+  changes by themselves alter results only by floating-point rounding (at most
+  3.4e-15 relative on our reference battery, and within 1e-10 for decision
+  makers split into draw batches).
+- **Generate-mode draws** (`draws = "generate"`) are formed in two passes over
+  each block, all the Halton uniforms first, then the inverse normal, with the
+  first dimension stepped by an exact integer odometer and the digits of the
+  next ten taken by division by a compile-time constant. The draws are
+  bit-identical on 64-bit platforms; gradient evaluations ran 32-36% faster on
+  a four-alternative cross-section, where regenerating the draws took about
+  half the time, and 10-14% faster on census-style data. On the
+  four-alternative data a generate-mode evaluation now takes about 1.35 times
+  as long as a store-mode one, down from 2.
+- **Before allocating, the estimation routines check their memory.** The
+  routines behind the log-likelihood and gradient, the Hessian (and the
+  profile's block of the constants), the BHHH matrix, the score matrix, the
+  meats and the conditional tastes compare an upper estimate of their working
+  memory, at the threads set, with the machine's physical memory, and stop
+  with an error that says how much they need and how many threads fit, where
+  their threads' memory used to grow until an allocation failed and terminated
+  R. They never lower the thread count on their own. Memory already in use is
+  not counted, nor is the inversion in R of the resulting
+  parameters-by-parameters matrices. `options(choicer.max_memory = <bytes>)`
+  sets the limit instead (a container's or a batch job's), and `Inf` lifts the
+  check (`?set_num_threads`).
+- **Prediction and post-estimation at scale.** The kernels behind `predict()`,
+  `logsum()`, `consumer_surplus()`, `elasticities()`, `diversion_ratios()`,
+  `blp()`, `gof()` and the fit statistics of `summary()` read the alternative
+  codes in place, simulate each choice situation in buffers allocated once per
+  thread (where they allocated about ten objects per situation), and allocate
+  their working arrays before the parallel loop, so that running out of memory
+  is an R error. On census-style data of 9.8 million rows, choice
+  probabilities took 16-20% less time and moved 0.16 GB through the heap
+  instead of 11.8 GB; log-sums 26-27% less, 0.08 GB instead of 18.8 GB. With
+  stored draws (`draws = "store"`, the default) these functions now form each
+  choice situation's block of Halton draws on the fly, in the thread that
+  simulates it, instead of building a `K_w x S x N` cube on every call:
+  `predict()` on census-style data of 98 million rows (a 5.9 GB cube) took
+  9.0 s instead of 76 s and its working memory peaked at 1.6 GB, the results
+  it returns, instead of 14.4 GB; and these functions no longer stop past
+  store mode's 2^31 - 1 points. The draws, and so the results, are the cube's
+  bit for bit where randtoolbox and choicer are compiled with the same
+  floating-point contraction, as on CRAN's platforms; otherwise some of them
+  move by a few parts in 10^9, in the far tails. With more than 128 random
+  coefficients they build the cube, as before. `blp()` gains
+  `keep_draws_bytes` (default 2^32 bytes, 4 GiB): when the draws of all choice
+  situations fit, its contraction forms them once and reuses them at every
+  iteration, leaving the deltas as they were (on the claims-style panel at 85
+  million rows, whose 3.6 GB of draws fit the default, each evaluation of the
+  shares took 5.2 s instead of 6.4 s with stored draws and 5.6 s instead of
+  7.0 s with generated ones, in single runs, two alternated ones for the
+  stored draws); the memory is taken per call, and a budget above the memory
+  actually free can end the R session. The exported `mxl_blp_contraction()`
+  accepts `gen_scramble = 2` for these draws, and now rejects codes other than
+  0, 1 and 2, which it treated as 0. Given the same draws, the prediction
+  kernels' results are unchanged by this rework, bit for bit, with OpenBLAS or
+  the reference BLAS: each choice situation's probabilities, mean utilities
+  and log-sums at any number of threads, and sums over situations at one
+  thread; with other BLAS libraries they may differ in their last bits.
+- **Stored draws for estimation.** `get_halton_normals()`, which builds the
+  estimation cube of `draws = "store"` (and again for `vcov(type = )`,
+  `wesml_vcov()`, `conditional_tastes()` and standard errors computed later),
+  fills it a block of units at a time: 21 s instead of 27 s, and 1.4 instead
+  of 3.0 times the cube's size at peak, for a 4.8 GB cube of 2 million units.
+  It checks its inputs and stops before allocating more than 2^31 - 1 points
+  (`S * N`), the largest start `randtoolbox::halton()` accepts; generate mode
+  has no such limit, and choicer now requires randtoolbox 1.31.0 or later.
+  `run_mxlogit(draws = "store")` (the convenience workflow) warns before it
+  builds draws that would take more than 1 GiB (`8 * K_w * S * U` bytes): the
+  cube is held while the model is fitted and rebuilt by the functions above.
+  Under `options(warn = 2)` such fits stop before estimating.
+
+## Estimation and inference in every model
+
+- **`scale_vars` in the multinomial and nested logits.** `run_mnlogit()` now
+  defaults to `scale_vars = "bhhh"`, as `run_mxlogit()` does (above), and
+  `run_nestlogit()` gains `scale_vars` (its last argument) and keeps `"none"`.
+  With the default optimizer, the multinomial logit reached the maximum in 26
+  and 39 evaluations on the claims- and census-style designs (509 and 2,521
+  parameters), against 787 and 1,358 with `"none"`; on that census-style
+  design with its columns rescaled by 10^3 and 10^-3, `"none"` reported
+  convergence 1,920 log-likelihood units short, where `"bhhh"` took 38
+  evaluations. The nested logit keeps `"none"`: its `"bhhh"` scales are fixed
+  at the start values, and nest parameters that end far from their start of
+  0.5 can mislead the optimizer (14% more iterations over the test suite's
+  nested logit fits, one of them 540 against 29). As for the mixed logit,
+  settings in parameter units in `control` and custom optimizers act on the
+  scaled coordinates, and `scale_vars = "none"` restores the 0.2.x path.
+  `run_mnlogit(scale_vars = )` no longer holds a scaled copy of `X` (on 8.7
+  million rows and 10 columns, a scaled fit's peak heap fell from 1.39 to
+  0.10 GB, an unscaled fit's being 0.08 GB). With `optimizer = "optim"`,
+  BFGS's `reltol` (multinomial logit, about 1.5e-8 of the log-likelihood) and
+  L-BFGS-B's `factr` (mixed and nested logits, about 2.2e-9) can stop before
+  full accuracy, scaled or not: on the claims-style multinomial logit optim
+  reported convergence 0.44 log-likelihood units short with `"bhhh"` and 0.52
+  short with `"none"`; tighten them through `control`, where `maxit` (100 by
+  default) caps the iterations.
+- **The multinomial and nested logit kernels** read the alternative codes, the
+  choices and the nests in place, where they copied them into index vectors on
+  every call, and the nested logit computes each situation's probabilities in
+  buffers allocated once per thread. On 17.5 million rows a multinomial logit
+  gradient evaluation took 23% less time at one thread and 39% less at eleven,
+  and peaked at 0.14 instead of 0.57 GB of working memory; twenty iterations
+  of `blp_contraction()` 42% and 70% less. On 7 million rows a nested logit
+  gradient evaluation took 37% and 46% less, and twenty iterations of
+  `nl_blp_contraction()` 47% and 65% less, moving 0.1 GB through the heap
+  instead of 10.9 GB. This change by itself leaves results unchanged, bit for
+  bit. Malformed index vectors, which only a hand-built `input_data` or a
+  direct call can supply, are now reported in a defined way (a missing or
+  negative code as such, an index beyond the integer range as `NA`).
+- **Data preparation at population scale.** `prepare_mnl_data()`,
+  `prepare_mxl_data()` and `prepare_nl_data()` copy only the index columns
+  into their working table, read the covariates in place from the caller's
+  data, scan them for missing values a column at a time, and gather `X` and
+  `W` in C++ once the rows are filtered and sorted; `X` and `W` are now always
+  double precision (an all-integer design used to be an integer matrix), which
+  by itself leaves estimates unchanged, bit for bit. The collinearity check
+  factors a design of a million or more values by row chunks and applies
+  `qr()`'s own rank rule to the resulting factor: it drops the same columns
+  (the two can disagree only on a column whose dependence lies within rounding
+  of the tolerance), makes none of `qr()`'s copies of the design, and no
+  longer stops at its limit of 2^31 - 1 values ("too large a matrix for
+  LINPACK"). The checks that a weight, cluster or decision-maker column is
+  constant within each choice situation no longer sort every situation's
+  values (87 of the 97 GB `prepare_mxl_data()` moved through the heap). On
+  claims- and census-style panels of 8.7 and 9.8 million rows,
+  `prepare_mxl_data()` took 2.9-3.7 s instead of 5.7-7.6 s, allocated
+  7.5-8.8 GB instead of 97-149 GB, and peaked at 1.9 times its input on the
+  heap instead of 4.0-4.5 times (2.0-2.1 instead of 4.4-5.7 for the
+  multinomial and nested logits); per-situation counts now computed in one
+  pass took another 9-15% off these three. The preparations of
+  `run_mnprobit()`, `run_hmnlogit()` and `run_hmnprobit()` were reworked the
+  same way (on 10^7 rows, `prepare_mnp_data()` took 5.0 s instead of 13.8 s
+  and `prepare_hmnl_data()` 14.5 s instead of 31.7 s, at peak heap 3.0 to 3.1
+  times the input instead of 4.9; counting per situation in one pass then
+  halved the first's time and cut the second's by two fifths), with three
+  changes: the choice-situation id used as a covariate is recognized as
+  constant within situations (kept with a message, or dropped with a warning
+  without an outside option); integer covariates whose differences overflow
+  32-bit integers no longer fail; and inputs whose column names clashed with
+  the preparations' own are covered under Corrections. Prepared objects are
+  otherwise unchanged on every call the test suite makes and on a battery of
+  edge cases.
+- **`optimizer = "optim"` reuses the likelihood pass for the gradient.**
+  `stats::optim()` asks for the objective and its gradient through separate
+  functions, and each call ran the likelihood pass, which computes both; the
+  gradient now comes from the pass that computed the objective at the same
+  point. L-BFGS-B, which fits the mixed and nested logits, takes about half
+  the evaluations (14,104 to 7,087 for the mixed logit over the test suite's
+  fits refitted with optim); BFGS, which fits the multinomial logit, one fewer
+  per gradient. This change by itself leaves estimates, standard errors,
+  iteration counts and convergence codes unchanged, bit for bit on one thread.
+  nloptr, the default optimizer, is unchanged.
+- **Every fit's information is equilibrated before it is inverted.** The
+  standard errors of every fit of `run_mnlogit()`, `run_mxlogit()` and
+  `run_nestlogit()`, at fit time and post hoc (`vcov(fit, type = )`,
+  `wesml_vcov()`), come from the information matrix scaled on both sides by
+  the powers of two nearest the inverse square roots of its diagonal's
+  magnitudes (which adds no rounding), inverted, and scaled back; the sandwich
+  is solved twice against the bread's factors without forming its inverse. In
+  natural units an information matrix's curvatures can span many orders of
+  magnitude (columns in different units, the constants of rarely and often
+  chosen alternatives); inverted as it was, such a matrix could fail as
+  computationally singular and leave the standard errors `NA`. Against an
+  exact computation on 963 inversions from our reference battery and the test
+  suite, the equilibrated route recovered 23 of the 30 the old one refused
+  (standard errors within about 1e-15 relative of exact), lost none, and where
+  an inversion changed its error stayed within 2.7 times the old one. (The
+  math articles count against a raw `solve()`, which refused 52 of the 963;
+  the old route already equilibrated 22 of those.) Where the information is
+  ill-conditioned for reasons no rescaling removes, standard errors keep only
+  the digits its conditioning allows, and the last of them move (among the
+  test suite's fits by up to 1e-4 relative, on nested logits); a variance that
+  is zero in exact arithmetic can come out `NA` with a message, or the
+  reverse. An inverse holds two parameters-by-parameters matrices besides the
+  information, where `solve()` held three (four or more when the information
+  was scaled), and the sandwich two besides the bread and meat, where it held
+  four or five: 4.6 GB against up to 11.6 GB at 17,000 parameters.
+- **A variance that fails no longer discards the estimates.** An error in the
+  variance step (`se_method`), such as the mixed logit's memory check or an
+  allocation that fails in R, used to stop the call and lose the estimates.
+  The fit now returns them without a variance (`vcov` is `NULL`, the standard
+  errors `NA`, and `variance_error` holds the message) and warns (class
+  `choicer_vcov_failed`) with the error and how to compute the variance later,
+  `vcov(fit, type = )`; nothing the size of the variance is allocated after
+  the failure. `summary()` and the post-estimation methods work as on any fit,
+  with `NA` wherever a standard error enters, and do not rerun the failed
+  step. An allocation that fails while the information is inverted, which was
+  reported as a singular information (and recomputed at every `summary()`),
+  takes the same route at fit time; after the fit it is an error, from
+  `vcov(fit, type = )` or from the methods that compute a missing variance.
+  The variance's inputs are now checked before the likelihood is first
+  evaluated: the guard on choice-based-sampling weights (whose warnings are
+  now printed as they occur) and the fit-time cluster labels. Fits whose
+  variance can be computed are unchanged by this, bit for bit. An allocation
+  that fails inside the multinomial and nested logits' Hessian and BHHH loops
+  still terminates R. Other inputs that can fail are checked before the
+  expensive work too: `run_mxlogit()` computes the column scales of `"sd"`,
+  `"mad"` and `"iqr"` (and stops on a column without spread) and checks a
+  supplied start where the optimizer works in scaled coordinates before it
+  builds stored draws, and the three wrappers check that every parameter has a
+  name before the optimizer runs, where a hand-built `input_data` whose `X`
+  lacks column names, or a `param_names` of another length, used to fail only
+  when the estimates were named, after it (an unnamed one-column `W` with
+  `rc_mean = TRUE` gave a mean named `Mu_`; it now needs a name too).
+- **A warning for constants without a finite maximum-likelihood estimate.**
+  `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` warn (class
+  `choicer_unbounded_constants`), before the optimizer runs, when the counts
+  in `alt_mapping` show an alternative never chosen, or chosen in every choice
+  situation that offers it: its constant's score has one sign at every value
+  of the parameters, so the optimizer stops it wherever its tolerance does and
+  its standard error means nothing, while the other parameters approach the
+  maximum without that alternative (or without the situations that offer it).
+  Where the outside option or the base alternative is the one, the other
+  constants diverge together. The warning names the alternatives and how to
+  reach finite constants: drop a never-chosen alternative or pool it with a
+  chosen one; drop the situations that offer an always-chosen one or pool it;
+  fit without an outside option that is never chosen, as when the data hold
+  the outside option's own rows and `include_outside_option = TRUE` adds
+  another. In the mixed logit a finite bound in the direction a constant
+  diverges holds it, and that alternative is not named; in the nested logit
+  the never-chosen case needs the nest's dissimilarity parameter at most 1. It
+  is printed as it occurs, before a fit that can take hours. The counts are of
+  rows, so an alternative listed twice in a situation can hide being chosen
+  wherever offered, and other patterns (a group of alternatives chosen only in
+  situations that offer no alternative outside it) are not detected. Estimates
+  are unchanged.
 
 ## Mixed logit — panel likelihood (`person_col`) and conditional tastes
 
@@ -259,12 +525,13 @@
     `person_col`, reports `recovery_table()` and `conditional_tastes()`, and
     contrasts standard errors against a cluster-robust cross-sectional fit of
     the same data.
-  - Apart from the corrections below and the new default `scale_vars` (see
-    "Scaling the optimizer's coordinates"), default (cross-sectional)
-    behavior is unchanged up to floating-point reassociation (<= 1e-10
-    relative in the estimation kernels, measured on the reference battery of
-    test configurations); prediction kernels are bit-identical (see also
-    "Mixed logit — prediction at population scale").
+  - The panel likelihood leaves the cross-sectional likelihood
+    (`person_col = NULL`) as it was, up to floating-point reassociation
+    (<= 1e-10 relative in the estimation kernels on our reference battery of
+    test configurations). The other numerical changes of this release (the
+    new defaults, the equilibrated variance, the corrections) are listed under
+    "Population-scale mixed logit", "Estimation and inference in every model"
+    and "Corrections".
   - New input guards: a non-`NULL` empty `Ti` is an error, and a
     primary-thread memory check now stops when a single decision maker
     stacks so many alternative rows (tens of millions) that its design rows
@@ -286,817 +553,12 @@
     now a choice: pass `person_col` to use the within-person variation the
     panel provides.
 
-## Mixed logit — kernels for population-scale data
-
-- The estimation kernels keep each thread's working arrays across decision
-  makers instead of allocating them per unit, and the analytical Hessian no
-  longer allocates a temporary for every alternative-and-draw outer product
-  or per-unit block: the draws are read in place from the store-mode cube,
-  and a unit's design rows and random-coefficient draws go into reused
-  buffers. On a synthetic 10^6-row panel the Hessian's heap traffic fell
-  from 106 million allocations (374 GB) per call to about three thousand, a
-  gradient evaluation on 10^7 rows allocates a quarter to a third as often,
-  and the kernels ran 3-24% faster in our benchmarks.
-- Each decision maker's draws are now processed in batches sized to a small
-  per-thread memory budget, with the score accumulated across batches by a
-  streaming log-sum-exp, so a thread's working memory no longer grows with
-  the product of a decision maker's number of choice situations and the
-  number of draws `S`. The draw loop also sweeps a decision maker's rows in
-  memory order and no longer allocates per decision maker. On a synthetic
-  claims panel with heavy-tailed histories (up to 500 choice situations per
-  decision maker), peak working memory at `S = 1000` fell from 6.4 GB to
-  0.12 GB and gradient evaluations ran 40% faster; on a 10^7-row panel they
-  ran 12-25% faster at `S = 100`-`500`. The analytical Hessian no longer
-  holds a decision maker's rows-by-draws matrix either: its peak working
-  memory on the claims panel at `S = 500` fell from 1.7 GB to 0.2 GB. A
-  decision maker is split into batches only when its stacked alternative
-  rows times `S` exceed 2^18 (a long panel, a choice set of hundreds of
-  alternatives, or a very large `S`).
-- The estimation kernels read the stacked design's integer indices in place
-  instead of copying them on every call, and compute each decision maker's
-  base utilities (`X beta + W mu + delta`) inside the parallel loop instead
-  of for all rows up front, so a likelihood evaluation no longer allocates
-  anything the length of the stacked design (what remains is 8 bytes of row
-  offsets per choice situation, and in a panel 8 per decision maker). On
-  synthetic 10^8-row panels, peak working memory fell from about 3 GB to
-  under 0.2 GB and an evaluation ran 19% faster at `S = 25` (7-9% at
-  `S = 100`); fits at `S = 50` on 10^7 rows took 9% less time per
-  evaluation. The kernels' offsets into the stacked design are now 64-bit.
-- Generate-mode draws (`draws = "generate"`) are now formed in two passes
-  over each block: all the Halton uniforms first, then the inverse normal
-  CDF. The first (base-2) dimension is stepped by an exact integer odometer,
-  and the digits of the next ten (bases 3 to 31) are taken by division by a
-  compile-time constant. The draws are bit-identical to before on 64-bit
-  platforms, so this change by itself alters no estimate, standard error,
-  prediction or other post-estimation quantity; it lowers the cost of
-  regenerating the draws at each likelihood evaluation. With three random
-  coefficients and `S = 100`, gradient evaluations ran 32-36% faster on a
-  synthetic four-alternative cross-section (10^6 rows at 1 and 11 threads,
-  10^7 rows at 11), where regenerating the draws had taken about half the
-  time; 10-14% faster on a school-census-like design (thousands of schools,
-  10-100 per choice set); and showed no measurable change (under 3%, within
-  run-to-run noise) on claims-like panels with 20-200 hospitals per choice
-  set, whose cost lies elsewhere. On the four-alternative data a
-  generate-mode evaluation now takes about 1.35 times as long as a
-  store-mode one, down from about 2 times. The generator's
-  digit-permutation tables are also smaller: 1.3 MB instead of 11 MB at the
-  128-dimension maximum.
-- Together these kernel changes alter results only by floating-point
-  rounding: at most 3.4e-15 relative on our reference battery of kernel
-  configurations, and within the 1e-10 our tests allow for decision makers
-  split into draw batches. The numerical changes of substance are the
-  corrections below and the new default `scale_vars` (see "Scaling the
-  optimizer's coordinates").
-
-## Multinomial and nested logit kernels at population scale
-
-- The multinomial and nested logit kernels now read the stacked design's
-  alternative codes, the choices and the alternatives' nests in place, as
-  the mixed logit estimation kernels already did. They used to copy them
-  into Armadillo index vectors on every call (through doubles, again
-  shifted to start at zero, and once more for each choice situation). That
-  covers the kernels behind `run_mnlogit()` and `run_nestlogit()`
-  (likelihood, gradient, Hessian, BHHH and scores) and behind their
-  post-estimation methods (predictions, shares, elasticities, diversion
-  ratios, `blp_contraction()` and `nl_blp_contraction()`), whose
-  contractions also form `X beta` once instead of at every iteration. The
-  nested logit kernels also compute each choice situation's probabilities
-  in buffers allocated once per thread, where they built about a dozen
-  Armadillo vectors per situation. On a synthetic design of 17.5 million
-  rows (500,000 choice situations of 20 to 50 alternatives, 10 covariates),
-  a multinomial logit gradient evaluation took 23% less time at one thread
-  and 39% less at eleven, moved 0.5 GB less through the heap, and peaked at
-  0.14 GB of working memory instead of 0.57 GB; twenty iterations of the
-  BLP contraction took 42% and 70% less time (medians of six alternated
-  runs). On 7 million rows (200,000 choice situations of 20 to 50
-  alternatives in 10 nests), a nested logit gradient evaluation took 37%
-  less time at one thread and 46% less at eleven, and peaked at 0.06 GB of
-  working memory instead of 0.23 GB; twenty iterations of its
-  contraction took 47% and 65% less time and moved 0.1 GB through the heap
-  instead of 10.9 GB (medians of three alternated runs; with 40 nests, 42%
-  and 50% for the gradient and 51% and 64% for the contraction).
-  Estimates, standard errors, predictions and every post-estimation
-  quantity are unchanged, bit for bit.
-- The same kernels now treat malformed index vectors, which only a hand-built
-  `input_data` list or a direct call can supply, in a defined way. A missing
-  or negative alternative code is reported as such, where it went through an
-  undefined conversion (and read as 0 on ARM processors), and a missing nest
-  code always as an invalid one; a missing or negative choice is an error,
-  where on ARM, with an outside option, it counted as choosing that option;
-  and an index beyond the integer range becomes `NA`, with R's warning, and is
-  then treated as a missing one. `blp_contraction()` and
-  `nl_blp_contraction()` given no choice situations and an empty `delta` now
-  stop at their check of the weights, where they read past the empty vector
-  or, with an outside option, failed an Armadillo bounds check.
-
-## Mixed logit — prediction at population scale
-
-- The mixed logit kernels behind `predict()` (probabilities and shares),
-  `logsum()`, `elasticities()`, `diversion_ratios()`, `blp()` and the exported
-  `mxl_blp_contraction()` (and so `consumer_surplus()`, `gof()` and the fit
-  statistics of `summary()`) now read the stacked design's alternative codes
-  in place and simulate each choice situation in buffers allocated once per
-  thread. They used to copy the codes twice on every call and allocate about
-  ten objects per choice situation, among them its rows-by-draws matrix of
-  random utilities and, for the log-sums, a temporary at every draw; with
-  stored draws, the threads also took turns at a lock shared by all of them
-  for every situation's draws. The BLP contraction also forms `X beta` and
-  `W mu` once instead of at every iteration. The working arrays, among them
-  the alternative-by-alternative accumulators of elasticities and diversion
-  ratios, are allocated before the parallel loop, so running out of memory now
-  stops with an R error that says how much each thread needs and suggests
-  fewer threads, instead of possibly aborting R from inside the loop. Results
-  are unchanged, bit for bit, with a BLAS whose results do not depend on where
-  its operands sit in memory, such as the reference BLAS or OpenBLAS. That
-  holds for each choice situation's probabilities, mean utilities and log-sum
-  at any number of threads, and for sums over situations (shares,
-  elasticities, diversion ratios, and so BLP inversions) at one thread; at
-  more threads such sums vary in their last bits with the order in which the
-  threads take the situations, as before. With other BLAS libraries, results
-  may differ from earlier versions' in their last bits.
-  - Measured on the kernels themselves, given the draws (stored draws as a
-    cube built beforehand, which the kernels still accept; the methods now
-    form them on the fly, below), on a synthetic school-census design of 9.8
-    million rows (245,000 choice situations of 10 to 100 schools, three random
-    coefficients, `S = 100`), at one and eleven threads, with draws generated
-    on the fly and, in parentheses, stored (medians of three alternated runs).
-    Probabilities took 16% and 20% less time (23% and 39%) and moved 0.16 GB
-    through the heap in 51 allocations instead of 11.8 GB in 2.2 million.
-    Log-sums took 27% and 26% less time (65% and 90%) and moved 0.08 GB in 19
-    allocations instead of 18.8 GB in 22 million. Shares took 14% and 16% less
-    time (20% and 36%) and moved 0.08 GB in 49 allocations instead of 11.4 GB
-    in 2.0 million. Five iterations of the BLP contraction took 14% and 17%
-    less time (17% and 29%) and moved 0.08 GB instead of 67.5 GB. On a
-    claims-like panel of similar size, the same kernels took 14-27% less time
-    for the probabilities, 24-44% less for the log-sums and 12-23% less for
-    the shares and the contraction.
-  - Elasticities and diversion ratios spend most of their time on the per-draw
-    products of probabilities, which did not change. Measured the same way on
-    the census design at a tenth of that size (0.98 million rows, 24,560
-    choice situations), diversion ratios took 13-18% less time and
-    elasticities 4-11% less, at one and eleven threads, with stored and
-    generated draws (medians of three alternated runs); on the claims-like
-    panel at 1.06 million rows, diversion ratios took 10-25% less and
-    elasticities between 4% less and 0.3% more (medians of four alternated
-    runs). Both moved 0.02-0.23 GB through the heap at one thread (0.04-0.77
-    GB at eleven, mostly the threads' accumulators, which the old code
-    allocated too) in 28 to 501 allocations, instead of 1.9-2.4 GB in 190,000
-    to 290,000.
-- The same kernels now treat malformed alternative codes, which only a direct
-  call can supply, in a defined way: a missing or negative code is reported as
-  such, where it went through an undefined conversion (read as 0 on ARM
-  processors, rejected as too large on x86-64), and a code beyond the integer
-  range becomes `NA`, with R's warning, and is then treated as a missing one.
-  With draws generated on the fly, an alternative-level `W` with fewer rows
-  than the largest alternative code is now reported as with stored draws,
-  where it stopped at an Armadillo bounds error.
-- With stored draws (`draws = "store"`, the default), `predict()`, `logsum()`,
-  `consumer_surplus()`, `elasticities()`, `diversion_ratios()`, `blp()` and
-  `gof()` (and so the fit statistics of `summary()`) integrate each choice
-  situation over its own block of Halton draws, and used to build the blocks
-  of all N situations as one `K_w x S x N` cube on every call (for a panel fit
-  too: predictions are unconditional, one block per situation). They now form
-  each situation's block on the fly, in the thread that simulates the
-  situation, and hold no cube. choicer's own Halton generator, without its
-  digit permutations, computes the points of `randtoolbox::halton()` digit by
-  digit as randtoolbox does, and R's `qnorm()` maps them to normal draws as
-  `get_halton_normals()` does. The draws, and so the results, are the cube's
-  bit for bit where randtoolbox and choicer are compiled with the same
-  floating-point contraction, as on CRAN's platforms: per choice situation at
-  any number of threads, and sums over situations at one thread. Otherwise
-  some of the uniforms differ in their last bit, which moves those draws by at
-  most a few parts in 10^9, in the far tails. Together with the kernel changes
-  above, on the census design at 98 million rows (2.45 million choice
-  situations, whose cube takes 5.9 GB), `predict()` of choice probabilities
-  with stored draws took 9.0 s instead of 76 s, moved 1.6 GB through the heap
-  in 2,431 allocations instead of 151 GB in 24 million, and its working memory
-  peaked at 1.6 GB, the probabilities and mean utilities it returns, instead
-  of 14.4 GB; on the claims-like panel at 85 million rows (1.5 million choice
-  situations, whose cube takes 3.6 GB), 6.4 s instead of 24 s and 1.4 GB
-  instead of 12.2 GB (medians of three alternated runs at eleven threads,
-  under background load). Without the cube these functions no longer stop past
-  store mode's 2^31 - 1 points (`S` times the number of choice situations),
-  which a panel fit could reach here although its estimation draws, one block
-  per decision maker, stayed within them. With more than 128 random
-  coefficients (the generator's table of primes) they build the cube, as
-  before.
-- `blp()` on a store-mode fit used to build the cube once per call and read it
-  at every iteration of the contraction; it now forms the draws on the fly at
-  every iteration, in parallel, as `predict()` does. At eleven threads, each
-  evaluation of the shares (one per iteration, and one before the first) took
-  about 8.5 s on the census design and 6.2 s on the claims-like panel, against
-  8.3 s and 7.1 s before, when `blp()` also spent about 60 s and 20 s building
-  the cube once per call (slopes between one and seven iterations, single runs
-  under background load); its working memory peaked at 0.8 GB instead of
-  12.1 GB, and at 0.7 GB instead of 10.9 GB. The exported
-  `mxl_blp_contraction()` accepts `gen_scramble = 2` for these store-mode
-  points formed on the fly, and now rejects other codes than 0, 1 and 2,
-  which it treated as 0.
-- `blp()` gains `keep_draws_bytes`, the most memory it may use to keep the
-  draws across the iterations of its contraction (default `2^32` bytes,
-  4 GiB). When the draws of all N choice situations take at most that
-  (`8 * K_w * S * N` bytes), the first evaluation of the shares forms them, in
-  parallel, and the later ones reuse them; above it, every iteration forms
-  them again, as before. `0` never keeps them, and `Inf` keeps them whenever
-  they are formed on the fly and can be allocated; the deltas are the same
-  either way. The memory is taken per call, and where it is committed only
-  when used (Linux, macOS, containers and batch jobs with memory limits), a
-  budget above the memory actually free can end the R session rather than fall
-  back. At eleven threads, keeping them took each evaluation of the shares
-  from 8.5 s to 7.2 s on the census design with stored draws and from 9.4 s to
-  6.9 s with generated draws (9.1 s before this release; its 5.9 GB of draws
-  are above the default, so these runs used `keep_draws_bytes = Inf`), and on
-  the claims-like panel, whose 3.6 GB are within the default, from 6.4 s to
-  5.2 s with stored draws and from 7.0 s to 5.6 s with generated draws (8.4 s
-  before); single runs under background load, two alternated ones for the
-  claims-like panel's stored draws. Working memory then holds the draws: it
-  peaked at 6.7 GB and 4.3 GB.
-- `run_mxlogit(draws = "store")` (the convenience workflow) now warns, before
-  it builds its draws, when they would take more than 1 GiB (`8 * K_w * S * U`
-  bytes, for the U decision makers of a panel fit or the choice situations of
-  a cross-section): the cube is held while the model is fitted, and
-  `vcov(type = )`, `wesml_vcov()` and `conditional_tastes()` rebuild it whole.
-  `draws = "generate"` stores no draws; with `scramble = "none"` it uses the
-  same Halton points, so its likelihood is store mode's up to rounding error
-  and its estimates agree to the optimizer's tolerance. The warning does not
-  change the fit; under `options(warn = 2)`, which turns warnings into errors,
-  such fits now stop before estimating.
-
-## Mixed logit — Hessian, variances and memory at population scale
-
-- The analytical Hessian of the mixed logit (behind `run_mxlogit()`'s
-  default standard errors, `vcov(type = "hessian")`, and the bread of the
-  robust, WESML and clustered variances) now works, for each decision maker,
-  only on the parameters that decision maker's likelihood involves: the
-  fixed coefficients, the means and Cholesky factor of the random
-  coefficients, and the constants of the alternatives that decision maker
-  faced; each choice situation's terms involve its own alternatives'
-  constants only. It used to carry every alternative's constant through
-  every decision maker, so that with thousands of alternatives most of its
-  work multiplied zeros; the gain is largest where each decision maker faces
-  a small share of the alternatives. On a synthetic school-census design with
-  2,620 parameters (2,602 schools, 10 to 100 per choice set, most students
-  with one choice set and some with up to three, three correlated random
-  coefficients, `S = 100`), where a student's likelihood involves 59 of the
-  2,620 parameters on average, the Hessian for 2,000 students took 0.35 s
-  instead of 24.8 s at eleven threads (1.9 s instead of 101 s at one), and
-  for 20,000 students 3.2 s instead of 228 s; its peak working memory fell
-  from 1.9 GB to 0.4 GB. On a claims-like panel with 500 hospitals (518
-  parameters, 20 to 200 hospitals per choice set, up to 500 visits per
-  patient) it took 3.4 s instead of 7.1 s for 1,500 patients and 26 s
-  instead of 55 s for 15,000 (medians of three alternated runs under
-  background load): a patient's visits involve about 60 of the hospitals on
-  average, and the work on each visit's alternatives, which this change
-  leaves as it was, now dominates.
-- The BHHH (outer product of gradients) matrix of the mixed logit (behind
-  `se_method = "bhhh"`, `vcov(type = "bhhh")` and, with squared weights, the
-  meat of the robust and WESML variances) now adds each decision maker's
-  rank-one update over the same parameters; it used to form every decision
-  maker's update over all of them. On the school-census design the BHHH
-  matrix for 20,000 students took 0.15 s instead of 25.1 s at eleven
-  threads, and for 200,000 students 1.4 s instead of 246 s; on the
-  claims-like panel, 15,000 patients took 0.88 s instead of 1.14 s (medians
-  of three alternated runs).
-- Robust and clustered variances computed after the fit (`vcov(type =
-  "robust")`, `vcov(type = "cluster")`, `wesml_vcov()`) and the clustered
-  variance of `run_mxlogit(se_method = "cluster")` no longer form the matrix
-  of every decision maker's score, one row per decision maker and one column
-  per parameter: 42 GB for 2 million students with 2,620 parameters, held
-  twice while it was weighted. (`se_method = "sandwich"` at fit time already
-  took its meat from the BHHH matrix with squared weights.) The robust meat
-  is now that BHHH matrix, the clustered meat sums the weighted scores
-  within clusters in C++ (a new internal kernel that splits a large
-  cluster's sum across the threads), and `vcov(type = "bhhh")` uses the BHHH
-  kernel as the fit does. On the school-census design with 200,000 students
-  at eleven threads, the meat of the robust variance took 1.4 s and 0.4 GB
-  of working memory instead of 12.2 s and 8.4 GB; the clustered meat 1.6 s
-  instead of 4.6 s with 2,000 clusters and 1.1 s instead of 3.2 s with five
-  (medians of three alternated runs). These variances also build their
-  store-mode draws once per call instead of twice. The cluster labels they
-  accept, their checks and messages, and the absence of a small-sample
-  correction are unchanged. The internal score kernel now refuses to form a
-  matrix above 2 GiB.
-- With many thousands of alternatives, and so of alternative-specific
-  constants, the Hessian, the BHHH matrix and the clustered meat no longer
-  keep one copy of the result per thread: the copies are kept only while
-  together they fit in 2 GiB (up to about 7,000 parameters at eleven threads,
-  10,000 at five); above that the threads add into the result itself, each
-  keeping private only the rows of the fixed coefficients and of the random
-  coefficients' means and Cholesky factor, which every decision maker touches.
-  On a census-like design with 17,156 parameters, five threads computed the
-  Hessian for 20,000 students in 3.9 s with 2.4 GB of working memory, the
-  result included, where per-thread copies took 4.2 s and 8.3 GB, and the BHHH
-  matrix in 0.42 s where they took 0.68 s (medians of three alternated runs);
-  at eleven threads, where per-thread copies would need 13 GB, the two took
-  2.9 s and 0.38 s in 2.4 GB (medians of three runs), about what the
-  2,620-parameter design takes now: a student's work does not depend on the
-  number of parameters. Inverting a matrix of that size in R, which these
-  times exclude, costs time that grows with the cube of the number of
-  parameters.
-- Before allocating their working memory, the mixed logit's compiled
-  routines (behind the log-likelihood and its gradient, the Hessian, the
-  BHHH matrix, the robust and clustered meats and the conditional tastes)
-  compare an upper estimate of it, for the number of threads set, with the
-  machine's total physical memory. When it would not fit they stop with an
-  error that says how much they need and how many threads fit; their
-  threads' working memory used to grow until an allocation failed, which
-  terminates R, or until the operating system stopped it. They do not lower
-  the thread count on their own. Memory already in use is not counted, nor
-  is the inversion in R of the resulting parameters-by-parameters matrices.
-  `options(choicer.max_memory = <bytes>)` sets the limit instead, such as a
-  container's or a cluster job's, and `Inf` lifts the check
-  (`?set_num_threads`). Results are unchanged.
-- None of these changes alters an estimator. Standard errors change by
-  floating-point rounding only: on our reference battery the BHHH matrix
-  behind `se_method = "bhhh"` is unchanged bit for bit (`vcov(type =
-  "bhhh")` after the fit, now computed from it, by at most 2e-16), the
-  Hessian differs by at most 3.5e-15 relative (not at all on designs with
-  many alternatives), and the robust and clustered meats by at most 7e-16.
-  As before, at more than one thread, sums over decision makers vary in
-  their last bits with the order in which the threads take them; a decision
-  maker whose utilities overflow is left out of the Hessian and spreads
-  `NaN` over its parameters' rows and columns in the BHHH matrix and the
-  meats; and a non-finite term of a decision maker's Hessian (an
-  overflowing utility at a draw of zero weight) makes the rows and columns
-  of the parameters concerned `NaN`.
-
-## Data preparation at population scale
-
-- `get_halton_normals()` builds the draw cube of `draws = "store"`, at fit
-  time and again for post-estimation. It now fills the cube a block of units
-  at a time; before, it generated the whole Halton sequence in one call and
-  copied it into the cube unit by unit in an R loop. The draws are
-  bit-identical wherever the old code was well defined. For 2 million draw
-  units at `S = 100` with three random coefficients (a 4.8 GB cube),
-  building the cube took 21 s instead of 27 s, peak memory fell from 3.0 to
-  1.4 times the size of the cube (the rest is R's garbage-collection slack),
-  and 1.3 thousand allocations replaced 8 million. The single call also
-  formed positions in its output with C `int` arithmetic, which is undefined
-  past 2^31 - 1 values (a 17 GB cube); each block now stays far below that.
-  The function now checks that `S`, `N` and `K_w` are positive whole
-  numbers, and stops before allocating a cube that store mode cannot
-  handle: more than 2^31 - 1 points (`S * N`), the largest starting index
-  `randtoolbox::halton()` accepts, where the old code failed with an
-  unrelated error. `draws = "generate"` has no such limit. choicer now
-  requires randtoolbox 1.31.0 or later, the release that added
-  `halton(start = )`.
-- `prepare_mnl_data()`, `prepare_mxl_data()` and `prepare_nl_data()` (and so
-  `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()`) copy only the
-  columns the model uses from a data.frame, tibble or data.table, where they
-  copied the whole data set; they scan those columns for missing values one
-  at a time instead of through a rows-by-columns `is.na()` matrix, and check
-  that the covariates are numeric without copying them. `prepare_nl_data()`
-  no longer makes a second full copy to read the alternative-to-nest map. On
-  a synthetic claims-style panel of 8.7 million rows, peak heap use fell from
-  5.7 to 4.3 times the size of the input for `prepare_nl_data()` and from
-  4.5 to 4.0 times for `prepare_mxl_data()`; the saving grows with the
-  number of columns the model does not use. Apart from the storage change
-  below, the prepared objects are unchanged on our reference battery and on
-  every call the test suite makes.
-- The same three functions now copy only the index columns (ids,
-  alternatives, choices, and any weight, cluster or decision-maker column)
-  into their working table, and gather the design matrices `X` and `W` in
-  C++ straight from the caller's covariate columns once the rows are
-  filtered and sorted. `X` and `W` are now always double precision: a
-  design matrix whose columns were all integer used to be an integer
-  matrix, which the estimation kernels converted to double on every call.
-  Estimates, standard errors and predictions are unchanged, bit for bit.
-- The collinearity check that drops dependent covariates (the columns
-  `qr(X, tol = 1e-7)` moves past its rank) now factors a design of a
-  million or more values by row chunks and applies `qr()`'s own rank rule
-  to the resulting factor, which has the same cross-products. It drops the
-  same columns on our reference battery, on every call the test suite makes
-  and on a sweep of near-collinear designs; the two can disagree only on a
-  column whose dependence lies within rounding of the tolerance, where
-  `qr()`'s own answer already changes with the order of the rows. The check
-  no longer makes `qr()`'s copies of the design (about three times its
-  size), nor stops at its limit of 2^31 - 1 values, which ended the
-  preparation of any larger design (for instance 2.2 * 10^8 rows and 10
-  covariates) with "too large a matrix for LINPACK". Such designs can now
-  be prepared for every model.
-- The checks that a weight, cluster or decision-maker column is constant
-  within each choice situation now count distinct (situation, value) pairs
-  in one grouping, instead of sorting every situation's values separately,
-  which alone allocated 87 of the 97 GB that `prepare_mxl_data()` moved
-  through the heap on the 8.7-million-row claims-style panel; the
-  per-situation value is read from each situation's first row. With all the
-  changes above, on that panel and on a census-style panel of 9.8 million
-  rows, `prepare_mxl_data()` now takes 2.9-3.7 s instead of 5.7-7.6 s,
-  allocates 7.5-8.8 GB instead of 97-149 GB, and its peak heap use is 1.9
-  times the size of its input instead of 4.0-4.5 times; for
-  `prepare_mnl_data()` and `prepare_nl_data()` it is 2.0-2.1 times instead
-  of 4.4-5.7 times. Peak resident memory, which also counts memory R has freed
-  but not returned, is 2.3-2.4 times the input for all three instead of
-  5.3-8.1 times (medians of three runs).
-- `run_mxlogit(scale_vars = )` no longer holds a scaled copy of the design. It
-  used to divide `X` and `W` by their column scales with `sweep()` and keep
-  the results beside the original matrices for the whole fit, which also took
-  two design-sized temporaries to form. The scales themselves came from
-  `apply()`, which first copies the whole matrix. Scaling is now a change of
-  the optimizer's coordinates (see "Scaling the optimizer's coordinates"
-  above), so the data are never divided, and the scales are computed a column
-  at a time, collecting each column's temporaries before the next on large
-  designs. On the claims- and census-style panels above (8.7 and 9.8 million
-  rows, 13 covariates), the memory a scaled fit holds while it optimizes fell
-  by 0.9 and 1.0 GB, one copy of `X` and `W`. Fitted from the long data,
-  preparation included, a scaled fit's peak heap is now an unscaled one's: it
-  fell from 3.3 to 1.9 times the size of the long data (from 3.4 and 3.9 GB to
-  2.0 and 2.2 GB), with `scale_vars = "sd"` and `"mad"` alike. With the data
-  prepared beforehand, `"sd"` raises the peak by 0.06 GB at most (it raised it
-  by 1.9 and 1.6 GB) and `"mad"` by 0.3 GB at most (2.6 and 2.3 GB before).
-  Computing the scales adds 0.5-0.6 s to such a fit with `"sd"` and 2.8-3.3 s
-  with `"mad"` (1.3-1.5 s and 3.7-4.2 s before, with the scaled copies), and
-  `"bhhh"`'s extra gradient pass 0.35-0.46 s (single runs of one likelihood
-  evaluation and the BHHH variance, under background load; the earlier times
-  were medians of three alternated runs). The collection
-  after each column takes longer the more distinct character strings a session
-  holds, the data's own included: about 0.05 s with 10^7.
-  `run_mnlogit(scale_vars = )` no longer holds a scaled copy of `X` either
-  (see above).
-- `prepare_mnp_data()`, `prepare_hmnl_data()` and `prepare_hmnp_data()` (and
-  so `run_mnprobit()`, `run_hmnlogit()` and `run_hmnprobit()`) now also copy
-  only the columns the model uses, scan them for missing values one at a
-  time, and check that the covariates are numeric without copying them. The
-  hierarchical preparations also scan for non-finite covariate values a
-  column at a time, and look up the choice situations to drop only when a
-  row is flagged, where they grouped every row by choice situation twice.
-  Apart from the changes below, the prepared objects are unchanged on every
-  call the test suite makes and on a battery of edge cases; a used column
-  that shared its name with a working column of the old code (`HAS_NA`,
-  `TASK_HAS_NA`, `HAS_BAD`, `TASK_HAS_BAD`) stopped the preparation with an
-  error, and now works like any other.
-- The same three functions now copy only the index columns into their
-  working table and gather `X` in C++ from the caller's covariate columns,
-  as the MNL, MXL and NL preparations do; `prepare_mnp_data()` writes each
-  choice situation's differences from its base alternative in the same
-  pass. `X` is now always double precision there too (posterior draws are
-  unchanged, bit for bit). The hierarchical preparations also read the
-  alternative-level covariates by source row, call a covariate constant
-  within choice situations when every row equals its situation's first row,
-  and look for an alternative listed twice in one pass over the keys; both
-  checks used to evaluate R code for every choice situation. A few inputs
-  now prepare differently. The choice-situation id used as a covariate (a
-  task-order term, say) is now recognized as constant within every
-  situation: it is kept with a message, or dropped with a warning when there
-  is no outside option, where it used to be kept silently. Inputs whose
-  column names clashed with the preparations' own names are covered under
-  Corrections. Integer covariates whose differences or within-situation
-  ranges overflow 32-bit integers no longer fail. On synthetic inputs of
-  10 million rows in which the model uses every column, `prepare_mnp_data()`
-  (2.5 million choice situations of four alternatives) now takes 5.0 s instead
-  of 13.8 s, allocates 6.4 GB instead of 9.0 GB, and its peak heap use is
-  3.0 times the size of its input instead of 4.9 times; `prepare_hmnl_data()`
-  (500,000 respondents with five choice situations of four alternatives
-  each) takes 14.5 s instead of 31.7 s, allocates 12.2 GB instead of
-  15.5 GB, and peaks at 3.1 times its input instead of 4.9 times. Peak
-  resident memory is 4.5 times the input instead of 8.0 times for
-  `prepare_mnp_data()` and 4.7 times instead of 7.6 times for
-  `prepare_hmnl_data()` (medians of three runs).
-- All six preparations now count each choice situation's alternatives and
-  chosen rows on private tables of the columns involved, which data.table
-  sums in one pass, and number the rows within each situation in one pass
-  too (`data.table::rowidv()`; `prepare_mnp_data()` has none to number);
-  they used to evaluate R code for every choice situation. On the inputs of
-  the previous item this halves the time `prepare_mnp_data()` takes and
-  cuts that of `prepare_hmnl_data()` by two fifths; on the claims- and
-  census-style panels above, `prepare_mnl_data()`, `prepare_mxl_data()` and
-  `prepare_nl_data()` take 9-15% less time. Memory traffic grows by up to 3%
-  (data.table's working arrays for the sums), and peak heap use is unchanged
-  or lower (medians of three alternated runs). The prepared objects are
-  unchanged on every call the test suite makes and on a battery of edge
-  cases.
-
-## `optimizer = "optim"` reuses the likelihood pass for the gradient
-
-- With `optimizer = "optim"`, `run_mnlogit()`, `run_mxlogit()` and
-  `run_nestlogit()` no longer repeat the likelihood pass for a gradient at the
-  point just evaluated. `stats::optim()` asks for the objective and its
-  gradient through separate functions, and each call ran the pass, which
-  computes both, so a point at which optim asked for both was evaluated twice;
-  the gradient now comes from the pass that computed the objective. L-BFGS-B,
-  which fits the mixed and nested logits, asks for both at every point, so
-  those fits take about half the evaluations; BFGS, which fits the multinomial
-  logit, also asks for the objective alone, at its line search's trial points,
-  and saves one evaluation per gradient. Over the test suite's fits refitted
-  with `optimizer = "optim"`, the evaluations (the `"bhhh"` pass included)
-  fell from 14,104 to 7,087 for the mixed logit (198 fits), from 12,941 to
-  6,470 for the nested logit (95) and from 4,671 to 3,118 for the multinomial
-  logit (179). On simulated data at one thread, with the default `scale_vars`,
-  the optimizer's time fell from 14.24 to 7.30 s for a mixed logit (two fixed
-  and two normal random coefficients, 100,000 choice situations of two to four
-  alternatives, 50 stored draws), from 8.36 to 4.26 s for a nested logit (two
-  covariates, 500,000 situations of six alternatives in three nests) and from
-  4.29 to 3.15 s for a multinomial logit (two covariates, 1,000,000 situations
-  of two to ten alternatives and an outside option); medians of three
-  alternated runs. Estimates, standard errors, iteration counts and
-  convergence codes are unchanged, bit for bit on one thread. nloptr, the
-  default optimizer, takes the objective and the gradient from one function
-  and is unchanged.
-
-## Every fit's information is equilibrated before it is inverted
-
-- The standard errors of every fit of `run_mnlogit()`, `run_mxlogit()` and
-  `run_nestlogit()`, scaled or not (`run_nestlogit()`'s default
-  `scale_vars = "none"` included), now come from the information matrix
-  equilibrated before it is inverted, as those of scaled fits already did
-  (above): scaled on both sides by the powers of two nearest (on a log scale)
-  the inverse square roots of its diagonal's magnitudes, which adds no
-  rounding, inverted, and scaled back. This holds at fit time and post hoc
-  (`vcov(fit, type = )`, `wesml_vcov()`), for the inverse of the Hessian or
-  BHHH information and for the sandwich. The estimator is unchanged. In
-  natural units an information matrix's curvatures can span many orders of
-  magnitude (columns in different units, the constants of rarely and often
-  chosen alternatives); inverted as it was, such a matrix could fail as
-  computationally singular, leaving the standard errors `NA`, and a sandwich
-  built on it could lose digits.
-- Against an exact computation on 963 inversions from our reference battery
-  and the test suite (477 distinct matrices, of 2 to 13 parameters), the
-  equilibrated inversion recovers 23 of the 30 that the old route refused, all
-  23 from unscaled fits (condition numbers from 6e18 to 1.2e28; equilibrated,
-  from 5 to 15), with standard errors within about 1e-15 relative of exact.
-  The other seven, singular to working precision, fail either way. Of the
-  rest, a scaled fit's inverse is the same to the last bit (with R's own
-  LAPACK), and where an inversion changed (476 inversions: unscaled fits and
-  every sandwich) its error is at most 2.7 times the old one, smaller by more
-  than half in 12 and larger by more than double in three. Where the
-  information is ill-conditioned for reasons no rescaling removes (a
-  likelihood nearly flat in some direction), standard errors keep only the
-  digits its conditioning allows, as before, and the last of them move: among
-  the test suite's fits by up to 1e-4 relative, on nested logits whose
-  equilibrated information had condition numbers near 1e10. Where the
-  information is not positive definite (a nested logit stopped short of a
-  maximum, say), a variance that is zero in exact arithmetic comes out as
-  rounding noise of either sign: a standard error near 1e-8 of the others may
-  now be `NA`, with a message, or the reverse.
-- The inversion holds less memory and takes no longer. The equilibrated
-  matrix is LU-factored in one working copy and the identity solved against
-  the factors into the result (the factorization and solve of `solve()`,
-  with its checks), so an inverse holds two parameters-by-parameters
-  matrices besides the information where `solve()` held three, and four or
-  more with the equilibration. The sandwich is solved twice against the
-  bread's factors without forming its inverse, and holds two besides the
-  bread and the meat where it held four, and five with the equilibration.
-  At 17,000 parameters each such matrix takes 2.3 GB: an inverse holds 4.6
-  GB besides the information, against 6.9 GB unscaled and 11.6 GB scaled
-  before, and a sandwich 4.6 GB, against 9.2 and 11.6 GB. On a census-style
-  mixed logit with 2,620 parameters (9.8 million rows, prepared data), a fit
-  stopped after one likelihood evaluation peaked at 0.24 GB of heap, its
-  BHHH variance included, scaled or not, against 0.40 GB unscaled and 0.55
-  GB scaled before: more than the matrices above account for, since R's own
-  temporaries of the old inversion stayed in the heap until a garbage
-  collection. The inverse took the time of `solve()`, and the
-  sandwich, at 2,620 parameters, 29% and 38% less at one and four threads
-  (medians of three alternated runs).
-
-## A variance that fails no longer discards the estimates
-
-- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` compute the variance
-  of their estimates (`se_method`) once the optimizer has stopped. An error in
-  that step used to stop the call, and the estimates were lost with it,
-  however long the optimizer had run: the mixed logit's memory check, say,
-  which stops a Hessian, BHHH matrix or clustered meat that would need more
-  than the machine's physical memory (or `options(choicer.max_memory =)`) at
-  the threads set, or an allocation that fails in R. The fit now returns its
-  estimates without a variance (`vcov` is `NULL`, the standard errors are
-  `NA`, and `variance_error` holds the error's message) and warns (class
-  `choicer_vcov_failed`) with the error and how to compute the variance later:
-  `vcov(fit, type = )`, which needs the data the fit keeps with
-  `keep_data = TRUE` (the default); the memory check's own message says how
-  many threads fit, or how to lift its limit. Nothing the size of the variance
-  is allocated after the failure, so a fit whose variance does not fit in
-  memory at all keeps its estimates too, as long as the failure is an error
-  (the memory check, or an allocation that fails with an error). `summary()`,
-  `print()` and the post-estimation methods work as on any fit, with `NA`
-  wherever a standard error enters, and do not run the failed step again;
-  `summary()` says that the standard errors were not computed and how to
-  compute them. An allocation that fails while the information is inverted,
-  which was reported as a singular information (and recomputed at every
-  `summary()`), now takes the same route at fit time; after the fit it is an
-  error, from `vcov(fit, type = )` or from `summary()` and the other methods
-  when they compute a missing variance. Errors in the optimizer and before it
-  stop the call as before, and a singular information matrix still gives `NA`
-  standard errors with a message. Fits whose variance can be computed are
-  unchanged, bit for bit. An allocation that fails inside the multinomial and
-  nested logits' Hessian and BHHH loops, which allocate per thread inside
-  their parallel region, still terminates R.
-
-## The fit-time variance's inputs are checked before the optimizer
-
-- The inputs of the variance are now checked before any evaluation of the
-  likelihood (for the mixed logit, before its draws are built), not after the
-  optimizer: the guard on the weights, whose error (a prepared `input_data`
-  that carries choice-based-sampling provenance with uniform weights) now
-  stops the call before the fit and whose warnings (non-uniform weights
-  without `se_method = "sandwich"` or `"cluster"`; that provenance with
-  uniform weights) are printed as they occur, before it (in a loop of fits,
-  once per fit rather than collected at the end); then the fit-time cluster
-  labels (one per choice situation, none missing, and, for a panel mixed
-  logit, constant within each decision maker). The messages are the same, and
-  a call that fails later now gives the guard's warnings as well. Only labels
-  edited in a prepared `input_data` can fail the label checks: the
-  preparations drop the choice situations with a missing value in any column
-  they use, and check that the labels are constant within each choice
-  situation and, with `person_col`, within each decision maker.
-- Other inputs that can fail are now checked before the expensive work too:
-  `run_mxlogit()` computes the column scales of `scale_vars = "sd"`, `"mad"`
-  and `"iqr"` (and stops on a column without spread) and checks a supplied
-  `theta_init` where the optimizer works in scaled coordinates before it builds
-  stored draws, and `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()`
-  check that every parameter has a name before the optimizer runs, where a
-  hand-built `input_data` whose `X` lacks column names, or a `param_names` of
-  another length, used to fail only when the estimates were named, after it
-  (an unnamed one-column `W` with `rc_mean = TRUE` gave a mean named `Mu_`; it
-  now needs a name too).
-
-## Mixed logit — a Newton phase after the optimizer (`polish`)
-
-- `run_mxlogit()` gains `polish` and `polish_control`, its last arguments.
-  With `polish = "newton"` the optimizer is followed by Newton steps on the
-  analytic Hessian of the simulated log-likelihood, and with `"bhhh"` on the
-  BHHH (outer product of the gradients) matrix, both with the fit's own draws
-  and weights, from wherever the optimizer stopped. The estimator does not
-  change: the polish finishes the climb to the maximum the optimizer
-  approached, which L-BFGS reaches slowly where curvatures differ by orders of
-  magnitude (thousands of constants, say), and certifies it. It converges when
-  the Newton decrement nu = g'C^-1 g / 2 (g the gradient, C the curvature),
-  over the mean weight, falls below `polish_control$tol_decrement`, 1e-8 by
-  default; the weights' scale does not matter (in raw log-likelihood units,
-  weights summing to one would loosen the rule by the sample size). On a
-  positive definite Hessian, every linear combination of the estimates then
-  lies within sqrt(2 nu) Hessian standard errors (computed as if the weights
-  had mean one; 1.4e-4 at the default) of the maximum of the log-likelihood's
-  quadratic model, whatever the sample size. BHHH is positive semi-definite
-  everywhere and cheaper per step, but converges linearly, and its decrement
-  on its own shows only a stationary point. The default, `"none"`, leaves
-  every fit as it was, bit for bit.
-- A converged polish sets `convergence` to the optimizer's success code (1 for
-  nloptr, 0 for optim and a custom optimizer) and leads `message` with its
-  verdict. `fit$optimizer$polish` records the phase (steps, decrement,
-  damping, evaluations, the parameters on a bound or held, the log-likelihood
-  gained, its run time) and the optimizer's own code, message, iterations and
-  run time. A polish that stops short keeps the optimizer's code and says why;
-  one that stops with an error (the Hessian's memory check, say) keeps its
-  last accepted point and warns (class `choicer_polish_failed`). The standard
-  errors are computed at the polished estimates, by `se_method`. The polish
-  decides every stop at the point whose curvature it has just evaluated, so,
-  unless it falls back to the optimizer's solution after steps that ended
-  worse, its curvature fails or its start cannot be evaluated, that matrix
-  serves as
-  the variance's own wherever `se_method` needs it, rather than being
-  evaluated again: after `"newton"`, the Hessian of `"hessian"` and the bread
-  of `"sandwich"` and `"cluster"`; after `"bhhh"`, the BHHH matrix of
-  `"bhhh"` (the sandwich's meat squares the weights, so it is computed).
-  There, a polish that certifies the optimizer's solution at once costs one
-  evaluation of the log-likelihood and its gradient and one factorization of
-  the curvature beyond the fit without it.
-- Where the curvature is not positive definite the steps are damped
-  (Levenberg-Marquardt, on the information equilibrated by powers of two, so
-  that a step does not depend on the parameters' units). They respect `lower`
-  and `upper` (projected Newton, Bertsekas 1982), and they pass a line search
-  that, near the maximum of a likelihood summed over millions of units, also
-  accepts a step whose gain is below the objective's rounding by reading the
-  gradient (Hager and Zhang 2005). Each step is solved in one working copy of
-  the information: at 17,000 parameters the step's peak heap besides the
-  information was 2.3 GB, against 4.6 GB for a scaled copy factored by
-  `chol()`, in about the same time.
-- The documentation (`?run_mxlogit`, and §5.7 of the mixed logit's math
-  article) states the limits. The constants of inside alternatives that have
-  no finite estimate (next section) are held at the optimizer's values, and
-  the certificate concerns the other parameters given them; where the outside
-  option or the base alternative is the one without, the polish does not
-  report convergence (unless, the reference never chosen, a chosen
-  alternative's constant held or bounded above stops the others). A random
-  coefficient whose variance's maximum is at zero drives its log-Cholesky
-  diagonal toward -Inf: the Newton polish may certify a point whose diagonal,
-  and its standard error, are set by `tol_decrement`, and the BHHH polish,
-  whose curvature there vanishes faster, holds the diagonal and stops
-  unconverged. `"bhhh"` needs at least as many likelihood units as the
-  parameters it moves.
-- In a validation study on simulated data (census-style designs of 20,000 and
-  200,000 students choosing among 2,500 to 2,600 schools, 2,530 and 2,620
-  parameters; claims-style panels of 1,500 and 15,000 patients over 500
-  hospitals, 518 parameters; alternatives never chosen dropped, and the
-  situations that offer one chosen wherever offered; 50 stored draws, 11
-  threads), the default fit stopped
-  within 1.1e-4 standard errors of the maximum on all four designs. A Newton
-  polish after it certified that maximum at once on three of them, for about
-  one gradient pass and one factorization more (0 to 3% of the fit, since its
-  Hessian then serves the variance), and in one step on the largest
-  claims-style design (+20%). Handing over earlier rarely paid: of ten Newton
-  hand-overs after 25 to 200 evaluations, one was faster (by a fifth) and one
-  as fast. After 25 evaluations Newton took 1.5 to 10 times as long as the
-  default fit, had not certified the larger claims-style design after 50
-  steps, and on the smaller one certified another local maximum, 13.4
-  log-likelihood units lower; from such stops BHHH certified only the larger
-  census-style design within 100 steps. (Times are modeled from the kernels'
-  calls and their per-pass costs, the machine being loaded by other work; the
-  clock was between 30% below and 20% above the model.) So
-  `polish = "newton"`, after the optimizer's own stop, is the recommended
-  check for a reportable fit with many constants; the default stays
-  `"none"`. The polish finishes and certifies an optimizer's work; it does
-  not replace it.
-
-## Mixed logit — the constants concentrated out (`concentrate_out_asc`)
-
-- `run_mxlogit()` gains `concentrate_out_asc` and `concentrate_control`, its
-  last arguments. With `concentrate_out_asc = "profile_likelihood"` the
-  optimizer moves only the other parameters (the fixed coefficients, the
-  random coefficients' means and Cholesky factor) on the profile
-  log-likelihood l*(theta_c) = max_delta l(theta_c, delta): at every point it
-  evaluates, the constants solve their first-order condition, which sets each
-  alternative's weighted chosen count equal to its predicted count, each
-  decision maker's probabilities averaged over the draws with the weight of
-  the draw given their choices. That is not BLP's share matching, which
-  equates unconditional shares and defines another estimator (`"blp"` is
-  reserved for it, and stops). The optimizer's gradient is the joint gradient
-  at the solved constants (the envelope theorem). The estimator does not
-  change: the profile's maximizer is the joint one, and the standard errors
-  are computed from the full information at the estimates, as for a joint
-  fit, so the estimation of the constants enters the other parameters'
-  standard errors. Treating the constants as known (inverting the other
-  parameters' block of the Hessian alone) would understate them: at
-  the true parameters of a census-style design, to 45% of the correct
-  standard error for a covariate that varies mostly between alternatives and
-  91% for an alternative x decision-maker interaction. The default, `"none"`,
-  leaves every fit as it was, bit for bit.
-- Each solve takes damped Newton steps (the Newton phase's machinery, on the
-  constants alone) on the constants' block of the information, which an
-  internal kernel forms in one pass with the objective and the gradient, for
-  about three gradient passes (the full Hessian costs about 30 to 40). It starts
-  from the constants of the best point the optimizer has reached and stops
-  when the Newton decrement over the mean weight falls below 1e-12, or when
-  every constant's score, and the reference's, is below 1e-10 of its
-  alternative's weighted chosen count plus the mean weight
-  (`concentrate_control`): at that decrement the other parameters' solution
-  moves by at most 1.4e-5 standard errors, even where estimating the other
-  parameters inflates the constants' variance a hundredfold (§5.8 of the
-  mixed logit's math article). Where the constants cannot be solved at the
-  start values the fit stops there (class `choicer_profile_unconverged`; an
-  error inside that solve is reported as itself). A
-  solve that does not converge later reaches the optimizer as an overflow,
-  so that it backtracks, and is counted; the fit warns (same class) when
-  such solves come after the optimizer's best point, or when the constants
-  cannot be solved at its solution. `fit$optimizer$concentration` records
-  the solves.
-- Every constant needs a finite estimate (see "Constants without a finite
-  maximum-likelihood estimate" below): under the profile, an alternative (or
-  the outside option, or the base alternative) that is never chosen, or
-  chosen wherever it is offered, is an error (class
-  `choicer_unbounded_constants`) before the draws, with the warning's
-  remedies, counted by choice situation, so that an alternative listed twice
-  in a situation cannot hide it. Bounds on the constants are an error too;
-  bounds on the other parameters go to the optimizer. The constants' block is
-  factored densely, up to `concentrate_control$max_dense = 10000` constants
-  (more is an error, before the draws; a solve holds two J x J matrices, 0.8
-  GB each at J = 10,000).
-- It is an expert option. In the validation study of the previous section
-  (census-style and claims-style designs, 518 to 2,620 parameters), the
-  profile reached the maximum the joint fit reached and ended closer to it
-  (the joint Newton decrement at its stop 3e-13 to 3e-10, against 1e-10 to
-  2e-8 at the default fit's; `polish = "newton"` certifies either), in 21 to
-  49 evaluations of the optimizer, with about two Newton steps per solve,
-  but took 2.0 to 3.8 times the joint fit's time (modeled; 1.8 to 4.9 times
-  on the clock): every evaluation costs a few passes of the constants'
-  kernel and factorizations of their block, while L-BFGS in the default
-  `scale_vars = "bhhh"` coordinates converged on the joint problem in 46 to
-  224 evaluations.
-
-## Constants without a finite maximum-likelihood estimate: a warning
-
-- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` now warn (class
-  `choicer_unbounded_constants`), before the optimizer runs, when the counts
-  in `alt_mapping` show that an alternative's constant has no finite
-  maximum-likelihood estimate: the alternative is never chosen in the data, or
-  is chosen in every choice situation that offers it. The score of its
-  constant then has one sign at every value of the parameters, so the
-  likelihood keeps rising as the constant falls (or grows): the optimizer
-  stops it wherever its tolerance does, and its standard error means nothing,
-  while the other parameters approach the maximum without that alternative (or
-  without the situations that offer it). Where the outside option or the base
-  alternative is never chosen, or chosen wherever it is offered, the other
-  constants diverge together. Other patterns of choices can leave constants
-  without a finite estimate too (a group of alternatives chosen only in
-  situations that offer no alternative outside the group, say); the counts do
-  not reveal them, and the warning does not detect them. The estimates are
-  unchanged.
-- The warning names up to five alternatives of each kind and says how to
-  reach finite constants: drop a never-chosen alternative or pool it with a
-  chosen one; drop the situations that offer an always-chosen one or pool it
-  with one that is not chosen wherever offered; and fit without an outside
-  option that is never chosen, as happens when the data hold the outside
-  option's own rows and `include_outside_option = TRUE` adds another. Naming
-  another base only moves the divergence of a never-chosen base to its own
-  constant. In the mixed logit a finite bound in the direction a constant
-  diverges holds it, and that alternative is not named. In the nested logit
-  the never-chosen case needs the nest's dissimilarity parameter at most 1.
-  The warning is printed as it occurs, before a fit that can take hours.
-
 ## Corrections
 
-The following were found while implementing the panel likelihood above and
-the kernel and data-preparation work for population-scale data that
-followed, and independently verified. Each affected released versions
-unless it says otherwise.
+The following were found during this development cycle, while implementing
+the panel likelihood and the population-scale work above or reviewing it,
+and independently verified. Each affected released versions unless it says
+otherwise.
 
 - `mxl_hessian_parallel()` silently dropped any choice situation whose
   simulated choice probability, summed over draws, was `<= 1e-12`, while the
@@ -1431,8 +893,8 @@ unless it says otherwise.
   word (`ARMA_64BIT_WORD`), so the kernels read matrices and cubes of any
   size R can hold, and outputs of more than 2^32 - 1 values, such as the
   output of `conditional_tastes()`, are allocated where Armadillo stopped
-  with "requested size is too large". Below 2^32 values, results are
-  unchanged, bit for bit.
+  with "requested size is too large". Below 2^32 values, this correction by
+  itself leaves results unchanged, bit for bit.
 - `summary()` of a mixed logit fit without a variance, one whose information
   matrix is singular, printed the Cholesky factor's parameters (the diagonal
   on its log scale) under the labels of the covariance matrix,
