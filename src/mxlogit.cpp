@@ -98,9 +98,14 @@ using mxl_off = choicer_off;
 // read in place from the kernel's integer arguments), plus the likelihood
 // units of a panel. It is valid for one kernel call only: when an argument
 // was coerced from doubles, the integer copy belongs to the Rcpp wrapper of
-// that call. Building it is one pass over the rows (in parallel above 10^6
-// rows) and one over the situations, about 20 ms at 10^8 rows: under 1% of
-// an evaluation, too little to repay caching.
+// that call. Building it fills N + 1 eight-byte row offsets (and U + 1 unit
+// offsets in a panel) and checks the codes and the choices: serial passes
+// over the situations and units, and one over the rows (the codes' range, in
+// parallel above 10^6 rows). With the unit data's check of a panel's weights,
+// a call's setup up to its memory check took about 20 ms on a census-like
+// panel of 10^8 rows, under 1% of an evaluation, too little to repay caching.
+// The serial passes grow with the situations, not the rows; for 10^9 rows on
+// many threads see _benchmarks/scale/README.md.
 struct MxlLayout : ChoiceLayout {
   mxl_off U = 0;                 // likelihood units
   mxl_off max_unit_rows = 0;     // rows of the largest unit
@@ -179,16 +184,25 @@ inline MxlLayout mxl_layout_build(const arma::mat& X,
 
 // Draw batches. A unit's R x S matrices (WGamma, and DiffW for the score)
 // are formed B draws at a time, B = S unless the kernel's n_mats R x B
-// matrices would exceed MXL_BATCH_BYTES: a unit is split only when R S
-// exceeds 2^18 (2^19 when n_mats = 1), i.e. a long panel, a choice set of
-// hundreds of alternatives or a very large S, and a thread's scratch then
-// grows with R rather than R S. The S-length and K_w x S pieces (lambda, the
-// draw weights, Gamma, BW) stay whole. The budget is small because the draw
-// loop reads each batch a few times in quick succession, and a batch that
-// stays in cache is fastest. A split unit's draws are partitioned into
-// batches whose sizes differ by at most one. draw_batch > 0 caps the batch
-// size instead (tests).
-constexpr double MXL_BATCH_BYTES = 4.0 * 1024.0 * 1024.0;
+// matrices would exceed MXL_BATCH_BYTES: at the default 4 MiB a unit is split
+// only when R S exceeds 2^18 (2^19 when n_mats = 1), i.e. a long panel, a
+// choice set of hundreds of alternatives or a very large S, and a thread's
+// scratch then grows with R rather than R S. The S-length and K_w x S pieces
+// (lambda, the draw weights, Gamma, BW) stay whole. The budget is small
+// because the draw loop reads each batch a few times in quick succession, and
+// a batch that stays in cache is fastest. A split unit's draws are
+// partitioned into batches whose sizes differ by at most one. draw_batch > 0
+// caps the batch size instead (tests). 4 MiB lies in the range (1-16 MiB)
+// that ran fastest on the 11-core machine it was tuned on; to measure it
+// elsewhere, the budget can be set in bytes when the package is compiled
+// (-DCHOICER_MXL_BATCH_BYTES=..., see _benchmarks/scale/budget_sweep.R; the
+// tests assume the default).
+#ifndef CHOICER_MXL_BATCH_BYTES
+#define CHOICER_MXL_BATCH_BYTES 4194304
+#endif
+constexpr double MXL_BATCH_BYTES = CHOICER_MXL_BATCH_BYTES;
+static_assert(MXL_BATCH_BYTES >= 1024.0 && MXL_BATCH_BYTES <= 17179869184.0,
+              "CHOICER_MXL_BATCH_BYTES must be between 1024 bytes and 16 GiB");
 
 // Number of draw batches of a unit of R rows, for a kernel that keeps n_mats
 // R x B matrices (1: the unit is not split).
