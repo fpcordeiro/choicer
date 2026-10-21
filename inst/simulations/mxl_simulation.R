@@ -27,9 +27,9 @@ mxl_inputs <- prepare_mxl_data(
   rc_correlation         = TRUE
 )
 
-# S > sqrt(N) for MSL consistency
+# S > sqrt(N) for MSL consistency; the fit forms its draws on the fly
+# (draws = "generate"), so no draw cube is held in memory
 S <- 50 * ceiling((1.5 * sqrt(sim$settings$N)) / 50)
-eta_draws <- get_halton_normals(S, mxl_inputs$N, sim$settings$K_w)
 cat("Simulation draws: S =", S, "\n\n")
 
 # 3) Warm-up MNL fit ==========================================================
@@ -99,9 +99,7 @@ fit <- run_mxlogit(
   outside_opt_label      = 0L,
   include_outside_option = FALSE,
   rc_correlation         = TRUE,
-  # input_data = mxl_inputs,
-  # eta_draws  = eta_draws,
-  S = 400L,
+  S          = S,
   use_asc    = TRUE,
   theta_init = theta_init,
   lower      = lower,
