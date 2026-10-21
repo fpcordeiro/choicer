@@ -264,3 +264,34 @@ the log scale (`L_kk` is `log(chol(Sigma)[k, k])`). The simulator
 `simulate_mxl_data()` and the fitted-object names follow the same convention.
 Custom `vech` extractors should match `build_var_mat()` / `build_L_mat()` in
 `src/mxlogit.cpp`.
+
+## Golden identity harness (`golden/`)
+
+`golden/refactor_identity_check.R` records the outputs of one build of choicer
+and checks another build's against them, leaf by leaf: every compiled entry
+point of the multinomial, mixed and nested logit kernels over grids of flags,
+draw modes, weights, panels, edge inputs and error cases, plus the data
+preparations, the Bayesian samplers and fits through the `run_*()` wrappers
+(about 27,000 leaves). Leaves must be bit-identical, except a tolerance group
+(the mixed logit estimation kernels' outputs whose summation order a change may
+alter), which passes when max|new - base| / max(1, max|base|) is at most 1e-10.
+It is the identity gate of the scale audit: a change that should not move
+results passes `check` against a baseline of the build before it.
+
+```sh
+# Each build installed from a copy of its tree into its own library:
+R_LIBS=/tmp/lib-main Rscript _validation/golden/refactor_identity_check.R baseline --ref=main
+R_LIBS=/tmp/lib-dev  Rscript _validation/golden/refactor_identity_check.R check --ref=main
+# Everything bit-identical, the tolerance group included:
+R_LIBS=/tmp/lib-dev  Rscript _validation/golden/refactor_identity_check.R check --ref=main --tol-slots=none
+```
+
+The build under test is the first entry of `R_LIBS`; the harness stops if
+choicer was loaded from anywhere else, and runs at one thread. Baselines,
+per-leaf reports (`refactor_check_report_<ref>.csv`) and call logs go to
+`_validation/output/golden/` (ignored by git), or to `--out=<dir>`; the harness
+refuses an output directory inside a package tree that git does not ignore.
+The batteries are the `*_batteries.R` files beside it (the header lists them);
+a new one defines `run_<name>()` and is added to `results` there. `check` exits
+with status 0 on a pass and 1 on a failure, and prints a summary per group, the
+failing leaves and the worst tolerance-group deviations.
