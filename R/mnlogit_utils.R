@@ -242,12 +242,20 @@ run_mnlogit <- function(
   # Parameter names and index map (built early so the scaling layer can address
   # blocks and so theta_hat/vcov/se can be named downstream).
   asc_names <- if (use_asc) {
-    paste0("ASC_", input_list$alt_mapping[[alt_col]][2:J])
+    paste0("ASC_", input_list$alt_mapping[[alt_col]][seq_len(J)[-1L]],
+           recycle0 = TRUE)
   } else {
     character(0)
   }
   param_names <- c(colnames(input_list$X), asc_names)
   .check_param_names(list(param_names), "ASC_<label>")
+  # Checked here, not where the estimates are named after the optimizer:
+  # a hand-built input_data's X needs a name per column.
+  if (length(param_names) != n_params) {
+    stop("`input_data$X` needs one column name per covariate (", K_x,
+         " columns, ", length(colnames(input_list$X)), " names): they name the ",
+         "coefficients.", call. = FALSE)
+  }
   param_map <- list(beta = seq_len(K_x))
   if (n_asc > 0) param_map$asc <- K_x + seq_len(n_asc)
 

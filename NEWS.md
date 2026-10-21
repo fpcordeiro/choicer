@@ -897,6 +897,16 @@
   preparations drop the choice situations with a missing value in any column
   they use, and check that the labels are constant within each choice
   situation and, with `person_col`, within each decision maker.
+- Other inputs that can fail are now checked before the expensive work too:
+  `run_mxlogit()` computes the column scales of `scale_vars = "sd"`, `"mad"`
+  and `"iqr"` (and stops on a column without spread) and checks a supplied
+  `theta_init` where the optimizer works in scaled coordinates before it builds
+  stored draws, and `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()`
+  check that every parameter has a name before the optimizer runs, where a
+  hand-built `input_data` whose `X` lacks column names, or a `param_names` of
+  another length, used to fail only when the estimates were named, after it
+  (an unnamed one-column `W` with `rc_mean = TRUE` gave a mean named `Mu_`; it
+  now needs a name too).
 
 ## Mixed logit — a Newton phase after the optimizer (`polish`)
 

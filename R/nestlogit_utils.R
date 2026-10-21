@@ -256,11 +256,14 @@ run_nestlogit <- function(
   names_supplied <- !is.null(param_names)
   if (!names_supplied) {
     beta_names <- colnames(input_data$X)
-    if (is.null(beta_names)) beta_names <- paste0("X_", seq_len(K_x))
-    lambda_names <- paste0("Lambda_", seq_len(K_l))
+    if (is.null(beta_names)) {
+      beta_names <- paste0("X_", seq_len(K_x), recycle0 = TRUE)
+    }
+    lambda_names <- paste0("Lambda_", seq_len(K_l), recycle0 = TRUE)
     alt_col <- names(input_data$alt_mapping)[2]
     asc_names <- if (use_asc) {
-      paste0("ASC_", input_data$alt_mapping[[alt_col]][2:J])
+      paste0("ASC_", input_data$alt_mapping[[alt_col]][seq_len(J)[-1L]],
+             recycle0 = TRUE)
     } else {
       character(0)
     }
@@ -268,6 +271,11 @@ run_nestlogit <- function(
   }
   .check_param_names(list(param_names), c("Lambda_<k>", "ASC_<label>"),
                      supplied = names_supplied)
+  # Checked here, not where the estimates are named after the optimizer
+  if (length(param_names) != n_params) {
+    stop("`param_names` has ", length(param_names), " names; the model has ",
+         n_params, " parameters.", call. = FALSE)
+  }
 
   # Initial parameter vector
   if (is.null(theta_init)) {
