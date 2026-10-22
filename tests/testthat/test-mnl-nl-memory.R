@@ -142,3 +142,122 @@ test_that("an MNL call beyond the physical memory stops before allocating", {
     expect_error(mnm_call(k, f), "GB of physical memory", label = k)
   }
 })
+
+# --- The nested logit -----------------------------------------------------
+
+# mnm_fixture()'s design with the alternatives in `n_nests` nests of three or
+# more (alternative j in nest (j - 1) %% n_nests + 1), and a dissimilarity
+# for each nest.
+nlm_fixture <- function(seed, N = 40L, J = 12L, m = 5L, K = 2L, n_nests = 4L) {
+  f <- mnm_fixture(seed, N = N, J = J, m = m, K = K)
+  f$nest_idx <- as.integer((seq_len(J) - 1L) %% n_nests + 1L)
+  f$theta <- c(f$theta[seq_len(K)], stats::runif(n_nests, 0.6, 0.9),
+               f$theta[-seq_len(K)])
+  f
+}
+
+nlm_kernels <- c("gradient", "gradient_opg", "hessian", "bhhh", "scores")
+
+nlm_call <- function(kernel, f) {
+  ns <- asNamespace("choicer")
+  switch(kernel,
+    gradient = ns$nl_loglik_gradient_parallel(f$theta, f$X, f$alt_idx,
+                                              f$choice_idx, f$nest_idx, f$M,
+                                              f$weights),
+    gradient_opg = ns$nl_loglik_gradient_parallel(f$theta, f$X, f$alt_idx,
+                                                  f$choice_idx, f$nest_idx,
+                                                  f$M, f$weights,
+                                                  opg_diag = TRUE),
+    hessian = ns$nl_loglik_hessian_parallel(f$theta, f$X, f$alt_idx,
+                                            f$choice_idx, f$nest_idx, f$M,
+                                            f$weights),
+    bhhh = ns$nl_bhhh_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
+                               f$nest_idx, f$M, f$weights),
+    scores = ns$nl_scores_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
+                                   f$nest_idx, f$M))
+}
+
+nlm_one_thread <- function(kernel, f) {
+  old <- options(choicer.max_memory = 1)
+  on.exit(options(old), add = TRUE)
+  msg <- tryCatch(nlm_call(kernel, f), error = conditionMessage)
+  m <- regmatches(msg, regexec("needs about ([0-9.]+) (kB|MB|GB) even with one thread", msg))[[1]]
+  as.numeric(m[2L]) * c(kB = 1e3, MB = 1e6, GB = 1e9)[[m[3L]]]
+}
+
+test_that("every NL kernel stops before allocating more than choicer.max_memory", {
+  f <- nlm_fixture(4201)
+  old <- options(choicer.max_memory = 1)
+  on.exit(options(old), add = TRUE)
+  for (k in nlm_kernels) {
+    expect_error(nlm_call(k, f),
+                 "needs about [0-9.]+ kB even with one thread .* more than the 0 kB of options\\(choicer.max_memory\\)",
+                 label = k)
+  }
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  options(choicer.max_memory = NULL)
+  ref <- lapply(setNames(nlm_kernels, nlm_kernels), function(k) nlm_call(k, f))
+  for (lim in list(Inf, 1e15)) {
+    options(choicer.max_memory = lim)
+    for (k in nlm_kernels) {
+      expect_identical(nlm_call(k, f), ref[[k]], label = paste(k, "with", format(lim)))
+    }
+  }
+})
+
+test_that("the NL kernels check their inputs before their memory", {
+  f <- nlm_fixture(4202)
+  old <- options(choicer.max_memory = 1)
+  on.exit(options(old), add = TRUE)
+  bad_choice <- f
+  bad_choice$choice_idx[2L] <- 99L
+  for (k in nlm_kernels) {
+    expect_error(nlm_call(k, bad_choice), "Invalid chosen alternative index",
+                 label = k)
+  }
+  bad_m <- f
+  bad_m$M[1L] <- 0L
+  for (k in nlm_kernels) {
+    expect_error(nlm_call(k, bad_m), "M must be positive", label = k)
+  }
+  bad_lambda <- f
+  bad_lambda$theta[3L] <- -1
+  for (k in nlm_kernels) {
+    expect_error(nlm_call(k, bad_lambda), "lambda .* must be > 0", label = k)
+  }
+})
+
+test_that("the NL memory estimates grow with the parameters and the threads", {
+  f_small <- nlm_fixture(4203, J = 12L)
+  f_large <- nlm_fixture(4203, J = 400L)
+  n <- length(f_large$theta)
+  for (k in c("hessian", "bhhh")) {
+    small <- nlm_one_thread(k, f_small)
+    large <- nlm_one_thread(k, f_large)
+    # at least the n x n result (8 n^2 bytes)
+    expect_gt(large, 8 * n^2, label = k)
+    expect_lt(small, large, label = k)
+  }
+  expect_gt(nlm_one_thread("scores", f_large), 16 * 40 * n)
+})
+
+test_that("the NL memory error gives the number of threads that fits", {
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
+  skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(2L)
+  # 1,000 alternatives: a second thread adds its own accumulator of the
+  # 1,005 x 1,005 matrix, a large part of the estimate
+  f <- nlm_fixture(4204, J = 1000L, m = 4L)
+  one <- nlm_one_thread("bhhh", f)
+  expect_gt(one, 7.5e6)
+  old <- options(choicer.max_memory = 1.15 * one)
+  on.exit(options(old), add = TRUE)
+  expect_error(nlm_call("bhhh", f),
+               "with 2 threads .* Use set_num_threads\\(1\\), or raise")
+  set_omp_threads(1L)
+  B <- nlm_call("bhhh", f)
+  options(choicer.max_memory = NULL)
+  expect_identical(B, nlm_call("bhhh", f))
+})
