@@ -111,8 +111,11 @@
 #'   estimates without it (\code{vcov} \code{NULL}, \code{NA} standard
 #'   errors, the error's message in \code{variance_error}) and warns, naming
 #'   the \code{vcov(fit, type = )} that computes the variance later from a
-#'   fit that keeps its data (\code{keep_data = TRUE}). An allocation that
-#'   fails inside the compiled Hessian or BHHH loops still terminates R.
+#'   fit that keeps its data (\code{keep_data = TRUE}). The compiled
+#'   Hessian, BHHH and cluster-meat routines check their memory before
+#'   allocating (see \code{\link{set_num_threads}}); only small
+#'   per-situation buffers are allocated inside their parallel loops, where
+#'   an allocation that fails still terminates R.
 #' @inheritSection prepare_mnl_data Column names
 #' @examples
 #' \donttest{

@@ -90,7 +90,9 @@ summary(fit)
 ```
 
 How much did it matter? `vcov(fit, type = )` recomputes any of the four
-estimators from the data stored with the fit:
+estimators from the data stored with the fit, by the route the fit's own
+variance took (so `type = "cluster"` reproduces `summary(fit)`'s standard
+errors, bit for bit at one thread):
 
 ```{r compare}
 se_of <- function(V) sqrt(diag(V))
