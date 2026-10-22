@@ -1481,7 +1481,12 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' weighted BHHH/OPG information; passing \code{weights = w^2} yields the
 #' sandwich \emph{meat} \eqn{B = \sum_i w_i^2 s_i s_i^\top} for robust (WESML)
 #' inference. Singleton-nest lambdas are fixed to 1 and contribute no score
-#' (mirroring the gradient kernel).
+#' (mirroring the gradient kernel). Each situation's outer product is formed
+#' only over the parameters its likelihood involves (the coefficients, the
+#' dissimilarities of the nests it offers and the constants of its
+#' alternatives), so the work per situation does not grow with the number of
+#' alternatives or nests; the n_params x n_params result and the threads'
+#' accumulators do (see acc_bytes).
 #'
 #' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
 #'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
@@ -1494,6 +1499,10 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' @param weights N x 1 vector with weights for each observation.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+#'   default), as in \code{mnl_bhhh_parallel()}; in a shared result the
+#'   coefficients' and the dissimilarities' rows stay private. \code{0}
+#'   forces the shared result (for tests).
 #' @returns A symmetric positive-semidefinite information matrix
 #'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
 #' @examples
@@ -1514,8 +1523,8 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' dim(B)
 #' }
 #' @keywords internal
-nl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_nl_bhhh_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
+nl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_nl_bhhh_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
 nl_scores_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc = TRUE, include_outside_option = FALSE) {

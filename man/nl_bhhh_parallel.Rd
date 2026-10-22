@@ -13,7 +13,8 @@ nl_bhhh_parallel(
   M,
   weights,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -36,6 +37,11 @@ Order: \verb{[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]}}
 \item{use_asc}{whether to use alternative-specific constants.}
 
 \item{include_outside_option}{whether to include outside option normalized to V=0, lambda=1.}
+
+\item{acc_bytes}{Bytes for the threads' private upper triangles (2 GiB by
+default), as in \code{mnl_bhhh_parallel()}; in a shared result the
+coefficients' and the dissimilarities' rows stay private. \code{0}
+forces the shared result (for tests).}
 }
 \value{
 A symmetric positive-semidefinite information matrix
@@ -51,7 +57,12 @@ the leading multiplier. Passing \code{weights = w} yields the ordinary
 weighted BHHH/OPG information; passing \code{weights = w^2} yields the
 sandwich \emph{meat} \eqn{B = \sum_i w_i^2 s_i s_i^\top} for robust (WESML)
 inference. Singleton-nest lambdas are fixed to 1 and contribute no score
-(mirroring the gradient kernel).
+(mirroring the gradient kernel). Each situation's outer product is formed
+only over the parameters its likelihood involves (the coefficients, the
+dissimilarities of the nests it offers and the constants of its
+alternatives), so the work per situation does not grow with the number of
+alternatives or nests; the n_params x n_params result and the threads'
+accumulators do (see acc_bytes).
 }
 \examples{
 \donttest{

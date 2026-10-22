@@ -1051,8 +1051,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_bhhh_parallel
-arma::mat nl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_nl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::NumericMatrix nl_bhhh_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, const double acc_bytes);
+RcppExport SEXP _choicer_nl_bhhh_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP acc_bytesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -1065,7 +1065,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(nl_bhhh_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const double >::type acc_bytes(acc_bytesSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_bhhh_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, acc_bytes));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1369,7 +1370,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_blp_contraction_cached", (DL_FUNC) &_choicer_mxl_blp_contraction_cached, 21},
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 18},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 10},
-    {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 9},
+    {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 10},
     {"_choicer_nl_scores_parallel", (DL_FUNC) &_choicer_nl_scores_parallel, 8},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
     {"_choicer_nl_loglik_hessian_parallel", (DL_FUNC) &_choicer_nl_loglik_hessian_parallel, 9},

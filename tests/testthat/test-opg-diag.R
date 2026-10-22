@@ -4,8 +4,8 @@
 # formed and rounded as the BHHH kernel forms it, so at one thread the two
 # agree to the last bit where the compiler fuses neither (clang, GCC at -O2);
 # the tests allow 1e-13 relative (and ask for the last bit for the
-# multinomial logit off CRAN), and 1e-12 at two threads, whose partial sums
-# are added in the order the threads finish.
+# multinomial and nested logits off CRAN), and 1e-12 at two threads, whose
+# partial sums are added in the order the threads finish.
 
 # Largest deviation of the diagonal d from the BHHH matrix's (or a vector's
 # entries), relative above one and absolute below.
@@ -194,6 +194,30 @@ test_that("the nested logit's OPG diagonal is the BHHH diagonal", {
         B <- do.call(choicer:::nl_bhhh_parallel, a)
         expect_lt(opg_dev(g1$d, B), 1e-13, label = paste("diagonal", what))
       }
+    }
+  }
+})
+
+test_that("at one thread the nested logit's OPG diagonal is the BHHH's bit for bit", {
+  # As for the multinomial logit: each term w_i s_ij^2, the dissimilarities'
+  # included, formed as the BHHH kernel's compact update forms it.
+  skip_on_cran()  # a compiler that fuses either kernel's terms differs
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  nest <- c(1L, 1L, 2L, 2L, 2L, 3L, 4L, 4L)  # nest 3 is a singleton
+  for (ioo in c(FALSE, TRUE)) {
+    for (dup in c(FALSE, TRUE)) {
+      d <- opg_choice_data(1010L + ioo + 2L * dup, 50L, 8L, 2L, ioo, dup)
+      n_delta <- if (ioo) 8L else 7L
+      set.seed(1015L + ioo)
+      theta <- c(stats::rnorm(2L, sd = 0.4), stats::runif(3L, 0.55, 1.2),
+                 stats::rnorm(n_delta, sd = 0.4))
+      a <- list(theta, d$X, d$alt_idx, d$choice_idx, nest, d$M, d$weights,
+                TRUE, ioo)
+      g <- do.call(nl_loglik_gradient_parallel, c(a, list(opg_diag = TRUE)))
+      expect_identical(as.numeric(g$opg_diag),
+                       diag(do.call(choicer:::nl_bhhh_parallel, a)),
+                       label = sprintf("[oo = %s, dup = %s]", ioo, dup))
     }
   }
 })
