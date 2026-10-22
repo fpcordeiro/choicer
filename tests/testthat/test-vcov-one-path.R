@@ -348,6 +348,33 @@ test_that("multinomial and nested logit variances follow their post-hoc routes",
       expect_identical(nodata$vcov, fit$vcov, label = paste("keep_data = FALSE", what))
     }
   }
+  # Non-uniform weights (the BHHH and robust meats differ), the outside
+  # option, and no constants
+  dw <- data.table::as.data.table(
+    simulate_mnl_data(N = 300, J = 4, seed = 25, outside_option = TRUE)$data)
+  dw[, `:=`(clus = (id - 1L) %/% 10L, w = 0.5 + id %% 3)]
+  dn[, w := 0.5 + id %% 3]
+  for (asc in c(TRUE, FALSE)) {
+    for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
+      what <- paste("weighted, use_asc =", asc, se)
+      # (BHHH standard errors with non-uniform weights warn)
+      fits <- suppressWarnings(suppressMessages(list(
+        MNL = run_mnlogit(dw, "id", "alt", "choice", c("x1", "x2"),
+                          weights_col = "w", include_outside_option = TRUE,
+                          use_asc = asc, se_method = se,
+                          cluster_col = if (se == "cluster") "clus"),
+        NL = run_nestlogit(dn, "id", "j", "choice", c("X", "W"), "nest",
+                           weights_col = "w", use_asc = asc, se_method = se,
+                           cluster_col = if (se == "cluster") "clus"))))
+      for (m in names(fits)) {
+        fit <- fits[[m]]
+        expect_identical(suppressWarnings(suppressMessages(vcov(fit, type = vop_type(se)))),
+                         fit$vcov, label = paste(m, what))
+        expect_identical(suppressWarnings(vop_lazy(fit)), fit$vcov,
+                         label = paste("lazy", m, what))
+      }
+    }
+  }
 })
 
 test_that("multinomial and nested logit variances never form the score matrix", {
