@@ -40,8 +40,9 @@ Order: \verb{[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]}}
 
 \item{acc_bytes}{Bytes for the threads' private upper triangles (2 GiB by
 default), as in \code{mnl_bhhh_parallel()}; in a shared result the
-coefficients' and the dissimilarities' rows stay private. \code{0}
-forces the shared result (for tests).}
+coefficients' rows stay private, and the dissimilarities' while the
+threads' copies of them fit in \code{acc_bytes}. \code{0} forces the
+shared result, with the coefficients' rows only (for tests).}
 }
 \value{
 A symmetric positive-semidefinite information matrix

@@ -120,6 +120,19 @@ static inline double nl_map_bytes(const int J_d, const int K_l,
                         std::min<double>(K_l, m) + 160.0) + 256.0;
 }
 
+// The rows each of T threads keeps privately when they share a derivative
+// kernel's result (SymAcc): the coefficients' and the dissimilarities' (with
+// few nests, each dissimilarity is touched by many situations) while the
+// threads' copies of those rows fit in acc_bytes; with many nests the
+// coefficients' only, the dissimilarities' rows then added into the result
+// as the constants' are.
+static inline int nl_acc_rows(const int n, const int K, const int K_l, const int T,
+                              const double acc_bytes) {
+  const double copies = sizeof(double) * static_cast<double>(T) *
+                        static_cast<double>(sym_acc_col_off(n, K + K_l));
+  return copies <= acc_bytes ? K + K_l : K;
+}
+
 // Every thread's map, each in its own allocation, on the primary thread.
 using NlSituationMaps = std::vector<std::unique_ptr<NlSituationMap>>;
 static inline NlSituationMaps nl_situation_maps(const int J_d, const int K_l,
@@ -150,13 +163,6 @@ static inline std::vector<NlThreadBuffers> nl_thread_buffers(const choicer_off m
   buf.reserve(n_threads);
   for (int i = 0; i < n_threads; ++i) buf.emplace_back(max_m, n_nests);
   return buf;
-}
-
-// Each thread's buffer of n doubles, on the primary thread.
-static inline std::vector<std::vector<double>> nl_thread_vectors(const std::size_t n,
-                                                                 const int n_threads) {
-  return std::vector<std::vector<double>>(static_cast<std::size_t>(n_threads),
-                                          std::vector<double>(n + 16));
 }
 
 // Free constant of a row with 0-based alternative alt0 (as
@@ -551,9 +557,10 @@ Rcpp::List nl_loglik_gradient_parallel(
   validate_choices(lay, include_outside_option, nullptr);
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
-  // diagonal, the constants' scores and the terms), X beta, the sums and the
-  // returned copies. Each thread allocates its sums and buffers before its
-  // first situation, so the pass runs on the team checked here.
+  // diagonal, the constants' scores and the terms), X beta, the sums, the
+  // negated gradient and R's copies of it and of the diagonal. Each thread
+  // allocates its sums and buffers before its first situation, so the pass
+  // runs on the team checked here.
   const int n_threads = kernel_team_threads(lay.N);
   kernel_check_memory(
       "gradient", n_threads,
@@ -562,7 +569,7 @@ Rcpp::List nl_loglik_gradient_parallel(
                     : 0.0),
       [&](const int) {
         return 8.0 * static_cast<double>(lay.n_rows) +
-               (opg_diag ? 32.0 : 16.0) * n_params;
+               (opg_diag ? 40.0 : 24.0) * n_params;
       });
 
   // Pre-compute base utility for all individuals (single BLAS call)
@@ -641,8 +648,9 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
 //' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
 //'   default), as in \code{mnl_bhhh_parallel()}; in a shared result the
-//'   coefficients' and the dissimilarities' rows stay private. \code{0}
-//'   forces the shared result (for tests).
+//'   coefficients' rows stay private, and the dissimilarities' while the
+//'   threads' copies of them fit in \code{acc_bytes}. \code{0} forces the
+//'   shared result, with the coefficients' rows only (for tests).
 //' @returns A symmetric positive-semidefinite information matrix
 //'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
 //' @examples
@@ -699,8 +707,8 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
 
   // Memory: each thread's slot map, compact score, a column of the update
   // (every parameter, for the dense fallback) and situation buffers; X beta,
-  // the result and the threads' accumulators (the coefficients' and
-  // dissimilarities' rows private in a shared result)
+  // the result and the threads' accumulators (in a shared result, the rows
+  // nl_acc_rows() keeps private)
   const int K_l = delta_start_idx - K;  // dissimilarities
   const bool has_delta = use_asc && delta_length > 0;
   const int J_d = has_delta ? delta_length : 0;  // free constants
@@ -712,7 +720,9 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
                           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
-                               sym_acc_need(n_params, K + K_l, t, acc_bytes);
+                               sym_acc_need(n_params,
+                                            nl_acc_rows(n_params, K, K_l, t, acc_bytes),
+                                            t, acc_bytes);
                       });
 
   // Pre-compute base utility for all individuals (single BLAS call)
@@ -727,13 +737,15 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
 
   // The result and the threads' accumulators, slot maps and buffers, all
   // allocated here on the primary thread
-  SymAcc acc(n_params, n_threads, K + K_l, "BHHH", acc_bytes);
+  SymAcc acc(n_params, n_threads,
+             nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "BHHH",
+             acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
   std::vector<std::vector<double>> scores =
-      nl_thread_vectors(static_cast<std::size_t>(blk_max), n_threads);
+      thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
   std::vector<std::vector<double>> cols =
-      nl_thread_vectors(static_cast<std::size_t>(n_params), n_threads);
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -884,7 +896,9 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
                           9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
-                               sym_acc_need(n_params, K + K_l, t, acc_bytes) +
+                               sym_acc_need(n_params,
+                                            nl_acc_rows(n_params, K, K_l, t, acc_bytes),
+                                            t, acc_bytes) +
                                8.0 * (static_cast<double>(N) + 2.0 * G +
                                       4.0 * t + 2.0);
                       });
@@ -933,11 +947,13 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
   // sums, and the chunks' partial sums of their cut clusters (two per chunk:
   // the cluster it starts in and the one it ends in), all allocated here on
   // the primary thread.
-  SymAcc acc(n_params, n_threads, K + K_l, "cluster meat", acc_bytes);
+  SymAcc acc(n_params, n_threads,
+             nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "cluster meat",
+             acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
   std::vector<std::vector<double>> scores =
-      nl_thread_vectors(static_cast<std::size_t>(blk_max), n_threads);
+      thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
   std::vector<ClusterSum> sums;
   sums.reserve(n_threads);
   for (int t = 0; t < n_threads; ++t) sums.emplace_back(n_params);
@@ -1385,26 +1401,29 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
   validate_choices(lay, include_outside_option, nullptr);
 
   // Memory: each thread's slot map, X_i, the sums of the nests a situation
-  // offers (four numbers, two K-vectors and two K x K matrices each), the
-  // nests' slots, a column of Q_i, its weighted copy, d_V and situation
-  // buffers; X beta, the result and the threads' accumulators (the
-  // coefficients' and dissimilarities' rows private in a shared result)
+  // offers (four numbers, two K-vectors and a packed K x K triangle each),
+  // the chosen nest's Q (a packed triangle), the nests' slots, a column of
+  // Q_i, its weighted copy, d_V and situation buffers; X beta, the result
+  // and the threads' accumulators (in a shared result, the rows
+  // nl_acc_rows() keeps private)
   const int K_l = delta_start_idx - K;  // dissimilarities
   const bool has_delta = use_asc && delta_length > 0;
   const int J_d = has_delta ? delta_length : 0;  // free constants
   const double m_max = static_cast<double>(lay.max_m);
   const double off_max = std::min<double>(n_nests, m_max);  // nests offered
-  const std::size_t stride = static_cast<std::size_t>(4 + 2 * K + 2 * K * K);
+  const std::size_t Kp = static_cast<std::size_t>(K) * (static_cast<std::size_t>(K) + 1) / 2;
+  const std::size_t stride = 4 + 2 * static_cast<std::size_t>(K) + Kp;
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory(
       "Hessian", n_threads,
       nl_map_bytes(J_d, K_l, lay.max_m) +
-          8.0 * (m_max * K + off_max * stride + 3.0 * m_max + 3.0 * K + 96.0) +
+          8.0 * (m_max * K + off_max * stride + Kp + 3.0 * m_max + 3.0 * K + 96.0) +
           sizeof(int) * (n_nests + off_max + 64.0) +
           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
       [&](const int t) {
         return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
-               sym_acc_need(n_params, K + K_l, t, acc_bytes);
+               sym_acc_need(n_params, nl_acc_rows(n_params, K, K_l, t, acc_bytes),
+                            t, acc_bytes);
       });
 
   // Pre-compute base utility for all individuals (single BLAS call)
@@ -1419,23 +1438,23 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
 
   // The result and the threads' accumulators, slot maps and buffers, all
   // allocated here on the primary thread
-  SymAcc acc(n_params, n_threads, K + K_l, "Hessian", acc_bytes);
+  SymAcc acc(n_params, n_threads,
+             nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "Hessian",
+             acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
   // per thread: X_i (max_m x K), the offered nests' sums (off_max x stride),
-  // a column of Q_i, its weighted copy and d_V (max_m each), Xbar_i, X_i' v
-  // and a coefficients' column (K each)
+  // the chosen nest's Q (Kp), a column of Q_i, its weighted copy and d_V
+  // (max_m each), Xbar_i, X_i' v and a coefficients' column (K each)
   const std::size_t mK = static_cast<std::size_t>(lay.max_m) * static_cast<std::size_t>(K);
   const std::size_t n_off = static_cast<std::size_t>(off_max);
-  const std::size_t n_buf = mK + n_off * stride + 3 * static_cast<std::size_t>(lay.max_m) +
+  const std::size_t n_buf = mK + n_off * stride + Kp +
+                            3 * static_cast<std::size_t>(lay.max_m) +
                             3 * static_cast<std::size_t>(K);
-  std::vector<std::vector<double>> work = nl_thread_vectors(n_buf, n_threads);
-  std::vector<std::vector<int>> nest_slots(
-      static_cast<std::size_t>(n_threads),
-      std::vector<int>(static_cast<std::size_t>(n_nests) + 32, -1));
-  std::vector<std::vector<int>> offers(
-      static_cast<std::size_t>(n_threads),
-      std::vector<int>(n_off + 32));
+  std::vector<std::vector<double>> work = thread_vectors<double>(n_buf, n_threads);
+  std::vector<std::vector<int>> nest_slots =
+      thread_vectors<int>(static_cast<std::size_t>(n_nests), n_threads, -1);
+  std::vector<std::vector<int>> offers = thread_vectors<int>(n_off, n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -1450,21 +1469,25 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     double* acc_t = acc.base(tid);
     double* xbuf = work[tid].data();
     double* sums = xbuf + mK;
-    double* qcol = sums + n_off * stride;
+    double* qk = sums + n_off * stride;
+    double* qcol = qk + Kp;
     double* hcol = qcol + lay.max_m;
     double* dV = hcol + lay.max_m;
     double* xbar_m = dV + lay.max_m;
     double* gvec_m = xbar_m + K;
-    const std::size_t Ks = static_cast<std::size_t>(K);
 
     // Add a term t(r, c) of the situation's Hessian, with t(c, r) its
     // transposed term, into the upper triangle, r and c global, as their
-    // sum: the result is halved once, as the dense code halved H + H'
+    // mean: the dense code summed each triangle and halved H + H' at the
+    // end. Halving each term is exact (a power of two; below 2^-1021 a term
+    // can lose its last bit), so the sums are the halves of the terms' sums,
+    // and no running sum is doubled on the way.
     auto add2 = [&](const int r, const int c, const double t_rc, const double t_cr) {
+      const double v = 0.5 * t_rc + 0.5 * t_cr;
       if (acc.shared) {
-        acc.add<true>(acc_t, std::min(r, c), std::max(r, c), t_rc + t_cr);
+        acc.add<true>(acc_t, std::min(r, c), std::max(r, c), v);
       } else {
-        acc.add<false>(acc_t, std::min(r, c), std::max(r, c), t_rc + t_cr);
+        acc.add<false>(acc_t, std::min(r, c), std::max(r, c), v);
       }
     };
 
@@ -1514,8 +1537,9 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
 
       // The nests the situation offers, increasing, and their sums
       // (Step 2c): per offered slot o, at sums + o * stride, Vbar, S2Vbar,
-      // T, VarV, m (K), c (K), S2 and Q (K x K, upper triangles). Nests it
-      // does not offer added exact zeros in the dense code.
+      // T, VarV, m (K), c (K) and S2 (a packed upper triangle); at qk the
+      // chosen nest's Q (packed), the only nest's Q Term C reads. Nests the
+      // situation does not offer added exact zeros in the dense code.
       int n_o = 0;
       for (int j = 0; j < m_i; ++j) {
         const int k = nest0[j];
@@ -1527,13 +1551,13 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       std::sort(nests_off, nests_off + n_o);
       for (int o = 0; o < n_o; ++o) nest_slot[nests_off[o]] = o;
       std::fill(sums, sums + static_cast<std::size_t>(n_o) * stride, 0.0);
+      std::fill(qk, qk + Kp, 0.0);
       auto nest_sums = [&](const int k) { return sums + static_cast<std::size_t>(nest_slot[k]) * stride; };
       for (int j = 0; j < m_i; ++j) {
         double* sk = nest_sums(nest0[j]);
         double* m_k = sk + 4;
         double* c_k = m_k + K;
         double* S2_k = c_k + K;
-        double* Q_k = S2_k + Ks * Ks;
         const double pj_given_k = P_j_given_k[j];
         const double p_ij       = P_i_vec[j];
         const double V_j        = V_inside[j];
@@ -1549,14 +1573,26 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
           const double tc = x_e * pj_given_k;
           c_k[e] += tc;
         }
-        // S2_k += p_ij x_j x_j' and Q_k += P(j|k) x_j x_j' (upper triangles)
-        for (int c = 0; c < K; ++c) {
-          for (int r = 0; r <= c; ++r) {
-            const double xx = X_i(j, r) * X_i(j, c);
-            const double ts = xx * p_ij;
-            S2_k[r + c * Ks] += ts;
-            const double tq = xx * pj_given_k;
-            Q_k[r + c * Ks] += tq;
+        // S2_k += p_ij x_j x_j' and, in the chosen nest, Q += P(j|k) x_j x_j'
+        // (packed upper triangles)
+        std::size_t e = 0;
+        if (nest0[j] == chosen_nest_k) {
+          for (int c = 0; c < K; ++c) {
+            for (int r = 0; r <= c; ++r, ++e) {
+              const double xx = X_i(j, r) * X_i(j, c);
+              const double ts = xx * p_ij;
+              S2_k[e] += ts;
+              const double tq = xx * pj_given_k;
+              qk[e] += tq;
+            }
+          }
+        } else {
+          for (int c = 0; c < K; ++c) {
+            for (int r = 0; r <= c; ++r, ++e) {
+              const double xx = X_i(j, r) * X_i(j, c);
+              const double ts = xx * p_ij;
+              S2_k[e] += ts;
+            }
           }
         }
       }
@@ -1658,9 +1694,10 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
         const double lam_k   = lambda[nests_off[o]];
         const double inv_lam = 1.0 / lam_k;
         const double scale_B = 1.0 - inv_lam;  // = 0 for singletons (lam=1)
+        std::size_t e = 0;
         for (int c = 0; c < K; ++c) {
-          for (int r = 0; r <= c; ++r) {
-            const double s2 = S2_k[r + c * Ks];
+          for (int r = 0; r <= c; ++r, ++e) {
+            const double s2 = S2_k[e];
             const double o_rc = m_k[r] * c_k[c];
             const double b_rc = o_rc * scale_B;
             const double s_rc = s2 * inv_lam;
@@ -1676,16 +1713,15 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       }
       // Term C (subtract): -w_i * scale_Ci * (Q_ki - c_ki c_ki^T)
       if (chosen_nest_k >= 0) {
-        const double* sk = nest_sums(chosen_nest_k);
-        const double* c_k = sk + 4 + K;
-        const double* Q_k = c_k + K + Ks * Ks;
+        const double* c_k = nest_sums(chosen_nest_k) + 4 + K;
         const double lam_ki = lambda[chosen_nest_k];
         const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
         const double w_scale_C = w_i * scale_C;
+        std::size_t e = 0;
         for (int c = 0; c < K; ++c) {
-          for (int r = 0; r <= c; ++r) {
+          for (int r = 0; r <= c; ++r, ++e) {
             const double cc = c_k[r] * c_k[c];
-            double t = Q_k[r + c * Ks] - cc;
+            double t = qk[e] - cc;
             t *= w_scale_C;
             add2(r, c, -t, -t);
           }
@@ -1785,14 +1821,13 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     }  // end individual loop
   }  // end parallel region
 
-  // Step 3: Symmetrize and sanitize: the sums of the two triangles' terms,
-  // halved, every non-finite entry set to 0
+  // Step 3: Symmetrize and sanitize: the means of the two triangles' sums,
+  // mirrored, every non-finite entry set to 0
   acc.finish(false);
   double* out = acc.result.begin();
   const std::size_t nn = static_cast<std::size_t>(n_params) * static_cast<std::size_t>(n_params);
   for (std::size_t e = 0; e < nn; ++e) {
-    const double h = out[e] * 0.5;
-    out[e] = std::isfinite(h) ? h : 0.0;
+    if (!std::isfinite(out[e])) out[e] = 0.0;
   }
   return acc.result;
 }

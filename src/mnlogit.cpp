@@ -110,14 +110,6 @@ inline void mnl_situation_map_clear(MnlSituationMap& mp) {
   for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = -1;
 }
 
-// Each thread's buffer of n doubles (a column of the dense update, or a
-// compact score), allocated here on the primary thread.
-inline std::vector<std::vector<double>> mnl_thread_buffers(const std::size_t n,
-                                                           const int n_threads) {
-  return std::vector<std::vector<double>>(static_cast<std::size_t>(n_threads),
-                                          std::vector<double>(n + 16));
-}
-
 // The weight-free score of situation i on its compact block, into s_c (K + a
 // entries, the map built for i), and the situation's 1{chosen} - P into
 // diff_vec: the coefficients' entries as X_i' diff, the expression of the
@@ -367,9 +359,10 @@ Rcpp::List mnl_loglik_gradient_parallel(
   validate_choices(lay, include_outside_option, nullptr);
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
-  // diagonal, the constants' scores and the terms), X beta, the sums and the
-  // returned copies. Each thread allocates its sums before its first
-  // situation, so the pass runs on the team checked here.
+  // diagonal, the constants' scores and the terms), X beta, the sums, the
+  // negated gradient and R's copies of it and of the diagonal. Each thread
+  // allocates its sums before its first situation, so the pass runs on the
+  // team checked here.
   const int n_threads = kernel_team_threads(lay.N);
   kernel_check_memory(
       "gradient", n_threads,
@@ -377,7 +370,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
           (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m)) + 8.0 * K : 0.0),
       [&](const int) {
         return 8.0 * static_cast<double>(lay.n_rows) +
-               (opg_diag ? 32.0 : 16.0) * n_params;
+               (opg_diag ? 40.0 : 24.0) * n_params;
       });
 
   // Pre-compute base utility for all individuals (single BLAS call)
@@ -521,9 +514,9 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   SymAcc acc(n_params, n_threads, K, "BHHH", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
   std::vector<std::vector<double>> scores =
-      mnl_thread_buffers(static_cast<std::size_t>(K + a_max), n_threads);
+      thread_vectors<double>(static_cast<std::size_t>(K + a_max), n_threads);
   std::vector<std::vector<double>> cols =
-      mnl_thread_buffers(static_cast<std::size_t>(n_params), n_threads);
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -701,7 +694,7 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
   SymAcc acc(n_params, n_threads, K, "cluster meat", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
   std::vector<std::vector<double>> scores =
-      mnl_thread_buffers(static_cast<std::size_t>(K + a_max), n_threads);
+      thread_vectors<double>(static_cast<std::size_t>(K + a_max), n_threads);
   std::vector<ClusterSum> sums;
   sums.reserve(n_threads);
   for (int t = 0; t < n_threads; ++t) sums.emplace_back(n_params);
@@ -1389,11 +1382,10 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   SymAcc acc(n_params, n_threads, K, "Hessian", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
   const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
-  std::vector<std::vector<double>> blocks = mnl_thread_buffers(blk, n_threads);
+  std::vector<std::vector<double>> blocks = thread_vectors<double>(blk, n_threads);
   std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
-  std::vector<std::vector<char>> nan_rows(
-      static_cast<std::size_t>(n_threads),
-      std::vector<char>(static_cast<std::size_t>(n_params) + 128, 0));
+  std::vector<std::vector<char>> nan_rows =
+      thread_vectors<char>(static_cast<std::size_t>(n_params), n_threads, 0);
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
   const double* Xm = X.memptr();
   const arma::uword n_rows = X.n_rows;

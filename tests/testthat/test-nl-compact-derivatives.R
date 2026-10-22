@@ -3,12 +3,13 @@
 # are nonzero only on the coefficients, the dissimilarities of the nests it
 # offers and the constants of the alternatives it offers, so the kernels form
 # them in that compact block and add it into the n x n result (the meat a
-# cluster's summed score, over the parameters its situations touch). These designs (30 alternatives in eight
-# nests of three and six singletons, choice sets of 3-8, dissimilarities on
-# both sides of one) exercise the slot maps: nests offered in part or not at
-# all, singleton nests (their dissimilarity fixed at one), many small nests,
-# one large nest, a situation listing an alternative twice, the outside
-# option, no constants.
+# cluster's summed score, over the parameters its situations touch). These
+# designs (30 alternatives in eight nests of three and six singletons, choice
+# sets of 3-8, dissimilarities on both sides of one) exercise the slot maps:
+# nests offered in part or not at all, singleton nests (their dissimilarity
+# fixed at one), many small nests, one large nest, a situation listing an
+# alternative twice, the outside option, no constants, and twenty
+# coefficients (Armadillo keeps vectors of more than 16 on the heap).
 
 # N situations, each offering `m_range` distinct alternatives drawn from
 # 1..J, plus one repeated row when `dup`; weights vary across situations.
@@ -54,7 +55,8 @@ ncd_cells <- function() {
     ncd_fixture("one large nest and singletons", 3008,
                 nest_idx = c(rep(1L, 20L), 2:11)),
     ncd_fixture("wide sets", 3009, J = 60L, m_range = c(10L, 40L), N = 30L,
-                nest_idx = rep(1:20, each = 3L))
+                nest_idx = rep(1:20, each = 3L)),
+    ncd_fixture("twenty coefficients", 3010, K = 20L)
   )
 }
 
@@ -121,6 +123,29 @@ ncd_drop <- function(f, i) {
   f
 }
 
+# f with situation i only
+ncd_keep <- function(f, i) {
+  row_off <- c(0L, cumsum(f$M))
+  rows <- (row_off[i] + 1L):row_off[i + 1L]
+  f$X <- f$X[rows, , drop = FALSE]
+  f$alt_idx <- f$alt_idx[rows]
+  f$choice_idx <- f$choice_idx[i]
+  f$M <- f$M[i]
+  f$weights <- f$weights[i]
+  f$N <- 1L
+  f
+}
+
+# The budgets (acc_bytes) of two threads sharing the result: 0 keeps the
+# coefficients' rows private, the bytes of the threads' copies of the
+# coefficients' and dissimilarities' rows keep those (their packed triangles
+# do not fit; without constants the two coincide).
+ncd_budgets <- function(f) {
+  n <- length(f$theta)
+  s <- f$K + f$K_l
+  c(coefficients = 0, dissimilarities = 2 * 8 * (n * s - s * (s - 1) / 2))
+}
+
 ncd_scale_dev <- function(a, b) max(abs(a - b)) / max(1, max(abs(b)))
 
 test_that("the compact NL Hessian matches numDeriv of the gradient", {
@@ -178,6 +203,40 @@ test_that("an NL situation whose chosen probability is not finite is left out", 
   expect_equal(H, unclass(ncd_call("hessian", d)), tolerance = 1e-14)
 })
 
+test_that("NaN probabilities in an NL situation zero the entries their terms reach", {
+  # An unchosen alternative's utility at +Inf, or a missing covariate, leaves
+  # the chosen probability finite (the alternative's nest drops out) and the
+  # nest's other probabilities not numbers. The situation's terms that use
+  # them are not finite, and every entry they reach is set to 0 at the end,
+  # as the dense code set it; its other terms are added as usual.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  for (seed in c(3016, 3018)) {
+    f <- ncd_fixture("NaN probabilities", seed)
+    f$theta[1L] <- 2
+    i <- 3L
+    row_off <- c(0L, cumsum(f$M))
+    r_other <- row_off[i] + setdiff(seq_len(f$M[i]), f$choice_idx[i])[1L]
+    rest <- unclass(ncd_call("hessian", ncd_drop(f, i)))
+    blk <- ncd_block(f, i)
+    for (v in c(1e308, NA_real_, NaN)) {
+      what <- paste(seed, "covariate", v)
+      g <- f
+      g$X[r_other, 1L] <- v
+      H <- unclass(ncd_call("hessian", g))
+      own <- unclass(ncd_call("hessian", ncd_keep(g, i)))
+      expect_true(all(is.finite(H)), label = what)
+      zero <- H == 0 & rest != 0
+      expect_true(any(zero), label = paste(what, "zeroes entries"))
+      expect_true(all(zero[-blk, ] == FALSE) && all(zero[, -blk] == FALSE),
+                  label = paste(what, "only in its block"))
+      expect_true(all(own[zero] == 0), label = paste(what, "where its terms are not finite"))
+      expect_equal(H[!zero], (rest + own)[!zero], tolerance = 1e-12,
+                   label = paste(what, "elsewhere"))
+    }
+  }
+})
+
 test_that("a non-finite NL weight zeroes exactly the entries its situation touches", {
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
@@ -197,16 +256,37 @@ test_that("a non-finite NL weight zeroes exactly the entries its situation touch
   }
 })
 
+test_that("the NL Hessian's sums overflow only where the triangles' sums do", {
+  # One situation, one nest of two alternatives (lambda = 2) and a covariate
+  # near sqrt(DBL_MAX): a term of about 0.56 DBL_MAX, the entry about 0.09
+  # DBL_MAX. Each triangle's running sum stays finite, and so does the sum
+  # of their halves; the sum of the two terms would not.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  ns <- asNamespace("choicer")
+  hess <- function(w) {
+    ns$nl_loglik_hessian_parallel(c(1e-200, 0.1, 2, 0.05),
+                                  cbind(c(sqrt(1.7e308), 0), c(0.3, -0.2)),
+                                  1:2, 1L, c(1L, 1L), 2L, w)
+  }
+  H <- hess(1.5)
+  expect_true(all(is.finite(H)) && H[1L, 1L] > 1.5e307)
+  expect_identical(H, 2 * hess(0.75))
+})
+
 test_that("a shared NL Hessian equals the per-thread accumulators' sum", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
-  for (f in ncd_cells()[c(1L, 2L, 3L, 5L, 7L, 9L)]) {
-    set_omp_threads(2L)
-    shared <- ncd_call("hessian", f, acc_bytes = 0)
-    expect_identical(shared, t(shared), label = paste(f$name, "symmetric"))
-    expect_equal(unclass(shared), unclass(ncd_call("hessian", f)), tolerance = 1e-12,
-                 label = paste(f$name, "shared vs per-thread"))
+  for (f in ncd_cells()[c(1L, 2L, 3L, 5L, 7L, 9L, 10L)]) {
+    for (b in names(ncd_budgets(f))) {
+      what <- paste(f$name, b, "private")
+      set_omp_threads(2L)
+      shared <- ncd_call("hessian", f, acc_bytes = ncd_budgets(f)[[b]])
+      expect_identical(shared, t(shared), label = paste(what, "symmetric"))
+      expect_equal(unclass(shared), unclass(ncd_call("hessian", f)), tolerance = 1e-12,
+                   label = paste(what, "shared vs per-thread"))
+    }
     set_omp_threads(1L)
     expect_identical(ncd_call("hessian", f, acc_bytes = 0), ncd_call("hessian", f),
                      label = paste(f$name, "one thread"))
@@ -372,7 +452,7 @@ test_that("shared NL BHHH and meat results equal the per-thread accumulators' su
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
-  for (f in ncd_cells()[c(1L, 2L, 3L, 5L, 7L, 9L)]) {
+  for (f in ncd_cells()[c(1L, 2L, 3L, 5L, 7L, 9L, 10L)]) {
     codes <- (seq_len(f$N) - 1L) %/% 3L + 1L
     for (k in c("bhhh", "meat")) {
       what <- paste(f$name, k)
@@ -380,10 +460,12 @@ test_that("shared NL BHHH and meat results equal the per-thread accumulators' su
         if (k == "meat") ncd_call(k, f, cluster = codes, ...) else ncd_call(k, f, ...)
       }
       set_omp_threads(2L)
-      shared <- kcall(acc_bytes = 0)
-      expect_identical(shared, t(shared), label = paste(what, "symmetric"))
-      expect_equal(unclass(shared), unclass(kcall()), tolerance = 1e-12,
-                   label = paste(what, "shared vs per-thread"))
+      for (b in names(ncd_budgets(f))) {
+        shared <- kcall(acc_bytes = ncd_budgets(f)[[b]])
+        expect_identical(shared, t(shared), label = paste(what, b, "symmetric"))
+        expect_equal(unclass(shared), unclass(kcall()), tolerance = 1e-12,
+                     label = paste(what, b, "shared vs per-thread"))
+      }
       # one thread adds into the result itself, whatever the budget
       set_omp_threads(1L)
       expect_identical(kcall(acc_bytes = 0), kcall(), label = paste(what, "one thread"))
