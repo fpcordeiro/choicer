@@ -3,7 +3,7 @@
 #
 #   sh _benchmarks/scale/run_grid.sh <tagA>=<library A> <tagB>=<library B>
 #   env: OUT (default _benchmarks/scale/output/grid-<date>), SECTIONS (default
-#   "A B C D E F G"), MC_SHIM (the malloc shim, macOS: memory runs through
+#   "A B C D E F G H I"), MC_SHIM (the malloc shim, macOS: memory runs through
 #   output/Rmc, see make_rmc.sh; without it, time runs only)
 #
 # Each library holds one choicer build (R CMD INSTALL --library=<dir>); every
@@ -22,14 +22,20 @@
 # prediction, BHHH and meats on B, store-mode prediction, the store-mode cube);
 # B the gradient grid and store mode; C heavy panels (S = 500, 1000); D the
 # Hessian, BHHH, scores, meats, tastes and prediction; E data preparation;
-# F the per-call layout (B); G B's Hessian at 10^8 rows.
+# F the per-call layout (B); G B's Hessian at 10^8 rows; H the multinomial and
+# nested logits' derivative kernels and meats (bench_mnl_nl.R); I their fits
+# per se_method (fit_mnl_nl.R, one round each). In H, kernels a build lacks
+# (the clustered meat before 0.3.0) record their error, and the dense kernels
+# of builds before 0.3.0 run once (at 17,000 parameters on a few hundred
+# situations: a full call would take days).
 D=$(cd "$(dirname "$0")" && pwd)
 A=${1%%=*}; LIB_A=${1#*=}; B=${2%%=*}; LIB_B=${2#*=}
 [ -n "$A" ] && [ -n "$B" ] && [ -d "$LIB_A" ] && [ -d "$LIB_B" ] || {
   echo "usage: sh run_grid.sh <tagA>=<libA> <tagB>=<libB>"; exit 1; }
 OUT=${OUT:-$D/output/grid-$(date +%Y%m%d-%H%M%S)}; mkdir -p "$OUT"
 LOG=$OUT/run.log
-SECTIONS=${SECTIONS:-"A B C D E F G"}
+SECTIONS=${SECTIONS:-"A B C D E F G H I"}
+SCRIPT=
 ROUND=
 
 lib_of() { [ "$1" = "$A" ] && echo "$LIB_A" || echo "$LIB_B"; }
@@ -63,11 +69,12 @@ run1() {  # <tag> <time|mem> <name> args...
   [ "$mode" = time ] && wait_quiet
   s0=$(swap_mb)
   echo "---- $(date +%H:%M:%S) $tag $mode $name r${ROUND:-1} | $* | load $(load_avg) | cpu $(cpu_all)% | avail $(avail_gb) GB | swap ${s0}M | $(ps_top)" >> "$LOG"
+  script=${SCRIPT:-bench_kernels.R}
   if [ "$mode" = mem ]; then
     env R_LIBS="$(lib_of $tag)" MC_SHIM="$MC_SHIM" CHOICER_SCALE_OUT="$OUT" "$D/output/Rmc" --no-echo --no-restore \
-      --file="$D/bench_kernels.R" --args tag=$tag mode=mem out="$f" "$@" >> "$LOG" 2>&1
+      --file="$D/$script" --args tag=$tag mode=mem out="$f" "$@" >> "$LOG" 2>&1
   else
-    env R_LIBS="$(lib_of $tag)" CHOICER_SCALE_OUT="$OUT" Rscript --no-echo --no-restore "$D/bench_kernels.R" \
+    env R_LIBS="$(lib_of $tag)" CHOICER_SCALE_OUT="$OUT" Rscript --no-echo --no-restore "$D/$script" \
       tag=$tag mode=time out="$f" "$@" >> "$LOG" 2>&1
   fi
   st=$?; s1=$(swap_mb)
@@ -78,6 +85,11 @@ run1() {  # <tag> <time|mem> <name> args...
 pair3() { name=$1; shift
   for r in 1 2 3; do ROUND=$r
     if [ $r = 2 ]; then run1 $B time $name "$@"; run1 $A time $name "$@"
+    else run1 $A time $name "$@"; run1 $B time $name "$@"; fi
+  done; ROUND=; }
+pair6() { name=$1; shift
+  for r in 1 2 3 4 5 6; do ROUND=$r
+    if [ $((r % 2)) = 0 ]; then run1 $B time $name "$@"; run1 $A time $name "$@"
     else run1 $A time $name "$@"; run1 $B time $name "$@"; fi
   done; ROUND=; }
 once() { name=$1; shift; ROUND=1; run1 $A time $name "$@"; run1 $B time $name "$@"; ROUND=; }
@@ -175,5 +187,40 @@ if has F; then
 fi
 if has G; then
   mem_ok 14 census2m && once_b census2m_hess $C2M threads=11 reps=1 warm=0 what=hess
+fi
+if has H; then
+  SCRIPT=bench_mnl_nl.R
+  for m in mnl nl; do
+    # Variances on census-style and claims-style designs; main's dense kernels
+    # once per configuration where a call takes minutes.
+    pair3 ${m}_census20k_var model=$m regime=census U=20000 threads=1,5 reps=1 warm=0 what=hess,bhhh,robust
+    pair3 ${m}_census20k_meat model=$m regime=census U=20000 threads=1,5 reps=1 warm=0 what=meat_cluster,meatr_robust,meatr_cluster
+    pair3 ${m}_census20k_meatG5 model=$m regime=census U=20000 clusters=5 threads=5 reps=1 warm=0 what=meat_cluster,meatr_cluster
+    pair3 ${m}_claims1500_var model=$m regime=claims U=1500 threads=1,5 reps=3 what=hess,bhhh,robust,meat_cluster,meatr_cluster
+    pair3 ${m}_claims15k_var model=$m regime=claims U=15000 threads=1,5 reps=1 warm=0 what=hess,bhhh,robust,meat_cluster,meatr_cluster
+    once ${m}_census200k_bhhh model=$m regime=census U=200000 threads=11 reps=1 warm=0 what=bhhh
+    for r in 1 2 3; do ROUND=$r; run1 $B time ${m}_census200k_main model=$m regime=census U=200000 threads=1,11 reps=3 what=hess,bhhh,robust,meat_cluster; done; ROUND=
+    once ${m}_census20k17k_sub model=$m regime=census20k U=20000 situations=500 threads=5 reps=1 warm=0 what=hess,bhhh
+    once_b ${m}_census20k17k model=$m regime=census20k U=20000 threads=5,11 reps=1 warm=0 what=hess,bhhh,robust,meat_cluster
+    # No regression where the compact block is the dense one (4 alternatives),
+    # and the gradient, unchanged by Phase 8A.
+    pair6 ${m}_small2500k model=$m regime=small U=2500000 threads=11 reps=3 what=grad,hess,bhhh
+    pair3 ${m}_small2500k_1t model=$m regime=small U=2500000 threads=1 reps=3 what=grad,hess,bhhh
+    mem2 ${m}_census20k_var model=$m regime=census U=20000 threads=5 what=hess,bhhh,robust,meatr_robust,meatr_cluster
+    run1 $B mem ${m}_census200k_main model=$m regime=census U=200000 threads=11 what=hess,bhhh,robust,meat_cluster
+  done
+  SCRIPT=
+fi
+if has I; then
+  for spec in census:20000 claims:15000; do
+    for m in mnl nl; do for t in $A $B; do
+      f=$OUT/${m}_fit_${spec%%:*}${spec##*:}_${t}.rds
+      [ -f "$f" ] && continue
+      wait_quiet
+      echo "---- $(date +%H:%M:%S) $t fit $m ${spec} | load $(load_avg) | cpu $(cpu_all)% | $(ps_top)" >> "$LOG"
+      env R_LIBS="$(lib_of $t)" CHOICER_SCALE_OUT="$OUT" Rscript --no-echo --no-restore "$D/fit_mnl_nl.R" \
+        tag=$t model=$m regime=${spec%%:*} U=${spec##*:} threads=5 out="$f" >> "$LOG" 2>&1
+    done; done
+  done
 fi
 echo "==== done $(date) | load $(load_avg)" >> "$LOG"
