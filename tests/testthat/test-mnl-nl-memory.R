@@ -20,7 +20,7 @@ mnm_fixture <- function(seed, N = 40L, J = 12L, m = 5L, K = 2L) {
        theta = c(stats::rnorm(K, sd = 0.3), stats::rnorm(J - 1L, sd = 0.3)))
 }
 
-mnm_kernels <- c("gradient", "gradient_opg", "hessian", "bhhh", "scores")
+mnm_kernels <- c("gradient", "gradient_opg", "hessian", "bhhh", "scores", "meat")
 
 mnm_call <- function(kernel, f) {
   ns <- asNamespace("choicer")
@@ -35,7 +35,10 @@ mnm_call <- function(kernel, f) {
     bhhh = ns$mnl_bhhh_parallel(f$theta, f$X, f$alt_idx, f$choice_idx, f$M,
                                 f$weights),
     scores = ns$mnl_scores_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
-                                    f$M))
+                                    f$M),
+    meat = ns$mnl_cluster_meat_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
+                                        f$M, f$weights,
+                                        rep(1:4, length.out = length(f$M))))
 }
 
 # The estimate that a call with a tiny limit reports for one thread, in bytes.

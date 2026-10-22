@@ -360,6 +360,26 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// mnl_cluster_meat_parallel
+Rcpp::NumericMatrix mnl_cluster_meat_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const Rcpp::IntegerVector& cluster, const bool use_asc, const bool include_outside_option, const double acc_bytes);
+RcppExport SEXP _choicer_mnl_cluster_meat_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP clusterSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP acc_bytesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type theta(thetaSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type choice_idx(choice_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type cluster(clusterSEXP);
+    Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    Rcpp::traits::input_parameter< const double >::type acc_bytes(acc_bytesSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnl_cluster_meat_parallel(theta, X, alt_idx, choice_idx, M, weights, cluster, use_asc, include_outside_option, acc_bytes));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_scores_parallel
 arma::mat mnl_scores_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option);
 RcppExport SEXP _choicer_mnl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
@@ -1316,6 +1336,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_test_physical_memory", (DL_FUNC) &_choicer_test_physical_memory, 0},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 9},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 9},
+    {"_choicer_mnl_cluster_meat_parallel", (DL_FUNC) &_choicer_mnl_cluster_meat_parallel, 10},
     {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 7},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},
     {"_choicer_mnl_predict_shares", (DL_FUNC) &_choicer_mnl_predict_shares, 7},
