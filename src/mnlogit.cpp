@@ -601,6 +601,201 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   return acc.result;
 }
 
+// Cluster-robust meat for the multinomial logit model (internal).
+//
+// Returns the n_params x n_params matrix sum_g s_g s_g' with
+// s_g = sum_{i in g} w_i s_i the weighted score of cluster g, s_i the
+// weight-free score of choice situation i and w_i its weight: what
+// crossprod(rowsum(w * S, cluster)) forms from the N x n_params score matrix
+// of mnl_scores_parallel(), without that matrix. `cluster` holds one code per
+// choice situation, 1..G (R passes match(as.character(labels), unique(...)),
+// the grouping rowsum() uses); codes need not all occur, but the sort's
+// arrays have G + 1 entries, so G should not be far above the number of
+// situations.
+//
+// As mxl_cluster_meat_parallel(), with choice situations as the units: the
+// situations sorted by cluster (a stable counting sort, so a cluster's
+// situations keep their order, as rowsum() adds them), the sorted sequence
+// cut into chunks of similar numbers of rows processed in parallel, each
+// thread adding the weighted compact scores of a cluster's situations into a
+// dense n-vector over the parameters they touch (the cluster's support) and
+// updating its accumulator once the cluster ends. A cluster cut by a chunk
+// boundary leaves its partial sums in the chunks; they are added in chunk
+// order after the parallel region and the cluster updated then. A cluster with
+// a non-finite weight or score is updated over every parameter, as
+// crossprod() spread its NaN or Inf (0 * NaN, 0 * Inf). acc_bytes chooses
+// between the threads' private triangles and a shared result, as for
+// mnl_bhhh_parallel().
+// [[Rcpp::export]]
+Rcpp::NumericMatrix mnl_cluster_meat_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const Rcpp::IntegerVector& cluster,
+    const bool use_asc = true,
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
+) {
+  const int K = X.n_cols;
+  const int n_params = theta.n_elem;
+
+  // Inputs, layout and choices validated on the primary thread as in the
+  // other weighted kernels; then the cluster codes.
+  const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc,
+                                               par.delta, &weights, &choice_idx);
+  const choicer_off N = lay.N;
+  validate_choices(lay, include_outside_option, "mnl_cluster_meat_parallel");
+  if (static_cast<choicer_off>(cluster.size()) != N) {
+    Rcpp::stop("cluster length (%d) does not match the number of choice "
+               "situations (%d).", cluster.size(), N);
+  }
+  const int* cl = cluster.begin();
+  int G = 0;
+  for (choicer_off i = 0; i < N; ++i) {
+    if (cl[i] < 1) {  // NA_INTEGER is negative
+      Rcpp::stop("cluster codes must be positive integers (situation %d has %s).",
+                 i + 1, cl[i] == NA_INTEGER ? "NA" : std::to_string(cl[i]));
+    }
+    G = std::max(G, cl[i]);
+  }
+
+  // Memory: per thread its slot map, compact score, situation buffers and
+  // cluster sum (n doubles, flags and indices) and its share of the chunks'
+  // cut parts (two per chunk, four chunks per thread); shared X beta, the
+  // result and the accumulators, and the sort's arrays.
+  const int J_d = n_params - K;  // free constants
+  const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
+  const int n_threads = kernel_team_threads(N);
+  kernel_check_memory("cluster meat", n_threads,
+                      mnl_map_bytes(J_d, lay.max_m) + 8.0 * (K + a_max + 32.0) +
+                          mnl_thread_bytes(lay, K, n_params, 0.0) +
+                          (8.0 * 13.0 + 13.0) * n_params,
+                      [&](const int t) {
+                        return 8.0 * static_cast<double>(lay.n_rows) +
+                               sym_acc_need(n_params, K, t, acc_bytes) +
+                               8.0 * (static_cast<double>(N) + 2.0 * G);
+                      });
+
+  // Situations sorted by cluster: order[off[g - 1], off[g]) holds cluster g's
+  // situations in increasing order.
+  std::vector<choicer_off> off(static_cast<std::size_t>(G) + 1, 0);
+  for (choicer_off i = 0; i < N; ++i) ++off[cl[i]];
+  for (choicer_off g = 1; g <= G; ++g) off[g] += off[g - 1];
+  std::vector<choicer_off> order(static_cast<std::size_t>(N));
+  {
+    std::vector<choicer_off> next(off.begin(), off.end() - 1);
+    for (choicer_off i = 0; i < N; ++i) order[next[cl[i] - 1]++] = i;
+  }
+
+  // Chunks of the sorted sequence with similar numbers of rows (a
+  // situation's cost grows with its rows): about four per thread.
+  const choicer_off n_chunks = std::max<choicer_off>(
+      1, std::min<choicer_off>(N, 4 * static_cast<choicer_off>(n_threads)));
+  std::vector<choicer_off> chunk(static_cast<std::size_t>(n_chunks) + 1, N);
+  {
+    const double total = static_cast<double>(lay.n_rows);
+    double cum = 0.0;
+    choicer_off c = 1;
+    chunk[0] = 0;
+    for (choicer_off q = 0; q < N && c < n_chunks; ++q) {
+      cum += static_cast<double>(lay.m(order[q]));
+      if (cum >= total * static_cast<double>(c) / static_cast<double>(n_chunks)) {
+        chunk[c++] = q + 1;
+      }
+    }
+    for (; c < n_chunks; ++c) chunk[c] = N;
+  }
+
+  // Pre-compute base utility for all individuals (single BLAS call)
+  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+
+  // The result and the threads' accumulators, slot maps, score buffers and
+  // cluster sums, and the chunks' partial sums of their cut clusters (two per
+  // chunk: the cluster it starts in and the one it ends in), all allocated
+  // here on the primary thread.
+  SymAcc acc(n_params, n_threads, K, "cluster meat", acc_bytes);
+  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  std::vector<std::vector<double>> scores =
+      mnl_thread_buffers(static_cast<std::size_t>(K + a_max), n_threads);
+  std::vector<ClusterSum> sums;
+  sums.reserve(n_threads);
+  for (int t = 0; t < n_threads; ++t) sums.emplace_back(n_params);
+  std::vector<ClusterSum> cut;  // chunk c: 2 c (head), 2 c + 1 (tail)
+  cut.reserve(static_cast<std::size_t>(2 * n_chunks));
+  for (choicer_off t = 0; t < 2 * n_chunks; ++t) cut.emplace_back(n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+  {
+    const int tid = kernel_thread_num();
+    MnlSituationMap& mp = *maps[tid];
+    ClusterSum& cs = sums[tid];
+    double* acc_t = acc.base(tid);
+    double* s_buf = scores[tid].data();
+    arma::vec diff_vec; // resized per situation
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (choicer_off c = 0; c < n_chunks; ++c) {
+      const choicer_off q0 = chunk[c], q1 = chunk[c + 1];
+      for (choicer_off q = q0; q < q1; ++q) {
+        const choicer_off i = order[q];
+        const int g = cl[i];
+        if (q == q0 || cl[order[q - 1]] != g) cs.start(g, K);
+        mnl_situation_map(lay, i, use_asc, include_outside_option, mp);
+        arma::vec s_c(s_buf, K + mp.a, false, true);
+        mnl_situation_score(X, lay, base_util, i, include_outside_option, mp,
+                            diff_vec, s_c);
+        cs.add(mp, K, s_c, weights[i]);
+        mnl_situation_map_clear(mp);
+        if (q + 1 == q1 || cl[order[q + 1]] != g) {
+          // The cluster ends here or at the chunk's end: update it, or keep
+          // the part of a cluster the chunk boundary cuts.
+          const bool head = off[g - 1] < q0;   // began before this chunk
+          const bool tail = off[g] > q1;       // continues after it
+          if (!head && !tail) {
+            cs.update(acc, acc_t);
+            cs.clear();
+          } else {
+            cs.hand_to(cut[2 * c + (head ? 0 : 1)]);
+          }
+        }
+      }
+    }
+  } // end parallel region
+
+  // Clusters cut by chunk boundaries: their partial sums in chunk order, then
+  // the rank-one update, through the first thread's buffer and with no other
+  // thread running (no atomic additions into a shared result).
+  ClusterSum& cs = sums[0];
+  int g_open = 0;
+  for (choicer_off c = 0; c < n_chunks; ++c) {
+    for (int k = 0; k < 2; ++k) {
+      ClusterSum& part = cut[2 * c + k];
+      if (!part.used) continue;
+      if (part.g != g_open) {
+        if (g_open > 0) {
+          cs.update(acc, acc.base(0), true);
+          cs.clear();
+        }
+        cs.start(part.g, K);
+        g_open = part.g;
+      }
+      cs.merge(part);
+    }
+  }
+  if (g_open > 0) cs.update(acc, acc.base(0), true);
+
+  acc.finish(false);
+  return acc.result;
+}
+
 // Per-situation score matrix for the multinomial logit model (internal).
 //
 // Returns the N x n_params matrix whose row i is the weight-free score

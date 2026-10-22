@@ -1,12 +1,14 @@
-# The multinomial logit Hessian and BHHH kernels on designs with many
-# alternatives and sparse choice sets. A situation's score and Hessian are
-# nonzero only on the coefficients and the free constants of the alternatives
-# it offers, so the kernels form them in that compact block and add it into
-# the n x n result. These designs (30 alternatives, choice sets of 3-8) make
-# the blocks small next to n and exercise the slot maps: the normalized
-# reference, the outside option, a situation listing an alternative twice
-# (adjacent or not), the reference never offered, situations offering only
-# the reference, choice sets of one alternative, no constants.
+# The multinomial logit Hessian, BHHH and cluster-meat kernels on designs
+# with many alternatives and sparse choice sets. A situation's score and
+# Hessian are nonzero only on the coefficients and the free constants of the
+# alternatives it offers, so the kernels form them in that compact block and
+# add it into the n x n result (the meat a cluster's summed score, over the
+# parameters its situations touch). These designs (30 alternatives, choice
+# sets of 3-8) make the blocks small next to n and exercise the slot maps:
+# the normalized reference, the outside option, a situation listing an
+# alternative twice (adjacent or not), the reference never offered,
+# situations offering only the reference, choice sets of one alternative, no
+# constants.
 
 # N situations, each offering `m_range` distinct alternatives drawn from 1..J
 # (from 2..J when `absent_ref`), plus one repeated row when `dup`; weights
@@ -68,7 +70,8 @@ mcd_call <- function(kernel, f, theta = f$theta, weights = f$weights, ...) {
     gradient = do.call(ns$mnl_loglik_gradient_parallel, c(a, list(...))),
     hessian = do.call(ns$mnl_loglik_hessian_parallel, c(a, list(...))),
     bhhh = do.call(ns$mnl_bhhh_parallel, c(a, list(...))),
-    scores = do.call(ns$mnl_scores_parallel, c(a[-6L], list(...))))
+    scores = do.call(ns$mnl_scores_parallel, c(a[-6L], list(...))),
+    meat = do.call(ns$mnl_cluster_meat_parallel, c(a, list(...))))
 }
 
 # The dense BHHH update, situation by situation: B + w_i s_i s_i'.
@@ -291,22 +294,119 @@ test_that("non-finite scores and weights spread over the BHHH as the dense updat
   }
 })
 
+# --- Cluster meat ---------------------------------------------------------
+
+# The cluster meat kernel with labels coded as the R route codes them, and the
+# R route's meat, crossprod(rowsum(w * S, cluster)).
+mcd_meat <- function(f, cl, ...) {
+  lab <- as.character(cl)
+  mcd_call("meat", f, cluster = match(lab, unique(lab)), ...)
+}
+mcd_meat_ref <- function(f, cl) {
+  crossprod(rowsum(f$weights * mcd_call("scores", f), group = as.character(cl)))
+}
+
+test_that("the cluster meat equals crossprod(rowsum(w * S, cluster))", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (f in mcd_cells()) {
+    set.seed(2100)
+    labs <- list(singletons = seq_len(f$N), one = rep(1L, f$N),
+                 coarse = sample(1:5, f$N, replace = TRUE),
+                 few = rep(c("b", "a"), length.out = f$N),
+                 shuffled = sample(seq_len(f$N)) * 10.5)
+    for (nm in names(labs)) {
+      ref <- mcd_meat_ref(f, labs[[nm]])
+      for (nt in 1:2) {
+        set_omp_threads(nt)
+        M <- mcd_meat(f, labs[[nm]])
+        expect_identical(M, t(M), label = paste(f$name, nm, "symmetric"))
+        expect_equal(unclass(M), ref, tolerance = 1e-12,
+                     label = sprintf("[%s, %s, %d threads]", f$name, nm, nt))
+      }
+    }
+  }
+})
+
+test_that("unused cluster codes and their numbering do not change the meat", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f <- mcd_fixture("codes", 2012)
+  set.seed(2101)
+  g <- sample(1:7, f$N, replace = TRUE)
+  M1 <- mcd_call("meat", f, cluster = g)
+  # the same grouping with unused codes between: the same sums in the same order
+  expect_identical(mcd_call("meat", f, cluster = c(1L, 4L, 9L, 12L, 20L, 21L, 40L)[g]), M1)
+  # codes in the reverse order: the clusters' updates in another order
+  expect_equal(mcd_call("meat", f, cluster = 8L - g), M1, tolerance = 1e-13)
+})
+
+test_that("the cluster meat checks its codes after the other inputs", {
+  f <- mcd_fixture("codes", 2013)
+  expect_error(mcd_call("meat", f, cluster = rep(1L, f$N - 1L)),
+               "cluster length \\([0-9]+\\) does not match the number of choice situations")
+  bad <- rep(1L, f$N); bad[3L] <- 0L
+  expect_error(mcd_call("meat", f, cluster = bad),
+               "cluster codes must be positive integers \\(situation 3 has 0\\)")
+  bad[3L] <- NA_integer_
+  expect_error(mcd_call("meat", f, cluster = bad), "situation 3 has NA")
+  g <- f; g$choice_idx[2L] <- 99L
+  expect_error(mcd_call("meat", g, cluster = bad), "Invalid chosen alternative index")
+})
+
+test_that("non-finite scores, weights and sums spread over the meat as crossprod() did", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f0 <- mcd_fixture("non-finite", 2014)
+  row_off <- c(0L, cumsum(f0$M))
+  other <- function(i) row_off[i] + setdiff(seq_len(f0$M[i]), f0$choice_idx[i])[1L]
+  chosen <- function(i) row_off[i] + f0$choice_idx[i]
+  cl <- rep(1:6, length.out = f0$N)  # situations 3 and 9 in cluster 3
+  cells <- list(
+    # utilities that overflow: a NaN score
+    overflow = function(f) { f$X[other(3L), 1L] <- 1e308; f$theta[1L] <- 2; f },
+    # finite utilities, an infinite score
+    infinite_score = function(f) {
+      f$X[chosen(3L), 1L] <- -1e308; f$X[other(3L), 1L] <- 1e308
+      f$theta[1L] <- 1e-306; f
+    },
+    # two finite weighted scores near -1e308 in one cluster: their sum overflows
+    overflowing_sum = function(f) {
+      for (i in c(3L, 9L)) { f$X[chosen(i), 1L] <- 0; f$X[other(i), 1L] <- 1e308 }
+      f$theta[1L] <- 1e-306; f$weights[c(3L, 9L)] <- 1; f
+    },
+    inf_weight = function(f) { f$weights[3L] <- Inf; f },
+    na_weight = function(f) { f$weights[3L] <- NA_real_; f })
+  for (nm in names(cells)) {
+    f <- cells[[nm]](f0)
+    if (nm == "overflowing_sum") {
+      S <- mcd_call("scores", f)
+      expect_true(all(is.finite(S)) && !is.finite(sum(S[c(3L, 9L), 1L])))
+    }
+    M <- mcd_meat(f, cl)
+    expect_true(any(!is.finite(M)), label = paste(nm, "has non-finite entries"))
+    mcd_same_pattern(M, mcd_meat_ref(f, cl), paste(nm, "meat"))
+  }
+})
+
 test_that("shared results equal the per-thread accumulators' sums", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
   for (f in mcd_cells()[c(1L, 2L, 3L, 6L, 8L, 10L)]) {
-    for (k in c("hessian", "bhhh")) {
+    codes <- (seq_len(f$N) - 1L) %/% 3L + 1L
+    for (k in c("hessian", "bhhh", "meat")) {
       what <- paste(f$name, k)
+      kcall <- function(...) {
+        if (k == "meat") mcd_call(k, f, cluster = codes, ...) else mcd_call(k, f, ...)
+      }
       set_omp_threads(2L)
-      shared <- mcd_call(k, f, acc_bytes = 0)
+      shared <- kcall(acc_bytes = 0)
       expect_identical(shared, t(shared), label = paste(what, "symmetric"))
-      expect_equal(unclass(shared), unclass(mcd_call(k, f)), tolerance = 1e-12,
+      expect_equal(unclass(shared), unclass(kcall()), tolerance = 1e-12,
                    label = paste(what, "shared vs per-thread"))
       # one thread adds into the result itself, whatever the budget
       set_omp_threads(1L)
-      expect_identical(mcd_call(k, f, acc_bytes = 0), mcd_call(k, f),
-                       label = paste(what, "one thread"))
+      expect_identical(kcall(acc_bytes = 0), kcall(), label = paste(what, "one thread"))
     }
   }
   # Non-finite entries spread over a shared result as over per-thread ones
@@ -323,10 +423,13 @@ test_that("shared results equal the per-thread accumulators' sums", {
     f$weights[5L] <- w_bad
     cells[[paste("weight", w_bad)]] <- f
   }
+  codes <- rep(1:5, length.out = f0$N)
   for (nm in names(cells)) {
-    for (k in c("hessian", "bhhh")) {
-      mcd_same_pattern(mcd_call(k, cells[[nm]], acc_bytes = 0),
-                       unclass(mcd_call(k, cells[[nm]])), paste(nm, k, "shared"))
+    for (k in c("hessian", "bhhh", "meat")) {
+      extra <- if (k == "meat") list(cluster = codes) else list()
+      mcd_same_pattern(do.call(mcd_call, c(list(k, cells[[nm]], acc_bytes = 0), extra)),
+                       unclass(do.call(mcd_call, c(list(k, cells[[nm]]), extra))),
+                       paste(nm, k, "shared"))
     }
   }
 })
