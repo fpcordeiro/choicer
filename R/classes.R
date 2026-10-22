@@ -1372,8 +1372,8 @@ invert_hessian <- function(hess) {
 #' No variance for a fit whose variance step failed
 #'
 #' The error handler of the `run_*()` wrappers' variance step, which runs
-#' after the optimizer: an error there (a mixed logit kernel's memory check,
-#' an allocation that fails, an error in the score matrix) would otherwise
+#' after the optimizer: an error there (a kernel's memory check, an
+#' allocation that fails) would otherwise
 #' stop the call and discard the estimates. Warns, quoting the error and
 #' naming the post-hoc route, and returns no variance: `vcov` NULL, `se` NA,
 #' and the error's message, which the wrapper keeps as the fit's
@@ -1445,9 +1445,8 @@ invert_hessian <- function(hess) {
 #' \code{A = sum_i w_i (-H_i)} is the weighted negated Hessian and
 #' \code{B = sum_i w_i^2 s_i s_i'} is the weight-squared outer product of
 #' per-individual scores — the \code{"robust"} case of the shared
-#' \code{.assemble_score_vcov()} path (\code{crossprod(w * S)} over the
-#' per-unit score matrix for MNL and NL; the BHHH kernel with squared weights,
-#' without the score matrix, for MXL). Valid under choice-based / WESML
+#' \code{.assemble_score_vcov()} path (each model's BHHH kernel with the
+#' squared weights, without the score matrix). Valid under choice-based / WESML
 #' weighting, where the plain inverse-Hessian is not. Supported for MNL, MXL
 #' and NL fits.
 #'
@@ -1697,8 +1696,8 @@ compute_scores <- function(object) {
 #' \code{.mxl_score_meat()} forms the mixed logit's: \code{"bhhh"} is the
 #' BHHH kernel with the weights, \code{"robust"} the same kernel with the
 #' squared weights, and \code{"cluster"} the cluster meat kernel over the
-#' labels, checked by the caller and grouped by \code{as.character()}, as
-#' \code{rowsum()} groups them.
+#' labels, checked as \code{.score_meat()} checks them and grouped by
+#' \code{as.character()}, as \code{rowsum()} groups them.
 #'
 #' @param object A fitted \code{choicer_mnl} or \code{choicer_nl} with stored
 #'   data.
@@ -1714,6 +1713,7 @@ compute_scores <- function(object) {
   d <- object[["data"]]
   theta <- object$coefficients
   if (identical(type, "cluster")) {
+    .check_cluster_labels(cluster, length(d$M))
     labels <- as.character(cluster)
     codes <- match(labels, unique(labels))
     return(switch(object$model,
@@ -1837,7 +1837,7 @@ compute_scores <- function(object) {
 #'
 #' The single post-hoc entry point behind \code{vcov(fit, type = )},
 #' \code{ensure_vcov()} (for \code{se_method = "cluster"} fits) and
-#' \code{compute_sandwich_vcov()}, and a mixed logit's variance at fit time.
+#' \code{compute_sandwich_vcov()}, and every model's variance at fit time.
 #' Operates entirely in natural space: the stored data and coefficients are
 #' natural-scale even when the fit used \code{scale_vars}, so no
 #' back-transform is needed; every matrix is inverted equilibrated
