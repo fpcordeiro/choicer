@@ -1,16 +1,18 @@
 // kernel_test_exports.cpp — Thin Rcpp wrappers exposing choicer_internal.h
-// helpers for unit testing. These functions are NOT user-facing API; they are
-// @noRd and only exported so that tests can pin the raw-array softmax,
-// log-sum-exp and nested logit probabilities to their Armadillo counterparts
-// bit for bit, check how Armadillo is configured (its index word), check
-// how the MXL derivative kernels choose and size their accumulators, and read
-// the physical memory their memory check compares with.
+// and choicer_derivs.h helpers for unit testing. These functions are NOT
+// user-facing API; they are @noRd and only exported so that tests can pin
+// the raw-array softmax, log-sum-exp and nested logit probabilities to their
+// Armadillo counterparts bit for bit, check how Armadillo is configured (its
+// index word), check how the derivative kernels choose and size their
+// accumulators, and read the physical memory the estimation kernels' memory
+// check compares with.
 //
 // DO NOT add any of these to the public documentation or NAMESPACE.
 
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "choicer.h"
 #include "choicer_internal.h"
+#include "choicer_derivs.h"
 
 //' stable_softmax_n(), log_sum_exp_n() and max_shifted_lse_n() next to
 //' stable_softmax(), logSumExp() and the Armadillo expression of the mixed
@@ -198,10 +200,10 @@ double test_arma_view_n_elem() {
   return static_cast<double>(view.n_elem);
 }
 
-//' The MXL derivative kernels' choice of accumulator, as MxlSymAcc makes it:
-//' the rows s = mxl_acc_rows() a thread keeps per column (n, or K_c when the
+//' The derivative kernels' choice of accumulator, as SymAcc makes it:
+//' the rows s = sym_acc_rows() a thread keeps per column (n, or K_c when the
 //' threads share the result) and its buffer's column offsets
-//' mxl_acc_col_off(j, s), j = 0..n
+//' sym_acc_col_off(j, s), j = 0..n
 //'
 //' @param n,K_c Numbers of parameters and of continuous parameters.
 //' @param T Threads.
@@ -210,14 +212,14 @@ double test_arma_view_n_elem() {
 //'   the last one the buffer's length.
 //' @noRd
 // [[Rcpp::export(rng = false)]]
-Rcpp::List test_mxl_acc(const double n, const int K_c, const int T,
+Rcpp::List test_sym_acc(const double n, const int K_c, const int T,
                         const double acc_bytes) {
   const choicer_off nn = static_cast<choicer_off>(n);
-  const choicer_off s = mxl_acc_rows(nn, K_c, T, acc_bytes);
+  const choicer_off s = sym_acc_rows(nn, K_c, T, acc_bytes);
   const bool shared = s < nn;
   Rcpp::NumericVector off(static_cast<R_xlen_t>(nn) + 1);
   for (choicer_off j = 0; j <= nn; ++j) {
-    off[static_cast<R_xlen_t>(j)] = static_cast<double>(mxl_acc_col_off(j, s));
+    off[static_cast<R_xlen_t>(j)] = static_cast<double>(sym_acc_col_off(j, s));
   }
   return Rcpp::List::create(Rcpp::Named("shared") = shared,
                             Rcpp::Named("col_off") = off);

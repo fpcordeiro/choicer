@@ -409,10 +409,10 @@ test_arma_view_n_elem <- function() {
     .Call(`_choicer_test_arma_view_n_elem`)
 }
 
-#' The MXL derivative kernels' choice of accumulator, as MxlSymAcc makes it:
-#' the rows s = mxl_acc_rows() a thread keeps per column (n, or K_c when the
+#' The derivative kernels' choice of accumulator, as SymAcc makes it:
+#' the rows s = sym_acc_rows() a thread keeps per column (n, or K_c when the
 #' threads share the result) and its buffer's column offsets
-#' mxl_acc_col_off(j, s), j = 0..n
+#' sym_acc_col_off(j, s), j = 0..n
 #'
 #' @param n,K_c Numbers of parameters and of continuous parameters.
 #' @param T Threads.
@@ -420,8 +420,8 @@ test_arma_view_n_elem <- function() {
 #' @return List with \code{shared} (s < n) and the n + 1 offsets (doubles),
 #'   the last one the buffer's length.
 #' @noRd
-test_mxl_acc <- function(n, K_c, T, acc_bytes) {
-    .Call(`_choicer_test_mxl_acc`, n, K_c, T, acc_bytes)
+test_sym_acc <- function(n, K_c, T, acc_bytes) {
+    .Call(`_choicer_test_sym_acc`, n, K_c, T, acc_bytes)
 }
 
 #' The machine's physical memory in bytes as the mixed logit kernels' memory

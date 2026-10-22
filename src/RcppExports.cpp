@@ -300,16 +300,16 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// test_mxl_acc
-Rcpp::List test_mxl_acc(const double n, const int K_c, const int T, const double acc_bytes);
-RcppExport SEXP _choicer_test_mxl_acc(SEXP nSEXP, SEXP K_cSEXP, SEXP TSEXP, SEXP acc_bytesSEXP) {
+// test_sym_acc
+Rcpp::List test_sym_acc(const double n, const int K_c, const int T, const double acc_bytes);
+RcppExport SEXP _choicer_test_sym_acc(SEXP nSEXP, SEXP K_cSEXP, SEXP TSEXP, SEXP acc_bytesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::traits::input_parameter< const double >::type n(nSEXP);
     Rcpp::traits::input_parameter< const int >::type K_c(K_cSEXP);
     Rcpp::traits::input_parameter< const int >::type T(TSEXP);
     Rcpp::traits::input_parameter< const double >::type acc_bytes(acc_bytesSEXP);
-    rcpp_result_gen = Rcpp::wrap(test_mxl_acc(n, K_c, T, acc_bytes));
+    rcpp_result_gen = Rcpp::wrap(test_sym_acc(n, K_c, T, acc_bytes));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1310,7 +1310,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_test_nl_individual_probs", (DL_FUNC) &_choicer_test_nl_individual_probs, 4},
     {"_choicer_test_arma_word_bytes", (DL_FUNC) &_choicer_test_arma_word_bytes, 0},
     {"_choicer_test_arma_view_n_elem", (DL_FUNC) &_choicer_test_arma_view_n_elem, 0},
-    {"_choicer_test_mxl_acc", (DL_FUNC) &_choicer_test_mxl_acc, 4},
+    {"_choicer_test_sym_acc", (DL_FUNC) &_choicer_test_sym_acc, 4},
     {"_choicer_test_physical_memory", (DL_FUNC) &_choicer_test_physical_memory, 0},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 9},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 8},

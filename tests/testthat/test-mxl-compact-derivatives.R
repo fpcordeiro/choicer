@@ -538,7 +538,7 @@ test_that("the cluster meat checks its labels after the other inputs", {
 # ASC block with atomic additions. acc_bytes = 0 forces the shared result.
 
 test_that("the kernels share the result exactly when the triangles exceed acc_bytes", {
-  acc <- function(n, K_c, T, bytes) test_mxl_acc(n, K_c, T, bytes)
+  acc <- function(n, K_c, T, bytes) test_sym_acc(n, K_c, T, bytes)
   tri <- function(n, T) 8 * T * n * (n + 1) / 2
   # the T triangles fit at exactly acc_bytes
   expect_false(acc(100, 5, 4, tri(100, 4))$shared)
