@@ -95,9 +95,8 @@ test_that("the MNL memory estimates grow with the parameters and the threads", {
   for (k in c("hessian", "bhhh")) {
     small <- mnm_one_thread(k, f_small)
     large <- mnm_one_thread(k, f_large)
-    # the n x n result, its copy into R and a thread's accumulator (24 n^2
-    # bytes; n = 401)
-    expect_gt(large, 24 * 401^2, label = k)
+    # at least the n x n result (8 n^2 bytes; n = 401)
+    expect_gt(large, 8 * 401^2, label = k)
     expect_lt(small, large, label = k)
   }
   expect_gt(mnm_one_thread("scores", f_large), 16 * 40 * 401)
@@ -108,11 +107,12 @@ test_that("the MNL memory error gives the number of threads that fits", {
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(2L)
-  # 1,000 alternatives: each thread's 8 MB accumulator is a large part of the
-  # estimate, so two threads need about a third more than one
+  # 1,000 alternatives: one thread adds into the 8 MB result itself, while
+  # two threads also keep a 4 MB packed triangle each, so two threads need
+  # about twice what one does
   f <- mnm_fixture(4104, J = 1000L, m = 4L)
   one <- mnm_one_thread("bhhh", f)
-  expect_gt(one, 2e7)
+  expect_gt(one, 7.5e6)
   old <- options(choicer.max_memory = 1.15 * one)
   on.exit(options(old), add = TRUE)
   expect_error(mnm_call("bhhh", f),

@@ -3,8 +3,9 @@
 # weights, and leave the objective and gradient as they are. Each term is
 # formed and rounded as the BHHH kernel forms it, so at one thread the two
 # agree to the last bit where the compiler fuses neither (clang, GCC at -O2);
-# the tests allow 1e-13 relative, and 1e-12 at two threads, whose partial
-# sums are added in the order the threads finish.
+# the tests allow 1e-13 relative (and ask for the last bit for the
+# multinomial logit off CRAN), and 1e-12 at two threads, whose partial sums
+# are added in the order the threads finish.
 
 # Largest deviation of the diagonal d from the BHHH matrix's (or a vector's
 # entries), relative above one and absolute below.
@@ -146,6 +147,29 @@ test_that("the multinomial logit's OPG diagonal is the BHHH diagonal", {
   a <- list(0.3, d$X, d$alt_idx, d$choice_idx, d$M, d$weights, FALSE, FALSE)
   g1 <- do.call(mnl_loglik_gradient_parallel, c(a, list(opg_diag = TRUE)))
   expect_lt(opg_dev(g1$opg_diag, do.call(choicer:::mnl_bhhh_parallel, a)), 1e-13)
+})
+
+test_that("at one thread the multinomial logit's OPG diagonal is the BHHH's bit for bit", {
+  # The gradient kernel forms each term w_i s_ij^2 as the BHHH kernel's
+  # compact update does and adds it in the same situation order, so with
+  # finite weights the two agree to the last bit.
+  skip_on_cran()  # a compiler that fuses either kernel's terms differs
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (J in c(6L, 25L)) {
+    for (ioo in c(FALSE, TRUE)) {
+      for (dup in c(FALSE, TRUE)) {
+        d <- opg_choice_data(990L + J + ioo + 2L * dup, 60L, J, 3L, ioo, dup)
+        set.seed(995L + ioo)
+        a <- list(stats::rnorm(3L + J - !ioo, sd = 0.4), d$X, d$alt_idx,
+                  d$choice_idx, d$M, d$weights, TRUE, ioo)
+        g <- do.call(mnl_loglik_gradient_parallel, c(a, list(opg_diag = TRUE)))
+        expect_identical(as.numeric(g$opg_diag),
+                         diag(do.call(choicer:::mnl_bhhh_parallel, a)),
+                         label = sprintf("[J = %d, oo = %s, dup = %s]", J, ioo, dup))
+      }
+    }
+  }
 })
 
 test_that("the nested logit's OPG diagonal is the BHHH diagonal", {

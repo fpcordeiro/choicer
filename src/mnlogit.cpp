@@ -38,6 +38,157 @@ inline std::vector<arma::mat> mnl_thread_accumulators(const int n_params,
   return acc;
 }
 
+// ============================================================================
+// Compact blocks of the MNL derivative kernels
+//
+// A situation's score and its Hessian live on its compact block: the K
+// coefficients, then the free constants of the alternatives it offers, in
+// increasing global order. The normalized reference and the outside option
+// have none; a situation that lists an alternative twice adds both rows into
+// one slot, in row order, as scatter_delta_grad() adds them into one
+// constant. MnlSituationMap holds the slots, one per thread, sized on the
+// primary thread for the largest situation, so that building them allocates
+// nothing; slot_of is -1 except while a situation is mapped.
+// ============================================================================
+struct MnlSituationMap {
+  std::vector<int> slot_of;   // free constant j -> slot, or -1 (J_d entries)
+  std::vector<int> delta;     // slot -> free constant, increasing
+  std::vector<int> row_slot;  // row of the situation -> slot, or -1
+  int a = 0;                  // free constants of the situation
+  char pad[128];              // keeps the next thread's map off these lines
+
+  // Each array is reserved 32 entries (128 bytes) beyond its largest size,
+  // so that no two threads' arrays share a cache line.
+  MnlSituationMap(const int J_d, const choicer_off max_m)
+      : slot_of(static_cast<std::size_t>(J_d) + 32, -1) {
+    delta.reserve(static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32);
+    row_slot.reserve(static_cast<std::size_t>(max_m) + 32);
+  }
+  // Global parameter of local index i (the K coefficients first).
+  int global(const int i, const int K) const {
+    return i < K ? i : K + delta[i - K];
+  }
+  // Local index of global parameter g, or -1 outside the situation's block.
+  int local(const int g, const int K) const {
+    if (g < K) return g;
+    const int k = slot_of[g - K];
+    return k >= 0 ? K + k : -1;
+  }
+};
+
+// Bytes of one thread's MnlSituationMap.
+inline double mnl_map_bytes(const int J_d, const choicer_off max_m) {
+  const double m = static_cast<double>(max_m);
+  return sizeof(int) * (J_d + std::min<double>(J_d, m) + m + 96.0) + 256.0;
+}
+
+// Every thread's map, each in its own allocation, on the primary thread.
+using MnlSituationMaps = std::vector<std::unique_ptr<MnlSituationMap>>;
+inline MnlSituationMaps mnl_situation_maps(const int J_d, const choicer_off max_m,
+                                           const int n_threads) {
+  MnlSituationMaps maps;
+  maps.reserve(n_threads);
+  for (int i = 0; i < n_threads; ++i) {
+    maps.emplace_back(new MnlSituationMap(J_d, max_m));
+  }
+  return maps;
+}
+
+// Free constant of a row with 0-based alternative alt0 (as
+// scatter_delta_grad() places it), or -1.
+inline int mnl_free_delta(const int alt0, const bool use_asc,
+                          const bool include_outside_option) {
+  if (!use_asc) return -1;
+  return include_outside_option ? alt0 : alt0 - 1;
+}
+
+// The slots of situation i: its distinct free constants, in increasing
+// order, and the slot of each of its rows. mnl_situation_map_clear() resets
+// the markers.
+inline void mnl_situation_map(const ChoiceLayout& lay, const choicer_off i,
+                              const bool use_asc,
+                              const bool include_outside_option,
+                              MnlSituationMap& mp) {
+  const int* alt = lay.alt + lay.row_off[i];
+  const int m = lay.m(i);
+  mp.delta.clear();
+  for (int r = 0; r < m; ++r) {
+    const int j = mnl_free_delta(alt[r] - 1, use_asc, include_outside_option);
+    if (j >= 0 && mp.slot_of[j] < 0) {
+      mp.slot_of[j] = 0;  // seen
+      mp.delta.push_back(j);
+    }
+  }
+  std::sort(mp.delta.begin(), mp.delta.end());
+  mp.a = static_cast<int>(mp.delta.size());
+  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = k;
+  mp.row_slot.resize(static_cast<std::size_t>(m));
+  for (int r = 0; r < m; ++r) {
+    const int j = mnl_free_delta(alt[r] - 1, use_asc, include_outside_option);
+    mp.row_slot[r] = j >= 0 ? mp.slot_of[j] : -1;
+  }
+}
+
+inline void mnl_situation_map_clear(MnlSituationMap& mp) {
+  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = -1;
+}
+
+// Each thread's buffer of n doubles (a column of the dense update, or a
+// compact score), allocated here on the primary thread.
+inline std::vector<std::vector<double>> mnl_thread_buffers(const std::size_t n,
+                                                           const int n_threads) {
+  return std::vector<std::vector<double>>(static_cast<std::size_t>(n_threads),
+                                          std::vector<double>(n + 16));
+}
+
+// The weight-free score of situation i on its compact block, into s_c (K + a
+// entries, the map built for i), and the situation's 1{chosen} - P into
+// diff_vec: the coefficients' entries as X_i' diff, the expression of the
+// gradient kernel's OPG diagonal, then each slot's differences in row order
+// at scale 1.0, as scatter_delta_grad() adds them into the n_params-vector.
+inline void mnl_situation_score(const arma::mat& X, const ChoiceLayout& lay,
+                                const arma::vec& base_util, const choicer_off i,
+                                const bool include_outside_option,
+                                const MnlSituationMap& mp, arma::vec& diff_vec,
+                                arma::vec& s_c) {
+  const int m_i         = lay.m(i);
+  const int num_choices = include_outside_option ? m_i + 1 : m_i;
+  const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
+  const arma::uword end_idx   = start_idx + m_i - 1;
+  const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
+  const int K = X.n_cols;
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+
+  // Build utility vector V_i
+  arma::vec V_i(num_choices);
+  arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
+  fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
+
+  // Probabilities
+  arma::vec P_i;
+  stable_softmax(V_i, P_i);
+
+  // Chosen alternative (validated serially by the caller)
+  int chosen_alt = lay.choice[i];
+  if (!include_outside_option) chosen_alt -= 1;
+
+  // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
+  diff_vec.set_size(num_choices);
+  diff_vec = -P_i;
+  diff_vec(chosen_alt) += 1.0;
+
+  s_c.zeros();
+  if (include_outside_option) {
+    s_c.subvec(0, K - 1) = X_i.t() * diff_vec.subvec(1, m_i);
+  } else {
+    s_c.subvec(0, K - 1) = X_i.t() * diff_vec;
+  }
+  for (int r = 0; r < m_i; ++r) {
+    const int k = mp.row_slot[r];
+    if (k >= 0) s_c[K + k] += 1.0 * diff_vec[r + o];
+  }
+}
+
 // The MNL gradient kernel's pass over the choice situations: the weighted
 // sums of their log-probabilities and scores and, with OpgDiag, the diagonal
 // of the BHHH matrix, sum_i w_i s_i o s_i, its terms formed as
@@ -298,14 +449,19 @@ Rcpp::List mnl_loglik_gradient_parallel(
 
 //' BHHH/OPG information matrix for multinomial logit model
 //'
-//' Computes the weighted outer product of per-individual scores
+//' Computes the weighted outer product of per-situation scores
 //' \eqn{\sum_i w_i\, s_i s_i^\top} for the Multinomial Logit model. The
-//' per-individual score \eqn{s_i} is the (positive) gradient of individual
+//' per-situation score \eqn{s_i} is the (positive) gradient of situation
 //' \eqn{i}'s log-likelihood contribution and is weight-free; the supplied
 //' \code{weights} enter only as the leading multiplier. Passing
 //' \code{weights = w} yields the ordinary weighted BHHH/OPG information; passing
 //' \code{weights = w^2} yields the sandwich \emph{meat}
 //' \eqn{B = \sum_i w_i^2 s_i s_i^\top} used for robust (WESML) inference.
+//' Each situation's outer product is formed only over the parameters its
+//' likelihood involves (the coefficients and the constants of the
+//' alternatives it offers), so the work per situation does not grow with the
+//' number of alternatives; the n_params x n_params result and the threads'
+//' accumulators do (see acc_bytes).
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
 //' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
@@ -315,6 +471,14 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+//'   default). While the triangles of the T threads in use, T n_params
+//'   (n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+//'   or for a NaN or negative value, the threads add into the result (the
+//'   coefficients' rows through smaller private buffers, the constants' block
+//'   atomically). One thread adds into the result whatever the value. The two
+//'   ways differ by rounding only; \code{0} forces the shared result (for
+//'   tests).
 //' @returns A symmetric positive-semidefinite information matrix
 //'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
 //' @examples
@@ -333,7 +497,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat mnl_bhhh_parallel(
+Rcpp::NumericMatrix mnl_bhhh_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
@@ -341,7 +505,8 @@ arma::mat mnl_bhhh_parallel(
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
@@ -354,94 +519,86 @@ arma::mat mnl_bhhh_parallel(
   // --- Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, "mnl_bhhh_parallel");
 
-  // Memory: each thread's n x n accumulator, score and situation buffers; X
-  // beta, the result and its copy into R
-  const double nn = static_cast<double>(n_params) * n_params;
+  // Memory: each thread's slot map, compact score, a column of the update
+  // (every parameter, for the dense fallback) and situation buffers; X beta,
+  // the result and the threads' accumulators
+  const int J_d = n_params - K;  // free constants
+  const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("BHHH matrix", n_threads,
-                      8.0 * nn + mnl_thread_bytes(lay, K, n_params, 1.0),
-                      [&](const int) {
-                        return 8.0 * static_cast<double>(lay.n_rows) + 16.0 * nn;
+                      mnl_map_bytes(J_d, lay.max_m) + 8.0 * (K + a_max + n_params + 32.0) +
+                          mnl_thread_bytes(lay, K, n_params, 0.0),
+                      [&](const int t) {
+                        return 8.0 * static_cast<double>(lay.n_rows) +
+                               sym_acc_need(n_params, K, t, acc_bytes);
                       });
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Global BHHH accumulator and the threads' own, allocated here
-  arma::mat global_bhhh = arma::zeros(n_params, n_params);
-  std::vector<arma::mat> locals =
-      mnl_thread_accumulators(n_params, n_threads, "BHHH");
+  // The result and the threads' accumulators, slot maps and buffers, all
+  // allocated here on the primary thread
+  SymAcc acc(n_params, n_threads, K, "BHHH", acc_bytes);
+  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  std::vector<std::vector<double>> scores =
+      mnl_thread_buffers(static_cast<std::size_t>(K + a_max), n_threads);
+  std::vector<std::vector<double>> cols =
+      mnl_thread_buffers(static_cast<std::size_t>(n_params), n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
-    // Thread-local accumulator
-    arma::mat& local_bhhh = locals[kernel_thread_num()];
+    const int tid = kernel_thread_num();
+    MnlSituationMap& mp = *maps[tid];
+    double* acc_t = acc.base(tid);
+    double* s_buf = scores[tid].data();
+    double* col = cols[tid].data();
     arma::vec diff_vec; // resized per individual
-    arma::vec s_i;      // per-individual score
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
-      const int m_i         = lay.m(i);
-      const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
-      const double w_i      = weights[i];
-      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
+      const double w_i = weights[i];
+      mnl_situation_map(lay, i, use_asc, include_outside_option, mp);
+      arma::vec s_c(s_buf, K + mp.a, false, true);
+      mnl_situation_score(X, lay, base_util, i, include_outside_option, mp,
+                          diff_vec, s_c);
 
-      // Build utility vector V_i
-      arma::vec V_i(num_choices);
-      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
-      // Probabilities
-      arma::vec P_i;
-      stable_softmax(V_i, P_i);
-
-      // Chosen alternative (validated serially above)
-      int chosen_alt = lay.choice[i];
-      if (!include_outside_option) chosen_alt -= 1;
-
-      // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
-      diff_vec.set_size(num_choices);
-      diff_vec = -P_i;
-      diff_vec(chosen_alt) += 1.0;
-
-      // Assemble the (weight-free) per-individual score s_i.
-      s_i.zeros(n_params);
-
-      // Beta block
-      if (include_outside_option) {
-        const auto diff_inside = diff_vec.subvec(1, m_i); // m_i elements
-        s_i.subvec(0, K - 1) = X_i.t() * diff_inside;
-      } else {
-        s_i.subvec(0, K - 1) = X_i.t() * diff_vec;
-      }
-
-      // Delta block (scatter; scale = 1, weight applied to the outer product)
-      if (use_asc) {
-        if (include_outside_option) {
-          scatter_delta_grad(s_i, K, diff_vec.subvec(1, m_i), alt_idx0_i,
-                             m_i, include_outside_option, 1.0);
+      // w_i s_c s_c' over the compact block, column by column, each entry
+      // formed as the dense rank-one update formed it (`B += w_i * s_i *
+      // s_i.t()` is Armadillo's syrk_vec: the product of the two scores,
+      // times the weight, then added). A column's terms are stored before
+      // they are added, so that the weight's product is never fused into the
+      // addition (bit for bit under clang and under GCC at R's default -O2;
+      // GCC's -O3 loop vectorizer rounds the dense update differently). The
+      // dense update added w_i * (0 * s) outside the block, +-0, which
+      // changes nothing: no accumulator, which starts at +0, is ever -0.
+      if (std::isfinite(w_i) && s_c.is_finite()) {
+        if (acc.shared) {
+          bhhh_add<true>(acc, acc_t, mp, K, s_c, w_i, col);
         } else {
-          scatter_delta_grad(s_i, K, diff_vec, alt_idx0_i,
-                             m_i, include_outside_option, 1.0);
+          bhhh_add<false>(acc, acc_t, mp, K, s_c, w_i, col);
+        }
+      } else {
+        // A non-finite weight, or a non-finite score (utilities that
+        // overflowed): the dense update over every entry, whose 0 * NaN and
+        // 0 * Inf spread it over whole rows and columns. The scores come
+        // from the slot map, zero outside the block.
+        if (acc.shared) {
+          bhhh_add_dense<true>(acc, acc_t, mp, K, s_c, w_i, col);
+        } else {
+          bhhh_add_dense<false>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       }
-
-      local_bhhh += w_i * s_i * s_i.t();
+      mnl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 
-  // The threads' sums in thread order, from +0
-  for (const arma::mat& local_bhhh : locals) global_bhhh += local_bhhh;
-
   // Return PSD information matrix (same sign convention as negated Hessian).
-  return global_bhhh;
+  acc.finish(false);
+  return acc.result;
 }
 
 // Per-situation score matrix for the multinomial logit model (internal).
