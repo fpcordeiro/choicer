@@ -435,7 +435,7 @@ The chosen-nest correction $C_{a,b}$ is nonzero only when both $a$ and $b$ are i
 - **MNL limit** ($\lambda_k = 1$ for all $k$): $Q_i[a,b] = P_{ia}(\mathbf{1}_{a=b} - P_{ib})$, the standard multinomial Hessian of $-\log P_{c_a}$. Own diagonal $= P_{ia}(1-P_{ia})$; off-diagonal $= -P_{ia}P_{ib}$. The chosen-nest correction vanishes because $1 - 1/\lambda_{k_i} = 0$.
 - When the outside option is chosen ($k_i = -1$) or when $\lambda_{k_i} = 1$ (singleton chosen nest), $C_{a,b} = 0$ for all pairs.
 
-*Implementation note:* The implementation materializes $Q_i$ as an explicit $m_i \times m_i$ matrix, which is efficient for typical choice set sizes ($J \leq 20$). The outer-product decomposition used for the beta-beta block (§4.3) avoids forming this matrix explicitly for the $K \times K$ accumulation.
+*Implementation note:* The implementation never forms $Q_i$ as an $m_i \times m_i$ matrix: it forms one column at a time, for each row with a free constant (§4.4, §4.8), and the outer-product decomposition used for the beta-beta block (§4.3) needs no entry of it.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
@@ -504,7 +504,7 @@ H^{(i)}_{\beta_r, \delta_{b'}} = w_i \sum_{a} x_{ia,r} \cdot Q_i[a, b']
 = w_i \, \bigl(\mathbf{X}_i^T \mathbf{Q}_i[:, b']\bigr)_r
 $$
 
-Both blocks reuse the same $Q_i$ matrix computed in §4.2. No additional auxiliary quantities are required.
+Both blocks use the column $Q_i[:, b']$ of each row $b'$ with a free constant, formed once (§4.8). No additional auxiliary quantities are required.
 
 **ASC normalization.** Without an outside option, the first inside alternative's ASC is fixed to zero: free-ASC alternatives satisfy `alt_idx0[a] > 0`, mapped to theta positions `delta_start_idx + alt_idx0[a] - 1`.
 
@@ -614,7 +614,7 @@ When the outside option is chosen ($k_i = -1$), all lambda diagonals use the non
 
 ### 4.8 Single-Pass Implementation and Auxiliary Accumulations
 
-All six blocks are accumulated in a **single parallel pass** over individuals. The per-nest auxiliary quantities below are accumulated in an inner loop over alternatives at $O(m_i)$ cost before any block is computed.
+All six blocks are accumulated in a **single parallel pass** over individuals. The per-nest auxiliary quantities below are accumulated in an inner loop over alternatives at $O(m_i)$ cost before any block is computed, for the nests the situation offers only: a nest it does not offer has zero sums and contributes nothing.
 
 **Per-nest scalars** (zero-initialized per individual, indexed by nest $k$):
 
@@ -637,13 +637,32 @@ All six blocks are accumulated in a **single parallel pass** over individuals. T
 | Quantity | Formula | Blocks that use it |
 |----------|---------|-------------------|
 | $\mathbf{S}^{(2)}_k$ | $\sum_{j \in B_k} P_{ij} \mathbf{x}_j \mathbf{x}_j^T$ | beta-beta Term B |
-| $\mathbf{Q}_k$ | $\sum_{j \in B_k} P(j\mid k) \mathbf{x}_j \mathbf{x}_j^T$ | beta-beta Term C (chosen nest $k_i$ only) |
+| $\mathbf{Q}_k$ | $\sum_{j \in B_k} P(j\mid k) \mathbf{x}_j \mathbf{x}_j^T$ | beta-beta Term C (formed for the chosen nest $k_i$ only) |
 
 **Global per-individual:** $\bar{\mathbf{x}}_i = \sum_j P_{ij} \mathbf{x}_j = \sum_k \mathbf{m}_k$ (beta-beta Term A).
 
-**OpenMP structure.** The outer loop over individuals is parallelized with dynamic scheduling. Each thread maintains a thread-local $P \times P$ accumulator `local_H`, merged into `global_H` via `#pragma omp critical` after the individual loop. The nest-to-theta-index map is copied thread-privately to avoid false sharing.
+**Compact blocks.** A situation's terms touch only its *compact block*: the $K$
+coefficients, the dissimilarities of the non-singleton nests it offers (those whose
+$\log I_k$ is finite), and the free constants of its alternatives, in increasing order.
+$Q_i$ is formed a column at a time (no $m_i \times m_i$ matrix), the symmetric
+$K \times K$ sums are kept as packed upper triangles, and the lambda-lambda block runs over
+the pairs of touched nests. A situation's blocks thus cost $O(m_i^2K + m_iK^2)$, whatever
+the number of alternatives in the model; its probabilities still visit every nest.
 
-**Symmetrization and sanitization.** After the parallel loop: $H \leftarrow (H + H^T)/2$ enforces exact symmetry; any remaining non-finite entries are zeroed.
+**OpenMP structure.** The outer loop over individuals is parallelized with dynamic
+scheduling. Each thread adds into its own packed upper triangle while the threads'
+triangles fit in a budget (2 GiB by default), and above it into a shared result: each
+thread keeps the coefficients' rows private (and the dissimilarities', while the threads'
+copies of them fit in the budget) and adds the rest atomically. All of it is allocated
+before the loop, once the kernel's memory estimate has been checked against
+`options(choicer.max_memory)` or the physical memory.
+
+**Symmetrization and sanitization.** $Q_i$ and Term B's $\mathbf{m}_k\mathbf{c}_k^T$ are
+symmetric in exact arithmetic ($P_{ij} = P_k P(j\mid k)$, so
+$\mathbf{m}_k = P_k\mathbf{c}_k$) but not in floating point. Each entry therefore
+receives the mean of its two transposed terms, $H \leftarrow (H + H^T)/2$ computed term
+by term (halving is exact except for subnormal terms, so no running sum is doubled on the
+way); any remaining non-finite entries are zeroed.
 
 **Singleton-nest handling.** Singleton nests ($\lambda_k = 1$, theta index $= -1$) contribute nothing to the lambda-lambda, lambda-beta, or lambda-delta blocks. Their beta-beta contribution via Term B simplifies to $\mathbf{S}^{(2)}_k$ (since $1 - 1/\lambda_k = 0$).
 
@@ -708,9 +727,13 @@ This avoids redundant matrix-vector products inside the per-individual loop.
 ### 5.5 OpenMP Parallelization
 
 The implementation parallelizes over individuals using OpenMP:
-- Each thread maintains local accumulators for log-likelihood and gradient.
-- `nest_k_to_theta_idx` is copied thread-privately to avoid false sharing.
-- Thread results are combined using `#pragma omp critical` sections.
+- Each thread keeps local accumulators (the log-likelihood and gradient, or a packed upper
+  triangle of the Hessian or BHHH matrix, §4.8; one thread adds into the result itself) and
+  its probability buffers, all allocated before the parallel loop once the kernel's memory
+  estimate has been checked.
+- The Hessian's and BHHH matrix's triangles are added after the loop in thread order (above
+  the budget, the shared entries atomically during it); the log-likelihood and gradient in
+  an order that can vary between calls.
 - Dynamic scheduling balances load across individuals with varying choice set sizes.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
@@ -731,8 +754,8 @@ $\sum_iw_is_is_i^T$.
 The likelihood kernel replaces a non-finite chosen log probability by $-10^{10}$.
 If the final negated objective is non-finite it returns $10^{10}$ and a zero gradient;
 isolated non-finite gradient entries are zeroed. The analytical Hessian skips a situation
-whose chosen log probability is non-finite, symmetrizes the aggregate, and replaces any
-remaining non-finite entries by zero. These rules are optimizer failure guards, not part
+whose chosen log probability is non-finite, adds the mean of each pair of transposed terms
+(§4.8), and replaces any remaining non-finite entries by zero. These rules are optimizer failure guards, not part
 of the regular finite-parameter nested-logit criterion; encountering them calls for
 rescaling or revising the specification.
 
@@ -1157,19 +1180,25 @@ variance under **variable-probability sampling**. The smaller stratum-centered
 
 ### 7.5 Implementation and Cluster-Robust Extension
 
-The common post-estimation path obtains the $N\times p$ matrix $S$ of weight-free scores
-from `nl_scores_parallel` (singleton lambda rows are absent because those parameters are
-not in $\theta$), then forms
+The meats come from compiled kernels that never form the $N\times p$ matrix of
+weight-free scores (singleton lambdas are not parameters, so the meats have no rows for
+them): the BHHH
+kernel `nl_bhhh_parallel()` adds $w_i\,s_is_i^T$ over each situation's compact block
+(§4.8), with `weights = w` for the BHHH information and `weights = w^2` for the robust
+meat, so that
 
 $$
 A=\texttt{nl\_loglik\_hessian\_parallel}(\widehat\theta;w),
-\qquad B=(\operatorname{diag}(w)S)^T(\operatorname{diag}(w)S).
+\qquad B=\texttt{nl\_bhhh\_parallel}(\widehat\theta;w^2)=\sum_i w_i^2 s_is_i^T.
 $$
 
-For a fit whose selected method is the numeric NL Hessian, the post-hoc bread uses the
-numeric oracle instead. The eager fit-time robust path is algebraically identical and may
-obtain $B$ by calling the BHHH accumulator with `weights = w^2`. For cluster labels
-$g(i)$, `se_method = "cluster"` uses
+For a fit whose selected method is the numeric NL Hessian, the bread uses the numeric
+oracle instead. The fit-time variance (`se_method`), `vcov(fit, type = )`, the
+recomputation of a variance dropped from a fit and `wesml_vcov()` all compute it from the
+same kernels (`.assemble_score_vcov()`, or `compute_hessian()` for a Hessian or BHHH variance
+recomputed lazily), so a fit's variance is the one `vcov()` returns post hoc: bit for bit at
+one thread, and up to the last bits with more. For cluster labels $g(i)$,
+`se_method = "cluster"` uses
 
 $$
 B_{\mathrm{cluster}}=\sum_g
@@ -1177,7 +1206,9 @@ B_{\mathrm{cluster}}=\sum_g
 \left(\sum_{i:g(i)=g}w_is_i\right)^T,
 $$
 
-with no finite-cluster correction. These matrices are combined as
+formed by `nl_cluster_meat_parallel()` without the score matrix either (the situations
+sorted by cluster, each cluster's weighted compact scores summed over the parameters its
+situations touch), with no finite-cluster correction. These matrices are combined as
 $V=A^{-1}BA^{-1}$, computed equilibrated by two solves against the $LU$ factors of the
 equilibrated bread, without forming an inverse (§5.8). User-facing entry points: `wesml_weights()`
 computes the Manski--Lerman weights from the population shares $Q$, while
@@ -1188,7 +1219,7 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc. Passing
 choice situation (validated constant within `id`), and a provenance guard prevents a
 WESML-labeled sample from being silently fit unweighted.
 
-*Code reference: `nl_scores_parallel()` / `nl_bhhh_parallel()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, `.assemble_score_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `nl_bhhh_parallel()` / `nl_cluster_meat_parallel()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp); `.assemble_score_vcov()`, `.logit_meat()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R) (`.score_meat()` there forms the same meats from the score matrix of `nl_scores_parallel()`, as the tests' reference); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 

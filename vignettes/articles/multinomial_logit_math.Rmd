@@ -230,7 +230,7 @@ $$\mathbf{BB}_i = \mathbb{E}_{P_i}[x x^T] - \mathbb{E}_{P_i}[x]\, \mathbb{E}_{P_
 
 $$\mathbf{DD}_i = \operatorname{diag}(\mu_\delta) - \mu_\delta \mu_\delta^T, \qquad \mu_\delta[r] = \sum_{\{a : d(a)=r\}} p_{ia}$$
 
-Because at most one alternative maps to each free ASC index, $\mu_\delta$ is the vector of choice probabilities for ASC-bearing alternatives. The diagonal of $\mathbf{DD}_i$ is $\mu_\delta \odot (1 - \mu_\delta)$ and the off-diagonal $(r,s)$ entry is $-\mu_\delta[r]\,\mu_\delta[s]$.
+When a situation lists an alternative once, $\mu_\delta[r]$ is that alternative's choice probability; rows that repeat an alternative add their probabilities into its one entry. The diagonal of $\mathbf{DD}_i$ is $\mu_\delta \odot (1 - \mu_\delta)$ and the off-diagonal $(r,s)$ entry is $-\mu_\delta[r]\,\mu_\delta[s]$; $\mu_\delta$ is zero off the constants of the alternatives the situation offers.
 
 **Beta-delta block** ($K \times J_\delta$, generally not symmetric):
 
@@ -246,22 +246,35 @@ $$\left(\sum_a p_{ia} Z_a\right)\left(\sum_a p_{ia} Z_a\right)^T = \begin{pmatri
 
 Subtracting block by block yields exactly $\mathbf{BB}_i$, $\mathbf{BD}_i$, $\mathbf{DD}_i$ above.
 
-### 4.3 Symmetry Exploitation
+### 4.3 Compact Blocks and Accumulation
 
-$\mathbf{BB}_i$ and $\mathbf{DD}_i$ are symmetric. The implementation accumulates only the upper triangles of these blocks during the inner loop over alternatives and reflects them once after the loop, halving the write operations for those blocks:
+Because $\mu_\delta$ is zero off the situation's own constants, $\mathbf{BD}_i$ and
+$\mathbf{DD}_i$ vanish outside them: situation $i$'s Hessian lives on its *compact block*,
+the $K$ coefficients and the $a_i \le m_i$ free constants of the alternatives it offers
+(in increasing order). The kernel forms $\mathbf{BB}_i$ (its upper triangle),
+$\mathbf{BD}_i$ ($K \times a_i$) and the constants' block ($a_i \times a_i$, from the
+vector $\mu_\delta$ as it is added) and adds $w_i$ times them into the upper triangle of
+an $n \times n$ accumulator, which is mirrored once after the loop. A situation costs
+$O(m_iK^2 + a_iK + a_i^2)$, whatever the number of alternatives $J$; adding its dense
+$\mathbf{BD}_i$ and $\mathbf{DD}_i$ cost $O(KJ_\delta + J_\delta^2)$, which dominated with
+thousands of constants (281 s for 24,560 situations and 2,611 parameters at one thread,
+against 0.13 s for the compact blocks).
 
-- **BB**: the double loop `for r in 0..K-1, for c in r..K-1` accumulates $p_{ia} x_{ar} x_{ac}$ into the upper triangle; the lower triangle is filled by mirroring.
-- **DD**: $\mu_\delta$ is a length-$J_\delta$ vector; the matrix $\operatorname{diag}(\mu_\delta) - \mu_\delta \mu_\delta^T$ is assembled from the vector after all alternatives are processed, with upper triangle only and then mirrored.
-- **BD**: $K \times J_\delta$ rectangular — the full block is computed (no symmetry available across the two index spaces).
+Each thread adds into its own packed upper triangle while the threads' triangles fit in a
+budget (2 GiB by default; the kernels' internal `acc_bytes`), and above it into the shared
+result: the coefficients' rows through small private buffers, the constants' block by
+atomic additions. Both are allocated before the parallel loop, and the kernel first
+compares an upper estimate of its memory with `options(choicer.max_memory)` or the
+machine's physical memory, stopping with an error that names the number of threads that
+fits.
 
-The existing final symmetrization `global_hess = 0.5*(global_hess + global_hess^T)` remains as a numerical tidy-up.
-
-**Complexity.** For situation $i$, the block assembly costs
-$O(m_iK^2)$ for BB, $O(m_iK)$ for BD scatter, and $O(J_\delta^2)$ for DD, versus
-$O(m_i(K+J_\delta)^2)$ for a naive dense outer product for every alternative. Constant
-factors are reduced by triangular accumulation in the symmetric blocks. The exact speedup
-depends on $m_i$, $K$, and $J_\delta$; it is largest when the ASC block is large enough
-that repeating its dense outer products over alternatives would dominate.
+**Non-finite values.** The dense form subtracted $\mu\mu^T$ over every parameter, so a
+non-finite mean (overflowing utilities, a covariate near the largest double) reached its
+row's entries outside the block as $0 \cdot \text{mean}$, NaN; and a non-finite weight
+multiplied the zeros outside the block. The compact kernel adds those values where the
+dense form did: the spread of a non-finite mean during the loop (once per row and thread
+for a NaN mean, which turns the whole row NaN), and the spread of a non-finite weight
+after it.
 
 ### 4.4 ASC Normalization and Indexing
 
@@ -271,7 +284,11 @@ $$d(a) = \begin{cases} \text{alt\_idx0\_i}[a] & \text{if } \texttt{include\_outs
 
 where `alt_idx0_i[a]` is the 0-based global alternative ID from `alt_idx0`. When there is no outside option, the first inside alternative ($\text{alt\_idx0\_i}[a] = 0$) has its ASC fixed to zero by the identification convention, so it contributes no free ASC entry and is skipped in the BD and DD accumulation.
 
-**Implementation note.** The optimization is internal and numerically equivalent (within $\approx 10^{-9}$ in absolute terms, well within the $10^{-6}$ tolerance verified at test time) to the prior dense outer-product implementation. The public results — vcov, se, logLik, and all post-estimation quantities — are unchanged.
+**Implementation note.** Each term is formed as the dense form formed it — every product
+of means rounded before it is subtracted — and added in the same order, so at one thread
+the compact Hessian is the dense one bit for bit, except where the dense form's BLAS call
+fused a product into the subtraction (in designs with a single coefficient or a single
+constant), where the two differ in their last bits.
 
 *Code reference: `src/mnlogit.cpp`, function `mnl_loglik_hessian_parallel`.*
 
@@ -713,18 +730,24 @@ conditional-maximum-likelihood alternative.
 
 ### 11.5 Implementation and Cluster-Robust Extension
 
-The common post-estimation path first obtains the $N\times p$ matrix $S$ whose row $i$ is
-the **weight-free** score $s_i$ from `mnl_scores_parallel`.  It then forms
+The meats come from compiled kernels that never form the $N\times p$ matrix of scores
+($N$ situations by $p$ parameters): the BHHH kernel `mnl_bhhh_parallel()` adds
+$w_i\,s_is_i^T$ over each situation's compact block (§4.3), with `weights = w` for the
+BHHH information and `weights = w^2` for the robust meat, the **weight-free** score $s_i$
+entering both. With the bread
 
 $$
 A=\texttt{mnl\_loglik\_hessian\_parallel}(\widehat\theta;w),
-\qquad B=(\operatorname{diag}(w)S)^T(\operatorname{diag}(w)S).
+\qquad B=\texttt{mnl\_bhhh\_parallel}(\widehat\theta;w^2)=\sum_i w_i^2 s_is_i^T,
 $$
 
-The eager fit-time path is algebraically identical and may obtain $B$ by calling the
-BHHH accumulator with `weights = w^2`.  Both routes combine the matrices as
-$V=A^{-1}BA^{-1}$, computed equilibrated by two solves against the $LU$ factors of the
-equilibrated bread, without forming an inverse (§12.6).
+the variance is $V=A^{-1}BA^{-1}$, computed equilibrated by two solves against the $LU$
+factors of the equilibrated bread, without forming an inverse (§12.6). The fit-time
+variance (`se_method`), `vcov(fit, type = )`, the recomputation of a variance dropped from
+a fit and `wesml_vcov()` all compute it from the same kernels (`.assemble_score_vcov()`, or
+`compute_hessian()` for a Hessian or BHHH variance recomputed lazily), so a fit's variance is
+the one `vcov()` returns post hoc: bit for bit at one thread, and up to the last bits with
+more, where the threads' shares of the situations change from call to call.
 
 For cluster labels $g(i)$, `se_method = "cluster"` replaces the meat by
 
@@ -734,6 +757,12 @@ B_{\mathrm{cluster}}
        \left(\sum_{i:g(i)=g}w_is_i\right)^T.
 $$
 
+`mnl_cluster_meat_parallel()` forms it without the score matrix either: the situations
+sorted by cluster, each cluster's weighted compact scores summed over the parameters its
+situations touch, its outer product added once the cluster ends. The sorted situations are
+cut into about four chunks of similar row counts per thread, and a cluster that a chunk
+boundary cuts is merged, in chunk order, after the parallel loop. The labels are checked
+before any kernel runs.
 No $G/(G-1)$ or other finite-cluster correction is applied.  Clustering changes the
 estimated covariance, not the likelihood or point estimate. User-facing entry points:
 `wesml_weights()`
@@ -745,7 +774,7 @@ estimates with the robust variance; `wesml_vcov()` returns it post hoc. Passing
 choice situation (validated constant within `id`), and a provenance guard prevents a
 WESML-labeled sample from being silently fit unweighted.
 
-*Code reference: `mnl_scores_parallel()` / `mnl_bhhh_parallel()` in [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); `compute_sandwich_vcov()`, `.score_meat()`, `.assemble_score_vcov()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mnl_bhhh_parallel()` / `mnl_cluster_meat_parallel()` in [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); `.assemble_score_vcov()`, `.logit_meat()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R) (`.score_meat()` there forms the same meats from the score matrix of `mnl_scores_parallel()`, as the tests' reference); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 
@@ -775,9 +804,14 @@ option (first ASC normalized to 0), or $J_{asc} = J$ with outside option.
 
 ### 12.3 OpenMP Parallelization
 
-The implementation parallelizes over individuals using OpenMP:
-- Each thread maintains local accumulators for log-likelihood, gradient, and Hessian
-- Thread results are combined using `#pragma omp critical` sections
+The implementation parallelizes over choice situations using OpenMP:
+- Each thread keeps local accumulators: the log-likelihood and gradient, or a packed upper
+  triangle of the Hessian or BHHH matrix (§4.3; one thread adds into the result itself, and
+  above the budget the threads share it), all allocated before the parallel loop once the
+  kernel's memory estimate has been checked
+- The Hessian's and BHHH matrix's triangles are added after the loop in thread order (above
+  the budget, the constants' entries atomically during it); the log-likelihood and gradient
+  in an order that can vary between calls
 - Dynamic scheduling is used for load balancing: `#pragma omp for schedule(dynamic)`
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*

@@ -1934,7 +1934,7 @@ and inverted equilibrated (§5.6); the Cholesky-to-$\Sigma$ delta method
 `sample_by_choice()` build the weights; `run_mxlogit(..., se_method = "sandwich")`
 estimates with the robust variance; `wesml_vcov()` returns it post hoc.
 
-*Code reference: `mxl_bhhh_parallel()`, `mxl_cluster_meat_parallel()` and `mxl_scores_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `compute_sandwich_vcov()`, `.assemble_score_vcov()`, `.mxl_score_meat()`, (MNL, NL) `.score_meat()` and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
+*Code reference: `mxl_bhhh_parallel()`, `mxl_cluster_meat_parallel()` and `mxl_scores_parallel()` in [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp); `.assemble_score_vcov()`, `.mxl_score_meat()` (the multinomial and nested logits' `.logit_meat()`; `.score_meat()` forms the same meats from the score matrix, as the tests' reference) and `.sandwich_combine()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp); `wesml_weights()` / `sample_by_choice()` in [R/sampling.R](https://github.com/fpcordeiro/choicer/blob/main/R/sampling.R).*
 
 ---
 

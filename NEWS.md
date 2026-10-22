@@ -362,6 +362,54 @@ designs of their own, described where they appear.
   bit. Malformed index vectors, which only a hand-built `input_data` or a
   direct call can supply, are now reported in a defined way (a missing or
   negative code as such, an index beyond the integer range as `NA`).
+- **The multinomial and nested logits' variances at population scale.** The
+  Hessian and BHHH kernels of `run_mnlogit()` and `run_nestlogit()`, and their
+  new clustered-meat kernels, form each choice situation's terms only over the
+  parameters its likelihood involves (the coefficients, the constants of the
+  alternatives it offers and, in the nested logit, the dissimilarities of the
+  nests it offers) and add them into upper-triangular accumulators, as the
+  mixed logit's kernels do (above). The work per situation no longer grows
+  with the number of alternatives: on a census-style design of 24,560 choice
+  situations and 2,611 parameters (2,661 in the nested logit, with its 50
+  nests), the multinomial logit's Hessian took 0.13 s instead of 281 s at one
+  thread and its BHHH matrix 0.07 s instead of 122 s, and the nested logit's
+  BHHH matrix 0.14 s instead of 90 s; at five threads the multinomial logit's
+  Hessian moved 0.22 GB through the heap instead of 1,336 GB. With 17,147
+  parameters, the multinomial logit's Hessian, which the dense kernel took
+  358 s to form on 500 of the situations at five threads, takes 0.30 s on all
+  24,560. On designs with a handful of alternatives, where a situation touches
+  every parameter, the BHHH matrix takes 10-14% longer than before in the
+  multinomial logit and 17-20% in the nested logit (0.73 instead of 0.65 s and
+  1.08 instead of 0.91 s on 2.5 million situations at one thread). The robust
+  meat of `vcov(type = "robust")` and `wesml_vcov()` is now the BHHH kernel
+  with squared weights, as that of `se_method = "sandwich"` already was, and
+  the clustered meat comes from a kernel, so no variance route forms the
+  matrix of every situation's scores (on the census-style design the clustered
+  meat took 0.08 s instead of 2.8 s at one thread, and the post-hoc robust
+  meat peaked at 0.20 instead of 1.08 GB of heap at five threads); the
+  internal score kernels, which no route calls, stop above 2 GiB. A fit's
+  variance is the one `vcov(fit, type = )` returns post hoc (`"robust"` for
+  `se_method = "sandwich"`, `"hessian"` for the nested logit's `"numeric"`),
+  bit for bit at one thread, for every `se_method`: before, the fit's BHHH and
+  sandwich variances differed from the post-hoc ones in their last bits. Every
+  multinomial and nested logit kernel behind the log-likelihood, its gradient,
+  Hessian, BHHH matrix, scores and clustered meat now compares an estimate of
+  its memory with `options(choicer.max_memory)` or the machine's physical
+  memory before allocating, and stops with an error that gives the number of
+  threads that fits, or says that even one does not (see `?set_num_threads`);
+  their accumulators are allocated before the parallel loops. Estimates are
+  unchanged, bit for bit at one thread. The variances move by rounding: on our
+  reference battery, relative to each matrix's largest entry, the multinomial
+  logit's Hessian by at most 4.3e-18 and only in designs with a single
+  coefficient or a single constant, the nested logit's by 3e-17 (1.4e-16 where
+  a utility is infinite, a covariate missing or a weight not finite), the BHHH
+  kernels' matrices not at all, and every variance by at most 1.5e-12 of its
+  entries' scale; among the test suite's fits, where an ill-conditioned
+  information amplifies such moves, by up to 1.7e-5 (a nested logit whose
+  information has condition number 2e11). Where a variance is zero in exact
+  arithmetic (a clustered variance with fewer clusters than parameters, say),
+  rounding decides its sign, so its standard error can turn from `NA` to a
+  tiny number, or back.
 - **Data preparation at population scale.** `prepare_mnl_data()`,
   `prepare_mxl_data()` and `prepare_nl_data()` copy only the index columns
   into their working table, read the covariates in place from the caller's
@@ -431,7 +479,7 @@ designs of their own, described where they appear.
   was scaled), and the sandwich two besides the bread and meat, where it held
   four or five: 4.6 GB against up to 11.6 GB at 17,000 parameters.
 - **A variance that fails no longer discards the estimates.** An error in the
-  variance step (`se_method`), such as the mixed logit's memory check or an
+  variance step (`se_method`), such as a kernel's memory check or an
   allocation that fails in R, used to stop the call and lose the estimates.
   The fit now returns them without a variance (`vcov` is `NULL`, the standard
   errors `NA`, and `variance_error` holds the message) and warns (class
@@ -447,16 +495,19 @@ designs of their own, described where they appear.
   evaluated: the guard on choice-based-sampling weights (whose warnings are
   now printed as they occur) and the fit-time cluster labels. Fits whose
   variance can be computed are unchanged by this, bit for bit. An allocation
-  that fails inside the multinomial and nested logits' Hessian and BHHH loops
-  still terminates R. Other inputs that can fail are checked before the
-  expensive work too: `run_mxlogit()` computes the column scales of `"sd"`,
-  `"mad"` and `"iqr"` (and stops on a column without spread) and checks a
-  supplied start where the optimizer works in scaled coordinates before it
-  builds stored draws, and the three wrappers check that every parameter has a
-  name before the optimizer runs, where a hand-built `input_data` whose `X`
-  lacks column names, or a `param_names` of another length, used to fail only
-  when the estimates were named, after it (an unnamed one-column `W` with
-  `rc_mean = TRUE` gave a mean named `Mu_`; it now needs a name too).
+  that fails inside the multinomial and nested logits' Hessian, BHHH and
+  cluster-meat loops, which now allocate only small per-situation buffers
+  there, still terminates R, as one in their elasticity and diversion-ratio
+  kernels (a J x J matrix per thread, unchecked) can. Other inputs that can
+  fail are checked before the expensive work too: `run_mxlogit()` computes the
+  column scales of `"sd"`, `"mad"` and `"iqr"` (and stops on a column without
+  spread) and checks a supplied start where the optimizer works in scaled
+  coordinates before it builds stored draws, and the three wrappers check that
+  every parameter has a name before the optimizer runs, where a hand-built
+  `input_data` whose `X` lacks column names, or a `param_names` of another
+  length, used to fail only when the estimates were named, after it (an
+  unnamed one-column `W` with `rc_mean = TRUE` gave a mean named `Mu_`; it now
+  needs a name too).
 - **A warning for constants without a finite maximum-likelihood estimate.**
   `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` warn (class
   `choicer_unbounded_constants`), before the optimizer runs, when the counts
