@@ -82,13 +82,14 @@ mcd_bhhh_ref <- function(S, w) {
 }
 
 # Equal non-finite patterns (missing values, infinities and their signs), and
-# finite entries within `tol`. Off CRAN also NA and NaN apart: R's NA keeps
-# its payload through the kernels' arithmetic and exp() here, as it does
-# through R's, which not every platform's libm guarantees.
-mcd_same_pattern <- function(a, b, what, tol = 1e-12) {
+# finite entries within `tol`. Off CRAN also NA and NaN apart (`kinds`): R's
+# NA keeps its payload through the kernels' arithmetic and exp() here, as it
+# does through R's, which not every platform's libm guarantees. Where NA and
+# NaN meet, which survives depends on the platform, and kinds = FALSE.
+mcd_same_pattern <- function(a, b, what, tol = 1e-12, kinds = TRUE) {
   a <- unclass(a)
   expect_identical(is.na(a), is.na(b), label = paste(what, "NA or NaN"))
-  if (identical(Sys.getenv("NOT_CRAN"), "true")) {
+  if (kinds && identical(Sys.getenv("NOT_CRAN"), "true")) {
     expect_identical(is.nan(a), is.nan(b), label = paste(what, "NaN"))
   }
   expect_identical(is.infinite(a), is.infinite(b), label = paste(what, "Inf"))
@@ -107,13 +108,31 @@ mcd_free <- function(f) {
   ifelse(j >= 1L, f$K + j, NA_integer_)
 }
 
+# The kernels' probabilities, rounded as they round them: the largest
+# utility subtracted, exp(), the two accumulators of Armadillo's accu(), the
+# division (R's sum() accumulates in long double on some platforms).
+mcd_softmax <- function(v) {
+  e <- exp(v - if (all(is.na(v))) -Inf else max(v, na.rm = TRUE))
+  a1 <- 0
+  a2 <- 0
+  j <- 2L
+  while (j <= length(e)) {
+    a1 <- a1 + e[j - 1L]
+    a2 <- a2 + e[j]
+    j <- j + 2L
+  }
+  if (j - 1L <= length(e)) a1 <- a1 + e[j - 1L]
+  e / (a1 + a2)
+}
+
 # The Hessian of the negated log-likelihood as the dense kernel formed it.
-# Situation by situation, with p the probabilities, mu_b = sum_a p_a x_a and
-# mu_d the probabilities summed by constant (zero off the situation's
-# constants): BB = sum_a p_a x_a x_a' - mu_b mu_b', BD = sum_a p_a x_a e_a' -
-# mu_b mu_d' and DD = diag(mu_d) - mu_d mu_d', over every constant, times
-# w_i. A non-finite mean therefore fills its parameter's row and column, and
-# a non-finite weight every entry (w * 0).
+# Situation by situation, with p the probabilities, mu_b = sum_a p_a x_a
+# (accumulated in double, row by row, as the kernels do) and mu_d the
+# probabilities summed by constant (zero off the situation's constants):
+# BB = sum_a p_a x_a x_a' - mu_b mu_b', BD = sum_a p_a x_a e_a' - mu_b mu_d'
+# and DD = diag(mu_d) - mu_d mu_d', over every constant, times w_i. A
+# non-finite mean therefore reaches its row's entries outside the block as
+# NaN (0 * mean), and a non-finite weight every entry (w * 0).
 mcd_dense_hessian <- function(f, weights = f$weights) {
   n <- length(f$theta); K <- f$K; J_d <- n - K
   b <- seq_len(K); d <- K + seq_len(J_d)
@@ -125,12 +144,12 @@ mcd_dense_hessian <- function(f, weights = f$weights) {
     Xi <- f$X[r, , drop = FALSE]
     v <- drop(Xi %*% f$theta[b]) + ifelse(is.na(fr[r]), 0, f$theta[fr[r]])
     if (f$include_outside_option) v <- c(0, v)
-    e <- exp(v - if (all(is.na(v))) -Inf else max(v, na.rm = TRUE))
-    p <- e / sum(e)
+    p <- mcd_softmax(v)
     if (f$include_outside_option) p <- p[-1L]
     BB <- crossprod(Xi * p, Xi)
     BB[lower.tri(BB)] <- t(BB)[lower.tri(BB)]
-    mu_b <- colSums(Xi * p)
+    mu_b <- numeric(K)
+    for (a in seq_along(r)) mu_b <- mu_b + p[a] * Xi[a, ]
     H[b, b] <- H[b, b] + (BB - outer(mu_b, mu_b)) * weights[i]
     if (J_d > 0L) {
       BD <- matrix(0, K, J_d)
@@ -209,13 +228,45 @@ test_that("non-finite means and weights spread over the Hessian as the dense pro
     huge_x = function(f) { f$X[r_other, 1L] <- 1e200; f$theta[1L] <- 1e-300; f },
     inf_weight = function(f) { f$weights[i] <- Inf; f },
     nan_weight = function(f) { f$weights[i] <- NaN; f },
-    na_weight = function(f) { f$weights[i] <- NA_real_; f })
+    na_weight = function(f) { f$weights[i] <- NA_real_; f },
+    # NaN probabilities and an NA weight in one situation
+    na_weight_overflow = function(f) {
+      f$X[r_other, 1L] <- 1e308; f$theta[1L] <- 2; f$weights[i] <- NA_real_; f
+    })
   for (nm in names(cells)) {
     f <- cells[[nm]](f0)
     H <- mcd_call("hessian", f)
     expect_true(any(!is.finite(H)), label = paste(nm, "has non-finite entries"))
-    mcd_same_pattern(H, mcd_dense_hessian(f), paste(nm, "Hessian"))
+    mcd_same_pattern(H, mcd_dense_hessian(f), paste(nm, "Hessian"),
+                     kinds = nm != "na_weight_overflow")
   }
+})
+
+test_that("an infinite mean leaves infinities in the block and NaN outside it", {
+  # A covariate at the largest double in every row of a situation whose
+  # utilities stay finite (a zero coefficient): p x x' overflows and the
+  # covariate's probability-weighted mean rounds past the largest double.
+  # The dense code's full-width subtractions left NaN (Inf * 0) in the mean's
+  # row outside the situation's block, and infinities inside it.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  big <- .Machine$double.xmax
+  cells <- list(
+    "no constants" = list(
+      X = rbind(cbind(rep(big, 11L), 0.5), cbind(c(0.1, -0.2, 0.3), 1:3)),
+      alt_idx = c(1:11, 1:3), M = c(11L, 3L), use_asc = FALSE, theta = c(0, 0.3)),
+    "constants" = list(
+      X = rbind(cbind(rep(big, 4L), 0.5), cbind(c(0.1, -0.2, 0.3), 1:3)),
+      alt_idx = 1:7, M = c(4L, 3L), use_asc = TRUE, theta = c(0, 0.3, rep(0.1, 6L))))
+  for (nm in names(cells)) {
+    f <- c(cells[[nm]], list(choice_idx = c(1L, 2L), weights = c(1, 1.5), K = 2L,
+                             N = 2L, include_outside_option = FALSE))
+    H <- unclass(mcd_call("hessian", f))
+    expect_true(any(H == -Inf, na.rm = TRUE), label = paste(nm, "keeps -Inf"))
+    mcd_same_pattern(H, mcd_dense_hessian(f), paste(nm, "infinite mean"))
+  }
+  # with constants, the mean's row outside the block (constants 5-7) is NaN
+  expect_true(all(is.nan(H[1L, 6:8])))
 })
 
 test_that("the compact BHHH is the weighted cross-product of the scores", {
@@ -340,8 +391,10 @@ test_that("unused cluster codes and their numbering do not change the meat", {
   expect_equal(mcd_call("meat", f, cluster = 8L - g), M1, tolerance = 1e-13)
 })
 
-test_that("the cluster meat checks its codes after the other inputs", {
+test_that("the cluster meat checks its codes after the other inputs and before its memory", {
   f <- mcd_fixture("codes", 2013)
+  old <- options(choicer.max_memory = 1)
+  on.exit(options(old), add = TRUE)
   expect_error(mcd_call("meat", f, cluster = rep(1L, f$N - 1L)),
                "cluster length \\([0-9]+\\) does not match the number of choice situations")
   bad <- rep(1L, f$N); bad[3L] <- 0L
@@ -351,6 +404,7 @@ test_that("the cluster meat checks its codes after the other inputs", {
   expect_error(mcd_call("meat", f, cluster = bad), "situation 3 has NA")
   g <- f; g$choice_idx[2L] <- 99L
   expect_error(mcd_call("meat", g, cluster = bad), "Invalid chosen alternative index")
+  expect_error(mcd_call("meat", f, cluster = rep(1L, f$N)), "needs about")
 })
 
 test_that("non-finite scores, weights and sums spread over the meat as crossprod() did", {
