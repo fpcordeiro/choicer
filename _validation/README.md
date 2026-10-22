@@ -272,7 +272,7 @@ and checks another build's against them, leaf by leaf: every compiled entry
 point of the multinomial, mixed and nested logit kernels over grids of flags,
 draw modes, weights, panels, edge inputs and error cases, plus the data
 preparations, the Bayesian samplers and fits through the `run_*()` wrappers
-(about 27,000 leaves). Leaves must be bit-identical, except a tolerance group
+(about 30,600 leaves). Leaves must be bit-identical, except a tolerance group
 (the mixed logit estimation kernels' outputs whose summation order a change may
 alter), which passes when max|new - base| / max(1, max|base|) is at most 1e-10.
 It is the identity gate of the scale audit: a change that should not move

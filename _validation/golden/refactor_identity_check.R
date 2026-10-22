@@ -33,7 +33,8 @@
 # p6d_batteries.R (p6d_diag, p6d_coord, p6d_vcov, p6d_new),
 # start_batteries.R (start_unit), optim_batteries.R (optim_ro, optim_fit),
 # uasc_batteries.R (uasc), shares_batteries.R (pred_shares),
-# p5a_batteries.R (ucon, polish) and p5b_batteries.R (pdelta, profile).
+# p5a_batteries.R (ucon, polish), p5b_batteries.R (pdelta, profile) and
+# p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit).
 # A new battery: a file here that defines run_<name>(), sourced and added to
 # `results` below. A build that lacks what a battery calls records the error
 # as that battery's output, so a battery can be added before the change it
@@ -1143,6 +1144,11 @@ cat("Running polish battery (5A)...\n");                res_polish <- run_polish
 source(file.path(.script_dir, "p5b_batteries.R"))
 cat("Running constants' block battery (5B)...\n");     res_pdelta <- run_pdelta()
 cat("Running profile battery (5B)...\n");              res_profile <- run_profile()
+source(file.path(.script_dir, "p8_batteries.R"))
+cat("Running MNL derivative battery (P8)...\n");      res_p8_mnl <- run_p8_mnl()
+cat("Running NL derivative battery (P8)...\n");       res_p8_nl <- run_p8_nl()
+cat("Running MNL/NL non-finite battery (P8)...\n");   res_p8_edge <- run_p8_edge()
+cat("Running MNL/NL fits battery (P8)...\n");         res_p8_fit <- run_p8_fit()
 oc_save_calls()
 
 results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
@@ -1167,7 +1173,9 @@ results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
                 optim_ro = res_optim_ro, optim_fit = res_optim_fit,
                 uasc = res_uasc, pred_shares = res_pred_shares,
                 ucon = res_ucon, polish = res_polish,
-                pdelta = res_pdelta, profile = res_profile)
+                pdelta = res_pdelta, profile = res_profile,
+                p8_mnl = res_p8_mnl, p8_nl = res_p8_nl,
+                p8_edge = res_p8_edge, p8_fit = res_p8_fit)
 
 flatten <- function(x, prefix = "") {
   if (is.list(x) && !isTRUE(attr(x, "golden_leaf"))) {
