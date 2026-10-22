@@ -1061,7 +1061,54 @@ arma::vec blp_contraction(
   }
 }
 
+// Add w_i H_i, situation i's block of the information (the Hessian of the
+// negated log-likelihood: w_i times the probability-weighted covariance of
+// Z_a = (x_a, the indicator of a's free constant)), into the accumulator's
+// upper triangle, each entry once: BB (K x K, its upper triangle), BD
+// (K x a, column s the constant in slot s) and DD (a x a, formed here from
+// the slots' probabilities mu_d: mu_d[s] - mu_d[s]^2 on the diagonal,
+// 0 - mu_d[s] mu_d[t] off it). Each term is the block's entry times the
+// weight, formed before it is added.
+template <bool Shared>
+inline void mnl_hessian_add(const SymAcc& acc, double* buf,
+                            const MnlSituationMap& mp, const int K,
+                            const double* BB, const double* BD,
+                            const double* mu_d, const double w) {
+  for (int c = 0; c < K; ++c) {
+    for (int r = 0; r <= c; ++r) {
+      double v = BB[r + c * K];
+      v *= w;
+      acc.add<Shared>(buf, r, c, v);
+    }
+  }
+  for (int s = 0; s < mp.a; ++s) {
+    const int g = K + mp.delta[s];
+    for (int r = 0; r < K; ++r) {
+      double v = BD[r + s * K];
+      v *= w;
+      acc.add<Shared>(buf, r, g, v);
+    }
+    const double ms = mu_d[s];
+    for (int t = 0; t < s; ++t) {
+      double v = 0.0 - mu_d[t] * ms;
+      v *= w;
+      acc.add<Shared>(buf, K + mp.delta[t], g, v);
+    }
+    double v = ms - ms * ms;
+    v *= w;
+    acc.add<Shared>(buf, g, g, v);
+  }
+}
+
 //' Hessian matrix for multinomial logit model
+//'
+//' The Hessian of the negated log-likelihood: the weighted sum over choice
+//' situations of the probability-weighted covariance of each alternative's
+//' covariates and constant indicator. Each situation's block is formed only
+//' over the parameters its likelihood involves (the coefficients and the
+//' constants of the alternatives it offers), so the work per situation does
+//' not grow with the number of alternatives; the n_params x n_params result
+//' and the threads' accumulators do (see acc_bytes).
 //'
 //' @param theta K + J - 1 or K + J vector with model parameters
 //' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
@@ -1071,6 +1118,9 @@ arma::vec blp_contraction(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+//' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+//'   default), as in \code{mnl_bhhh_parallel()}; \code{0} forces the shared
+//'   result (for tests).
 //' @returns Hessian matrix of the negative log-likelihood
 //' @examples
 //' \donttest{
@@ -1088,7 +1138,7 @@ arma::vec blp_contraction(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat mnl_loglik_hessian_parallel(
+Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
@@ -1096,7 +1146,8 @@ arma::mat mnl_loglik_hessian_parallel(
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
   (void)choice_idx; // silence unused-parameter warning
 
@@ -1111,32 +1162,48 @@ arma::mat mnl_loglik_hessian_parallel(
                                                &weights);
   const choicer_off N = lay.N;
 
-  // Memory: each thread's n x n accumulator, a situation's blocks (BB, BD,
-  // DD and their means) and situation buffers; X beta, the result and its
-  // copy into R
-  const double nn = static_cast<double>(n_params) * n_params;
-  const double J_asc = n_params - K;
+  // Memory: each thread's slot map, a situation's blocks (BB, BD and the
+  // means), the non-finite records and situation buffers; X beta, the result
+  // and the threads' accumulators
+  const int J_d = n_params - K;  // free constants
+  const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
-  kernel_check_memory(
-      "Hessian", n_threads,
-      8.0 * nn + 8.0 * (K * (K + 2.0) + K * J_asc + J_asc + J_asc * J_asc) +
-          mnl_thread_bytes(lay, K, n_params, 0.0),
-      [&](const int) { return 8.0 * static_cast<double>(lay.n_rows) + 16.0 * nn; });
+  kernel_check_memory("Hessian", n_threads,
+                      mnl_map_bytes(J_d, lay.max_m) +
+                          8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + 64.0) +
+                          6.0 * n_params + mnl_thread_bytes(lay, K, n_params, 0.0),
+                      [&](const int t) {
+                        return 8.0 * static_cast<double>(lay.n_rows) +
+                               sym_acc_need(n_params, K, t, acc_bytes);
+                      });
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Prepare global accumulator and the threads' own, allocated here
-  arma::mat global_hess = arma::zeros(n_params, n_params);
-  std::vector<arma::mat> locals =
-      mnl_thread_accumulators(n_params, n_threads, "Hessian");
+  // The result and the threads' accumulators, slot maps, block buffers and
+  // non-finite records, all allocated here on the primary thread
+  SymAcc acc(n_params, n_threads, K, "Hessian", acc_bytes);
+  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
+  std::vector<std::vector<double>> blocks = mnl_thread_buffers(blk, n_threads);
+  std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads, true);
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+  const double* Xm = X.memptr();
+  const arma::uword n_rows = X.n_rows;
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
-    // Thread-local accumulator
-    arma::mat& local_hess = locals[kernel_thread_num()];
+    const int tid = kernel_thread_num();
+    MnlSituationMap& mp = *maps[tid];
+    NonFiniteRecord& nf = nonfinite[tid];
+    double* acc_t = acc.base(tid);
+    // BB (K x K), mu_b (K), BD (K x a), mu_d (a) and K products, in one
+    // buffer
+    double* BB = blocks[tid].data();
+    double* mu_b = BB + static_cast<std::size_t>(K) * K;
+    double* BD = mu_b + K;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1148,10 +1215,6 @@ arma::mat mnl_loglik_hessian_parallel(
       const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
 
-      // M[i] x K view of design rows for this individual (inside alts only)
-      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
-      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // inside alt IDs (0-based), length M[i]
-
       // Build utility vector V_i
       arma::vec V_i(num_choices);
       arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
@@ -1161,119 +1224,67 @@ arma::mat mnl_loglik_hessian_parallel(
       arma::vec P_i;
       stable_softmax(V_i, P_i);
 
-      // Calculate Hessian components for individual i -----------------------
-      // O2: Block decomposition — BB (beta-beta), BD (beta-delta), DD (delta-delta)
-      // O5: Exploit symmetry of BB and DD — accumulate upper triangle only, mirror after loop
-      const int J_asc = n_params - K;  // number of free ASC parameters (0 when use_asc=false)
-
-      arma::mat BB       = arma::zeros(K, K);          // beta-beta  (K x K, symmetric)
-      arma::vec mu_beta  = arma::zeros(K);              // P-weighted mean of x_a
-      arma::mat BD       = (J_asc > 0) ? arma::zeros(K, J_asc) : arma::mat(); // beta-delta (K x J_asc)
-      arma::vec mu_delta = (J_asc > 0) ? arma::zeros(J_asc) : arma::vec();    // P-weighted ASC indicator sums
-
-      for (int a = 0; a < m_i; ++a) {
-        // Probability of this inside alternative
-        const double p_a = include_outside_option ? P_i[a + 1] : P_i[a];
-
-        // Covariate column vector for this inside alternative
-        const arma::vec x_a = X_i.row(a).t();   // K x 1
-
-        // --- Beta-beta block: accumulate upper triangle of p_a * x_a x_a^T ---
-        // O5: only upper triangle (c >= r), mirror after loop
-        for (int r = 0; r < K; ++r) {
-            const double p_x_r = p_a * x_a[r];
-            for (int c = r; c < K; ++c) {
-                BB(r, c) += p_x_r * x_a[c];
-            }
+      // The situation's slots and blocks: BB = sum_a p_a x_a x_a' - mu_b mu_b'
+      // (upper triangle), mu_b = sum_a p_a x_a, BD = sum_a p_a x_a e_s(a)' -
+      // mu_b mu_d', mu_d[s] = sum of p_a over the rows of slot s
+      mnl_situation_map(lay, i, use_asc, include_outside_option, mp);
+      const int a = mp.a;
+      double* mu_d = BD + static_cast<std::size_t>(K) * a;
+      std::fill(BB, mu_d + a, 0.0);
+      for (int r = 0; r < m_i; ++r) {
+        const double p_r = P_i[r + o];
+        const double* x = Xm + start_idx + r;  // x_r[k] = x[k * n_rows]
+        const int k = mp.row_slot[r];
+        // Row c of BB's upper triangle from (p x_c) x_q, q >= c, as the
+        // dense code formed it
+        for (int c = 0; c < K; ++c) {
+          const double p_x_c = p_r * x[c * n_rows];
+          for (int q = c; q < K; ++q) BB[c + q * K] += p_x_c * x[q * n_rows];
+          mu_b[c] += p_x_c;
+          if (k >= 0) BD[c + k * K] += p_x_c;
         }
-        mu_beta += p_a * x_a;
-
-        // --- Delta position: skip if no free ASCs or if this alt's ASC is normalized ---
-        if (J_asc > 0) {
-            int delta_pos;
-            bool has_free_asc;
-            if (include_outside_option) {
-                delta_pos    = static_cast<int>(alt_idx0_i[a]);  // 0 ... J-1
-                has_free_asc = true;
-            } else {
-                const int a_id = static_cast<int>(alt_idx0_i[a]);
-                if (a_id == 0) {
-                    has_free_asc = false;
-                    delta_pos    = -1;
-                } else {
-                    has_free_asc = true;
-                    delta_pos    = a_id - 1;  // 0 ... J-2
-                }
-            }
-
-            if (has_free_asc) {
-                // Beta-delta block: scatter p_a * x_a into column delta_pos
-                BD.col(delta_pos) += p_a * x_a;
-                // Delta accumulator (diagonal of diag(mu_delta) before outer-product subtraction)
-                mu_delta[delta_pos] += p_a;
-            }
-        }
-      } // end of alt loop
-
-      // O5: Mirror BB lower triangle from upper triangle
-      for (int r = 0; r < K; ++r) {
-          for (int c = r + 1; c < K; ++c) {
-              BB(c, r) = BB(r, c);
-          }
+        if (k >= 0) mu_d[k] += p_r;
+      }
+      // Each product of means rounded before it is subtracted, as the dense
+      // code rounded them (Armadillo's syrk_vec for mu_b mu_b', BLAS for
+      // mu_b mu_d'): a column's products are stored first, so that no
+      // compiler fuses them into the subtraction (a fused product past the
+      // largest double, from p x x' past it, would leave Inf where the dense
+      // code left Inf - Inf = NaN)
+      double* prod = mu_d + a;  // K entries
+      for (int c = 0; c < K; ++c) {
+        for (int q = 0; q <= c; ++q) prod[q] = mu_b[q] * mu_b[c];
+        for (int q = 0; q <= c; ++q) BB[q + c * K] -= prod[q];
+      }
+      for (int s = 0; s < a; ++s) {
+        for (int c = 0; c < K; ++c) prod[c] = mu_b[c] * mu_d[s];
+        for (int c = 0; c < K; ++c) BD[c + s * K] -= prod[c];
       }
 
-      // Subtract outer products to complete the variance terms:
-      // BB = sum_a p_a x_a x_a^T - mu_beta mu_beta^T  (P-weighted covariance of covariates)
-      BB -= mu_beta * mu_beta.t();
-
-      // Scatter blocks into local_hess with the correct sign convention:
-      // local_hess accumulates w_i * (sum_P_Z sum_P_Z^T - sum_P_Z_Zt) = -w_i * Var_P(Z)
-      // Blocks BB, BD, DD compute +Var_P(Z) direction, so we subtract (local_hess -= w_i * block)
-      // Final return -global_hess then gives the Hessian of the negative log-likelihood.
-
-      // Beta-beta block (rows 0:K-1, cols 0:K-1)
-      local_hess.submat(0, 0, K-1, K-1) -= w_i * BB;
-
-      if (J_asc > 0) {
-          // BD = sum_a p_a x_a e_{d(a)}^T - mu_beta mu_delta^T  (K x J_asc)
-          BD -= mu_beta * mu_delta.t();
-
-          // Delta-delta block: diag(mu_delta) - mu_delta mu_delta^T
-          // Assemble upper triangle only, then mirror
-          arma::mat DD_upper = arma::zeros(J_asc, J_asc);
-          for (int r = 0; r < J_asc; ++r) {
-              DD_upper(r, r) += mu_delta[r];                        // diagonal: sum of p_a for ASC r
-              for (int c = r + 1; c < J_asc; ++c) {
-                  DD_upper(r, c) -= mu_delta[r] * mu_delta[c];     // off-diagonal: -p_r * p_c
-              }
-              DD_upper(r, r) -= mu_delta[r] * mu_delta[r];         // diagonal: p_r - p_r^2
-          }
-          // Mirror DD lower triangle from upper triangle
-          for (int r = 0; r < J_asc; ++r) {
-              for (int c = r + 1; c < J_asc; ++c) {
-                  DD_upper(c, r) = DD_upper(r, c);
-              }
-          }
-
-          // Beta-delta block (rows 0:K-1, cols K:n_params-1)
-          local_hess.submat(0, K, K-1, n_params-1) -= w_i * BD;
-          // Delta-beta block = transpose of beta-delta
-          local_hess.submat(K, 0, n_params-1, K-1) -= w_i * BD.t();
-          // Delta-delta block (rows K:n_params-1, cols K:n_params-1)
-          local_hess.submat(K, K, n_params-1, n_params-1) -= w_i * DD_upper;
+      // Non-finite means: the dense code subtracted mu mu' over every
+      // parameter, so a non-finite mean filled its parameter's row and
+      // column (NA for an NA); a non-finite weight multiplied the zeros
+      // outside the block
+      for (int c = 0; c < K; ++c) nonfinite_value(c, mu_b[c], nf);
+      for (int s = 0; s < a; ++s) nonfinite_value(K + mp.delta[s], mu_d[s], nf);
+      if (!std::isfinite(w_i)) {
+        nonfinite_weight(w_i, K + a, [&](const int l) { return mp.global(l, K); }, nf);
       }
 
+      if (acc.shared) {
+        mnl_hessian_add<true>(acc, acc_t, mp, K, BB, BD, mu_d, w_i);
+      } else {
+        mnl_hessian_add<false>(acc, acc_t, mp, K, BB, BD, mu_d, w_i);
+      }
+      mnl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 
-  // Combine the threads' accumulators in thread order, from +0
-  for (const arma::mat& local_hess : locals) global_hess += local_hess;
-
-  // Enforce exact symmetry (numerical tidy-up)
-  global_hess = 0.5 * (global_hess + global_hess.t());
-
-  // Return Hessian of the *negative* log-likelihood
-  return -global_hess;
+  // The information (Hessian of the negated log-likelihood), with the dense
+  // code's spread of non-finite values
+  acc.finish(false);
+  apply_nonfinite(acc, nonfinite);
+  return acc.result;
 }
 
 //' Compute aggregate elasticities for MNL model

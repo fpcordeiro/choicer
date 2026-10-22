@@ -12,7 +12,8 @@ mnl_loglik_hessian_parallel(
   M,
   weights,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -31,12 +32,22 @@ mnl_loglik_hessian_parallel(
 \item{use_asc}{whether to use alternative-specific constants}
 
 \item{include_outside_option}{whether to include outside option normalized to 0 (if so, the outside option is not included in the data)}
+
+\item{acc_bytes}{Bytes for the threads' private upper triangles (2 GiB by
+default), as in \code{mnl_bhhh_parallel()}; \code{0} forces the shared
+result (for tests).}
 }
 \value{
 Hessian matrix of the negative log-likelihood
 }
 \description{
-Hessian matrix for multinomial logit model
+The Hessian of the negated log-likelihood: the weighted sum over choice
+situations of the probability-weighted covariance of each alternative's
+covariates and constant indicator. Each situation's block is formed only
+over the parameters its likelihood involves (the coefficients and the
+constants of the alternatives it offers), so the work per situation does
+not grow with the number of alternatives; the n_params x n_params result
+and the threads' accumulators do (see acc_bytes).
 }
 \examples{
 \donttest{

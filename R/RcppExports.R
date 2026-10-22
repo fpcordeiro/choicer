@@ -621,6 +621,14 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 
 #' Hessian matrix for multinomial logit model
 #'
+#' The Hessian of the negated log-likelihood: the weighted sum over choice
+#' situations of the probability-weighted covariance of each alternative's
+#' covariates and constant indicator. Each situation's block is formed only
+#' over the parameters its likelihood involves (the coefficients and the
+#' constants of the alternatives it offers), so the work per situation does
+#' not grow with the number of alternatives; the n_params x n_params result
+#' and the threads' accumulators do (see acc_bytes).
+#'
 #' @param theta K + J - 1 or K + J vector with model parameters
 #' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
@@ -629,6 +637,9 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+#'   default), as in \code{mnl_bhhh_parallel()}; \code{0} forces the shared
+#'   result (for tests).
 #' @returns Hessian matrix of the negative log-likelihood
 #' @examples
 #' \donttest{
@@ -645,8 +656,8 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, 
 #' dim(H)
 #' }
 #' @keywords internal
-mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mnl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
+mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mnl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
 #' Compute aggregate elasticities for MNL model

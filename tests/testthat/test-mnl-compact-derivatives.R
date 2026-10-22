@@ -1,12 +1,12 @@
-# The multinomial logit BHHH kernel on designs with many alternatives and
-# sparse choice sets. A situation's score is nonzero only on the coefficients
-# and the free constants of the alternatives it offers, so the kernel forms
-# w s s' in that compact block and adds it into the n x n result. These
-# designs (30 alternatives, choice sets of 3-8) make the blocks small next to
-# n and exercise the slot maps: the normalized reference, the outside option,
-# a situation listing an alternative twice (adjacent or not), the reference
-# never offered, situations offering only the reference, choice sets of one
-# alternative, no constants.
+# The multinomial logit Hessian and BHHH kernels on designs with many
+# alternatives and sparse choice sets. A situation's score and Hessian are
+# nonzero only on the coefficients and the free constants of the alternatives
+# it offers, so the kernels form them in that compact block and add it into
+# the n x n result. These designs (30 alternatives, choice sets of 3-8) make
+# the blocks small next to n and exercise the slot maps: the normalized
+# reference, the outside option, a situation listing an alternative twice
+# (adjacent or not), the reference never offered, situations offering only
+# the reference, choice sets of one alternative, no constants.
 
 # N situations, each offering `m_range` distinct alternatives drawn from 1..J
 # (from 2..J when `absent_ref`), plus one repeated row when `dup`; weights
@@ -66,6 +66,7 @@ mcd_call <- function(kernel, f, theta = f$theta, weights = f$weights, ...) {
             use_asc = f$use_asc, include_outside_option = f$include_outside_option)
   switch(kernel,
     gradient = do.call(ns$mnl_loglik_gradient_parallel, c(a, list(...))),
+    hessian = do.call(ns$mnl_loglik_hessian_parallel, c(a, list(...))),
     bhhh = do.call(ns$mnl_bhhh_parallel, c(a, list(...))),
     scores = do.call(ns$mnl_scores_parallel, c(a[-6L], list(...))))
 }
@@ -95,6 +96,124 @@ mcd_same_pattern <- function(a, b, what, tol = 1e-12) {
     expect_equal(a[fin], b[fin], tolerance = tol, label = paste(what, "finite entries"))
   }
 }
+
+# The free constant of each row (its position in theta), or NA.
+mcd_free <- function(f) {
+  if (!f$use_asc) return(rep(NA_integer_, length(f$alt_idx)))
+  j <- if (f$include_outside_option) f$alt_idx else f$alt_idx - 1L
+  ifelse(j >= 1L, f$K + j, NA_integer_)
+}
+
+# The Hessian of the negated log-likelihood as the dense kernel formed it.
+# Situation by situation, with p the probabilities, mu_b = sum_a p_a x_a and
+# mu_d the probabilities summed by constant (zero off the situation's
+# constants): BB = sum_a p_a x_a x_a' - mu_b mu_b', BD = sum_a p_a x_a e_a' -
+# mu_b mu_d' and DD = diag(mu_d) - mu_d mu_d', over every constant, times
+# w_i. A non-finite mean therefore fills its parameter's row and column, and
+# a non-finite weight every entry (w * 0).
+mcd_dense_hessian <- function(f, weights = f$weights) {
+  n <- length(f$theta); K <- f$K; J_d <- n - K
+  b <- seq_len(K); d <- K + seq_len(J_d)
+  fr <- mcd_free(f)
+  row_off <- c(0L, cumsum(f$M))
+  H <- matrix(0, n, n)
+  for (i in seq_len(f$N)) {
+    r <- (row_off[i] + 1L):row_off[i + 1L]
+    Xi <- f$X[r, , drop = FALSE]
+    v <- drop(Xi %*% f$theta[b]) + ifelse(is.na(fr[r]), 0, f$theta[fr[r]])
+    if (f$include_outside_option) v <- c(0, v)
+    e <- exp(v - if (all(is.na(v))) -Inf else max(v, na.rm = TRUE))
+    p <- e / sum(e)
+    if (f$include_outside_option) p <- p[-1L]
+    BB <- crossprod(Xi * p, Xi)
+    BB[lower.tri(BB)] <- t(BB)[lower.tri(BB)]
+    mu_b <- colSums(Xi * p)
+    H[b, b] <- H[b, b] + (BB - outer(mu_b, mu_b)) * weights[i]
+    if (J_d > 0L) {
+      BD <- matrix(0, K, J_d)
+      mu_d <- numeric(J_d)
+      for (a in which(!is.na(fr[r]))) {
+        j <- fr[r[a]] - K
+        BD[, j] <- BD[, j] + p[a] * Xi[a, ]
+        mu_d[j] <- mu_d[j] + p[a]
+      }
+      BD <- BD - outer(mu_b, mu_d)
+      H[b, d] <- H[b, d] + BD * weights[i]
+      H[d, b] <- H[d, b] + t(BD) * weights[i]
+      H[d, d] <- H[d, d] + (diag(mu_d, J_d) - outer(mu_d, mu_d)) * weights[i]
+    }
+  }
+  H
+}
+
+mcd_scale_dev <- function(a, b) max(abs(a - b)) / max(1, max(abs(b)))
+
+test_that("the compact Hessian matches numDeriv of the gradient on sparse designs", {
+  skip_on_cran()
+  skip_if_not_installed("numDeriv")
+  for (f in mcd_cells()) {
+    num <- numDeriv::jacobian(function(th) mcd_call("gradient", f, theta = th)$gradient,
+                              f$theta)
+    expect_lt(mcd_scale_dev(unclass(mcd_call("hessian", f)), num), 1e-6,
+              label = f$name)
+  }
+})
+
+test_that("the compact Hessian is the dense one", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (f in mcd_cells()) {
+    for (nt in 1:2) {
+      set_omp_threads(nt)
+      expect_equal(unclass(mcd_call("hessian", f)), mcd_dense_hessian(f),
+                   tolerance = 1e-12, label = sprintf("[%s, %d threads]", f$name, nt))
+    }
+  }
+})
+
+test_that("the Hessian is exactly symmetric, linear in the weights and permuted with the labels", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  for (f in mcd_cells()) {
+    H <- mcd_call("hessian", f)
+    expect_identical(H, t(H), label = f$name)
+    expect_identical(mcd_call("hessian", f, weights = 2 * f$weights), 2 * H,
+                     label = f$name)
+  }
+  # Relabeling the non-reference alternatives permutes the constants' block
+  f <- mcd_fixture("relabel", 2011, dup = TRUE)
+  set.seed(2111)
+  perm <- c(1L, 1L + sample.int(f$J - 1L))  # code c becomes perm[c]
+  g <- f
+  g$alt_idx <- perm[f$alt_idx]
+  g$theta[f$K + perm[-1L] - 1L] <- f$theta[f$K + seq_len(f$J - 1L)]
+  idx <- c(seq_len(f$K), f$K + perm[-1L] - 1L)
+  expect_identical(mcd_call("hessian", g)[idx, idx], mcd_call("hessian", f))
+})
+
+test_that("non-finite means and weights spread over the Hessian as the dense products did", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f0 <- mcd_fixture("non-finite", 2014)
+  row_off <- c(0L, cumsum(f0$M))
+  i <- 3L
+  r_other <- row_off[i] + setdiff(seq_len(f0$M[i]), f0$choice_idx[i])[1L]
+  cells <- list(
+    # utilities that overflow: every probability NaN, so every mean
+    overflow = function(f) { f$X[r_other, 1L] <- 1e308; f$theta[1L] <- 2; f },
+    # a missing covariate: missing probabilities
+    na_x = function(f) { f$X[r_other, 1L] <- NA_real_; f },
+    # p x x' past the largest double: an infinite entry, finite means
+    huge_x = function(f) { f$X[r_other, 1L] <- 1e200; f$theta[1L] <- 1e-300; f },
+    inf_weight = function(f) { f$weights[i] <- Inf; f },
+    nan_weight = function(f) { f$weights[i] <- NaN; f },
+    na_weight = function(f) { f$weights[i] <- NA_real_; f })
+  for (nm in names(cells)) {
+    f <- cells[[nm]](f0)
+    H <- mcd_call("hessian", f)
+    expect_true(any(!is.finite(H)), label = paste(nm, "has non-finite entries"))
+    mcd_same_pattern(H, mcd_dense_hessian(f), paste(nm, "Hessian"))
+  }
+})
 
 test_that("the compact BHHH is the weighted cross-product of the scores", {
   on.exit(set_omp_threads(2L), add = TRUE)
@@ -172,20 +291,23 @@ test_that("non-finite scores and weights spread over the BHHH as the dense updat
   }
 })
 
-test_that("a shared BHHH result equals the per-thread accumulators' sum", {
+test_that("shared results equal the per-thread accumulators' sums", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
   for (f in mcd_cells()[c(1L, 2L, 3L, 6L, 8L, 10L)]) {
-    set_omp_threads(2L)
-    shared <- mcd_call("bhhh", f, acc_bytes = 0)
-    expect_identical(shared, t(shared), label = paste(f$name, "symmetric"))
-    expect_equal(unclass(shared), unclass(mcd_call("bhhh", f)), tolerance = 1e-12,
-                 label = paste(f$name, "shared vs per-thread"))
-    # one thread adds into the result itself, whatever the budget
-    set_omp_threads(1L)
-    expect_identical(mcd_call("bhhh", f, acc_bytes = 0), mcd_call("bhhh", f),
-                     label = paste(f$name, "one thread"))
+    for (k in c("hessian", "bhhh")) {
+      what <- paste(f$name, k)
+      set_omp_threads(2L)
+      shared <- mcd_call(k, f, acc_bytes = 0)
+      expect_identical(shared, t(shared), label = paste(what, "symmetric"))
+      expect_equal(unclass(shared), unclass(mcd_call(k, f)), tolerance = 1e-12,
+                   label = paste(what, "shared vs per-thread"))
+      # one thread adds into the result itself, whatever the budget
+      set_omp_threads(1L)
+      expect_identical(mcd_call(k, f, acc_bytes = 0), mcd_call(k, f),
+                       label = paste(what, "one thread"))
+    }
   }
   # Non-finite entries spread over a shared result as over per-thread ones
   set_omp_threads(2L)
@@ -202,7 +324,9 @@ test_that("a shared BHHH result equals the per-thread accumulators' sum", {
     cells[[paste("weight", w_bad)]] <- f
   }
   for (nm in names(cells)) {
-    mcd_same_pattern(mcd_call("bhhh", cells[[nm]], acc_bytes = 0),
-                     unclass(mcd_call("bhhh", cells[[nm]])), paste(nm, "shared"))
+    for (k in c("hessian", "bhhh")) {
+      mcd_same_pattern(mcd_call(k, cells[[nm]], acc_bytes = 0),
+                       unclass(mcd_call(k, cells[[nm]])), paste(nm, k, "shared"))
+    }
   }
 })
