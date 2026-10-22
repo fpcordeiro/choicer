@@ -58,29 +58,6 @@ static inline double nl_thread_bytes(const ChoiceLayout& lay, const int K,
          sizeof(int) * m;
 }
 
-// Each thread's dense n x n accumulator of the Hessian and BHHH kernels,
-// allocated here on the primary thread, zero (an allocation failure is an R
-// error naming the size, not a failure inside the parallel region).
-static inline std::vector<arma::mat> nl_thread_accumulators(const int n_params,
-                                                            const int n_threads,
-                                                            const char* what) {
-  std::vector<arma::mat> acc;
-  try {
-    acc.reserve(n_threads);
-    for (int i = 0; i < n_threads; ++i) {
-      acc.emplace_back(n_params, n_params, arma::fill::zeros);
-    }
-  } catch (const std::bad_alloc&) {
-    std::vector<arma::mat>().swap(acc);  // release before reporting
-    Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB per "
-               "thread for %d threads. Run fewer threads with "
-               "set_num_threads().", what,
-               sizeof(double) * static_cast<double>(n_params) *
-                   static_cast<double>(n_params) / 1e9, n_threads);
-  }
-  return acc;
-}
-
 // ============================================================================
 // Compact blocks of the NL derivative kernels
 //
@@ -1098,6 +1075,11 @@ arma::mat nl_loglik_numeric_hessian(
 //' Covers all parameter blocks: beta-beta, beta-lambda, beta-delta,
 //' lambda-lambda, lambda-delta, and delta-delta. Singleton nests (lambda fixed
 //' to 1, not estimated) contribute no rows or columns to the lambda blocks.
+//' Each situation's terms are formed only over the parameters its likelihood
+//' involves (the coefficients, the dissimilarities of the nests it offers and
+//' the constants of its alternatives), so the work per situation does not
+//' grow with the number of alternatives or nests; the n_params x n_params
+//' result and the threads' accumulators do (see acc_bytes).
 //'
 //' @param theta (K + n_non_singleton_nests + n_delta) parameter vector.
 //'   Order: \code{[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]}.
@@ -1113,6 +1095,9 @@ arma::mat nl_loglik_numeric_hessian(
 //' @param use_asc Logical; whether alternative-specific constants are included.
 //' @param include_outside_option Logical; whether an outside option (V=0) is
 //'   present.
+//' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+//'   default), as in \code{nl_bhhh_parallel()}; \code{0} forces the shared
+//'   result (for tests).
 //' @returns A symmetric (P x P) matrix: the Hessian of the negated
 //'   log-likelihood evaluated at \code{theta}. Structurally identical to the
 //'   output of \code{nl_loglik_numeric_hessian}; suitable for
@@ -1137,7 +1122,7 @@ arma::mat nl_loglik_numeric_hessian(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat nl_loglik_hessian_parallel(
+Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
@@ -1146,7 +1131,8 @@ arma::mat nl_loglik_hessian_parallel(
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
   // Extract dimensions
   const int K = X.n_cols;
@@ -1170,40 +1156,89 @@ arma::mat nl_loglik_hessian_parallel(
   // --- H2: Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, nullptr);
 
-  // Memory: each thread's n x n accumulator, a situation's pieces (X_i, the
-  // per-nest sums, vectors and K x K matrices with their headers, Q_i, the
-  // columns) and situation buffers; X beta, the result and its copy into R
-  const double nn = static_cast<double>(n_params) * n_params;
+  // Memory: each thread's slot map, X_i, the sums of the nests a situation
+  // offers (four numbers, two K-vectors and two K x K matrices each), the
+  // nests' slots, a column of Q_i, its weighted copy, d_V and situation
+  // buffers; X beta, the result and the threads' accumulators (the
+  // coefficients' and dissimilarities' rows private in a shared result)
+  const int K_l = delta_start_idx - K;  // dissimilarities
+  const bool has_delta = use_asc && delta_length > 0;
+  const int J_d = has_delta ? delta_length : 0;  // free constants
   const double m_max = static_cast<double>(lay.max_m);
+  const double off_max = std::min<double>(n_nests, m_max);  // nests offered
+  const std::size_t stride = static_cast<std::size_t>(4 + 2 * K + 2 * K * K);
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory(
       "Hessian", n_threads,
-      8.0 * nn +
-          8.0 * (m_max * K + n_nests * (4.0 + 2.0 * K + 2.0 * K * K) + m_max * m_max +
-                 3.0 * m_max + 3.0 * K) +
-          400.0 * n_nests + nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
-      [&](const int) { return 8.0 * static_cast<double>(lay.n_rows) + 16.0 * nn; });
+      nl_map_bytes(J_d, K_l, lay.max_m) +
+          8.0 * (m_max * K + off_max * stride + 3.0 * m_max + 3.0 * K + 96.0) +
+          sizeof(int) * (n_nests + off_max + 64.0) +
+          nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
+      [&](const int t) {
+        return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
+               sym_acc_need(n_params, K + K_l, t, acc_bytes);
+      });
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
-  // Initialize global Hessian accumulator and the threads' own, allocated here
-  arma::mat global_H(n_params, n_params, arma::fill::zeros);
-  std::vector<arma::mat> locals =
-      nl_thread_accumulators(n_params, n_threads, "Hessian");
-  const choicer_off max_m = lay.max_m;
+  // Each dissimilarity's nest
+  std::vector<int> lam_nest(static_cast<std::size_t>(K_l) + 1);
+  for (int k = 0; k < n_nests; ++k) {
+    const arma::sword t = nest_k_to_theta_idx[k];
+    if (t >= 0) lam_nest[static_cast<std::size_t>(t - K)] = k;
+  }
+
+  // The result and the threads' accumulators, slot maps and buffers, all
+  // allocated here on the primary thread
+  SymAcc acc(n_params, n_threads, K + K_l, "Hessian", acc_bytes);
+  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
+  // per thread: X_i (max_m x K), the offered nests' sums (off_max x stride),
+  // a column of Q_i, its weighted copy and d_V (max_m each), Xbar_i, X_i' v
+  // and a coefficients' column (K each)
+  const std::size_t mK = static_cast<std::size_t>(lay.max_m) * static_cast<std::size_t>(K);
+  const std::size_t n_off = static_cast<std::size_t>(off_max);
+  const std::size_t n_buf = mK + n_off * stride + 3 * static_cast<std::size_t>(lay.max_m) +
+                            3 * static_cast<std::size_t>(K);
+  std::vector<std::vector<double>> work = nl_thread_vectors(n_buf, n_threads);
+  std::vector<std::vector<int>> nest_slots(
+      static_cast<std::size_t>(n_threads),
+      std::vector<int>(static_cast<std::size_t>(n_nests) + 32, -1));
+  std::vector<std::vector<int>> offers(
+      static_cast<std::size_t>(n_threads),
+      std::vector<int>(n_off + 32));
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
-    // Thread-local Hessian accumulator
-    arma::mat& local_H = locals[kernel_thread_num()];
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
+    const int tid = kernel_thread_num();
+    NlSituationMap& mp = *maps[tid];
+    NlThreadBuffers& b_t = bufs[tid];
+    int* nest0 = b_t.nest0.data();
+    int* nest_slot = nest_slots[tid].data();  // nest -> offered slot, or -1
+    int* nests_off = offers[tid].data();      // offered nests, increasing
+    double* acc_t = acc.base(tid);
+    double* xbuf = work[tid].data();
+    double* sums = xbuf + mK;
+    double* qcol = sums + n_off * stride;
+    double* hcol = qcol + lay.max_m;
+    double* dV = hcol + lay.max_m;
+    double* xbar_m = dV + lay.max_m;
+    double* gvec_m = xbar_m + K;
+    const std::size_t Ks = static_cast<std::size_t>(K);
 
-    // Make the index map thread-private
-    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
+    // Add a term t(r, c) of the situation's Hessian, with t(c, r) its
+    // transposed term, into the upper triangle, r and c global, as their
+    // sum: the result is halved once, as the dense code halved H + H'
+    auto add2 = [&](const int r, const int c, const double t_rc, const double t_cr) {
+      if (acc.shared) {
+        acc.add<true>(acc_t, std::min(r, c), std::max(r, c), t_rc + t_cr);
+      } else {
+        acc.add<false>(acc_t, std::min(r, c), std::max(r, c), t_rc + t_cr);
+      }
+    };
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1213,16 +1248,12 @@ arma::mat nl_loglik_hessian_parallel(
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
       const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i    = weights[i];
-
-      // Step 2a: Slice individual data
-      const arma::mat X_i        = X.rows(start_idx, end_idx);  // m_i x K
-      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]};
-      int* nest_idx0_i           = nest_buf.data();
-      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
+      nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside     = base_util.memptr() + start_idx;
 
       // Step 2b: Compute probabilities
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
+      NlProbs& pr = b_t.pr;
+      nl_individual_probs(V_inside, nest0, m_i, lambda, n_nests,
                           include_outside_option, pr);
       const arma::vec P_i_vec(pr.P_i.data(), m_i, false, true);
       const double* P_j_given_k = pr.P_j_given_k.data();
@@ -1242,228 +1273,232 @@ arma::mat nl_loglik_hessian_parallel(
       } else {
         chosen_inside_idx = chosen_alt_idx_i - 1;
         log_P_choice      = log_P_i[chosen_inside_idx];
-        chosen_nest_k     = static_cast<int>(nest_idx0_i[chosen_inside_idx]);
+        chosen_nest_k     = static_cast<int>(nest0[chosen_inside_idx]);
       }
 
       // H1 clamp: skip individual if log_P_choice is non-finite
       if (!std::isfinite(log_P_choice)) continue;
 
-      // Step 2c: Accumulate per-nest auxiliary scalars and vectors
-      // Vbar_k[k]   = sum_{j in B_k} P(j|k) * V_j
-      // S2Vbar_k[k] = sum_{j in B_k} P(j|k) * V_j^2
-      // m_k[k]      = sum_{j in B_k} P_ij * x_j         (K-vector)
-      // c_k[k]      = sum_{j in B_k} P(j|k) * x_j       (K-vector)
-      // S2_k[k]     = sum_{j in B_k} P_ij * x_j x_j^T   (KxK matrix)
-      // Q_k[k]      = sum_{j in B_k} P(j|k) * x_j x_j^T (KxK matrix)
-      std::vector<double> Vbar_k(n_nests, 0.0);
-      std::vector<double> S2Vbar_k(n_nests, 0.0);
-      std::vector<arma::vec> m_k_vec(n_nests, arma::zeros<arma::vec>(K));
-      std::vector<arma::vec> c_k_vec(n_nests, arma::zeros<arma::vec>(K));
-      std::vector<arma::mat> S2_k(n_nests, arma::zeros<arma::mat>(K, K));
-      std::vector<arma::mat> Q_k(n_nests, arma::zeros<arma::mat>(K, K));
+      // X_i, copied once (the dense code's copy, the operand of its BLAS
+      // products)
+      arma::mat X_i(xbuf, m_i, K, false, true);
+      X_i = X.rows(start_idx, end_idx);
 
+      // The nests the situation offers, increasing, and their sums
+      // (Step 2c): per offered slot o, at sums + o * stride, Vbar, S2Vbar,
+      // T, VarV, m (K), c (K), S2 and Q (K x K, upper triangles). Nests it
+      // does not offer added exact zeros in the dense code.
+      int n_o = 0;
       for (int j = 0; j < m_i; ++j) {
-        const int k = static_cast<int>(nest_idx0_i[j]);
+        const int k = nest0[j];
+        if (nest_slot[k] < 0) {
+          nest_slot[k] = 0;  // seen
+          nests_off[n_o++] = k;
+        }
+      }
+      std::sort(nests_off, nests_off + n_o);
+      for (int o = 0; o < n_o; ++o) nest_slot[nests_off[o]] = o;
+      std::fill(sums, sums + static_cast<std::size_t>(n_o) * stride, 0.0);
+      auto nest_sums = [&](const int k) { return sums + static_cast<std::size_t>(nest_slot[k]) * stride; };
+      for (int j = 0; j < m_i; ++j) {
+        double* sk = nest_sums(nest0[j]);
+        double* m_k = sk + 4;
+        double* c_k = m_k + K;
+        double* S2_k = c_k + K;
+        double* Q_k = S2_k + Ks * Ks;
         const double pj_given_k = P_j_given_k[j];
         const double p_ij       = P_i_vec[j];
         const double V_j        = V_inside[j];
-        const arma::vec x_j     = X_i.row(j).t();
 
-        Vbar_k[k]   += pj_given_k * V_j;
-        S2Vbar_k[k] += pj_given_k * V_j * V_j;
-        m_k_vec[k]  += p_ij * x_j;
-        c_k_vec[k]  += pj_given_k * x_j;
-        S2_k[k]     += p_ij * (x_j * x_j.t());
-        Q_k[k]      += pj_given_k * (x_j * x_j.t());
+        sk[0] += pj_given_k * V_j;          // Vbar_k
+        sk[1] += pj_given_k * V_j * V_j;    // S2Vbar_k
+        // m_k += p_ij x_j and c_k += P(j|k) x_j, each product rounded
+        // before it is added, as the dense code's vector updates did
+        for (int e = 0; e < K; ++e) {
+          const double x_e = X_i(j, e);
+          const double tm = x_e * p_ij;
+          m_k[e] += tm;
+          const double tc = x_e * pj_given_k;
+          c_k[e] += tc;
+        }
+        // S2_k += p_ij x_j x_j' and Q_k += P(j|k) x_j x_j' (upper triangles)
+        for (int c = 0; c < K; ++c) {
+          for (int r = 0; r <= c; ++r) {
+            const double xx = X_i(j, r) * X_i(j, c);
+            const double ts = xx * p_ij;
+            S2_k[r + c * Ks] += ts;
+            const double tq = xx * pj_given_k;
+            Q_k[r + c * Ks] += tq;
+          }
+        }
       }
-
       // Per-nest derived quantities
-      std::vector<double> T_k(n_nests, 0.0);
-      std::vector<double> VarV_k(n_nests, 0.0);
-      for (int k = 0; k < n_nests; ++k) {
-        T_k[k]    = log_I_k[k] - Vbar_k[k] / lambda[k];
-        VarV_k[k] = S2Vbar_k[k] - Vbar_k[k] * Vbar_k[k];
+      for (int o = 0; o < n_o; ++o) {
+        double* sk = sums + static_cast<std::size_t>(o) * stride;
+        const int k = nests_off[o];
+        sk[2] = log_I_k[k] - sk[0] / lambda[k];  // T_k
+        sk[3] = sk[1] - sk[0] * sk[0];           // VarV_k
       }
 
       // P_i-weighted global mean: Xbar_i = X_i^T * P_i  (K-vector)
-      arma::vec Xbar_i = X_i.t() * P_i_vec;
+      arma::vec Xbar_i(xbar_m, K, false, true);
+      Xbar_i = X_i.t() * P_i_vec;
 
-      // -----------------------------------------------------------------------
-      // Step 2d & 2e: Accumulate beta-beta, beta-delta, delta-delta blocks.
-      //
-      // The V-space Hessian of the negated log-likelihood is:
-      //   Q_i[a,b] = d²(-loglik_i)/dV_a dV_b = -dg[a]/dV_b
-      //
-      // Correct formula (derived from differentiating the gradient):
-      //
-      //   Q_i[a,b] = P_ia * { -P_ib
-      //             + 1_{k(a)=k(b)} * [1_{a=b}/lam_k + P(b|k)(1 - 1/lam_k)] }
-      //           - C(a,b)
-      //
-      // where C(a,b) = [(1-1/lam_ki)/lam_ki] * P(a|ki) * (1_{a=b} - P(a|ki))
-      //                  for k(a)=k(b)=ki (chosen-nest correction)
-      //
-      // The beta-beta block is w_i * X_i^T * Q_i * X_i (Hessian of -loglik).
-      // Decomposing X^T Q X into per-nest terms gives Terms A, B, C below.
-      // -----------------------------------------------------------------------
+      // The situation's slots: its free constants and touched dissimilarities
+      nl_situation_map(lay, i, nest0, log_I_k, nest_k_to_theta_idx, K,
+                       has_delta, include_outside_option, mp);
+      const int d0 = K + K_l;  // global index of the first constant
 
-      // Build the full m_i x m_i Q_i matrix (correct formula)
-      arma::mat Qi(m_i, m_i, arma::fill::zeros);
-      for (int a = 0; a < m_i; ++a) {
-        const int ka = static_cast<int>(nest_idx0_i[a]);
+      // Q_i[a, b], the V-space Hessian of the negated log-likelihood
+      // (the dense code's expression)
+      auto Q_ab = [&](const int a, const int b) {
+        const int ka = static_cast<int>(nest0[a]);
         const double Pia = P_i_vec[a];
         const double Pa_given_ka = P_j_given_k[a];
         const double lam_ka = lambda[ka];
         const double inv_lam_ka = 1.0 / lam_ka;
+        const int kb = static_cast<int>(nest0[b]);
+        const double Pib = P_i_vec[b];
+        const double Pb_given_kb = P_j_given_k[b];
 
-        for (int b = 0; b < m_i; ++b) {
-          const int kb = static_cast<int>(nest_idx0_i[b]);
-          const double Pib = P_i_vec[b];
-          const double Pb_given_kb = P_j_given_k[b];
+        // Base term: -P_ia * P_ib (all pairs)
+        double Qab = -Pia * Pib;
 
-          // Base term: -P_ia * P_ib (all pairs)
-          double Qab = -Pia * Pib;
-
-          // Within-nest correction (correct formula from gradient derivation)
-          // Contribution: P_ia * [1_{a=b}/lam_k + P(b|k) * (1 - 1/lam_k)]
-          if (ka == kb) {
-            const double indicator_ab = (a == b) ? 1.0 : 0.0;
-            Qab += Pia * (indicator_ab * inv_lam_ka + Pb_given_kb * (1.0 - inv_lam_ka));
-          }
-
-          // Chosen-nest correction C(a,b)
-          // Only nonzero when k(a)=k(b)=ki (chosen nest)
-          // C(a,b) = scale_C * P(a|ki) * (1_{a=b} - P(a|ki))
-          // This comes from the (1-1/lam_ki) * d(P(a|ki))/dV_b term in the gradient
-          if (chosen_nest_k >= 0 && ka == chosen_nest_k && kb == chosen_nest_k) {
-            const double lam_ki = lambda[chosen_nest_k];
-            const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
-            const double ind_ab = (a == b) ? 1.0 : 0.0;
-            // C_ab uses P(a|ki), not P(b|ki) — the original gradient term is
-            // (1-1/lam_ki) * dP(a|ki)/dV_b = (1-1/lam_ki) * (1/lam_ki) * P(a|ki) * (1_{a=b} - P(b|ki))
-            Qab -= scale_C * Pa_given_ka * (ind_ab - Pb_given_kb);
-          }
-
-          Qi(a, b) = Qab;
+        // Within-nest correction: P_ia * [1_{a=b}/lam_k + P(b|k) * (1 - 1/lam_k)]
+        if (ka == kb) {
+          const double indicator_ab = (a == b) ? 1.0 : 0.0;
+          Qab += Pia * (indicator_ab * inv_lam_ka + Pb_given_kb * (1.0 - inv_lam_ka));
         }
-      }
 
-      // delta-delta block: w_i * Q_i[a,b] for free-ASC alternatives a, b
-      if (use_asc && delta_length > 0) {
-        for (int a = 0; a < m_i; ++a) {
-          const int id_a = static_cast<int>(alt_idx0_i[a]);
-          int p_theta_a;
-          if (include_outside_option) {
-            p_theta_a = delta_start_idx + id_a;
-          } else {
-            p_theta_a = (id_a > 0) ? (delta_start_idx + id_a - 1) : -1;
-          }
-          if (p_theta_a < 0) continue;
+        // Chosen-nest correction C(a,b), nonzero when k(a)=k(b)=ki
+        if (chosen_nest_k >= 0 && ka == chosen_nest_k && kb == chosen_nest_k) {
+          const double lam_ki = lambda[chosen_nest_k];
+          const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
+          const double ind_ab = (a == b) ? 1.0 : 0.0;
+          Qab -= scale_C * Pa_given_ka * (ind_ab - Pb_given_kb);
+        }
+        return Qab;
+      };
 
-          for (int b = 0; b < m_i; ++b) {
-            const int id_b = static_cast<int>(alt_idx0_i[b]);
-            int p_theta_b;
-            if (include_outside_option) {
-              p_theta_b = delta_start_idx + id_b;
+      // Steps 2d and 2e, delta-delta and beta-delta: for each row b with a
+      // free constant, the column Q_i[, b]; w_i Q_i[a, b] into the constants'
+      // block for each row a with one, and X_i' (w_i Q_i[, b]) into the
+      // coefficients' column of b's constant
+      if (has_delta) {
+        arma::vec h_col_b(hcol, m_i, false, true);
+        arma::vec beta_delta_contrib(gvec_m, K, false, true);
+        for (int b = 0; b < m_i; ++b) {
+          const int sb = mp.row_slot[b];
+          if (sb < 0) continue;
+          const int gb = d0 + mp.delta[sb];
+          for (int a = 0; a < m_i; ++a) qcol[a] = Q_ab(a, b);
+          for (int a = 0; a < m_i; ++a) {
+            const int sa = mp.row_slot[a];
+            if (sa < 0) continue;
+            const double t = w_i * qcol[a];
+            if (sa == sb) {
+              add2(gb, gb, t, t);
             } else {
-              p_theta_b = (id_b > 0) ? (delta_start_idx + id_b - 1) : -1;
+              add2(d0 + mp.delta[sa], gb, t, 0.0);
             }
-            if (p_theta_b < 0) continue;
-
-            local_H(p_theta_a, p_theta_b) += w_i * Qi(a, b);
           }
-        }
-
-        // beta-delta block: for each free-delta alternative b,
-        // add w_i * X_i^T * Qi[:, b] to column p_theta_b of beta block
-        for (int b = 0; b < m_i; ++b) {
-          const int id_b = static_cast<int>(alt_idx0_i[b]);
-          int p_theta_b;
-          if (include_outside_option) {
-            p_theta_b = delta_start_idx + id_b;
-          } else {
-            p_theta_b = (id_b > 0) ? (delta_start_idx + id_b - 1) : -1;
+          for (int a = 0; a < m_i; ++a) h_col_b[a] = qcol[a] * w_i;
+          beta_delta_contrib = X_i.t() * h_col_b;  // K-vector
+          for (int r = 0; r < K; ++r) {
+            add2(r, gb, beta_delta_contrib[r], beta_delta_contrib[r]);
           }
-          if (p_theta_b < 0) continue;
-
-          arma::vec h_col_b = w_i * Qi.col(b);
-          arma::vec beta_delta_contrib = X_i.t() * h_col_b;  // K-vector
-
-          local_H.submat(0, p_theta_b, K - 1, p_theta_b) += beta_delta_contrib;
-          local_H.submat(p_theta_b, 0, p_theta_b, K - 1) += beta_delta_contrib.t();
         }
       }
 
-      // -----------------------------------------------------------------------
-      // Step 2e: Beta-beta block = w_i * X_i^T * Q_i * X_i
-      //
-      // Decompose using three terms:
-      //   H_BB = -Xbar*Xbar^T + sum_k [(1-1/lam_k)*m_k*c_k^T + (1/lam_k)*S2_k]
-      //          - 1_{ki>=0} * scale_Ci * (Q_ki - c_ki*c_ki^T)
-      //
-      // Signs derived from the correct Q_i formula above.
-      // -----------------------------------------------------------------------
-
-      // Term A (subtract): -w_i * Xbar_i * Xbar_i^T  (from -P_ia * P_ib term)
-      local_H.submat(0, 0, K - 1, K - 1) -= w_i * (Xbar_i * Xbar_i.t());
-
-      // Term B (add): per-nest within-nest contributions
-      for (int k = 0; k < n_nests; ++k) {
-        const double lam_k   = lambda[k];
+      // Step 2e: Beta-beta block = w_i * X_i^T * Q_i * X_i, term by term in
+      // the dense code's order, each entry as it formed it:
+      // Term A (subtract): -w_i * Xbar_i * Xbar_i^T
+      for (int c = 0; c < K; ++c) {
+        for (int r = 0; r <= c; ++r) {
+          const double xx = Xbar_i[r] * Xbar_i[c];
+          const double t = xx * w_i;
+          add2(r, c, -t, -t);
+        }
+      }
+      // Term B (add): w_i * ((1 - 1/lam_k) m_k c_k^T + (1/lam_k) S2_k) for
+      // each nest offered, in nest order
+      for (int o = 0; o < n_o; ++o) {
+        const double* sk = sums + static_cast<std::size_t>(o) * stride;
+        const double* m_k = sk + 4;
+        const double* c_k = m_k + K;
+        const double* S2_k = c_k + K;
+        const double lam_k   = lambda[nests_off[o]];
         const double inv_lam = 1.0 / lam_k;
         const double scale_B = 1.0 - inv_lam;  // = 0 for singletons (lam=1)
-        local_H.submat(0, 0, K - 1, K - 1) +=
-          w_i * (scale_B * (m_k_vec[k] * c_k_vec[k].t()) + inv_lam * S2_k[k]);
+        for (int c = 0; c < K; ++c) {
+          for (int r = 0; r <= c; ++r) {
+            const double s2 = S2_k[r + c * Ks];
+            const double o_rc = m_k[r] * c_k[c];
+            const double b_rc = o_rc * scale_B;
+            const double s_rc = s2 * inv_lam;
+            double t_rc = b_rc + s_rc;
+            t_rc *= w_i;
+            const double o_cr = m_k[c] * c_k[r];
+            const double b_cr = o_cr * scale_B;
+            double t_cr = b_cr + s_rc;
+            t_cr *= w_i;
+            add2(r, c, t_rc, t_cr);
+          }
+        }
       }
-
-      // Term C (subtract): chosen-nest correction (only if chosen_nest_k >= 0)
-      // C contribution: -scale_Ci * P(a|ki) * (1_{a=b} - P(b|ki))
-      // In matrix form: -scale_Ci * (Q_ki - c_ki * c_ki^T)
-      // where Q_ki = sum_{a in ki} P(a|ki) x_a x_a^T  (= Q_k[ki])
+      // Term C (subtract): -w_i * scale_Ci * (Q_ki - c_ki c_ki^T)
       if (chosen_nest_k >= 0) {
-        const int ki        = chosen_nest_k;
-        const double lam_ki = lambda[ki];
+        const double* sk = nest_sums(chosen_nest_k);
+        const double* c_k = sk + 4 + K;
+        const double* Q_k = c_k + K + Ks * Ks;
+        const double lam_ki = lambda[chosen_nest_k];
         const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
-        local_H.submat(0, 0, K - 1, K - 1) -=
-          w_i * scale_C * (Q_k[ki] - c_k_vec[ki] * c_k_vec[ki].t());
+        const double w_scale_C = w_i * scale_C;
+        for (int c = 0; c < K; ++c) {
+          for (int r = 0; r <= c; ++r) {
+            const double cc = c_k[r] * c_k[c];
+            double t = Q_k[r + c * Ks] - cc;
+            t *= w_scale_C;
+            add2(r, c, -t, -t);
+          }
+        }
       }
 
-      // -----------------------------------------------------------------------
-      // Step 2f: Lambda-beta and lambda-delta cross blocks
-      // d_V^(k)[b] = dg_{lambda_k}/dV_b
-      // -----------------------------------------------------------------------
-      for (int k = 0; k < n_nests; ++k) {
-        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
-        if (theta_idx_k == -1) continue;
-        if (!std::isfinite(log_I_k[k])) continue;
-
+      // Step 2f: Lambda-beta and lambda-delta cross blocks, and step 2g, the
+      // lambda-lambda block, for each dissimilarity the situation touches
+      arma::vec d_V_k(dV, m_i, false, true);
+      arma::vec lambda_beta_contrib(gvec_m, K, false, true);
+      for (int l = 0; l < mp.n_lam; ++l) {
+        const int k = lam_nest[mp.lam[l]];
+        const int gk = K + mp.lam[l];
+        const double* sk = nest_sums(k);
         const double lam_k = lambda[k];
         const double P_k_k = P_k[k];
+        const double T_kk = sk[2];
+        const double Vbar_kk = sk[0];
 
-        // Compute d_V^(k), length m_i
-        arma::vec d_V_k(m_i, arma::fill::zeros);
-
+        // d_V^(k)[b] = dg_{lambda_k}/dV_b
         if (k != chosen_nest_k) {
           // Non-chosen nest formula
           for (int b = 0; b < m_i; ++b) {
-            const int kb = static_cast<int>(nest_idx0_i[b]);
-            d_V_k[b] = P_k_k * T_k[k] * P_i_vec[b];
+            const int kb = static_cast<int>(nest0[b]);
+            d_V_k[b] = P_k_k * T_kk * P_i_vec[b];
             if (kb == k) {
               d_V_k[b] += P_k_k * P_j_given_k[b]
-                          * ((V_inside[b] - Vbar_k[k]) / (lam_k * lam_k) - T_k[k]);
+                          * ((V_inside[b] - Vbar_kk) / (lam_k * lam_k) - T_kk);
             }
           }
         } else {
           // Chosen nest formula (k == chosen_nest_k, ki >= 0)
           for (int b = 0; b < m_i; ++b) {
-            const int kb = static_cast<int>(nest_idx0_i[b]);
-            d_V_k[b] = P_k_k * T_k[k] * P_i_vec[b];
+            const int kb = static_cast<int>(nest0[b]);
+            d_V_k[b] = P_k_k * T_kk * P_i_vec[b];
             if (b == chosen_inside_idx) {
               d_V_k[b] -= 1.0 / (lam_k * lam_k);
             }
             if (kb == k) {
-              double bracket = -P_k_k * T_k[k]
-                + (V_inside[b] - Vbar_k[k]) / (lam_k * lam_k)
+              double bracket = -P_k_k * T_kk
+                + (V_inside[b] - Vbar_kk) / (lam_k * lam_k)
                   * (P_k_k - 1.0 + 1.0 / lam_k)
                 + 1.0 / (lam_k * lam_k);
               d_V_k[b] += P_j_given_k[b] * bracket;
@@ -1472,83 +1507,66 @@ arma::mat nl_loglik_hessian_parallel(
         }
 
         // lambda-beta cross: K-vector contribution
-        arma::vec lambda_beta_contrib = -w_i * (X_i.t() * d_V_k);
-        local_H.submat(theta_idx_k, 0, theta_idx_k, K - 1) +=
-          lambda_beta_contrib.t();
-        local_H.submat(0, theta_idx_k, K - 1, theta_idx_k) +=
-          lambda_beta_contrib;
+        lambda_beta_contrib = -w_i * (X_i.t() * d_V_k);
+        for (int r = 0; r < K; ++r) {
+          add2(r, gk, lambda_beta_contrib[r], lambda_beta_contrib[r]);
+        }
 
         // lambda-delta cross: scatter over free-ASC alternatives
-        if (use_asc && delta_length > 0) {
+        if (has_delta) {
           for (int b = 0; b < m_i; ++b) {
-            const int id_b = static_cast<int>(alt_idx0_i[b]);
-            int p_theta_b;
-            if (include_outside_option) {
-              p_theta_b = delta_start_idx + id_b;
-            } else {
-              p_theta_b = (id_b > 0) ? (delta_start_idx + id_b - 1) : -1;
-            }
-            if (p_theta_b < 0) continue;
+            const int sb = mp.row_slot[b];
+            if (sb < 0) continue;
             const double val = -w_i * d_V_k[b];
-            local_H(theta_idx_k, p_theta_b) += val;
-            local_H(p_theta_b, theta_idx_k) += val;
+            add2(gk, d0 + mp.delta[sb], val, val);
           }
         }
-      }  // end lambda cross blocks
 
-      // -----------------------------------------------------------------------
-      // Step 2g: Lambda-lambda block
-      // -----------------------------------------------------------------------
-      for (int k = 0; k < n_nests; ++k) {
-        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
-        if (theta_idx_k == -1) continue;
-        if (!std::isfinite(log_I_k[k])) continue;
-
-        // Off-diagonal: k != l
-        for (int l = k + 1; l < n_nests; ++l) {
-          const int theta_idx_l = thread_nest_k_to_theta_idx[l];
-          if (theta_idx_l == -1) continue;
-          if (!std::isfinite(log_I_k[l])) continue;
-
+        // lambda-lambda: off-diagonal with the later touched nests
+        for (int l2 = l + 1; l2 < mp.n_lam; ++l2) {
+          const int k2 = lam_nest[mp.lam[l2]];
           const double off_diag =
-            -w_i * P_k[k] * P_k[l] * T_k[k] * T_k[l];
-          local_H(theta_idx_k, theta_idx_l) += off_diag;
-          local_H(theta_idx_l, theta_idx_k) += off_diag;
+            -w_i * P_k[k] * P_k[k2] * T_kk * nest_sums(k2)[2];
+          add2(gk, K + mp.lam[l2], off_diag, off_diag);
         }
 
         // Diagonal
-        const double lam_k = lambda[k];
+        const double VarV_kk = sk[3];
         double diag_val;
         if (k == chosen_nest_k) {
           // Chosen-nest diagonal formula
           const double V_ca = V_inside[chosen_inside_idx];
           diag_val = w_i * (
-              P_k[k] * (1.0 - P_k[k]) * T_k[k] * T_k[k]
-            - (1.0 - P_k[k]) * VarV_k[k] / (lam_k * lam_k * lam_k)
-            + VarV_k[k] / (lam_k * lam_k * lam_k * lam_k)
-            + 2.0 * (Vbar_k[k] - V_ca) / (lam_k * lam_k * lam_k)
+              P_k[k] * (1.0 - P_k[k]) * T_kk * T_kk
+            - (1.0 - P_k[k]) * VarV_kk / (lam_k * lam_k * lam_k)
+            + VarV_kk / (lam_k * lam_k * lam_k * lam_k)
+            + 2.0 * (Vbar_kk - V_ca) / (lam_k * lam_k * lam_k)
           );
         } else {
           // Non-chosen nest diagonal formula
           diag_val = w_i * (
-              P_k[k] * (1.0 - P_k[k]) * T_k[k] * T_k[k]
-            + P_k[k] * VarV_k[k] / (lam_k * lam_k * lam_k)
+              P_k[k] * (1.0 - P_k[k]) * T_kk * T_kk
+            + P_k[k] * VarV_kk / (lam_k * lam_k * lam_k)
           );
         }
-        local_H(theta_idx_k, theta_idx_k) += diag_val;
-      }  // end lambda-lambda block
+        add2(gk, gk, diag_val, diag_val);
+      }
 
+      for (int o = 0; o < n_o; ++o) nest_slot[nests_off[o]] = -1;
+      nl_situation_map_clear(mp);
     }  // end individual loop
   }  // end parallel region
 
-  // Step 2h: Merge the threads' Hessians in thread order, from +0
-  for (const arma::mat& local_H : locals) global_H += local_H;
-
-  // Step 3: Symmetrize and sanitize
-  global_H = (global_H + global_H.t()) / 2.0;
-  global_H.elem(arma::find_nonfinite(global_H)).zeros();
-
-  return global_H;
+  // Step 3: Symmetrize and sanitize: the sums of the two triangles' terms,
+  // halved, every non-finite entry set to 0
+  acc.finish(false);
+  double* out = acc.result.begin();
+  const std::size_t nn = static_cast<std::size_t>(n_params) * static_cast<std::size_t>(n_params);
+  for (std::size_t e = 0; e < nn; ++e) {
+    const double h = out[e] * 0.5;
+    out[e] = std::isfinite(h) ? h : 0.0;
+  }
+  return acc.result;
 }
 
 // =============================================================================

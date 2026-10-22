@@ -1,8 +1,8 @@
-# The nested logit BHHH kernel on designs with many alternatives and sparse
-# choice sets. A situation's score is nonzero only on the coefficients, the
-# dissimilarities of the nests it offers and the constants of the
-# alternatives it offers, so the kernel forms w s s' in that compact block
-# and adds it into the n x n result. These designs (30 alternatives in eight
+# The nested logit Hessian and BHHH kernels on designs with many
+# alternatives and sparse choice sets. A situation's score and Hessian are
+# nonzero only on the coefficients, the dissimilarities of the nests it
+# offers and the constants of the alternatives it offers, so the kernels form
+# them in that compact block and add it into the n x n result. These designs (30 alternatives in eight
 # nests of three and six singletons, choice sets of 3-8, dissimilarities on
 # both sides of one) exercise the slot maps: nests offered in part or not at
 # all, singleton nests (their dissimilarity fixed at one), many small nests,
@@ -65,6 +65,7 @@ ncd_call <- function(kernel, f, theta = f$theta, weights = f$weights, ...) {
             include_outside_option = f$include_outside_option)
   switch(kernel,
     gradient = do.call(ns$nl_loglik_gradient_parallel, c(a, list(...))),
+    hessian = do.call(ns$nl_loglik_hessian_parallel, c(a, list(...))),
     bhhh = do.call(ns$nl_bhhh_parallel, c(a, list(...))),
     scores = do.call(ns$nl_scores_parallel, c(a[-7L], list(...))))
 }
@@ -92,6 +93,123 @@ ncd_same_pattern <- function(a, b, what, tol = 1e-12) {
     expect_equal(a[fin], b[fin], tolerance = tol, label = paste(what, "finite entries"))
   }
 }
+
+# The parameters situation i touches (its compact block): the coefficients,
+# the dissimilarities of the non-singleton nests it offers, the constants of
+# its alternatives.
+ncd_block <- function(f, i) {
+  row_off <- c(0L, cumsum(f$M))
+  alts <- f$alt_idx[(row_off[i] + 1L):row_off[i + 1L]]
+  multi <- which(tabulate(f$nest_idx) > 1L)
+  lam <- f$K + match(intersect(multi, f$nest_idx[alts]), multi)
+  j <- if (!f$use_asc) integer(0) else if (f$include_outside_option) alts else alts[alts > 1L] - 1L
+  sort(unique(c(seq_len(f$K), lam, f$K + f$K_l + j)))
+}
+
+# f without situation i
+ncd_drop <- function(f, i) {
+  row_off <- c(0L, cumsum(f$M))
+  rows <- (row_off[i] + 1L):row_off[i + 1L]
+  f$X <- f$X[-rows, , drop = FALSE]
+  f$alt_idx <- f$alt_idx[-rows]
+  f$choice_idx <- f$choice_idx[-i]
+  f$M <- f$M[-i]
+  f$weights <- f$weights[-i]
+  f$N <- f$N - 1L
+  f
+}
+
+ncd_scale_dev <- function(a, b) max(abs(a - b)) / max(1, max(abs(b)))
+
+test_that("the compact NL Hessian matches numDeriv of the gradient", {
+  skip_on_cran()
+  skip_if_not_installed("numDeriv")
+  for (f in ncd_cells()) {
+    num <- numDeriv::jacobian(function(th) ncd_call("gradient", f, theta = th)$gradient,
+                              f$theta)
+    expect_lt(ncd_scale_dev(unclass(ncd_call("hessian", f)), num), 1e-6, label = f$name)
+  }
+})
+
+test_that("the NL Hessian is exactly symmetric, linear in the weights and permuted with the labels", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  for (f in ncd_cells()) {
+    H <- ncd_call("hessian", f)
+    expect_identical(H, t(H), label = f$name)
+    expect_identical(ncd_call("hessian", f, weights = 2 * f$weights), 2 * H,
+                     label = f$name)
+  }
+  f <- ncd_fixture("relabel", 3011, dup = TRUE)
+  set.seed(3111)
+  perm <- c(1L, 1L + sample.int(f$J - 1L))
+  g <- f
+  g$alt_idx <- perm[f$alt_idx]
+  g$nest_idx[perm] <- f$nest_idx
+  g$theta[f$K + f$K_l + perm[-1L] - 1L] <- f$theta[f$K + f$K_l + seq_len(f$J - 1L)]
+  idx <- c(seq_len(f$K + f$K_l), f$K + f$K_l + perm[-1L] - 1L)
+  expect_identical(ncd_call("hessian", g)[idx, idx], ncd_call("hessian", f))
+  sigma <- c(sample.int(8L), 9:14)
+  h <- f
+  h$nest_idx <- sigma[f$nest_idx]
+  h$theta[f$K + sigma[1:8]] <- f$theta[f$K + 1:8]
+  idx <- c(seq_len(f$K), f$K + sigma[1:8], f$K + f$K_l + seq_len(f$J - 1L))
+  expect_equal(unclass(ncd_call("hessian", h))[idx, idx],
+               unclass(ncd_call("hessian", f)), tolerance = 1e-12)
+})
+
+test_that("an NL situation whose chosen probability is not finite is left out", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f <- ncd_fixture("skip", 3016)
+  row_off <- c(0L, cumsum(f$M))
+  # the chosen alternative's utility at -Inf, so its log-probability
+  i <- 3L
+  r_chosen <- row_off[i] + f$choice_idx[i]
+  g <- f
+  g$X[r_chosen, 1L] <- -1e308
+  g$theta[1L] <- 2
+  d <- ncd_drop(f, i)
+  d$theta[1L] <- 2
+  H <- unclass(ncd_call("hessian", g))
+  expect_true(all(is.finite(H)))
+  expect_equal(H, unclass(ncd_call("hessian", d)), tolerance = 1e-14)
+})
+
+test_that("a non-finite NL weight zeroes exactly the entries its situation touches", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f <- ncd_fixture("weights", 3017)
+  i <- 4L
+  blk <- ncd_block(f, i)
+  ref <- unclass(ncd_call("hessian", ncd_drop(f, i)))
+  inside <- matrix(FALSE, length(f$theta), length(f$theta))
+  inside[blk, blk] <- TRUE
+  for (w_bad in c(Inf, NaN, NA_real_)) {
+    g <- f
+    g$weights[i] <- w_bad
+    H <- unclass(ncd_call("hessian", g))
+    expect_true(all(H[inside] == 0), label = paste("weight", w_bad, "block"))
+    expect_equal(H[!inside], ref[!inside], tolerance = 1e-14,
+                 label = paste("weight", w_bad, "elsewhere"))
+  }
+})
+
+test_that("a shared NL Hessian equals the per-thread accumulators' sum", {
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
+  skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (f in ncd_cells()[c(1L, 2L, 3L, 5L, 7L, 9L)]) {
+    set_omp_threads(2L)
+    shared <- ncd_call("hessian", f, acc_bytes = 0)
+    expect_identical(shared, t(shared), label = paste(f$name, "symmetric"))
+    expect_equal(unclass(shared), unclass(ncd_call("hessian", f)), tolerance = 1e-12,
+                 label = paste(f$name, "shared vs per-thread"))
+    set_omp_threads(1L)
+    expect_identical(ncd_call("hessian", f, acc_bytes = 0), ncd_call("hessian", f),
+                     label = paste(f$name, "one thread"))
+  }
+})
 
 test_that("the compact NL BHHH is the weighted cross-product of the scores", {
   on.exit(set_omp_threads(2L), add = TRUE)

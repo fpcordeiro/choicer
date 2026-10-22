@@ -13,7 +13,8 @@ nl_loglik_hessian_parallel(
   M,
   weights,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -39,6 +40,10 @@ inside alternative.}
 
 \item{include_outside_option}{Logical; whether an outside option (V=0) is
 present.}
+
+\item{acc_bytes}{Bytes for the threads' private upper triangles (2 GiB by
+default), as in \code{nl_bhhh_parallel()}; \code{0} forces the shared
+result (for tests).}
 }
 \value{
 A symmetric (P x P) matrix: the Hessian of the negated
@@ -52,6 +57,11 @@ Nested Logit model using OpenMP parallelisation with thread-local accumulators.
 Covers all parameter blocks: beta-beta, beta-lambda, beta-delta,
 lambda-lambda, lambda-delta, and delta-delta. Singleton nests (lambda fixed
 to 1, not estimated) contribute no rows or columns to the lambda blocks.
+Each situation's terms are formed only over the parameters its likelihood
+involves (the coefficients, the dissimilarities of the nests it offers and
+the constants of its alternatives), so the work per situation does not
+grow with the number of alternatives or nests; the n_params x n_params
+result and the threads' accumulators do (see acc_bytes).
 }
 \examples{
 \donttest{
