@@ -474,14 +474,19 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 
 #' BHHH/OPG information matrix for multinomial logit model
 #'
-#' Computes the weighted outer product of per-individual scores
+#' Computes the weighted outer product of per-situation scores
 #' \eqn{\sum_i w_i\, s_i s_i^\top} for the Multinomial Logit model. The
-#' per-individual score \eqn{s_i} is the (positive) gradient of individual
+#' per-situation score \eqn{s_i} is the (positive) gradient of situation
 #' \eqn{i}'s log-likelihood contribution and is weight-free; the supplied
 #' \code{weights} enter only as the leading multiplier. Passing
 #' \code{weights = w} yields the ordinary weighted BHHH/OPG information; passing
 #' \code{weights = w^2} yields the sandwich \emph{meat}
 #' \eqn{B = \sum_i w_i^2 s_i s_i^\top} used for robust (WESML) inference.
+#' Each situation's outer product is formed only over the parameters its
+#' likelihood involves (the coefficients and the constants of the
+#' alternatives it offers), so the work per situation does not grow with the
+#' number of alternatives; the n_params x n_params result and the threads'
+#' accumulators do (see acc_bytes).
 #'
 #' @param theta K + J - 1 or K + J vector with model parameters
 #' @param X sum(M) x K design matrix with covariates. Stacks M\[i] x K matrices for individual i.
@@ -491,6 +496,14 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
+#' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+#'   default). While the triangles of the T threads in use, T n_params
+#'   (n_params + 1) / 2 doubles, fit, each thread adds into its own; above,
+#'   or for a NaN or negative value, the threads add into the result (the
+#'   coefficients' rows through smaller private buffers, the constants' block
+#'   atomically). One thread adds into the result whatever the value. The two
+#'   ways differ by rounding only; \code{0} forces the shared result (for
+#'   tests).
 #' @returns A symmetric positive-semidefinite information matrix
 #'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
 #' @examples
@@ -508,8 +521,8 @@ mnl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, M, weigh
 #' dim(B)
 #' }
 #' @keywords internal
-mnl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mnl_bhhh_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option)
+mnl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mnl_bhhh_parallel`, theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
 mnl_scores_parallel <- function(theta, X, alt_idx, choice_idx, M, use_asc = TRUE, include_outside_option = FALSE) {

@@ -1,0 +1,208 @@
+# The multinomial logit BHHH kernel on designs with many alternatives and
+# sparse choice sets. A situation's score is nonzero only on the coefficients
+# and the free constants of the alternatives it offers, so the kernel forms
+# w s s' in that compact block and adds it into the n x n result. These
+# designs (30 alternatives, choice sets of 3-8) make the blocks small next to
+# n and exercise the slot maps: the normalized reference, the outside option,
+# a situation listing an alternative twice (adjacent or not), the reference
+# never offered, situations offering only the reference, choice sets of one
+# alternative, no constants.
+
+# N situations, each offering `m_range` distinct alternatives drawn from 1..J
+# (from 2..J when `absent_ref`), plus one repeated row when `dup`; weights
+# vary across situations.
+mcd_fixture <- function(name, seed, N = 60L, J = 30L, m_range = c(3L, 8L),
+                        K = 2L, include_outside_option = FALSE, use_asc = TRUE,
+                        dup = FALSE, absent_ref = FALSE, ref_only = FALSE,
+                        shuffle = FALSE, single = FALSE) {
+  set.seed(seed)
+  pool <- if (absent_ref) 2:J else seq_len(J)
+  alts <- lapply(seq_len(N), function(t) {
+    # `ref_only`: about a third of the situations offer only the reference
+    if (ref_only && stats::runif(1L) < 1 / 3) return(1L)
+    # `single`: about a third offer one alternative
+    if (single && stats::runif(1L) < 1 / 3) return(pool[sample.int(length(pool), 1L)])
+    m <- sample(m_range[1L]:m_range[2L], 1L)
+    a <- sort(pool[sample.int(length(pool), min(m, length(pool)))])
+    if (dup) a <- sort(c(a, a[sample.int(length(a), 1L)]))
+    # `shuffle`: rows in no particular order (repeats not adjacent)
+    if (shuffle) a <- a[sample.int(length(a))]
+    a
+  })
+  M <- lengths(alts)
+  n_rows <- sum(M)
+  choice_idx <- vapply(M, function(m) {
+    if (include_outside_option) sample(0:m, 1L) else sample.int(m, 1L)
+  }, integer(1L))
+  n_delta <- if (!use_asc) 0L else if (include_outside_option) J else J - 1L
+  list(name = name, X = matrix(stats::rnorm(n_rows * K), n_rows, K),
+       alt_idx = as.integer(unlist(alts)), choice_idx = as.integer(choice_idx),
+       M = as.integer(M), weights = stats::runif(N, 0.5, 2),
+       theta = c(stats::rnorm(K, sd = 0.4), stats::rnorm(n_delta, sd = 0.4)),
+       use_asc = use_asc, include_outside_option = include_outside_option,
+       J = J, K = K, N = N)
+}
+
+mcd_cells <- function() {
+  list(
+    mcd_fixture("base", 2001),
+    mcd_fixture("outside option", 2002, include_outside_option = TRUE),
+    mcd_fixture("repeated alternative", 2003, dup = TRUE),
+    mcd_fixture("repeated alternative, shuffled rows", 2004, dup = TRUE,
+                shuffle = TRUE),
+    mcd_fixture("reference never offered", 2005, absent_ref = TRUE),
+    mcd_fixture("situations with the reference only", 2006, ref_only = TRUE),
+    mcd_fixture("single-alternative sets", 2007, single = TRUE),
+    mcd_fixture("no constants", 2008, use_asc = FALSE),
+    mcd_fixture("one coefficient", 2009, K = 1L),
+    mcd_fixture("wide sets", 2010, J = 60L, m_range = c(10L, 40L), N = 30L)
+  )
+}
+
+mcd_call <- function(kernel, f, theta = f$theta, weights = f$weights, ...) {
+  ns <- asNamespace("choicer")
+  a <- list(theta = theta, X = f$X, alt_idx = f$alt_idx,
+            choice_idx = f$choice_idx, M = f$M, weights = weights,
+            use_asc = f$use_asc, include_outside_option = f$include_outside_option)
+  switch(kernel,
+    gradient = do.call(ns$mnl_loglik_gradient_parallel, c(a, list(...))),
+    bhhh = do.call(ns$mnl_bhhh_parallel, c(a, list(...))),
+    scores = do.call(ns$mnl_scores_parallel, c(a[-6L], list(...))))
+}
+
+# The dense BHHH update, situation by situation: B + w_i s_i s_i'.
+mcd_bhhh_ref <- function(S, w) {
+  B <- matrix(0, ncol(S), ncol(S))
+  for (i in seq_len(nrow(S))) B <- B + w[i] * outer(S[i, ], S[i, ])
+  B
+}
+
+# Equal non-finite patterns (missing values, infinities and their signs), and
+# finite entries within `tol`. Off CRAN also NA and NaN apart: R's NA keeps
+# its payload through the kernels' arithmetic and exp() here, as it does
+# through R's, which not every platform's libm guarantees.
+mcd_same_pattern <- function(a, b, what, tol = 1e-12) {
+  a <- unclass(a)
+  expect_identical(is.na(a), is.na(b), label = paste(what, "NA or NaN"))
+  if (identical(Sys.getenv("NOT_CRAN"), "true")) {
+    expect_identical(is.nan(a), is.nan(b), label = paste(what, "NaN"))
+  }
+  expect_identical(is.infinite(a), is.infinite(b), label = paste(what, "Inf"))
+  expect_identical(a[is.infinite(a)], b[is.infinite(b)],
+                   label = paste(what, "infinities and their signs"))
+  fin <- is.finite(b)
+  if (any(fin)) {
+    expect_equal(a[fin], b[fin], tolerance = tol, label = paste(what, "finite entries"))
+  }
+}
+
+test_that("the compact BHHH is the weighted cross-product of the scores", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (f in mcd_cells()) {
+    for (nt in 1:2) {
+      set_omp_threads(nt)
+      S <- mcd_call("scores", f)
+      B <- mcd_call("bhhh", f)
+      expect_identical(B, t(B), label = paste(f$name, "symmetric"))
+      expect_equal(unclass(B), crossprod(sqrt(f$weights) * S), tolerance = 1e-12,
+                   label = sprintf("[%s, %d threads]", f$name, nt))
+    }
+  }
+})
+
+test_that("at one thread the compact BHHH is the dense update bit for bit", {
+  # Each entry is the product of the two scores, times the weight, added in
+  # situation order, rounded at each step as R rounds the reference.
+  skip_on_cran()  # a compiler that fuses the dense update's terms differs
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  for (f in mcd_cells()) {
+    S <- mcd_call("scores", f)
+    for (w in list(f$weights, f$weights^2)) {
+      expect_identical(unclass(mcd_call("bhhh", f, weights = w)),
+                       mcd_bhhh_ref(S, w), label = f$name)
+    }
+  }
+})
+
+test_that("relabeling the alternatives permutes the BHHH's constants' block", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f <- mcd_fixture("relabel", 2011, dup = TRUE)
+  set.seed(2111)
+  perm <- c(1L, 1L + sample.int(f$J - 1L))  # code c becomes perm[c]
+  g <- f
+  g$alt_idx <- perm[f$alt_idx]
+  # rows within a situation stay in their order; the constants follow
+  g$theta[f$K + perm[-1L] - 1L] <- f$theta[f$K + seq_len(f$J - 1L)]
+  idx <- c(seq_len(f$K), f$K + perm[-1L] - 1L)
+  expect_identical(mcd_call("bhhh", g)[idx, idx], mcd_call("bhhh", f))
+})
+
+test_that("non-finite scores and weights spread over the BHHH as the dense update did", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f0 <- mcd_fixture("non-finite", 2014)
+  row_off <- c(0L, cumsum(f0$M))
+  i <- 3L
+  r_ch <- row_off[i] + f0$choice_idx[i]
+  r_other <- row_off[i] + setdiff(seq_len(f0$M[i]), f0$choice_idx[i])[1L]
+  cells <- list(
+    # utilities that overflow: every probability, and the score, NaN
+    overflow = function(f) { f$X[r_other, 1L] <- 1e308; f$theta[1L] <- 2; f },
+    # a missing covariate: missing probabilities
+    na_x = function(f) { f$X[r_other, 1L] <- NA_real_; f },
+    # finite utilities, an infinite score: covariates of -1e308 (chosen) and
+    # 1e308 times a coefficient of 1e-306
+    infinite_score = function(f) {
+      f$X[r_ch, 1L] <- -1e308; f$X[r_other, 1L] <- 1e308; f$theta[1L] <- 1e-306; f
+    },
+    inf_weight = function(f) { f$weights[i] <- Inf; f },
+    nan_weight = function(f) { f$weights[i] <- NaN; f },
+    na_weight = function(f) { f$weights[i] <- NA_real_; f })
+  for (nm in names(cells)) {
+    f <- cells[[nm]](f0)
+    S <- mcd_call("scores", f)
+    if (nm == "infinite_score") {
+      expect_true(is.infinite(S[i, 1L]) && all(is.finite(S[i, -1L])))
+    }
+    B <- mcd_call("bhhh", f)
+    expect_true(any(!is.finite(B)), label = paste(nm, "has non-finite entries"))
+    mcd_same_pattern(B, mcd_bhhh_ref(S, f$weights), paste(nm, "BHHH"))
+  }
+})
+
+test_that("a shared BHHH result equals the per-thread accumulators' sum", {
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
+  skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (f in mcd_cells()[c(1L, 2L, 3L, 6L, 8L, 10L)]) {
+    set_omp_threads(2L)
+    shared <- mcd_call("bhhh", f, acc_bytes = 0)
+    expect_identical(shared, t(shared), label = paste(f$name, "symmetric"))
+    expect_equal(unclass(shared), unclass(mcd_call("bhhh", f)), tolerance = 1e-12,
+                 label = paste(f$name, "shared vs per-thread"))
+    # one thread adds into the result itself, whatever the budget
+    set_omp_threads(1L)
+    expect_identical(mcd_call("bhhh", f, acc_bytes = 0), mcd_call("bhhh", f),
+                     label = paste(f$name, "one thread"))
+  }
+  # Non-finite entries spread over a shared result as over per-thread ones
+  set_omp_threads(2L)
+  f0 <- mcd_fixture("non-finite, shared", 2015)
+  row_off <- c(0L, cumsum(f0$M))
+  r_other <- row_off[5L] + setdiff(seq_len(f0$M[5L]), f0$choice_idx[5L])[1L]
+  f <- f0
+  f$X[r_other, 1L] <- 1e308
+  f$theta[1L] <- 2
+  cells <- list(overflow = f)
+  for (w_bad in c(Inf, NA_real_)) {
+    f <- f0
+    f$weights[5L] <- w_bad
+    cells[[paste("weight", w_bad)]] <- f
+  }
+  for (nm in names(cells)) {
+    mcd_same_pattern(mcd_call("bhhh", cells[[nm]], acc_bytes = 0),
+                     unclass(mcd_call("bhhh", cells[[nm]])), paste(nm, "shared"))
+  }
+})
