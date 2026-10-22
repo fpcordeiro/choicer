@@ -529,8 +529,8 @@ mnl_cluster_meat_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
     .Call(`_choicer_mnl_cluster_meat_parallel`, theta, X, alt_idx, choice_idx, M, weights, cluster, use_asc, include_outside_option, acc_bytes)
 }
 
-mnl_scores_parallel <- function(theta, X, alt_idx, choice_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mnl_scores_parallel`, theta, X, alt_idx, choice_idx, M, use_asc, include_outside_option)
+mnl_scores_parallel <- function(theta, X, alt_idx, choice_idx, M, use_asc = TRUE, include_outside_option = FALSE, max_bytes = 2147483648.0) {
+    .Call(`_choicer_mnl_scores_parallel`, theta, X, alt_idx, choice_idx, M, use_asc, include_outside_option, max_bytes)
 }
 
 #' Prediction of choice probabilities and utilities based on fitted model
@@ -1532,8 +1532,8 @@ nl_cluster_meat_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M,
     .Call(`_choicer_nl_cluster_meat_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, cluster, use_asc, include_outside_option, acc_bytes)
 }
 
-nl_scores_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_nl_scores_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, use_asc, include_outside_option)
+nl_scores_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc = TRUE, include_outside_option = FALSE, max_bytes = 2147483648.0) {
+    .Call(`_choicer_nl_scores_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, use_asc, include_outside_option, max_bytes)
 }
 
 #' Numerical Hessian of the log-likelihood via finite differences

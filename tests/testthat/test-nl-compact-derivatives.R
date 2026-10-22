@@ -370,6 +370,14 @@ test_that("non-finite scores and weights spread over the NL BHHH as the dense up
   }
 })
 
+test_that("the NL score matrix refuses to exceed max_bytes", {
+  f <- ncd_fixture("guard", 3018, N = 5L)
+  expect_error(ncd_call("scores", f, max_bytes = 100),
+               "The score matrix would take 0.00 GiB (5 choice situations x",
+               fixed = TRUE)
+  expect_equal(dim(ncd_call("scores", f)), c(5L, length(f$theta)))
+})
+
 # --- Cluster meat ---------------------------------------------------------
 
 # The cluster meat kernel with labels coded as the R route codes them, and the

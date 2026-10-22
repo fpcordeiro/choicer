@@ -1052,10 +1052,12 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
 //
 // Returns the N x n_params matrix whose row i is the weight-free score
 // s_i = d log P_i / d theta over the beta, lambda and delta/ASC blocks.
-// Same loop body as nl_bhhh_parallel with the outer-product accumulator
-// replaced by a row write; weights are applied on the R side (see
-// .assemble_score_vcov in R/classes.R). Singleton-nest lambdas are fixed to
-// 1 and contribute no score (mirroring the gradient kernel).
+// Same loop body as the dense BHHH update had, with the outer product
+// replaced by a row write. Singleton-nest lambdas are fixed to 1 and
+// contribute no score (mirroring the gradient kernel). The variance routes
+// no longer form it (nl_bhhh_parallel and nl_cluster_meat_parallel sum the
+// scores in C++), so it stops above max_bytes (2 GiB by default) before
+// allocating.
 // [[Rcpp::export]]
 arma::mat nl_scores_parallel(
     const arma::vec& theta,
@@ -1065,7 +1067,8 @@ arma::mat nl_scores_parallel(
     const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double max_bytes = 2147483648.0
 ) {
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
@@ -1087,6 +1090,16 @@ arma::mat nl_scores_parallel(
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, "nl_scores_parallel");
+
+  const double bytes = sizeof(double) * static_cast<double>(N) *
+                       static_cast<double>(n_params);
+  if (!(bytes <= max_bytes)) {
+    Rcpp::stop("The score matrix would take %.2f GiB (%d choice situations x %d "
+               "parameters), more than max_bytes (%.2f GiB). vcov(type = ), "
+               "wesml_vcov() and the fit-time variances do not form it; pass "
+               "a larger max_bytes to compute it.",
+               bytes / 1073741824.0, N, n_params, max_bytes / 1073741824.0);
+  }
 
   // Memory: each thread's score and situation buffers; X beta, the N x n
   // matrix and its copy into R

@@ -381,8 +381,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mnl_scores_parallel
-arma::mat mnl_scores_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mnl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat mnl_scores_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option, const double max_bytes);
+RcppExport SEXP _choicer_mnl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP max_bytesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -393,7 +393,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mnl_scores_parallel(theta, X, alt_idx, choice_idx, M, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const double >::type max_bytes(max_bytesSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnl_scores_parallel(theta, X, alt_idx, choice_idx, M, use_asc, include_outside_option, max_bytes));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1092,8 +1093,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // nl_scores_parallel
-arma::mat nl_scores_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_nl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+arma::mat nl_scores_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const bool use_asc, const bool include_outside_option, const double max_bytes);
+RcppExport SEXP _choicer_nl_scores_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP max_bytesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -1105,7 +1106,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(nl_scores_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const double >::type max_bytes(max_bytesSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_scores_parallel(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc, include_outside_option, max_bytes));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1360,7 +1362,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 9},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 9},
     {"_choicer_mnl_cluster_meat_parallel", (DL_FUNC) &_choicer_mnl_cluster_meat_parallel, 10},
-    {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 7},
+    {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 8},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},
     {"_choicer_mnl_predict_shares", (DL_FUNC) &_choicer_mnl_predict_shares, 7},
     {"_choicer_blp_contraction", (DL_FUNC) &_choicer_blp_contraction, 10},
@@ -1394,7 +1396,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 10},
     {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 10},
     {"_choicer_nl_cluster_meat_parallel", (DL_FUNC) &_choicer_nl_cluster_meat_parallel, 11},
-    {"_choicer_nl_scores_parallel", (DL_FUNC) &_choicer_nl_scores_parallel, 8},
+    {"_choicer_nl_scores_parallel", (DL_FUNC) &_choicer_nl_scores_parallel, 9},
     {"_choicer_nl_loglik_numeric_hessian", (DL_FUNC) &_choicer_nl_loglik_numeric_hessian, 10},
     {"_choicer_nl_loglik_hessian_parallel", (DL_FUNC) &_choicer_nl_loglik_hessian_parallel, 10},
     {"_choicer_nl_predict", (DL_FUNC) &_choicer_nl_predict, 7},
