@@ -264,3 +264,32 @@ test_that("the NL memory error gives the number of threads that fits", {
   options(choicer.max_memory = NULL)
   expect_identical(B, nlm_call("bhhh", f))
 })
+
+test_that("NL threads sharing a result keep the dissimilarities' rows only while they fit", {
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
+  skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(2L)
+  # 1,000 alternatives in 250 nests (1,251 parameters): a 12.5 MB result.
+  # Two threads sharing it keep copies of the coefficients' rows (40 kB) or
+  # of the coefficients' and dissimilarities' rows (4.5 MB); their packed
+  # triangles (the default budget) take 12.5 MB.
+  f <- nlm_fixture(4205, J = 1000L, m = 4L, n_nests = 250L)
+  ns <- asNamespace("choicer")
+  n <- length(f$theta)
+  s <- 2 + 250
+  rows_bytes <- 2 * 8 * (n * s - s * (s - 1) / 2)
+  for (k in c("hessian", "bhhh")) {
+    kernel <- if (k == "hessian") ns$nl_loglik_hessian_parallel else ns$nl_bhhh_parallel
+    kcall <- function(acc_bytes) {
+      kernel(f$theta, f$X, f$alt_idx, f$choice_idx, f$nest_idx, f$M, f$weights,
+             acc_bytes = acc_bytes)
+    }
+    one <- nlm_one_thread(k, f)
+    old <- options(choicer.max_memory = one + 1e6)
+    expect_no_error(kcall(rows_bytes - 1))
+    expect_error(kcall(rows_bytes), "with 2 threads", label = k)
+    expect_error(kcall(2^31), "with 2 threads", label = k)
+    options(old)
+  }
+})

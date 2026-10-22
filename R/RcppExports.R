@@ -1501,8 +1501,9 @@ nl_loglik_gradient_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx,
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
 #' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
 #'   default), as in \code{mnl_bhhh_parallel()}; in a shared result the
-#'   coefficients' and the dissimilarities' rows stay private. \code{0}
-#'   forces the shared result (for tests).
+#'   coefficients' rows stay private, and the dissimilarities' while the
+#'   threads' copies of them fit in \code{acc_bytes}. \code{0} forces the
+#'   shared result, with the coefficients' rows only (for tests).
 #' @returns A symmetric positive-semidefinite information matrix
 #'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
 #' @examples

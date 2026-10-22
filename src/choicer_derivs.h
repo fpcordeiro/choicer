@@ -70,6 +70,18 @@ inline std::unique_ptr<double[]> padded_buffer(const std::size_t n) {
   return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
 }
 
+// T vectors of n values each (and 128 bytes of padding, as padded_buffer()),
+// built one at a time on the primary thread: a vector of T copies of one
+// vector would hold T + 1 of them at once.
+template <typename V>
+inline std::vector<std::vector<V>> thread_vectors(const std::size_t n, const int T,
+                                                  const V value = V()) {
+  std::vector<std::vector<V>> v;
+  v.reserve(static_cast<std::size_t>(T));
+  for (int t = 0; t < T; ++t) v.emplace_back(n + 128 / sizeof(V), value);
+  return v;
+}
+
 // ============================================================================
 // Memory guard
 //
