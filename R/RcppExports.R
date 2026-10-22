@@ -1527,6 +1527,10 @@ nl_bhhh_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights
     .Call(`_choicer_nl_bhhh_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
+nl_cluster_meat_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, cluster, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_nl_cluster_meat_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, cluster, use_asc, include_outside_option, acc_bytes)
+}
+
 nl_scores_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, use_asc = TRUE, include_outside_option = FALSE) {
     .Call(`_choicer_nl_scores_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, use_asc, include_outside_option)
 }

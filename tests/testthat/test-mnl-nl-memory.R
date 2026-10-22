@@ -156,7 +156,7 @@ nlm_fixture <- function(seed, N = 40L, J = 12L, m = 5L, K = 2L, n_nests = 4L) {
   f
 }
 
-nlm_kernels <- c("gradient", "gradient_opg", "hessian", "bhhh", "scores")
+nlm_kernels <- c("gradient", "gradient_opg", "hessian", "bhhh", "scores", "meat")
 
 nlm_call <- function(kernel, f) {
   ns <- asNamespace("choicer")
@@ -174,7 +174,10 @@ nlm_call <- function(kernel, f) {
     bhhh = ns$nl_bhhh_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
                                f$nest_idx, f$M, f$weights),
     scores = ns$nl_scores_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
-                                   f$nest_idx, f$M))
+                                   f$nest_idx, f$M),
+    meat = ns$nl_cluster_meat_parallel(f$theta, f$X, f$alt_idx, f$choice_idx,
+                                       f$nest_idx, f$M, f$weights,
+                                       rep(1:4, length.out = length(f$M))))
 }
 
 nlm_one_thread <- function(kernel, f) {

@@ -1,8 +1,9 @@
-# The nested logit Hessian and BHHH kernels on designs with many
-# alternatives and sparse choice sets. A situation's score and Hessian are
-# nonzero only on the coefficients, the dissimilarities of the nests it
+# The nested logit Hessian, BHHH and cluster-meat kernels on designs with
+# many alternatives and sparse choice sets. A situation's score and Hessian
+# are nonzero only on the coefficients, the dissimilarities of the nests it
 # offers and the constants of the alternatives it offers, so the kernels form
-# them in that compact block and add it into the n x n result. These designs (30 alternatives in eight
+# them in that compact block and add it into the n x n result (the meat a
+# cluster's summed score, over the parameters its situations touch). These designs (30 alternatives in eight
 # nests of three and six singletons, choice sets of 3-8, dissimilarities on
 # both sides of one) exercise the slot maps: nests offered in part or not at
 # all, singleton nests (their dissimilarity fixed at one), many small nests,
@@ -67,7 +68,8 @@ ncd_call <- function(kernel, f, theta = f$theta, weights = f$weights, ...) {
     gradient = do.call(ns$nl_loglik_gradient_parallel, c(a, list(...))),
     hessian = do.call(ns$nl_loglik_hessian_parallel, c(a, list(...))),
     bhhh = do.call(ns$nl_bhhh_parallel, c(a, list(...))),
-    scores = do.call(ns$nl_scores_parallel, c(a[-7L], list(...))))
+    scores = do.call(ns$nl_scores_parallel, c(a[-7L], list(...))),
+    meat = do.call(ns$nl_cluster_meat_parallel, c(a, list(...))))
 }
 
 # The dense BHHH update, situation by situation: B + w_i s_i s_i'.
@@ -288,20 +290,104 @@ test_that("non-finite scores and weights spread over the NL BHHH as the dense up
   }
 })
 
-test_that("a shared NL BHHH result equals the per-thread accumulators' sum", {
+# --- Cluster meat ---------------------------------------------------------
+
+# The cluster meat kernel with labels coded as the R route codes them, and the
+# R route's meat, crossprod(rowsum(w * S, cluster)).
+ncd_meat <- function(f, cl, ...) {
+  lab <- as.character(cl)
+  ncd_call("meat", f, cluster = match(lab, unique(lab)), ...)
+}
+ncd_meat_ref <- function(f, cl) {
+  crossprod(rowsum(f$weights * ncd_call("scores", f), group = as.character(cl)))
+}
+
+test_that("the NL cluster meat equals crossprod(rowsum(w * S, cluster))", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  for (f in ncd_cells()) {
+    set.seed(3100)
+    labs <- list(singletons = seq_len(f$N), one = rep(1L, f$N),
+                 coarse = sample(1:5, f$N, replace = TRUE),
+                 few = rep(c("b", "a"), length.out = f$N))
+    for (nm in names(labs)) {
+      ref <- ncd_meat_ref(f, labs[[nm]])
+      for (nt in 1:2) {
+        set_omp_threads(nt)
+        M <- ncd_meat(f, labs[[nm]])
+        expect_identical(M, t(M), label = paste(f$name, nm, "symmetric"))
+        expect_equal(unclass(M), ref, tolerance = 1e-12,
+                     label = sprintf("[%s, %s, %d threads]", f$name, nm, nt))
+      }
+    }
+  }
+})
+
+test_that("the NL cluster meat checks its codes after the other inputs and before its memory", {
+  f <- ncd_fixture("codes", 3013)
+  old <- options(choicer.max_memory = 1)
+  on.exit(options(old), add = TRUE)
+  expect_error(ncd_call("meat", f, cluster = rep(1L, f$N - 1L)),
+               "cluster length \\([0-9]+\\) does not match the number of choice situations")
+  bad <- rep(1L, f$N); bad[3L] <- 0L
+  expect_error(ncd_call("meat", f, cluster = bad),
+               "cluster codes must be positive integers \\(situation 3 has 0\\)")
+  bad[3L] <- NA_integer_
+  expect_error(ncd_call("meat", f, cluster = bad), "situation 3 has NA")
+  g <- f; g$choice_idx[2L] <- 99L
+  expect_error(ncd_call("meat", g, cluster = bad), "Invalid chosen alternative index")
+  expect_error(ncd_call("meat", f, cluster = rep(1L, f$N)), "needs about")
+})
+
+test_that("non-finite scores, weights and sums spread over the NL meat as crossprod() did", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  f0 <- ncd_fixture("non-finite", 3014)
+  row_off <- c(0L, cumsum(f0$M))
+  other <- function(i) row_off[i] + setdiff(seq_len(f0$M[i]), f0$choice_idx[i])[1L]
+  chosen <- function(i) row_off[i] + f0$choice_idx[i]
+  cl <- rep(1:6, length.out = f0$N)  # situations 3 and 9 in cluster 3
+  cells <- list(
+    # utilities that overflow: NaN scores
+    overflow = function(f) { f$X[other(3L), 1L] <- 1e308; f$theta[1L] <- 2; f },
+    # two finite weighted scores near -1e308 in one cluster: their sum overflows
+    overflowing_sum = function(f) {
+      for (i in c(3L, 9L)) { f$X[chosen(i), 1L] <- 0; f$X[other(i), 1L] <- 1e308 }
+      f$theta[1L] <- 1e-306; f$weights[c(3L, 9L)] <- 1; f
+    },
+    inf_weight = function(f) { f$weights[3L] <- Inf; f },
+    na_weight = function(f) { f$weights[3L] <- NA_real_; f })
+  for (nm in names(cells)) {
+    f <- cells[[nm]](f0)
+    if (nm == "overflowing_sum") {
+      S <- ncd_call("scores", f)
+      expect_true(all(is.finite(S)) && !is.finite(sum(S[c(3L, 9L), 1L])))
+    }
+    M <- ncd_meat(f, cl)
+    expect_true(any(!is.finite(M)), label = paste(nm, "has non-finite entries"))
+    ncd_same_pattern(M, ncd_meat_ref(f, cl), paste(nm, "meat"))
+  }
+})
+
+test_that("shared NL BHHH and meat results equal the per-thread accumulators' sums", {
   skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
   for (f in ncd_cells()[c(1L, 2L, 3L, 5L, 7L, 9L)]) {
-    set_omp_threads(2L)
-    shared <- ncd_call("bhhh", f, acc_bytes = 0)
-    expect_identical(shared, t(shared), label = paste(f$name, "symmetric"))
-    expect_equal(unclass(shared), unclass(ncd_call("bhhh", f)), tolerance = 1e-12,
-                 label = paste(f$name, "shared vs per-thread"))
-    # one thread adds into the result itself, whatever the budget
-    set_omp_threads(1L)
-    expect_identical(ncd_call("bhhh", f, acc_bytes = 0), ncd_call("bhhh", f),
-                     label = paste(f$name, "one thread"))
+    codes <- (seq_len(f$N) - 1L) %/% 3L + 1L
+    for (k in c("bhhh", "meat")) {
+      what <- paste(f$name, k)
+      kcall <- function(...) {
+        if (k == "meat") ncd_call(k, f, cluster = codes, ...) else ncd_call(k, f, ...)
+      }
+      set_omp_threads(2L)
+      shared <- kcall(acc_bytes = 0)
+      expect_identical(shared, t(shared), label = paste(what, "symmetric"))
+      expect_equal(unclass(shared), unclass(kcall()), tolerance = 1e-12,
+                   label = paste(what, "shared vs per-thread"))
+      # one thread adds into the result itself, whatever the budget
+      set_omp_threads(1L)
+      expect_identical(kcall(acc_bytes = 0), kcall(), label = paste(what, "one thread"))
+    }
   }
   set_omp_threads(2L)
   f0 <- ncd_fixture("non-finite, shared", 3015)
@@ -316,8 +402,13 @@ test_that("a shared NL BHHH result equals the per-thread accumulators' sum", {
     f$weights[5L] <- w_bad
     cells[[paste("weight", w_bad)]] <- f
   }
+  codes <- rep(1:5, length.out = f0$N)
   for (nm in names(cells)) {
-    ncd_same_pattern(ncd_call("bhhh", cells[[nm]], acc_bytes = 0),
-                     unclass(ncd_call("bhhh", cells[[nm]])), paste(nm, "shared"))
+    for (k in c("bhhh", "meat")) {
+      extra <- if (k == "meat") list(cluster = codes) else list()
+      ncd_same_pattern(do.call(ncd_call, c(list(k, cells[[nm]], acc_bytes = 0), extra)),
+                       unclass(do.call(ncd_call, c(list(k, cells[[nm]]), extra))),
+                       paste(nm, k, "shared"))
+    }
   }
 })
