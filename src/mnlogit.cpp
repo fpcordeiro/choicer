@@ -1,6 +1,42 @@
 // [[Rcpp::depends(RcppArmadillo)]]
 #include "choicer.h"
 #include "choicer_internal.h"
+#include "choicer_derivs.h"
+
+// Memory of the MNL kernels' loop over the choice situations, an upper bound
+// per thread: the utilities, probabilities and score differences (V_i,
+// inside_utils, P_i, diff_vec; max_m + 1 doubles each), the copy of X_i that
+// Armadillo makes for X_i.t() * v (max_m x K) and its product (K), and n_vecs
+// vectors of the n parameters (the thread's sums or scores).
+inline double mnl_thread_bytes(const ChoiceLayout& lay, const int K,
+                               const int n_params, const double n_vecs) {
+  const double m = static_cast<double>(lay.max_m);
+  return sizeof(double) * (4.0 * (m + 1.0) + m * K + K +
+                           n_vecs * static_cast<double>(n_params));
+}
+
+// Each thread's dense n x n accumulator of the Hessian and BHHH kernels,
+// allocated here on the primary thread, zero (an allocation failure is an R
+// error naming the size, not a failure inside the parallel region).
+inline std::vector<arma::mat> mnl_thread_accumulators(const int n_params,
+                                                      const int n_threads,
+                                                      const char* what) {
+  std::vector<arma::mat> acc;
+  try {
+    acc.reserve(n_threads);
+    for (int i = 0; i < n_threads; ++i) {
+      acc.emplace_back(n_params, n_params, arma::fill::zeros);
+    }
+  } catch (const std::bad_alloc&) {
+    std::vector<arma::mat>().swap(acc);  // release before reporting
+    Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB per "
+               "thread for %d threads. Run fewer threads with "
+               "set_num_threads().", what,
+               sizeof(double) * static_cast<double>(n_params) *
+                   static_cast<double>(n_params) / 1e9, n_threads);
+  }
+  return acc;
+}
 
 // The MNL gradient kernel's pass over the choice situations: the weighted
 // sums of their log-probabilities and scores and, with OpgDiag, the diagonal
@@ -201,6 +237,18 @@ Rcpp::List mnl_loglik_gradient_parallel(
   // Rcpp::stop() is only safe outside parallel regions.
   validate_choices(lay, include_outside_option, nullptr);
 
+  // Memory: each thread's sums and situation buffers (with opg_diag also its
+  // diagonal, the constants' scores and the terms), X beta, the sums and the
+  // returned copies
+  kernel_check_memory(
+      "gradient", kernel_team_threads(lay.N),
+      mnl_thread_bytes(lay, K, n_params, opg_diag ? 3.0 : 1.0) +
+          (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m)) + 8.0 * K : 0.0),
+      [&](const int) {
+        return 8.0 * static_cast<double>(lay.n_rows) +
+               (opg_diag ? 32.0 : 16.0) * n_params;
+      });
+
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
@@ -306,18 +354,30 @@ arma::mat mnl_bhhh_parallel(
   // --- Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, "mnl_bhhh_parallel");
 
+  // Memory: each thread's n x n accumulator, score and situation buffers; X
+  // beta, the result and its copy into R
+  const double nn = static_cast<double>(n_params) * n_params;
+  const int n_threads = kernel_team_threads(N);
+  kernel_check_memory("BHHH matrix", n_threads,
+                      8.0 * nn + mnl_thread_bytes(lay, K, n_params, 1.0),
+                      [&](const int) {
+                        return 8.0 * static_cast<double>(lay.n_rows) + 16.0 * nn;
+                      });
+
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Global BHHH accumulator
+  // Global BHHH accumulator and the threads' own, allocated here
   arma::mat global_bhhh = arma::zeros(n_params, n_params);
+  std::vector<arma::mat> locals =
+      mnl_thread_accumulators(n_params, n_threads, "BHHH");
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
     // Thread-local accumulator
-    arma::mat local_bhhh = arma::zeros(n_params, n_params);
+    arma::mat& local_bhhh = locals[kernel_thread_num()];
     arma::vec diff_vec; // resized per individual
     arma::vec s_i;      // per-individual score
 
@@ -375,14 +435,10 @@ arma::mat mnl_bhhh_parallel(
 
       local_bhhh += w_i * s_i * s_i.t();
     } // end of i loop
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_bhhh += local_bhhh;
-    }
   } // end parallel region
+
+  // The threads' sums in thread order, from +0
+  for (const arma::mat& local_bhhh : locals) global_bhhh += local_bhhh;
 
   // Return PSD information matrix (same sign convention as negated Hessian).
   return global_bhhh;
@@ -415,6 +471,14 @@ arma::mat mnl_scores_parallel(
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, "mnl_scores_parallel");
+
+  // Memory: each thread's score and situation buffers; X beta, the N x n
+  // matrix and its copy into R
+  kernel_check_memory("score matrix", kernel_team_threads(N),
+                      mnl_thread_bytes(lay, K, n_params, 1.0), [&](const int) {
+                        return 8.0 * static_cast<double>(lay.n_rows) +
+                               16.0 * static_cast<double>(N) * n_params;
+                      });
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
@@ -890,18 +954,32 @@ arma::mat mnl_loglik_hessian_parallel(
                                                &weights);
   const choicer_off N = lay.N;
 
+  // Memory: each thread's n x n accumulator, a situation's blocks (BB, BD,
+  // DD and their means) and situation buffers; X beta, the result and its
+  // copy into R
+  const double nn = static_cast<double>(n_params) * n_params;
+  const double J_asc = n_params - K;
+  const int n_threads = kernel_team_threads(N);
+  kernel_check_memory(
+      "Hessian", n_threads,
+      8.0 * nn + 8.0 * (K * (K + 2.0) + K * J_asc + J_asc + J_asc * J_asc) +
+          mnl_thread_bytes(lay, K, n_params, 0.0),
+      [&](const int) { return 8.0 * static_cast<double>(lay.n_rows) + 16.0 * nn; });
+
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Prepare global accumulator
+  // Prepare global accumulator and the threads' own, allocated here
   arma::mat global_hess = arma::zeros(n_params, n_params);
+  std::vector<arma::mat> locals =
+      mnl_thread_accumulators(n_params, n_threads, "Hessian");
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
     // Thread-local accumulator
-    arma::mat local_hess = arma::zeros(n_params, n_params);
+    arma::mat& local_hess = locals[kernel_thread_num()];
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1029,15 +1107,10 @@ arma::mat mnl_loglik_hessian_parallel(
       }
 
     } // end of i loop
-
-    // Combine partial accumulators into global accumulator
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_hess += local_hess;
-    }
   } // end parallel region
+
+  // Combine the threads' accumulators in thread order, from +0
+  for (const arma::mat& local_hess : locals) global_hess += local_hess;
 
   // Enforce exact symmetry (numerical tidy-up)
   global_hess = 0.5 * (global_hess + global_hess.t());
