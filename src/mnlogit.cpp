@@ -1250,13 +1250,17 @@ arma::vec blp_contraction(
 // changes nothing, but NaN, or NA for an NA, for a non-finite one
 // (overflowing utilities, a covariate past the largest double), added here
 // to that row's entries outside the block. The entries inside keep their
-// values (an infinite mean leaves infinities there, as before).
+// values (an infinite mean leaves infinities there, as before). A NaN mean
+// makes its whole row NaN in this thread's sums, inside the block through
+// the products and outside through these terms, so nan_row marks the row
+// and its later spreads, which change nothing, are skipped.
 template <bool Shared>
 inline void mnl_hessian_add(const SymAcc& acc, double* buf,
                             const MnlSituationMap& mp, const int K,
                             const int J_d, const double* BB,
                             const double* mu_b, const double* BD,
-                            const double* mu_d, const double w) {
+                            const double* mu_d, const double w,
+                            char* nan_row) {
   const std::size_t Ks = static_cast<std::size_t>(K);
   for (int c = 0; c < K; ++c) {
     for (int r = 0; r <= c; ++r) {
@@ -1285,9 +1289,13 @@ inline void mnl_hessian_add(const SymAcc& acc, double* buf,
   for (int l = 0; l < K + mp.a; ++l) {
     const double mean = l < K ? mu_b[l] : mu_d[l - K];
     if (std::isfinite(mean)) continue;
+    const int g = mp.global(l, K);
+    if (std::isnan(mean)) {
+      if (nan_row[g]) continue;
+      nan_row[g] = 1;
+    }
     double v = 0.0 - mean * 0.0;
     v *= w;
-    const int g = mp.global(l, K);
     for (int j = 0; j < J_d; ++j) {
       if (mp.slot_of[j] >= 0) continue;  // inside the block
       const int h = K + j;
@@ -1359,15 +1367,15 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   const choicer_off N = lay.N;
 
   // Memory: each thread's slot map, a situation's blocks (BB, BD, the means
-  // and K products), the non-finite-weight records and situation buffers;
-  // X beta, the result and the threads' accumulators
+  // and K products), the non-finite-weight records, the NaN rows' marks and
+  // situation buffers; X beta, the result and the threads' accumulators
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("Hessian", n_threads,
                       mnl_map_bytes(J_d, lay.max_m) +
                           8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + 64.0) +
-                          6.0 * n_params + mnl_thread_bytes(lay, K, n_params, 0.0),
+                          7.0 * n_params + 128.0 + mnl_thread_bytes(lay, K, n_params, 0.0),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) +
                                sym_acc_need(n_params, K, t, acc_bytes);
@@ -1383,6 +1391,9 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
   std::vector<std::vector<double>> blocks = mnl_thread_buffers(blk, n_threads);
   std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
+  std::vector<std::vector<char>> nan_rows(
+      static_cast<std::size_t>(n_threads),
+      std::vector<char>(static_cast<std::size_t>(n_params) + 128, 0));
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
   const double* Xm = X.memptr();
   const arma::uword n_rows = X.n_rows;
@@ -1394,6 +1405,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
     const int tid = kernel_thread_num();
     MnlSituationMap& mp = *maps[tid];
     NonFiniteRecord& nf = nonfinite[tid];
+    char* nan_row = nan_rows[tid].data();
     double* acc_t = acc.base(tid);
     // BB (K x K), mu_b (K), BD (K x a), mu_d (a) and K products, in one
     // buffer
@@ -1465,9 +1477,11 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
       }
 
       if (acc.shared) {
-        mnl_hessian_add<true>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i);
+        mnl_hessian_add<true>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
+                              nan_row);
       } else {
-        mnl_hessian_add<false>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i);
+        mnl_hessian_add<false>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
+                               nan_row);
       }
       mnl_situation_map_clear(mp);
     } // end of i loop
