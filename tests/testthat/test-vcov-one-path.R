@@ -316,20 +316,16 @@ test_that("multinomial and nested logit variances follow their post-hoc routes",
       post <- suppressMessages(vcov(fit, type = vop_type(se)))
       lazy <- vop_lazy(fit)
       what <- paste("MNL", sv, se)
-      if (se %in% c("hessian", "cluster")) {
-        expect_identical(post, fit$vcov, label = what)
-      } else {
-        # The fit's BHHH kernel against the post-hoc score matrix: the same
-        # sums in another order.
-        expect_equal(post, fit$vcov, tolerance = 1e-10, label = what)
-      }
-      # The lazy route (compute_hessian()) is the fit's kernel route, except
-      # for the sandwich (the post-hoc route).
-      if (se == "sandwich") {
-        expect_equal(lazy, fit$vcov, tolerance = 1e-10, label = paste("lazy", what))
-      } else {
-        expect_identical(lazy, fit$vcov, label = paste("lazy", what))
-      }
+      # One route: the fit's variance is the one vcov() returns post hoc and
+      # the lazy route's, bit for bit, and a fit that keeps no data has it.
+      expect_identical(post, fit$vcov, label = what)
+      expect_identical(lazy, fit$vcov, label = paste("lazy", what))
+      nodata <- suppressMessages(run_mnlogit(
+        dm, "id", "alt", "choice", c("x1", "x2"), scale_vars = sv,
+        se_method = se, cluster_col = if (se == "cluster") "clus",
+        keep_data = FALSE))
+      expect_null(nodata$data)
+      expect_identical(nodata$vcov, fit$vcov, label = paste("keep_data = FALSE", what))
     }
   }
   simn <- simulate_nl_data(N = 400, seed = 22)
@@ -342,12 +338,68 @@ test_that("multinomial and nested logit variances follow their post-hoc routes",
         dn, "id", "j", "choice", c("X", "W"), "nest", se_method = se,
         cluster_col = if (se == "cluster") "clus", scale_vars = sv))
       post <- suppressMessages(vcov(fit, type = vop_type(se)))
-      if (se %in% c("hessian", "numeric", "cluster")) {
-        expect_identical(post, fit$vcov, label = what)
-      } else {
-        expect_equal(post, fit$vcov, tolerance = 1e-10, label = what)
-      }
+      expect_identical(post, fit$vcov, label = what)
+      expect_identical(vop_lazy(fit), fit$vcov, label = paste("lazy", what))
+      nodata <- suppressMessages(run_nestlogit(
+        dn, "id", "j", "choice", c("X", "W"), "nest", se_method = se,
+        cluster_col = if (se == "cluster") "clus", scale_vars = sv,
+        keep_data = FALSE))
+      expect_null(nodata$data)
+      expect_identical(nodata$vcov, fit$vcov, label = paste("keep_data = FALSE", what))
     }
+  }
+})
+
+test_that("multinomial and nested logit variances never form the score matrix", {
+  skip_on_cran()
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  # Non-uniform weights, so that w, w^2 and sqrt(w) give different meats
+  dm <- data.table::as.data.table(
+    simulate_mnl_data(N = 200, J = 4, seed = 23, outside_option = FALSE)$data)
+  dm[, `:=`(clus = (id - 1L) %/% 10L, w = 0.5 + id %% 3)]
+  dn <- data.table::as.data.table(simulate_nl_data(N = 300, seed = 24)$data)
+  dn[, `:=`(clus = (id - 1L) %/% 10L, w = 0.5 + id %% 3)]
+  fit_mnl <- function(se, ...) {
+    suppressWarnings(suppressMessages(run_mnlogit(
+      dm, "id", "alt", "choice", c("x1", "x2"), weights_col = "w",
+      se_method = se, cluster_col = "clus", ...)))
+  }
+  fit_nl <- function(se, ...) {
+    suppressWarnings(suppressMessages(run_nestlogit(
+      dn, "id", "j", "choice", c("X", "W"), "nest", weights_col = "w",
+      se_method = se, cluster_col = "clus", ...)))
+  }
+  fits <- list(mnl = fit_mnl("cluster"), nl = fit_nl("cluster"))
+  for (m in names(fits)) {
+    fit <- fits[[m]]
+    d <- fit$data
+    # The old route, from the score matrix
+    S <- choicer:::compute_scores(fit)
+    A <- choicer:::.compute_bread(fit)
+    old <- function(B) choicer:::.sandwich_combine(A, B)$vcov
+    ref <- list(
+      robust = old(crossprod(d$weights * S)),
+      cluster = old(crossprod(rowsum(d$weights * S, group = as.character(d$cluster)))),
+      bhhh = choicer:::invert_hessian(crossprod(sqrt(d$weights) * S))$vcov)
+    with_mocked_bindings({
+      for (type in names(ref)) {
+        expect_equal(unname(vcov(fit, type = type)), unname(ref[[type]]),
+                     tolerance = 1e-10, label = sprintf("[%s] vcov(type = %s)", m, type))
+      }
+      expect_equal(unname(suppressWarnings(wesml_vcov(fit))), unname(ref$robust),
+                   tolerance = 1e-10, label = paste(m, "wesml_vcov()"))
+      # every se_method's variance at fit time
+      for (se in c("hessian", "bhhh", "sandwich", "cluster")) {
+        f <- if (m == "mnl") fit_mnl(se) else fit_nl(se)
+        expect_null(f$variance_error, label = paste(m, se, "at fit time"))
+        expect_true(all(is.finite(f$se)), label = paste(m, se, "standard errors"))
+      }
+    },
+    mnl_scores_parallel = function(...) stop("the score matrix was formed"),
+    nl_scores_parallel = function(...) stop("the score matrix was formed"))
+    expect_equal(unname(fit$vcov), unname(ref$cluster), tolerance = 1e-10,
+                 label = paste(m, "fit-time cluster vcov"))
   }
 })
 
