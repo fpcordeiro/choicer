@@ -81,6 +81,232 @@ static inline std::vector<arma::mat> nl_thread_accumulators(const int n_params,
   return acc;
 }
 
+// ============================================================================
+// Compact blocks of the NL derivative kernels
+//
+// A situation's score and Hessian live on its compact block: the K
+// coefficients; then the dissimilarities of the non-singleton nests it offers
+// whose inclusive value log I_k is finite (the lambda entries the dense
+// kernels touched; the others' scores are 0); then the free constants of the
+// alternatives it offers. Each range is in increasing order, so the block's
+// global order is increasing (theta holds beta, then the dissimilarities in
+// nest order, then the constants). A situation listing an alternative twice
+// adds both rows into one constant slot, in row order, as
+// scatter_delta_grad() adds them into one constant. NlSituationMap holds the
+// slots, one per thread, sized on the primary thread for the largest
+// situation, so that building them allocates nothing; the markers are -1
+// except while a situation is mapped.
+// ============================================================================
+struct NlSituationMap {
+  std::vector<int> slot_of;      // free constant j -> slot, or -1 (J_d entries)
+  std::vector<int> delta;        // constant slot -> free constant, increasing
+  std::vector<int> row_slot;     // row of the situation -> constant slot, or -1
+  std::vector<int> lam_slot_of;  // dissimilarity d -> slot, or -1 (K_l entries)
+  std::vector<int> lam;          // lambda slot -> dissimilarity, increasing
+  int a = 0;                     // constant slots
+  int n_lam = 0;                 // lambda slots
+  int K_l = 0;                   // dissimilarities in theta
+  char pad[128];                 // keeps the next thread's map off these lines
+
+  // Each array is reserved 32 entries (128 bytes) beyond its largest size,
+  // so that no two threads' arrays share a cache line.
+  NlSituationMap(const int J_d, const int K_l_, const choicer_off max_m)
+      : slot_of(static_cast<std::size_t>(J_d) + 32, -1),
+        lam_slot_of(static_cast<std::size_t>(K_l_) + 32, -1), K_l(K_l_) {
+    delta.reserve(static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32);
+    row_slot.reserve(static_cast<std::size_t>(max_m) + 32);
+    lam.reserve(static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) + 32);
+  }
+  // Global parameter of local index i (the K coefficients first).
+  int global(const int i, const int K) const {
+    if (i < K) return i;
+    if (i < K + n_lam) return K + lam[i - K];
+    return K + K_l + delta[i - K - n_lam];
+  }
+  // Local index of global parameter g, or -1 outside the situation's block.
+  int local(const int g, const int K) const {
+    if (g < K) return g;
+    if (g < K + K_l) {
+      const int k = lam_slot_of[g - K];
+      return k >= 0 ? K + k : -1;
+    }
+    const int k = slot_of[g - K - K_l];
+    return k >= 0 ? K + n_lam + k : -1;
+  }
+};
+
+// Bytes of one thread's NlSituationMap.
+static inline double nl_map_bytes(const int J_d, const int K_l,
+                                  const choicer_off max_m) {
+  const double m = static_cast<double>(max_m);
+  return sizeof(int) * (J_d + std::min<double>(J_d, m) + m + K_l +
+                        std::min<double>(K_l, m) + 160.0) + 256.0;
+}
+
+// Every thread's map, each in its own allocation, on the primary thread.
+using NlSituationMaps = std::vector<std::unique_ptr<NlSituationMap>>;
+static inline NlSituationMaps nl_situation_maps(const int J_d, const int K_l,
+                                                const choicer_off max_m,
+                                                const int n_threads) {
+  NlSituationMaps maps;
+  maps.reserve(n_threads);
+  for (int i = 0; i < n_threads; ++i) {
+    maps.emplace_back(new NlSituationMap(J_d, K_l, max_m));
+  }
+  return maps;
+}
+
+// Every thread's probability buffers, nests of a situation's rows and per-nest
+// sums, on the primary thread.
+struct NlThreadBuffers {
+  NlProbs pr;
+  std::vector<int> nest0;        // each row's 0-based nest
+  std::vector<double> sum_P_V;   // sum_{j in B_k} P(j|k) V_j, zero between situations
+  NlThreadBuffers(const choicer_off max_m, const int n_nests)
+      : pr(max_m, n_nests), nest0(static_cast<std::size_t>(max_m) + 32),
+        sum_P_V(static_cast<std::size_t>(n_nests) + 16, 0.0) {}
+};
+static inline std::vector<NlThreadBuffers> nl_thread_buffers(const choicer_off max_m,
+                                                             const int n_nests,
+                                                             const int n_threads) {
+  std::vector<NlThreadBuffers> buf;
+  buf.reserve(n_threads);
+  for (int i = 0; i < n_threads; ++i) buf.emplace_back(max_m, n_nests);
+  return buf;
+}
+
+// Each thread's buffer of n doubles, on the primary thread.
+static inline std::vector<std::vector<double>> nl_thread_vectors(const std::size_t n,
+                                                                 const int n_threads) {
+  return std::vector<std::vector<double>>(static_cast<std::size_t>(n_threads),
+                                          std::vector<double>(n + 16));
+}
+
+// Free constant of a row with 0-based alternative alt0 (as
+// scatter_delta_grad() places it), or -1.
+static inline int nl_free_delta(const int alt0, const bool has_delta,
+                                const bool include_outside_option) {
+  if (!has_delta) return -1;
+  return include_outside_option ? alt0 : alt0 - 1;
+}
+
+// The slots of situation i: its distinct free constants and the slot of each
+// of its rows (has_delta: use_asc with constants in theta), and the
+// dissimilarities of its rows' non-singleton nests whose log I_k is finite
+// (lam_theta: each nest's position in theta, -1 for a singleton).
+// nl_situation_map_clear() resets the markers.
+static inline void nl_situation_map(const ChoiceLayout& lay, const choicer_off i,
+                                    const int* nest0, const double* log_I_k,
+                                    const arma::ivec& lam_theta, const int K,
+                                    const bool has_delta,
+                                    const bool include_outside_option,
+                                    NlSituationMap& mp) {
+  const int* alt = lay.alt + lay.row_off[i];
+  const int m = lay.m(i);
+  mp.delta.clear();
+  mp.lam.clear();
+  for (int r = 0; r < m; ++r) {
+    const int j = nl_free_delta(alt[r] - 1, has_delta, include_outside_option);
+    if (j >= 0 && mp.slot_of[j] < 0) {
+      mp.slot_of[j] = 0;  // seen
+      mp.delta.push_back(j);
+    }
+    const int k = nest0[r];
+    const int t = static_cast<int>(lam_theta[k]);
+    if (t >= 0 && std::isfinite(log_I_k[k]) && mp.lam_slot_of[t - K] < 0) {
+      mp.lam_slot_of[t - K] = 0;  // seen
+      mp.lam.push_back(t - K);
+    }
+  }
+  std::sort(mp.delta.begin(), mp.delta.end());
+  std::sort(mp.lam.begin(), mp.lam.end());
+  mp.a = static_cast<int>(mp.delta.size());
+  mp.n_lam = static_cast<int>(mp.lam.size());
+  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = k;
+  for (int k = 0; k < mp.n_lam; ++k) mp.lam_slot_of[mp.lam[k]] = k;
+  mp.row_slot.resize(static_cast<std::size_t>(m));
+  for (int r = 0; r < m; ++r) {
+    const int j = nl_free_delta(alt[r] - 1, has_delta, include_outside_option);
+    mp.row_slot[r] = j >= 0 ? mp.slot_of[j] : -1;
+  }
+}
+
+static inline void nl_situation_map_clear(NlSituationMap& mp) {
+  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = -1;
+  for (int k = 0; k < mp.n_lam; ++k) mp.lam_slot_of[mp.lam[k]] = -1;
+}
+
+// The weight-free score of situation i on its compact block (the map built
+// for i), into s_c, and its V-space gradient g into grad_vec, with the
+// expressions of the dense kernels: the coefficients' entries as X_i' g, each
+// slot's differences in row order at scale 1.0 (as scatter_delta_grad()), and
+// each dissimilarity's score from its nest's sum of P(j|k) V_j. lam_nest maps
+// a dissimilarity to its nest; sum_P_V (one entry per nest) is zero on entry
+// and left zero.
+static inline void nl_situation_score(const arma::mat& X,
+                                      const arma::uword start_idx, const int m_i,
+                                      const int* nest0, const double* V_inside,
+                                      NlProbs& pr, const arma::vec& lambda,
+                                      const int* lam_nest,
+                                      const int chosen_nest_k,
+                                      const int chosen_inside_idx,
+                                      const NlSituationMap& mp, const int K,
+                                      double* sum_P_V, arma::vec& grad_vec,
+                                      arma::vec& s_c) {
+  const auto X_i = X.rows(start_idx, start_idx + m_i - 1); // m_i x K
+  const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+  const double* P_j_given_k = pr.P_j_given_k.data();
+  const double* P_k = pr.P_k.data();
+  const double* log_I_k = pr.log_I_k.data();
+
+  // grad_vec[j] = -P_i[j]
+  //             + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
+  //             + 1/lambda_k                          if j == chosen alt
+  grad_vec.set_size(m_i);
+  grad_vec = -P_i;
+  if (chosen_nest_k >= 0) { // not outside option
+    const double lambda_chosen = lambda[chosen_nest_k];
+    const double term_scale = 1.0 - 1.0 / lambda_chosen;
+    for (int j = 0; j < m_i; ++j) {
+      if (nest0[j] == chosen_nest_k) {
+        grad_vec[j] += P_j_given_k[j] * term_scale;
+      }
+    }
+    grad_vec[chosen_inside_idx] += 1.0 / lambda_chosen;
+  }
+
+  s_c.zeros();
+  s_c.subvec(0, K - 1) = X_i.t() * grad_vec;
+  const int d0 = K + mp.n_lam;  // the first constant slot
+  for (int r = 0; r < m_i; ++r) {
+    const int k = mp.row_slot[r];
+    if (k >= 0) s_c[d0 + k] += 1.0 * grad_vec[r];
+  }
+
+  // The dissimilarities: sum_{j in B_k} P(j|B_k) * V_ij, then each touched
+  // nest's score
+  for (int j = 0; j < m_i; ++j) {
+    sum_P_V[nest0[j]] += P_j_given_k[j] * V_inside[j];
+  }
+  for (int l = 0; l < mp.n_lam; ++l) {
+    const int k = lam_nest[mp.lam[l]];
+    const double lambda_k = lambda[k];
+    double grad_lambda_k = 0.0;
+    double term_in_brackets = log_I_k[k] - (1.0 / lambda_k) * sum_P_V[k];
+    double P_k_k = P_k[k];
+
+    if (k == chosen_nest_k) {
+      grad_lambda_k += (1.0 - P_k_k) * term_in_brackets;
+      double V_chosen = V_inside[chosen_inside_idx];
+      grad_lambda_k += (1.0 / (lambda_k * lambda_k)) * (sum_P_V[k] - V_chosen);
+    } else {
+      grad_lambda_k += -P_k_k * term_in_brackets;
+    }
+    s_c[K + l] += grad_lambda_k;
+  }
+  for (int j = 0; j < m_i; ++j) sum_P_V[nest0[j]] = 0.0;
+}
+
 // The NL gradient kernel's pass over the choice situations: the weighted
 // sums of their log-probabilities and scores and, with OpgDiag, the diagonal
 // of the BHHH matrix, sum_i w_i s_i o s_i, its terms formed as
@@ -418,7 +644,12 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' weighted BHHH/OPG information; passing \code{weights = w^2} yields the
 //' sandwich \emph{meat} \eqn{B = \sum_i w_i^2 s_i s_i^\top} for robust (WESML)
 //' inference. Singleton-nest lambdas are fixed to 1 and contribute no score
-//' (mirroring the gradient kernel).
+//' (mirroring the gradient kernel). Each situation's outer product is formed
+//' only over the parameters its likelihood involves (the coefficients, the
+//' dissimilarities of the nests it offers and the constants of its
+//' alternatives), so the work per situation does not grow with the number of
+//' alternatives or nests; the n_params x n_params result and the threads'
+//' accumulators do (see acc_bytes).
 //'
 //' @param theta (K + n_non_singleton_nests + n_delta) vector with model parameters.
 //'        Order: `[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]`
@@ -431,6 +662,10 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' @param weights N x 1 vector with weights for each observation.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+//'   default), as in \code{mnl_bhhh_parallel()}; in a shared result the
+//'   coefficients' and the dissimilarities' rows stay private. \code{0}
+//'   forces the shared result (for tests).
 //' @returns A symmetric positive-semidefinite information matrix
 //'   \eqn{\sum_i w_i\, s_i s_i^\top} (same sign convention as the negated Hessian).
 //' @examples
@@ -452,7 +687,7 @@ Rcpp::List nl_loglik_gradient_parallel(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat nl_bhhh_parallel(
+Rcpp::NumericMatrix nl_bhhh_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
@@ -461,7 +696,8 @@ arma::mat nl_bhhh_parallel(
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
@@ -484,38 +720,56 @@ arma::mat nl_bhhh_parallel(
   // --- Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, "nl_bhhh_parallel");
 
-  // Memory: each thread's n x n accumulator, score and situation buffers; X
-  // beta, the result and its copy into R
-  const double nn = static_cast<double>(n_params) * n_params;
+  // Memory: each thread's slot map, compact score, a column of the update
+  // (every parameter, for the dense fallback) and situation buffers; X beta,
+  // the result and the threads' accumulators (the coefficients' and
+  // dissimilarities' rows private in a shared result)
+  const int K_l = delta_start_idx - K;  // dissimilarities
+  const bool has_delta = use_asc && delta_length > 0;
+  const int J_d = has_delta ? delta_length : 0;  // free constants
+  const double m_max = static_cast<double>(lay.max_m);
+  const double blk_max = K + std::min<double>(K_l, m_max) + std::min<double>(J_d, m_max);
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("BHHH matrix", n_threads,
-                      8.0 * nn + nl_thread_bytes(lay, K, n_nests, n_params, 1.0),
-                      [&](const int) {
-                        return 8.0 * static_cast<double>(lay.n_rows) + 16.0 * nn;
+                      nl_map_bytes(J_d, K_l, lay.max_m) + 8.0 * (blk_max + n_params + 64.0) +
+                          nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
+                      [&](const int t) {
+                        return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
+                               sym_acc_need(n_params, K + K_l, t, acc_bytes);
                       });
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
-  // Global BHHH accumulator and the threads' own, allocated here
-  arma::mat global_bhhh = arma::zeros(n_params, n_params);
-  std::vector<arma::mat> locals =
-      nl_thread_accumulators(n_params, n_threads, "BHHH");
-  const choicer_off max_m = lay.max_m;
+  // Each dissimilarity's nest
+  std::vector<int> lam_nest(static_cast<std::size_t>(K_l) + 1);
+  for (int k = 0; k < n_nests; ++k) {
+    const arma::sword t = nest_k_to_theta_idx[k];
+    if (t >= 0) lam_nest[static_cast<std::size_t>(t - K)] = k;
+  }
+
+  // The result and the threads' accumulators, slot maps and buffers, all
+  // allocated here on the primary thread
+  SymAcc acc(n_params, n_threads, K + K_l, "BHHH", acc_bytes);
+  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
+  std::vector<std::vector<double>> scores =
+      nl_thread_vectors(static_cast<std::size_t>(blk_max), n_threads);
+  std::vector<std::vector<double>> cols =
+      nl_thread_vectors(static_cast<std::size_t>(n_params), n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
-    // Thread-local accumulators
-    arma::mat& local_bhhh = locals[kernel_thread_num()];
-    arma::vec grad_vec; // resized per individual
-    arma::vec s_i;      // per-individual score
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
-
-    // Make the index map thread-private
-    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
+    const int tid = kernel_thread_num();
+    NlSituationMap& mp = *maps[tid];
+    NlThreadBuffers& b = bufs[tid];
+    int* nest0 = b.nest0.data();
+    double* acc_t = acc.base(tid);
+    double* s_buf = scores[tid].data();
+    double* col = cols[tid].data();
+    arma::vec grad_vec; // resized per situation
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -523,97 +777,54 @@ arma::mat nl_bhhh_parallel(
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
-
-      const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
-      const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // m_i
-      int* nest_idx0_i      = nest_buf.data(); // m_i
-      nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
+      nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
       const double* V_inside = base_util.memptr() + start_idx;
 
       // Per-individual probability block (shared helper)
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
-      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
-      const double* P_j_given_k = pr.P_j_given_k.data();
-      const double* P_k = pr.P_k.data();
-      const double* log_I_k = pr.log_I_k.data();
+      nl_individual_probs(V_inside, nest0, m_i, lambda, n_nests,
+                          include_outside_option, b.pr);
 
       const int chosen_alt_idx = lay.choice[i];
       int chosen_nest_k = -1;
       int chosen_inside_idx = -1;
       if (!(include_outside_option && chosen_alt_idx == 0)) {
         chosen_inside_idx = chosen_alt_idx - 1;
-        chosen_nest_k = nest_idx0_i[chosen_inside_idx];
+        chosen_nest_k = nest0[chosen_inside_idx];
       }
 
-      // Assemble the (weight-free) per-individual score s_i.
-      s_i.zeros(n_params);
+      nl_situation_map(lay, i, nest0, b.pr.log_I_k.data(), nest_k_to_theta_idx,
+                       K, has_delta, include_outside_option, mp);
+      arma::vec s_c(s_buf, K + mp.n_lam + mp.a, false, true);
+      nl_situation_score(X, start_idx, m_i, nest0, V_inside, b.pr, lambda,
+                         lam_nest.data(), chosen_nest_k, chosen_inside_idx, mp,
+                         K, b.sum_P_V.data(), grad_vec, s_c);
 
-      // --- beta / delta blocks: build grad_vec exactly as in the gradient ---
-      // grad_vec[j] = -P_i[j]
-      //             + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
-      //             + 1/lambda_k                          if j == chosen alt
-      grad_vec.set_size(m_i);
-      grad_vec = -P_i;
-      if (chosen_nest_k >= 0) { // not outside option
-        const double lambda_chosen = lambda[chosen_nest_k];
-        const double term_scale = 1.0 - 1.0 / lambda_chosen;
-        for (int j = 0; j < m_i; ++j) {
-          if ((int)nest_idx0_i[j] == chosen_nest_k) {
-            grad_vec[j] += P_j_given_k[j] * term_scale;
-          }
-        }
-        grad_vec[chosen_inside_idx] += 1.0 / lambda_chosen;
-      }
-
-      // Beta block (scale = 1; weight applied to outer product)
-      s_i.subvec(0, K - 1) = X_i.t() * grad_vec;
-
-      // Delta block: scatter
-      if (use_asc && delta_length > 0) {
-        scatter_delta_grad(s_i, delta_start_idx, grad_vec, alt_idx0_i,
-                           m_i, include_outside_option, 1.0);
-      }
-
-      // --- lambda blocks: same expression as the gradient kernel ---
-      // sum_{j in B_k} P(j|B_k) * V_ij
-      arma::vec sum_P_V_k = arma::zeros(n_nests);
-      for (int j = 0; j < m_i; ++j) {
-        sum_P_V_k[nest_idx0_i[j]] += P_j_given_k[j] * V_inside[j];
-      }
-      for (int k = 0; k < n_nests; ++k) {
-        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
-        if (theta_idx_k == -1) continue;
-        if (!std::isfinite(log_I_k[k])) continue;
-
-        const double lambda_k = lambda[k];
-        double grad_lambda_k = 0.0;
-        double term_in_brackets = log_I_k[k] - (1.0 / lambda_k) * sum_P_V_k[k];
-        double P_k_k = P_k[k];
-
-        if (k == chosen_nest_k) {
-          grad_lambda_k += (1.0 - P_k_k) * term_in_brackets;
-          double V_chosen = V_inside[chosen_inside_idx];
-          grad_lambda_k += (1.0 / (lambda_k * lambda_k)) * (sum_P_V_k[k] - V_chosen);
+      // w_i s_c s_c' over the compact block, each entry formed as the dense
+      // rank-one update formed it (mnl_bhhh_parallel()); a non-finite weight
+      // or score takes the dense update over every entry.
+      if (std::isfinite(w_i) && s_c.is_finite()) {
+        if (acc.shared) {
+          bhhh_add<true>(acc, acc_t, mp, K, s_c, w_i, col);
         } else {
-          grad_lambda_k += -P_k_k * term_in_brackets;
+          bhhh_add<false>(acc, acc_t, mp, K, s_c, w_i, col);
         }
-        s_i[theta_idx_k] += grad_lambda_k;
+      } else {
+        if (acc.shared) {
+          bhhh_add_dense<true>(acc, acc_t, mp, K, s_c, w_i, col);
+        } else {
+          bhhh_add_dense<false>(acc, acc_t, mp, K, s_c, w_i, col);
+        }
       }
-
-      local_bhhh += w_i * s_i * s_i.t();
+      nl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 
-  // The threads' sums in thread order, from +0
-  for (const arma::mat& local_bhhh : locals) global_bhhh += local_bhhh;
-
   // Return PSD information matrix (same sign convention as negated Hessian).
-  return global_bhhh;
+  acc.finish(false);
+  return acc.result;
 }
 
 // Per-situation score matrix for the nested logit model (internal).

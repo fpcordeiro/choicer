@@ -247,8 +247,8 @@ test_that("the NL memory error gives the number of threads that fits", {
   skip_if(isTRUE(thread_info()$omp_get_thread_limit < 2L), "thread limit below 2")
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(2L)
-  # 1,000 alternatives: a second thread adds its own accumulator of the
-  # 1,005 x 1,005 matrix, a large part of the estimate
+  # 1,000 alternatives: one thread adds into the 8 MB result itself, while
+  # two threads also keep a 4 MB packed triangle each
   f <- nlm_fixture(4204, J = 1000L, m = 4L)
   one <- nlm_one_thread("bhhh", f)
   expect_gt(one, 7.5e6)
