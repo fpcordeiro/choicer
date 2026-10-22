@@ -431,8 +431,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // mnl_loglik_hessian_parallel
-arma::mat mnl_loglik_hessian_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option);
-RcppExport SEXP _choicer_mnl_loglik_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP) {
+Rcpp::NumericMatrix mnl_loglik_hessian_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, const double acc_bytes);
+RcppExport SEXP _choicer_mnl_loglik_hessian_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP acc_bytesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -444,7 +444,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type use_asc(use_ascSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    rcpp_result_gen = Rcpp::wrap(mnl_loglik_hessian_parallel(theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option));
+    Rcpp::traits::input_parameter< const double >::type acc_bytes(acc_bytesSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnl_loglik_hessian_parallel(theta, X, alt_idx, choice_idx, M, weights, use_asc, include_outside_option, acc_bytes));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1319,7 +1320,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},
     {"_choicer_mnl_predict_shares", (DL_FUNC) &_choicer_mnl_predict_shares, 7},
     {"_choicer_blp_contraction", (DL_FUNC) &_choicer_blp_contraction, 10},
-    {"_choicer_mnl_loglik_hessian_parallel", (DL_FUNC) &_choicer_mnl_loglik_hessian_parallel, 8},
+    {"_choicer_mnl_loglik_hessian_parallel", (DL_FUNC) &_choicer_mnl_loglik_hessian_parallel, 9},
     {"_choicer_mnl_elasticities_parallel", (DL_FUNC) &_choicer_mnl_elasticities_parallel, 9},
     {"_choicer_mnl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mnl_diversion_ratios_parallel, 7},
     {"_choicer_mnp_gibbs", (DL_FUNC) &_choicer_mnp_gibbs, 12},

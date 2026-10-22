@@ -466,16 +466,21 @@ struct ClusterSum {
 struct NonFiniteRecord {
   std::vector<char> row;  // parameter whose row and column get NaN
   std::vector<int> hits;  // non-finite-weight units whose block has it
+  // With row_na (the MNL and NL kernels): the parameter's non-finite value was
+  // R's NA, which the dense products spread as NA (empty otherwise)
+  std::vector<char> row_na;
   int n_blk = 0;          // non-finite-weight units
   bool na = false;        // one of their weights is NA
-  explicit NonFiniteRecord(const int n)
-      : row(static_cast<std::size_t>(n), 0), hits(static_cast<std::size_t>(n), 0) {}
+  explicit NonFiniteRecord(const int n, const bool with_na = false)
+      : row(static_cast<std::size_t>(n), 0), hits(static_cast<std::size_t>(n), 0),
+        row_na(with_na ? static_cast<std::size_t>(n) : 0u, 0) {}
 };
 
-inline std::vector<NonFiniteRecord> nonfinite_records(const int n, const int n_threads) {
+inline std::vector<NonFiniteRecord> nonfinite_records(const int n, const int n_threads,
+                                                      const bool with_na = false) {
   std::vector<NonFiniteRecord> nf;
   nf.reserve(n_threads);
-  for (int i = 0; i < n_threads; ++i) nf.emplace_back(n);
+  for (int i = 0; i < n_threads; ++i) nf.emplace_back(n, with_na);
   return nf;
 }
 
@@ -500,6 +505,14 @@ inline void nonfinite_rows(const arma::mat& B, Map to_global,
   }
 }
 
+// Flag parameter g when v, the value that spreads over its row and column in
+// the dense products, is not finite (and whether it is NA, given row_na).
+inline void nonfinite_value(const int g, const double v, NonFiniteRecord& nf) {
+  if (std::isfinite(v)) return;
+  nf.row[g] = 1;
+  if (!nf.row_na.empty() && is_na_real(v)) nf.row_na[g] = 1;
+}
+
 // Record a unit with a non-finite weight w over its block of m parameters.
 template <typename Map>
 inline void nonfinite_weight(const double w, const int m, Map to_global,
@@ -514,12 +527,14 @@ inline void apply_nonfinite(SymAcc& acc,
                             const std::vector<NonFiniteRecord>& nf) {
   const choicer_off n = acc.n;
   std::vector<char> row(static_cast<std::size_t>(n), 0);
+  std::vector<char> row_na(static_cast<std::size_t>(n), 0);
   std::vector<int> hits(static_cast<std::size_t>(n), 0);
   int n_blk = 0;
   bool na = false, any_row = false;
   for (const NonFiniteRecord& t : nf) {
     for (choicer_off g = 0; g < n; ++g) {
       row[g] = row[g] | t.row[g];
+      if (!t.row_na.empty()) row_na[g] = row_na[g] | t.row_na[g];
       hits[g] += t.hits[g];
       any_row = any_row || t.row[g];
     }
@@ -534,7 +549,7 @@ inline void apply_nonfinite(SymAcc& acc,
     const std::size_t col = static_cast<std::size_t>(j) * static_cast<std::size_t>(n);
     for (choicer_off i = 0; i < n; ++i) {
       if (row[i] || row[j]) {
-        o[col + static_cast<std::size_t>(i)] = nan;
+        o[col + static_cast<std::size_t>(i)] = (row_na[i] || row_na[j]) ? NA_REAL : nan;
       } else if (n_blk > 0 && !(hits[i] == n_blk && hits[j] == n_blk)) {
         o[col + static_cast<std::size_t>(i)] = spread;
       }
