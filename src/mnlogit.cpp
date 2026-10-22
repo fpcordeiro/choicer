@@ -15,29 +15,6 @@ inline double mnl_thread_bytes(const ChoiceLayout& lay, const int K,
                            n_vecs * static_cast<double>(n_params));
 }
 
-// Each thread's dense n x n accumulator of the Hessian and BHHH kernels,
-// allocated here on the primary thread, zero (an allocation failure is an R
-// error naming the size, not a failure inside the parallel region).
-inline std::vector<arma::mat> mnl_thread_accumulators(const int n_params,
-                                                      const int n_threads,
-                                                      const char* what) {
-  std::vector<arma::mat> acc;
-  try {
-    acc.reserve(n_threads);
-    for (int i = 0; i < n_threads; ++i) {
-      acc.emplace_back(n_params, n_params, arma::fill::zeros);
-    }
-  } catch (const std::bad_alloc&) {
-    std::vector<arma::mat>().swap(acc);  // release before reporting
-    Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB per "
-               "thread for %d threads. Run fewer threads with "
-               "set_num_threads().", what,
-               sizeof(double) * static_cast<double>(n_params) *
-                   static_cast<double>(n_params) / 1e9, n_threads);
-  }
-  return acc;
-}
-
 // ============================================================================
 // Compact blocks of the MNL derivative kernels
 //
@@ -203,11 +180,12 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
                               const int n_params, const bool use_asc,
                               const bool include_outside_option,
                               double& global_loglik, arma::vec& global_grad,
-                              arma::vec& global_diag, bool& nonfinite_seen) {
+                              arma::vec& global_diag, bool& nonfinite_seen,
+                              const int n_threads) {
   const choicer_off N = lay.N;
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
     // Thread-local accumulators
@@ -390,9 +368,11 @@ Rcpp::List mnl_loglik_gradient_parallel(
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
   // diagonal, the constants' scores and the terms), X beta, the sums and the
-  // returned copies
+  // returned copies. Each thread allocates its sums before its first
+  // situation, so the pass runs on the team checked here.
+  const int n_threads = kernel_team_threads(lay.N);
   kernel_check_memory(
-      "gradient", kernel_team_threads(lay.N),
+      "gradient", n_threads,
       mnl_thread_bytes(lay, K, n_params, opg_diag ? 3.0 : 1.0) +
           (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m)) + 8.0 * K : 0.0),
       [&](const int) {
@@ -412,11 +392,11 @@ Rcpp::List mnl_loglik_gradient_parallel(
     global_diag.zeros(n_params);
     mnl_gradient_pass<true>(X, lay, base_util, weights, K, n_params, use_asc,
                             include_outside_option, global_loglik, global_grad,
-                            global_diag, nonfinite_seen);
+                            global_diag, nonfinite_seen, n_threads);
   } else {
     mnl_gradient_pass<false>(X, lay, base_util, weights, K, n_params, use_asc,
                              include_outside_option, global_loglik, global_grad,
-                             global_diag, nonfinite_seen);
+                             global_diag, nonfinite_seen, n_threads);
   }
 
   // H1: emit warning once, outside the parallel region (R-API safe here)
@@ -664,20 +644,21 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
   }
 
   // Memory: per thread its slot map, compact score, situation buffers and
-  // cluster sum (n doubles, flags and indices) and its share of the chunks'
-  // cut parts (two per chunk, four chunks per thread); shared X beta, the
-  // result and the accumulators, and the sort's arrays.
+  // cluster sum, and its share of the chunks' cut parts (two per chunk, four
+  // chunks per thread); shared X beta, the result and the accumulators, and
+  // the sort's and the chunks' arrays.
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("cluster meat", n_threads,
                       mnl_map_bytes(J_d, lay.max_m) + 8.0 * (K + a_max + 32.0) +
                           mnl_thread_bytes(lay, K, n_params, 0.0) +
-                          (8.0 * 13.0 + 13.0) * n_params,
+                          9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) +
                                sym_acc_need(n_params, K, t, acc_bytes) +
-                               8.0 * (static_cast<double>(N) + 2.0 * G);
+                               8.0 * (static_cast<double>(N) + 2.0 * G +
+                                      4.0 * t + 2.0);
                       });
 
   // Situations sorted by cluster: order[off[g - 1], off[g]) holds cluster g's
@@ -1256,42 +1237,62 @@ arma::vec blp_contraction(
   }
 }
 
-// Add w_i H_i, situation i's block of the information (the Hessian of the
-// negated log-likelihood: w_i times the probability-weighted covariance of
-// Z_a = (x_a, the indicator of a's free constant)), into the accumulator's
-// upper triangle, each entry once: BB (K x K, its upper triangle), BD
-// (K x a, column s the constant in slot s) and DD (a x a, formed here from
-// the slots' probabilities mu_d: mu_d[s] - mu_d[s]^2 on the diagonal,
-// 0 - mu_d[s] mu_d[t] off it). Each term is the block's entry times the
-// weight, formed before it is added.
+// Add situation i's terms of the Hessian into the accumulator's upper
+// triangle, each entry once, as the dense code added them: it subtracted w_i
+// times each block from its accumulator and negated the sum at the end, so
+// each term here is -(entry * w_i) and finish() negates (entries no situation
+// touches are -0, as before). Inside the block (the K coefficients, then the
+// constants in slot order): BB (its upper triangle), BD (K x a, column s the
+// constant in slot s) and the constants' block, formed here from the slots'
+// probabilities mu_d: mu_d[s] - mu_d[s]^2 on the diagonal, 0 - mu_d[s]
+// mu_d[t] off it. Outside the block the dense code's full-width subtractions
+// left 0 - mean * 0 in the row of each mean: +-0 for a finite mean, which
+// changes nothing, but NaN, or NA for an NA, for a non-finite one
+// (overflowing utilities, a covariate past the largest double), added here
+// to that row's entries outside the block. The entries inside keep their
+// values (an infinite mean leaves infinities there, as before).
 template <bool Shared>
 inline void mnl_hessian_add(const SymAcc& acc, double* buf,
                             const MnlSituationMap& mp, const int K,
-                            const double* BB, const double* BD,
+                            const int J_d, const double* BB,
+                            const double* mu_b, const double* BD,
                             const double* mu_d, const double w) {
+  const std::size_t Ks = static_cast<std::size_t>(K);
   for (int c = 0; c < K; ++c) {
     for (int r = 0; r <= c; ++r) {
-      double v = BB[r + c * K];
+      double v = BB[r + c * Ks];
       v *= w;
-      acc.add<Shared>(buf, r, c, v);
+      acc.add<Shared>(buf, r, c, -v);
     }
   }
   for (int s = 0; s < mp.a; ++s) {
     const int g = K + mp.delta[s];
     for (int r = 0; r < K; ++r) {
-      double v = BD[r + s * K];
+      double v = BD[r + s * Ks];
       v *= w;
-      acc.add<Shared>(buf, r, g, v);
+      acc.add<Shared>(buf, r, g, -v);
     }
     const double ms = mu_d[s];
     for (int t = 0; t < s; ++t) {
       double v = 0.0 - mu_d[t] * ms;
       v *= w;
-      acc.add<Shared>(buf, K + mp.delta[t], g, v);
+      acc.add<Shared>(buf, K + mp.delta[t], g, -v);
     }
     double v = ms - ms * ms;
     v *= w;
-    acc.add<Shared>(buf, g, g, v);
+    acc.add<Shared>(buf, g, g, -v);
+  }
+  for (int l = 0; l < K + mp.a; ++l) {
+    const double mean = l < K ? mu_b[l] : mu_d[l - K];
+    if (std::isfinite(mean)) continue;
+    double v = 0.0 - mean * 0.0;
+    v *= w;
+    const int g = mp.global(l, K);
+    for (int j = 0; j < J_d; ++j) {
+      if (mp.slot_of[j] >= 0) continue;  // inside the block
+      const int h = K + j;
+      acc.add<Shared>(buf, std::min(g, h), std::max(g, h), -v);
+    }
   }
 }
 
@@ -1357,9 +1358,9 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
                                                &weights);
   const choicer_off N = lay.N;
 
-  // Memory: each thread's slot map, a situation's blocks (BB, BD and the
-  // means), the non-finite records and situation buffers; X beta, the result
-  // and the threads' accumulators
+  // Memory: each thread's slot map, a situation's blocks (BB, BD, the means
+  // and K products), the non-finite-weight records and situation buffers;
+  // X beta, the result and the threads' accumulators
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
@@ -1376,12 +1377,12 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
   // The result and the threads' accumulators, slot maps, block buffers and
-  // non-finite records, all allocated here on the primary thread
+  // non-finite-weight records, all allocated here on the primary thread
   SymAcc acc(n_params, n_threads, K, "Hessian", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
   const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
   std::vector<std::vector<double>> blocks = mnl_thread_buffers(blk, n_threads);
-  std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads, true);
+  std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
   const double* Xm = X.memptr();
   const arma::uword n_rows = X.n_rows;
@@ -1396,8 +1397,9 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
     double* acc_t = acc.base(tid);
     // BB (K x K), mu_b (K), BD (K x a), mu_d (a) and K products, in one
     // buffer
+    const std::size_t Ks = static_cast<std::size_t>(K);
     double* BB = blocks[tid].data();
-    double* mu_b = BB + static_cast<std::size_t>(K) * K;
+    double* mu_b = BB + Ks * Ks;
     double* BD = mu_b + K;
 
 #ifdef _OPENMP
@@ -1424,7 +1426,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
       // mu_b mu_d', mu_d[s] = sum of p_a over the rows of slot s
       mnl_situation_map(lay, i, use_asc, include_outside_option, mp);
       const int a = mp.a;
-      double* mu_d = BD + static_cast<std::size_t>(K) * a;
+      double* mu_d = BD + Ks * a;
       std::fill(BB, mu_d + a, 0.0);
       for (int r = 0; r < m_i; ++r) {
         const double p_r = P_i[r + o];
@@ -1434,9 +1436,9 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
         // dense code formed it
         for (int c = 0; c < K; ++c) {
           const double p_x_c = p_r * x[c * n_rows];
-          for (int q = c; q < K; ++q) BB[c + q * K] += p_x_c * x[q * n_rows];
+          for (int q = c; q < K; ++q) BB[c + q * Ks] += p_x_c * x[q * n_rows];
           mu_b[c] += p_x_c;
-          if (k >= 0) BD[c + k * K] += p_x_c;
+          if (k >= 0) BD[c + k * Ks] += p_x_c;
         }
         if (k >= 0) mu_d[k] += p_r;
       }
@@ -1449,35 +1451,31 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
       double* prod = mu_d + a;  // K entries
       for (int c = 0; c < K; ++c) {
         for (int q = 0; q <= c; ++q) prod[q] = mu_b[q] * mu_b[c];
-        for (int q = 0; q <= c; ++q) BB[q + c * K] -= prod[q];
+        for (int q = 0; q <= c; ++q) BB[q + c * Ks] -= prod[q];
       }
       for (int s = 0; s < a; ++s) {
         for (int c = 0; c < K; ++c) prod[c] = mu_b[c] * mu_d[s];
-        for (int c = 0; c < K; ++c) BD[c + s * K] -= prod[c];
+        for (int c = 0; c < K; ++c) BD[c + s * Ks] -= prod[c];
       }
 
-      // Non-finite means: the dense code subtracted mu mu' over every
-      // parameter, so a non-finite mean filled its parameter's row and
-      // column (NA for an NA); a non-finite weight multiplied the zeros
-      // outside the block
-      for (int c = 0; c < K; ++c) nonfinite_value(c, mu_b[c], nf);
-      for (int s = 0; s < a; ++s) nonfinite_value(K + mp.delta[s], mu_d[s], nf);
+      // A non-finite weight multiplied the zeros outside the block too:
+      // recorded, and spread after the parallel region
       if (!std::isfinite(w_i)) {
         nonfinite_weight(w_i, K + a, [&](const int l) { return mp.global(l, K); }, nf);
       }
 
       if (acc.shared) {
-        mnl_hessian_add<true>(acc, acc_t, mp, K, BB, BD, mu_d, w_i);
+        mnl_hessian_add<true>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i);
       } else {
-        mnl_hessian_add<false>(acc, acc_t, mp, K, BB, BD, mu_d, w_i);
+        mnl_hessian_add<false>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i);
       }
       mnl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 
   // The information (Hessian of the negated log-likelihood), with the dense
-  // code's spread of non-finite values
-  acc.finish(false);
+  // code's spread of non-finite weights
+  acc.finish(true);
   apply_nonfinite(acc, nonfinite);
   return acc.result;
 }
