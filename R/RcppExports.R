@@ -1575,6 +1575,11 @@ nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M
 #' Covers all parameter blocks: beta-beta, beta-lambda, beta-delta,
 #' lambda-lambda, lambda-delta, and delta-delta. Singleton nests (lambda fixed
 #' to 1, not estimated) contribute no rows or columns to the lambda blocks.
+#' Each situation's terms are formed only over the parameters its likelihood
+#' involves (the coefficients, the dissimilarities of the nests it offers and
+#' the constants of its alternatives), so the work per situation does not
+#' grow with the number of alternatives or nests; the n_params x n_params
+#' result and the threads' accumulators do (see acc_bytes).
 #'
 #' @param theta (K + n_non_singleton_nests + n_delta) parameter vector.
 #'   Order: \code{[beta (K), lambda (n_non_singleton_nests), delta (n_delta)]}.
@@ -1590,6 +1595,9 @@ nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M
 #' @param use_asc Logical; whether alternative-specific constants are included.
 #' @param include_outside_option Logical; whether an outside option (V=0) is
 #'   present.
+#' @param acc_bytes Bytes for the threads' private upper triangles (2 GiB by
+#'   default), as in \code{nl_bhhh_parallel()}; \code{0} forces the shared
+#'   result (for tests).
 #' @returns A symmetric (P x P) matrix: the Hessian of the negated
 #'   log-likelihood evaluated at \code{theta}. Structurally identical to the
 #'   output of \code{nl_loglik_numeric_hessian}; suitable for
@@ -1613,8 +1621,8 @@ nl_loglik_numeric_hessian <- function(theta, X, alt_idx, choice_idx, nest_idx, M
 #' dim(H)
 #' }
 #' @keywords internal
-nl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_nl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option)
+nl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_nl_loglik_hessian_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
 #' Prediction of choice probabilities and utilities for the Nested Logit model
