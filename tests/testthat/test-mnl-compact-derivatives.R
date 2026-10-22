@@ -85,7 +85,9 @@ mcd_bhhh_ref <- function(S, w) {
 # finite entries within `tol`. Off CRAN also NA and NaN apart (`kinds`): R's
 # NA keeps its payload through the kernels' arithmetic and exp() here, as it
 # does through R's, which not every platform's libm guarantees. Where NA and
-# NaN meet, which survives depends on the platform, and kinds = FALSE.
+# NaN meet in one entry, which survives depends on the platform, on the order
+# of the situations and on the kernel (a non-finite weight is spread after
+# the parallel region), and kinds = FALSE.
 mcd_same_pattern <- function(a, b, what, tol = 1e-12, kinds = TRUE) {
   a <- unclass(a)
   expect_identical(is.na(a), is.na(b), label = paste(what, "NA or NaN"))
@@ -229,6 +231,11 @@ test_that("non-finite means and weights spread over the Hessian as the dense pro
     inf_weight = function(f) { f$weights[i] <- Inf; f },
     nan_weight = function(f) { f$weights[i] <- NaN; f },
     na_weight = function(f) { f$weights[i] <- NA_real_; f },
+    # utilities that overflow in two situations, whose blocks differ
+    overflow_twice = function(f) {
+      r7 <- row_off[7L] + setdiff(seq_len(f0$M[7L]), f0$choice_idx[7L])[1L]
+      f$X[c(r_other, r7), 1L] <- 1e308; f$theta[1L] <- 2; f
+    },
     # NaN probabilities and an NA weight in one situation
     na_weight_overflow = function(f) {
       f$X[r_other, 1L] <- 1e308; f$theta[1L] <- 2; f$weights[i] <- NA_real_; f
@@ -246,6 +253,8 @@ test_that("an infinite mean leaves infinities in the block and NaN outside it", 
   # A covariate at the largest double in every row of a situation whose
   # utilities stay finite (a zero coefficient): p x x' overflows and the
   # covariate's probability-weighted mean rounds past the largest double.
+  # The situation's utilities are equal (its constants zero), so that its
+  # probabilities are 1/11 on every platform, whatever libm's exp().
   # The dense code's full-width subtractions left NaN (Inf * 0) in the mean's
   # row outside the situation's block, and infinities inside it.
   on.exit(set_omp_threads(2L), add = TRUE)
@@ -256,8 +265,9 @@ test_that("an infinite mean leaves infinities in the block and NaN outside it", 
       X = rbind(cbind(rep(big, 11L), 0.5), cbind(c(0.1, -0.2, 0.3), 1:3)),
       alt_idx = c(1:11, 1:3), M = c(11L, 3L), use_asc = FALSE, theta = c(0, 0.3)),
     "constants" = list(
-      X = rbind(cbind(rep(big, 4L), 0.5), cbind(c(0.1, -0.2, 0.3), 1:3)),
-      alt_idx = 1:7, M = c(4L, 3L), use_asc = TRUE, theta = c(0, 0.3, rep(0.1, 6L))))
+      X = rbind(cbind(rep(big, 11L), 0.5), cbind(c(0.1, -0.2, 0.3), 1:3)),
+      alt_idx = 1:14, M = c(11L, 3L), use_asc = TRUE,
+      theta = c(0, 0.3, rep(0, 10L), rep(0.1, 3L))))
   for (nm in names(cells)) {
     f <- c(cells[[nm]], list(choice_idx = c(1L, 2L), weights = c(1, 1.5), K = 2L,
                              N = 2L, include_outside_option = FALSE))
@@ -265,8 +275,9 @@ test_that("an infinite mean leaves infinities in the block and NaN outside it", 
     expect_true(any(H == -Inf, na.rm = TRUE), label = paste(nm, "keeps -Inf"))
     mcd_same_pattern(H, mcd_dense_hessian(f), paste(nm, "infinite mean"))
   }
-  # with constants, the mean's row outside the block (constants 5-7) is NaN
-  expect_true(all(is.nan(H[1L, 6:8])))
+  # with constants, the mean's row outside the block (the constants of
+  # alternatives 12-14) is NaN
+  expect_true(all(is.nan(H[1L, 13:15])))
 })
 
 test_that("the compact BHHH is the weighted cross-product of the scores", {
