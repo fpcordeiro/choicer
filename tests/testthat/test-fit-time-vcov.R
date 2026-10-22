@@ -199,11 +199,11 @@ vf_kernel <- function(model, se_method) {
   switch(paste(sub("_noasc$", "", model), se_method),
     "mnl hessian" = "mnl_loglik_hessian_parallel",
     "mnl bhhh" = , "mnl sandwich" = "mnl_bhhh_parallel",
-    "mnl cluster" = "mnl_scores_parallel",
+    "mnl cluster" = "mnl_cluster_meat_parallel",
     "nl hessian" = "nl_loglik_hessian_parallel",
     "nl numeric" = "nl_loglik_numeric_hessian",
     "nl bhhh" = , "nl sandwich" = "nl_bhhh_parallel",
-    "nl cluster" = "nl_scores_parallel",
+    "nl cluster" = "nl_cluster_meat_parallel",
     "mxl hessian" = "mxl_hessian_parallel",
     "mxl bhhh" = , "mxl sandwich" = "mxl_bhhh_parallel",
     "mxl cluster" = "mxl_cluster_meat_parallel")

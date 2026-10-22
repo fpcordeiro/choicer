@@ -1469,6 +1469,9 @@ compute_sandwich_vcov <- function(object) {
 #' deterministically from \code{draws_info} (mirroring
 #' \code{compute_hessian()}).
 #'
+#' No variance route calls it: the kernels form the meats without the matrix
+#' (\code{.mxl_score_meat()}, \code{.logit_meat()}).
+#'
 #' @param object A fitted \code{choicer_fit} object (MNL / MXL / NL) with
 #'   \code{keep_data = TRUE}.
 #' @returns Numeric matrix, \code{U x n_params} (\code{U = nobs} unless the
@@ -1568,7 +1571,10 @@ compute_scores <- function(object) {
 
 #' Meat matrix from a per-unit score matrix
 #'
-#' One code path for every score-based variance estimator:
+#' The meats of the score-based variance estimators, from the score matrix:
+#' the R reference of the kernels' routes (\code{.mxl_score_meat()},
+#' \code{.logit_meat()}), which form them without the matrix; no variance
+#' route calls it.
 #' \describe{
 #'   \item{bhhh}{\code{crossprod(sqrt(w) * S)} — the ordinary weighted
 #'     BHHH/OPG information \eqn{\sum_i w_i s_i s_i'}.}
@@ -1609,8 +1615,8 @@ compute_scores <- function(object) {
 #' Check cluster labels, one per likelihood unit
 #'
 #' The checks of the cluster meat, shared by \code{.score_meat()} and the
-#' mixed logit kernels' route, which the \code{run_*()} wrappers also run on
-#' their fit-time labels before the optimizer.
+#' kernels' routes, which the \code{run_*()} wrappers also run on their
+#' fit-time labels before the optimizer.
 #'
 #' @param cluster Cluster labels, one per likelihood unit (or \code{NULL}).
 #' @param n_units Number of likelihood units.
@@ -1682,6 +1688,63 @@ compute_scores <- function(object) {
     include_outside_option = object$include_outside_option,
     gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
     Ti = d$Ti
+  )
+}
+
+#' Score-based meat of a multinomial or nested logit fit, from the C++ kernels
+#'
+#' The meats of \code{.score_meat()} without the \code{N x p} score matrix, as
+#' \code{.mxl_score_meat()} forms the mixed logit's: \code{"bhhh"} is the
+#' BHHH kernel with the weights, \code{"robust"} the same kernel with the
+#' squared weights, and \code{"cluster"} the cluster meat kernel over the
+#' labels, checked by the caller and grouped by \code{as.character()}, as
+#' \code{rowsum()} groups them.
+#'
+#' @param object A fitted \code{choicer_mnl} or \code{choicer_nl} with stored
+#'   data.
+#' @param type One of \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
+#' @param cluster Cluster labels, one per choice situation
+#'   (\code{type = "cluster"}).
+#' @returns \code{p x p} meat matrix.
+#' @noRd
+.logit_meat <- function(object, type, cluster = NULL) {
+  if (!type %in% c("bhhh", "robust", "cluster")) {
+    stop("Unknown meat type: '", type, "'.")
+  }
+  d <- object[["data"]]
+  theta <- object$coefficients
+  if (identical(type, "cluster")) {
+    labels <- as.character(cluster)
+    codes <- match(labels, unique(labels))
+    return(switch(object$model,
+      mnl = mnl_cluster_meat_parallel(
+        theta = theta, X = d$X, alt_idx = d$alt_idx,
+        choice_idx = d$choice_idx, M = d$M, weights = d$weights,
+        cluster = codes, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option
+      ),
+      nl = nl_cluster_meat_parallel(
+        theta = theta, X = d$X, alt_idx = d$alt_idx,
+        choice_idx = d$choice_idx, nest_idx = d$nest_idx, M = d$M,
+        weights = d$weights, cluster = codes, use_asc = object$use_asc,
+        include_outside_option = object$include_outside_option
+      )
+    ))
+  }
+  w <- if (identical(type, "robust")) d$weights^2 else d$weights
+  switch(object$model,
+    mnl = mnl_bhhh_parallel(
+      theta = theta, X = d$X, alt_idx = d$alt_idx,
+      choice_idx = d$choice_idx, M = d$M, weights = w,
+      use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    ),
+    nl = nl_bhhh_parallel(
+      theta = theta, X = d$X, alt_idx = d$alt_idx,
+      choice_idx = d$choice_idx, nest_idx = d$nest_idx, M = d$M,
+      weights = w, use_asc = object$use_asc,
+      include_outside_option = object$include_outside_option
+    )
   )
 }
 
@@ -1838,15 +1901,14 @@ compute_scores <- function(object) {
     return(.sandwich_combine(bread %||% .compute_bread(object, gp), B))
   }
 
-  w <- d$weights[.unit_first(d)]
-  S <- compute_scores(object)
-
-  if (identical(type, "bhhh")) {
-    return(invert_hessian(.score_meat(S, w, "bhhh")))
+  # The multinomial and nested logits' meats come from their kernels too,
+  # without the N x p score matrix; the labels are checked before any kernel.
+  if (identical(type, "cluster")) {
+    cluster <- .unit_clusters(object, cluster, what)
+    .check_cluster_labels(cluster, length(d$M))
   }
-
-  if (identical(type, "cluster")) cluster <- .unit_clusters(object, cluster, what)
-  B <- .score_meat(S, w, type, cluster)
+  B <- .logit_meat(object, type, cluster)
+  if (identical(type, "bhhh")) return(invert_hessian(B))
   .sandwich_combine(bread %||% .compute_bread(object), B)
 }
 

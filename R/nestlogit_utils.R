@@ -360,72 +360,6 @@ run_nestlogit <- function(
   # Extract lambda values
   lambda <- theta_hat[param_map$lambda]
 
-  # Compute vcov eagerly using the selected SE method. For "sandwich"
-  # (robust / WESML) errors, form V = A^{-1} B A^{-1} with bread A = weighted
-  # negated Hessian and meat B = weight-squared OPG (pass weights^2 to the
-  # weight-free BHHH routine). For "cluster", the meat is the outer product of
-  # within-cluster sums of weighted scores. At the natural estimates; the
-  # matrices are inverted equilibrated, as post hoc. An error here (an
-  # allocation that fails, say) returns the estimates without a variance,
-  # with a warning (.vcov_failed()).
-  vcov_result <- tryCatch({
-    if (se_method %in% c("sandwich", "cluster")) {
-      A_bread <- nl_loglik_hessian_parallel(
-        theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-        M = input_data$M, weights = input_data$weights, use_asc = use_asc,
-        include_outside_option = input_data$include_outside_option
-      )
-      B_meat <- if (se_method == "sandwich") {
-        nl_bhhh_parallel(
-          theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-          choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-          M = input_data$M, weights = input_data$weights^2, use_asc = use_asc,
-          include_outside_option = input_data$include_outside_option
-        )
-      } else {
-        S_scores <- nl_scores_parallel(
-          theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-          choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-          M = input_data$M, use_asc = use_asc,
-          include_outside_option = input_data$include_outside_option
-        )
-        .score_meat(S_scores, input_data$weights, "cluster", input_data$cluster)
-      }
-      .sandwich_combine(A_bread, B_meat)
-    } else {
-      hess <- switch(
-        se_method,
-        numeric = nl_loglik_numeric_hessian(
-          theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-          choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-          M = input_data$M, weights = input_data$weights, use_asc = use_asc,
-          include_outside_option = input_data$include_outside_option
-        ),
-        bhhh = nl_bhhh_parallel(
-          theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-          choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-          M = input_data$M, weights = input_data$weights, use_asc = use_asc,
-          include_outside_option = input_data$include_outside_option
-        ),
-        nl_loglik_hessian_parallel(
-          theta = theta_hat, X = input_data$X, alt_idx = input_data$alt_idx,
-          choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
-          M = input_data$M, weights = input_data$weights, use_asc = use_asc,
-          include_outside_option = input_data$include_outside_option
-        )
-      )
-      invert_hessian(hess)
-    }
-  }, error = function(e) {
-    .vcov_failed(e, se_method, param_names, keep_data)
-  })
-  if (!is.null(vcov_result$vcov)) {
-    rownames(vcov_result$vcov) <- param_names
-    colnames(vcov_result$vcov) <- param_names
-    names(vcov_result$se) <- param_names
-  }
-
   # Build S3 object
   fit <- new_choicer_nl(
     call = cl,
@@ -446,20 +380,16 @@ run_nestlogit <- function(
       elapsed_time = elapsed[["elapsed"]],
       iterations = opt$iterations
     ),
-    vcov = vcov_result$vcov,
-    se = vcov_result$se,
-    data = if (keep_data) {
-      list(
-        X = input_data$X,
-        alt_idx = input_data$alt_idx,
-        choice_idx = input_data$choice_idx,
-        nest_idx = input_data$nest_idx,
-        M = input_data$M,
-        weights = input_data$weights,
-        cluster = input_data$cluster,
-        situation_ids = input_data$situation_ids
-      )
-    },
+    data = list(
+      X = input_data$X,
+      alt_idx = input_data$alt_idx,
+      choice_idx = input_data$choice_idx,
+      nest_idx = input_data$nest_idx,
+      M = input_data$M,
+      weights = input_data$weights,
+      cluster = input_data$cluster,
+      situation_ids = input_data$situation_ids
+    ),
     lambda = lambda,
     nest_idx = input_data$nest_idx,
     se_method = se_method,
@@ -469,10 +399,36 @@ run_nestlogit <- function(
     param_scale = stats::setNames(map$scale, param_names),
     param_shift = stats::setNames(map$shift, param_names)
   )
+  # Compute vcov eagerly using the selected SE method, by the route
+  # vcov(fit, type = ) takes post hoc: at the estimates, in natural units,
+  # inverted equilibrated. For "sandwich" (robust / WESML) standard errors,
+  # V = A^{-1} B A^{-1} with bread A = weighted negated Hessian and meat B =
+  # weight-squared OPG (the BHHH kernel with weights^2, its per-situation
+  # score being weight-free). For "cluster", the meat is the outer product of
+  # within-cluster sums of weighted scores, summed in C++ without the N x p
+  # score matrix. An error here (an allocation that fails, a kernel's memory
+  # check) returns the estimates without a variance, with a warning
+  # (.vcov_failed()).
+  vcov_result <- tryCatch(
+    .assemble_score_vcov(fit, type = .vcov_type(se_method),
+                         what = "`cluster_col`"),
+    error = function(e) {
+      .vcov_failed(e, se_method, param_names, keep_data)
+    }
+  )
+  if (!is.null(vcov_result$vcov)) {
+    rownames(vcov_result$vcov) <- param_names
+    colnames(vcov_result$vcov) <- param_names
+    names(vcov_result$se) <- param_names
+  }
+  fit["vcov"] <- list(vcov_result$vcov)
+  fit["se"] <- list(vcov_result$se)
   # A variance step that failed is recorded, on such fits only
   if (!is.null(vcov_result$error)) {
     fit["variance_error"] <- list(vcov_result$error)
   }
+  if (keep_data) return(fit)
+  fit["data"] <- list(NULL)  # the slot is kept, NULL
   fit
 }
 
