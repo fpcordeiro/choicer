@@ -774,9 +774,11 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
 //
 // Returns the N x n_params matrix whose row i is the weight-free score
 // s_i = d log P_i / d theta (positive gradient of situation i's
-// log-likelihood contribution). Same loop body as mnl_bhhh_parallel with the
-// outer-product accumulator replaced by a row write; weights are applied on
-// the R side (see .assemble_score_vcov in R/classes.R).
+// log-likelihood contribution). Same loop body as the dense BHHH update had,
+// with the outer product replaced by a row write. The variance routes no
+// longer form it (mnl_bhhh_parallel and mnl_cluster_meat_parallel sum the
+// scores in C++); at census scale it would hold 200,000 x 2,611 values
+// (4.2 GB), so it stops above max_bytes (2 GiB by default) before allocating.
 // [[Rcpp::export]]
 arma::mat mnl_scores_parallel(
     const arma::vec& theta,
@@ -785,7 +787,8 @@ arma::mat mnl_scores_parallel(
     const Rcpp::IntegerVector& choice_idx,
     const Rcpp::IntegerVector& M,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double max_bytes = 2147483648.0
 ) {
   const int K = X.n_cols;
   const int n_params = theta.n_elem;
@@ -797,6 +800,16 @@ arma::mat mnl_scores_parallel(
 
   // --- Serial pre-loop validation of chosen-alternative indices ---
   validate_choices(lay, include_outside_option, "mnl_scores_parallel");
+
+  const double bytes = sizeof(double) * static_cast<double>(N) *
+                       static_cast<double>(n_params);
+  if (!(bytes <= max_bytes)) {
+    Rcpp::stop("The score matrix would take %.2f GiB (%d choice situations x %d "
+               "parameters), more than max_bytes (%.2f GiB). vcov(type = ), "
+               "wesml_vcov() and the fit-time variances do not form it; pass "
+               "a larger max_bytes to compute it.",
+               bytes / 1073741824.0, N, n_params, max_bytes / 1073741824.0);
+  }
 
   // Memory: each thread's score and situation buffers; X beta, the N x n
   // matrix and its copy into R
