@@ -40,10 +40,11 @@
 // within the thread limit, and at most one thread per work item (likelihood
 // unit or choice situation), but two for a single item, so that the region
 // stays active and, as before, an OpenMP-built BLAS runs the item's products
-// single-threaded. Kernels whose threads allocate nothing sized by the data
-// before their first item (the score matrices, the mixed logit's gradient and
-// conditional tastes) run on OpenMP's default team; where it has more threads
-// than items, the extra ones hold at most their few n-vectors.
+// single-threaded. Kernels whose threads allocate nothing before their first
+// item beyond a few n-vectors (the multinomial and mixed logits' score
+// matrices, the mixed logit's gradient and conditional tastes) run on
+// OpenMP's default team; where it has more threads than items, the extra ones
+// hold those vectors only.
 inline int kernel_team_threads(const choicer_off n_items) {
 #ifdef _OPENMP
   choicer_off n = std::min(omp_get_max_threads(), omp_get_thread_limit());
