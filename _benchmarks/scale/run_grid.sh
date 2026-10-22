@@ -202,10 +202,11 @@ if has H; then
     for r in 1 2 3; do ROUND=$r; run1 $B time ${m}_census200k_main model=$m regime=census U=200000 threads=1,11 reps=3 what=hess,bhhh,robust,meat_cluster; done; ROUND=
     once ${m}_census20k17k_sub model=$m regime=census20k U=20000 situations=500 threads=5 reps=1 warm=0 what=hess,bhhh
     once_b ${m}_census20k17k model=$m regime=census20k U=20000 threads=5,11 reps=1 warm=0 what=hess,bhhh,robust,meat_cluster
-    # No regression where the compact block is the dense one (4 alternatives),
-    # and the gradient, unchanged by Phase 8A.
-    pair6 ${m}_small2500k model=$m regime=small U=2500000 threads=11 reps=3 what=grad,hess,bhhh
-    pair3 ${m}_small2500k_1t model=$m regime=small U=2500000 threads=1 reps=3 what=grad,hess,bhhh
+    # No regression where the compact block is the dense one (4 alternatives,
+    # for the nested logit in two nests of two), and the gradient, unchanged
+    # by Phase 8A.
+    pair6 ${m}_small2500k model=$m regime=small U=2500000 nests=2 threads=11 reps=3 what=grad,hess,bhhh
+    pair3 ${m}_small2500k_1t model=$m regime=small U=2500000 nests=2 threads=1 reps=3 what=grad,hess,bhhh
     mem2 ${m}_census20k_var model=$m regime=census U=20000 threads=5 what=hess,bhhh,robust,meatr_robust,meatr_cluster
     run1 $B mem ${m}_census200k_main model=$m regime=census U=200000 threads=11 what=hess,bhhh,robust,meat_cluster
   done
