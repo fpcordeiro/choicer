@@ -311,6 +311,9 @@ designs of their own, described where they appear.
   the reference BLAS: each choice situation's probabilities, mean utilities
   and log-sums at any number of threads, and sums over situations at one
   thread; with other BLAS libraries they may differ in their last bits.
+  `elasticities()` and `diversion_ratios()` keep a J x J matrix per thread
+  only while the threads' copies fit in 2 GiB, and check that memory first
+  ("Estimation and inference in every model", below).
 - **Stored draws for estimation.** `get_halton_normals()`, which builds the
   estimation cube of `draws = "store"` (and again for `vcov(type = )`,
   `wesml_vcov()`, `conditional_tastes()` and standard errors computed later),
@@ -378,9 +381,10 @@ designs of their own, described where they appear.
   parameters, the multinomial logit's Hessian, which the dense kernel took
   358 s to form on 500 of the situations at five threads, takes 0.30 s on all
   24,560. On designs with a handful of alternatives, where a situation touches
-  every parameter, the BHHH matrix takes 10-14% longer than before in the
-  multinomial logit and 17-20% in the nested logit (0.73 instead of 0.65 s and
-  1.08 instead of 0.91 s on 2.5 million situations at one thread). The robust
+  every parameter, the BHHH matrix takes less time than with the dense kernel:
+  0.35 instead of 0.65 s in the multinomial logit and 0.67 instead of 0.92 s
+  in the nested logit on 2.5 million situations at one thread (0.68 and
+  1.10 s in 0.2.1; see the next item). The robust
   meat of `vcov(type = "robust")` and `wesml_vcov()` is now the BHHH kernel
   with squared weights, as that of `se_method = "sandwich"` already was, and
   the clustered meat comes from a kernel, so no variance route forms the
@@ -410,6 +414,62 @@ designs of their own, described where they appear.
   arithmetic (a clustered variance with fewer clusters than parameters, say),
   rounding decides its sign, so its standard error can turn from `NA` to a
   tiny number, or back.
+- **The multinomial and nested logits' work per choice situation.** Their
+  compiled routines (the log-likelihood and gradient, the Hessian, BHHH
+  matrix, scores and clustered meat, predictions and shares, the BLP
+  contraction, elasticities and diversion ratios) no longer allocate memory
+  for each choice situation: every thread's working arrays are allocated once
+  per call, before the parallel loop (on 250,000 four-alternative situations
+  a multinomial logit BHHH call made 250,023 heap allocations and moved 90 MB
+  through the heap, against 26 allocations and 10 MB now; the nested logit's
+  predictions, shares, contraction and diversion ratios already allocated
+  nothing per situation). A thread keeps a situation's bookkeeping while the
+  next situations offer the same alternatives, and the loops hand a thread
+  about 256 stacked rows at a time instead of a single situation. The nested
+  logit's loops over nests cover only the nests a situation offers; so do its
+  probabilities, where every dissimilarity is positive and the nests
+  outnumber a situation's alternatives on average. At one thread, on 2.5
+  million four-alternative situations and on census- and claims-style designs
+  (24,560 situations of 40 alternatives on average, and 153,721 of 56.5), the
+  multinomial logit's gradient took 44%, 46% and 34% less time than before
+  this change, its BHHH matrix 53%, 23% and 20% less, predictions 34%, 26%
+  and 26% less, and contraction iterations 33%, 33% and 32% less; the nested
+  logit's gradient 22%, 18% and 3% less and its BHHH matrix 39%, 25% and 23%
+  less (two nests on the four-alternative design, 50 on the others). At five
+  threads the gains are smaller: on the census- and claims-style designs the
+  multinomial logit's gradient took 27% and 20% less time and its BHHH matrix
+  12% and 16% less. On the census-style design with 500 nests, the nested
+  logit's gradient, predictions, shares and contraction iterations took 41-48%
+  of the time they took with the probabilities computed over every nest.
+  Results are unchanged, bit for bit at one thread.
+- **Elasticities and diversion ratios with many alternatives.**
+  `elasticities()` and `diversion_ratios()` of multinomial, nested and mixed
+  logit fits add each choice situation's terms into one J x J matrix per
+  thread only while those copies fit in 2 GiB, and beyond that into one
+  shared matrix; with one thread they add into the result itself, which
+  halves their peak memory (62 instead of 117 MB with J = 2,602
+  alternatives). They now check that memory before allocating, as the
+  estimation routines do, and stop with the same error, which names the
+  number of threads that fits (`?set_num_threads`): the multinomial and nested
+  logits used to allocate every thread's matrix inside the parallel loop,
+  where running out of memory ended the R session, and the mixed logit
+  allocated its copies without a check. With 17,138 alternatives and the
+  outside option (a 2.35 GB matrix), the multinomial logit's elasticities took
+  0.35 s at five threads, where five per-thread copies and the result would
+  have taken about 14 GB. With more than one thread the last bits of the
+  result vary between calls, as before: with the situations each thread takes
+  and, beyond the 2 GiB, with the order of the shared additions; at one
+  thread results are unchanged. For a hand-built design whose largest
+  alternative code is 2^31 - 1, with the outside option, the multinomial and
+  nested logits' elasticity and diversion-ratio routines now stop with the
+  mixed logit's message.
+- **Cluster labels.** `vcov(type = "cluster")` and `cluster_col` code plain
+  factor, integer, logical and character labels without converting them to
+  strings: coding 10^7 integer labels in 2 million clusters took 0.41 s
+  instead of 4.9-5.6 s. Other labels (doubles, dates, integer64, factor
+  subclasses, factors with repeated levels or levels marked `"bytes"`) go
+  through `as.character()` as before, and the clusters are the same either
+  way.
 - **Data preparation at population scale.** `prepare_mnl_data()`,
   `prepare_mxl_data()` and `prepare_nl_data()` copy only the index columns
   into their working table, read the covariates in place from the caller's

@@ -1064,6 +1064,11 @@ scheduling for load balancing (`#pragma omp for schedule(dynamic)`):
   memory, per thread and shared, with the machine's physical memory (or
   `options(choicer.max_memory)`), and stops with an error naming the number of threads
   that would fit instead of running out of memory inside the parallel region.
+- The elasticity and diversion-ratio kernels (§6, §7) add each choice situation's terms into a
+  $J \times J$ sum: one thread into the result itself, $T$ threads into copies of their own
+  while those fit in 2 GiB (added up in thread order), and beyond that into the shared
+  result atomically, each thread keeping the outside option's row and column to itself.
+  They check the memory of that sum and of their working arrays the same way first.
 
 ### 5.4 Practical Notes
 

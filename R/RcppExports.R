@@ -1949,18 +1949,20 @@ get_num_threads <- function() {
 #'   Each thread of the mixed logit's compiled routines (behind the
 #'   log-likelihood and its gradient, the Hessian and the profile likelihood's
 #'   block of the constants, the BHHH matrix, the score matrix, the robust and
-#'   clustered meats and the conditional tastes), and of the multinomial and
+#'   clustered meats and the conditional tastes), of the multinomial and
 #'   nested logits' (the log-likelihood and its gradient, the Hessian, the
-#'   BHHH matrix, the score matrix and the clustered meat), needs its own
-#'   working memory, besides what they share. Before allocating it, they
-#'   compare an upper estimate of the call's total with the machine's total
-#'   physical memory and, when it would not fit, stop with an error that
-#'   gives the number of threads that fits; they do not lower the thread
-#'   count to make it fit. Memory already in use (the data, store-mode
-#'   draws, other processes) is not counted, nor is the inversion in R of the
-#'   resulting matrices, so passing the check does not promise that the call
-#'   fits; where the physical memory cannot be read and the option is unset,
-#'   there is no check.
+#'   BHHH matrix, the score matrix and the clustered meat), and of the three
+#'   models' elasticities and diversion ratios (whose threads keep their own
+#'   copies of the J x J sums while those fit in 2 GiB, and share one sum
+#'   beyond) needs its own working memory, besides what they share. Before
+#'   allocating it, they compare an upper estimate of the call's total with
+#'   the machine's total physical memory and, when it would not fit, stop
+#'   with an error that gives the number of threads that fits; they do not
+#'   lower the thread count to make it fit. Memory already in use (the data,
+#'   store-mode draws, other processes) is not counted, nor is the inversion
+#'   in R of the resulting matrices, so passing the check does not promise
+#'   that the call fits; where the physical memory cannot be read and the
+#'   option is unset, there is no check.
 #'   `options(choicer.max_memory = <bytes>)` sets the limit instead, for a
 #'   container or a cluster job with less memory than the machine, and `Inf`
 #'   lifts the check.
