@@ -72,6 +72,34 @@ inline int kernel_team_threads(const choicer_off n_items) {
   return static_cast<int>(std::max<choicer_off>(n, 1));
 }
 
+// Stacked alternative rows a thread takes per dispatch in the multinomial
+// and nested logits' loops over choice situations (schedule(dynamic,
+// chunk)): about CHOICER_CHUNK_ROWS rows, at least one situation, so that
+// situations of a few rows do not pay a dispatch each. Set at compile time
+// with -DCHOICER_CHUNK_ROWS=<rows> (_benchmarks/scale/chunk_sweep.sh). One
+// thread's results do not depend on it; with more, it decides which thread
+// adds which situation.
+#ifndef CHOICER_CHUNK_ROWS
+#define CHOICER_CHUNK_ROWS 256
+#endif
+static_assert(CHOICER_CHUNK_ROWS >= 1 && CHOICER_CHUNK_ROWS <= 1048576,
+              "CHOICER_CHUNK_ROWS must be between 1 and 2^20 rows");
+
+// The situations per dispatch of a loop over lay's situations.
+inline int situation_chunk(const ChoiceLayout& lay) {
+  if (lay.N <= 0 || lay.n_rows <= 0) return 1;
+  const double rows = static_cast<double>(lay.n_rows) / static_cast<double>(lay.N);
+  const double c = std::floor(CHOICER_CHUNK_ROWS / rows + 0.5);
+  return c < 1.0 ? 1 : static_cast<int>(std::min(c, 1048576.0));
+}
+
+// The team of such a loop, and the thread count its memory check assumes:
+// kernel_team_threads() of its chunks.
+inline int situation_team(const ChoiceLayout& lay) {
+  const choicer_off chunk = situation_chunk(lay);
+  return kernel_team_threads((lay.N + chunk - 1) / chunk);
+}
+
 inline int kernel_thread_num() {
 #ifdef _OPENMP
   return omp_get_thread_num();

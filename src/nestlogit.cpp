@@ -514,6 +514,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
   }
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -530,7 +531,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
     OpgDiagTerms& terms = terms_t[tid];
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -764,7 +765,7 @@ Rcpp::List nl_loglik_gradient_parallel(
   // negated gradient and R's copies of it and of the diagonal. The pass
   // allocates every thread's sums and buffers on the primary thread, for the
   // team checked here.
-  const int n_threads = kernel_team_threads(lay.N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory(
       "gradient", n_threads,
       nl_thread_bytes(lay, K, n_nests, n_params, opg_diag ? 3.0 : 1.0) +
@@ -918,7 +919,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
   const int J_d = has_delta ? delta_length : 0;  // free constants
   const double m_max = static_cast<double>(lay.max_m);
   const double blk_max = K + std::min<double>(K_l, m_max) + std::min<double>(J_d, m_max);
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory("BHHH matrix", n_threads,
                       nl_map_bytes(J_d, K_l, lay.max_m, K) + 8.0 * (blk_max + n_params + 64.0) +
                           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
@@ -952,6 +953,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
   std::vector<std::vector<double>> cols =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -965,7 +967,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
     double* col = cols[tid].data();
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -1314,7 +1316,7 @@ arma::mat nl_scores_parallel(
 
   // Memory: each thread's score and situation buffers; X beta, the N x n
   // matrix and its copy into R
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory("score matrix", n_threads,
                       nl_thread_bytes(lay, K, n_nests, n_params, 1.0),
                       [&](const int) {
@@ -1337,6 +1339,7 @@ arma::mat nl_scores_parallel(
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
   const bool has_delta = use_asc && delta_length > 0;
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -1348,7 +1351,7 @@ arma::mat nl_scores_parallel(
     arma::vec s_i(score_t[tid].data(), n_params, false, true); // per-individual score
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -1940,7 +1943,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
   const double off_max = std::min<double>(n_nests, m_max);  // nests offered
   const std::size_t Kp = static_cast<std::size_t>(K) * (static_cast<std::size_t>(K) + 1) / 2;
   const std::size_t stride = 4 + 2 * static_cast<std::size_t>(K) + Kp;
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory(
       "Hessian", n_threads,
       nl_map_bytes(J_d, K_l, lay.max_m, K) +
@@ -1980,6 +1983,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
                             3 * static_cast<std::size_t>(K);
   std::vector<std::vector<double>> work = thread_vectors<double>(n_buf, n_threads);
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -2002,7 +2006,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     double* xdv_m = gvec_m + K;
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
@@ -2325,10 +2329,11 @@ Rcpp::List nl_predict(
 
   // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -2337,7 +2342,7 @@ Rcpp::List nl_predict(
     NlProbs& pr = b.pr;                 // nl_situation_probs() buffers
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
@@ -2366,7 +2371,7 @@ struct NlSharesWork {
   std::vector<NlThreadBuffers> bufs;
   std::vector<std::vector<double>> local;  // each thread's shares
   NlSharesWork(const ChoiceLayout& lay, const int n_nests, const int num_alts)
-      : bufs(nl_thread_buffers(lay.max_m, n_nests, 0, kernel_team_threads(lay.N))),
+      : bufs(nl_thread_buffers(lay.max_m, n_nests, 0, situation_team(lay))),
         local(thread_vectors<double>(static_cast<std::size_t>(num_alts),
                                      static_cast<int>(bufs.size()))) {}
 };
@@ -2395,6 +2400,7 @@ static void nl_predict_shares_internal(
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   shares.zeros(num_alts);
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -2406,7 +2412,7 @@ static void nl_predict_shares_internal(
     local_shares.zeros();
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
@@ -2555,6 +2561,7 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
   const choicer_off N = lay.N;
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(acc.T)
 #endif
@@ -2567,7 +2574,7 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
     double local_total_weight = 0.0;
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
@@ -2717,7 +2724,7 @@ Rcpp::NumericMatrix nl_elasticities_parallel(
   check_alternative_count(J_total);
 
   // Memory: each thread's working arrays and map; X beta and the J x J sums
-  const int n_threads = kernel_team_threads(lay.N);
+  const int n_threads = situation_team(lay);
   nl_dense_check_memory("elasticity matrix", lay, n_nests, n_threads, J_total,
                         0.0, include_outside_option, acc_bytes);
 
@@ -2767,6 +2774,7 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
   const choicer_off N = lay.N;
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(acc.T)
 #endif
@@ -2779,7 +2787,7 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
     double* local_denominator = dens[tid].data();
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
@@ -2925,7 +2933,7 @@ Rcpp::NumericMatrix nl_diversion_ratios_parallel(
 
   // Memory: each thread's working arrays, map and denominators; X beta, the
   // J x J numerators and the denominators' sum
-  const int n_threads = kernel_team_threads(lay.N);
+  const int n_threads = situation_team(lay);
   nl_dense_check_memory("diversion-ratio matrix", lay, n_nests, n_threads,
                         J_total, 1.0, include_outside_option, acc_bytes);
 
