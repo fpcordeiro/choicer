@@ -3,16 +3,80 @@
 #include "choicer_internal.h"
 #include "choicer_derivs.h"
 
+// ============================================================================
+// The MNL kernels' working arrays
+//
+// One thread's arrays for the choice situation in hand, allocated on the
+// primary thread for the largest one (max_m rows, K covariates) and first
+// touched by the thread, so that no loop over situations allocates: the
+// utilities and probabilities of its choices (the outside option first),
+// 1{chosen} - P, the covariate of an elasticity, a copy of its rows of X for
+// the products X_i' v that do not reach BLAS (xt_times(); Armadillo copied
+// X.rows() for every product), and a K-vector for a product added into a sum
+// afterwards. Each array starts a 64-byte line.
+// ============================================================================
+struct MnlWork {
+  AlignedBuffer buf;
+  double *v = nullptr, *p = nullptr, *diff = nullptr, *xk = nullptr;
+  double *xi = nullptr, *kv = nullptr;
+
+  MnlWork(const choicer_off max_m, const int K) {
+    const std::size_t m1 = aligned_len(static_cast<std::size_t>(max_m) + 1);
+    const std::size_t mk = aligned_len(static_cast<std::size_t>(max_m) *
+                                       static_cast<std::size_t>(K));
+    buf = AlignedBuffer(4 * m1 + mk + aligned_len(static_cast<std::size_t>(K)));
+    v = buf.data;
+    p = v + m1;
+    diff = p + m1;
+    xk = diff + m1;
+    xi = xk + m1;
+    kv = xi + mk;
+  }
+};
+
+// Every thread's working arrays, one allocation each, on the primary thread.
+inline std::vector<MnlWork> mnl_work(const ChoiceLayout& lay, const int K,
+                                     const int n_threads) {
+  std::vector<MnlWork> work;
+  work.reserve(static_cast<std::size_t>(n_threads));
+  for (int t = 0; t < n_threads; ++t) work.emplace_back(lay.max_m, K);
+  return work;
+}
+
 // Memory of the MNL kernels' loop over the choice situations, an upper bound
-// per thread: the utilities, probabilities and score differences (V_i,
-// inside_utils, P_i, diff_vec; max_m + 1 doubles each), the copy of X_i that
-// Armadillo makes for X_i.t() * v (max_m x K) and its product (K), and n_vecs
-// vectors of the n parameters (the thread's sums or scores).
+// per thread: MnlWork's arrays (each rounded up to a 64-byte line) and n_vecs
+// padded vectors of the n parameters (the thread's sums or scores).
 inline double mnl_thread_bytes(const ChoiceLayout& lay, const int K,
                                const int n_params, const double n_vecs) {
   const double m = static_cast<double>(lay.max_m);
-  return sizeof(double) * (4.0 * (m + 1.0) + m * K + K +
-                           n_vecs * static_cast<double>(n_params));
+  return sizeof(MnlWork) +
+         AlignedBuffer::bytes(4.0 * (m + 8.0) + (m * K + 7.0) + (K + 7.0)) +
+         sizeof(double) * n_vecs * (static_cast<double>(n_params) + 16.0);
+}
+
+// Situation i's choice probabilities into w.p (the outside option first), its
+// utilities into w.v shifted by their maximum, and the log of the denominator
+// returned: fill_choice_utilities() and stable_softmax(), on the thread's
+// arrays (stable_softmax_n() applies Armadillo's operations in its order).
+inline double mnl_softmax(const arma::vec& base_util, const ChoiceLayout& lay,
+                          const choicer_off i, const bool include_outside_option,
+                          MnlWork& w) {
+  const int m_i = lay.m(i);
+  const double* bu = base_util.memptr() + lay.row_off[i];
+  double* v = w.v;
+  if (include_outside_option) {
+    v[0] = 0.0;
+    std::copy(bu, bu + m_i, v + 1);
+  } else {
+    std::copy(bu, bu + m_i, v);
+  }
+  return stable_softmax_n(v, w.p, include_outside_option ? m_i + 1 : m_i);
+}
+
+// 1{a == chosen} - P[a] into w.diff, as diff_vec = -P; diff_vec(chosen) += 1.
+inline void mnl_diff(MnlWork& w, const int num_choices, const int chosen) {
+  for (int a = 0; a < num_choices; ++a) w.diff[a] = -w.p[a];
+  w.diff[chosen] += 1.0;
 }
 
 // ============================================================================
@@ -112,49 +176,35 @@ inline void mnl_situation_map_clear(MnlSituationMap& mp) {
 
 // The weight-free score of situation i on its compact block, into s_c (K + a
 // entries, the map built for i), and the situation's 1{chosen} - P into
-// diff_vec: the coefficients' entries as X_i' diff, the expression of the
-// gradient kernel's OPG diagonal, then each slot's differences in row order
-// at scale 1.0, as scatter_delta_grad() adds them into the n_params-vector.
+// w.diff: the coefficients' entries as X_i' diff (xt_times(), the expression
+// of the gradient kernel's OPG diagonal, written into s_c's first K entries,
+// where the dense code copied the product), then each slot's differences in
+// row order at scale 1.0, as scatter_delta_grad() adds them into the
+// n_params-vector.
 inline void mnl_situation_score(const arma::mat& X, const ChoiceLayout& lay,
                                 const arma::vec& base_util, const choicer_off i,
                                 const bool include_outside_option,
-                                const MnlSituationMap& mp, arma::vec& diff_vec,
+                                const MnlSituationMap& mp, MnlWork& w,
                                 arma::vec& s_c) {
   const int m_i         = lay.m(i);
   const int num_choices = include_outside_option ? m_i + 1 : m_i;
-  const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-  const arma::uword end_idx   = start_idx + m_i - 1;
-  const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
   const int K = X.n_cols;
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
-  // Build utility vector V_i
-  arma::vec V_i(num_choices);
-  arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-  fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
-  // Probabilities
-  arma::vec P_i;
-  stable_softmax(V_i, P_i);
-
-  // Chosen alternative (validated serially by the caller)
+  // Probabilities, and diff[a] = 1{a == chosen_alt} - P[a] (as the gradient
+  // kernel forms it; the choice was validated serially by the caller)
+  mnl_softmax(base_util, lay, i, include_outside_option, w);
   int chosen_alt = lay.choice[i];
   if (!include_outside_option) chosen_alt -= 1;
-
-  // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
-  diff_vec.set_size(num_choices);
-  diff_vec = -P_i;
-  diff_vec(chosen_alt) += 1.0;
+  mnl_diff(w, num_choices, chosen_alt);
+  const double* diff = w.diff;
 
   s_c.zeros();
-  if (include_outside_option) {
-    s_c.subvec(0, K - 1) = X_i.t() * diff_vec.subvec(1, m_i);
-  } else {
-    s_c.subvec(0, K - 1) = X_i.t() * diff_vec;
-  }
+  xt_times(X, static_cast<arma::uword>(lay.row_off[i]), m_i, diff + o, false,
+           0.0, s_c.memptr(), w.xi);
   for (int r = 0; r < m_i; ++r) {
     const int k = mp.row_slot[r];
-    if (k >= 0) s_c[K + k] += 1.0 * diff_vec[r + o];
+    if (k >= 0) s_c[K + k] += 1.0 * diff[r + o];
   }
 }
 
@@ -175,24 +225,37 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
                               arma::vec& global_diag, bool& nonfinite_seen,
                               const int n_threads) {
   const choicer_off N = lay.N;
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+
+  // Every thread's working arrays and sums, allocated here on the primary
+  // thread: the gradient and, with OpgDiag, the diagonal, the constants'
+  // scores (zero between situations) and a situation's terms
+  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
+  std::vector<std::vector<double>> grads =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads, 0.0);
+  std::vector<std::vector<double>> diags = thread_vectors<double>(
+      OpgDiag ? static_cast<std::size_t>(n_params) : 0, n_threads, 0.0);
+  std::vector<std::vector<double>> sds = thread_vectors<double>(
+      OpgDiag && use_asc ? static_cast<std::size_t>(n_params) : 0, n_threads, 0.0);
+  std::vector<OpgDiagTerms> terms_t;
+  terms_t.reserve(static_cast<std::size_t>(n_threads));
+  for (int t = 0; t < n_threads; ++t) {
+    terms_t.emplace_back(OpgDiag ? K + lay.max_m : 0);
+  }
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
+    const int tid = kernel_thread_num();
+    MnlWork& w = work[tid];
     // Thread-local accumulators
     double local_loglik = 0.0;
-    arma::vec local_grad = arma::zeros(n_params);
-    arma::vec diff_vec; // pre-allocated per-thread, resized per individual
+    arma::vec local_grad(grads[tid].data(), n_params, false, true);
     bool local_nonfinite = false;
-    // The diagonal, the constants' scores (zero between situations), the
-    // beta block's scores and a situation's terms
-    arma::vec local_diag, s_d, s_b;
-    OpgDiagTerms terms(OpgDiag ? K + lay.max_m : 0);
-    if (OpgDiag) {
-      local_diag.zeros(n_params);
-      if (use_asc) s_d.zeros(n_params);
-    }
+    arma::vec local_diag(diags[tid].data(), OpgDiag ? n_params : 0, false, true);
+    arma::vec s_d(sds[tid].data(), OpgDiag && use_asc ? n_params : 0, false, true);
+    OpgDiagTerms& terms = terms_t[tid];
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -201,21 +264,13 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
-      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
       const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
-
-      // Build utility vector V_i
-      arma::vec V_i(num_choices);
-      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
 
       // log-likelihood -------------------------------------------------------
 
-      // Vector of choice probabilities
-      arma::vec P_i;
-      const double log_denom = stable_softmax(V_i, P_i);
+      // Choice probabilities (w.v holds the utilities, shifted)
+      const double log_denom = mnl_softmax(base_util, lay, i, include_outside_option, w);
 
       // Identify chosen alternative (validated serially above)
       int chosen_alt = lay.choice[i];
@@ -224,7 +279,7 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       }
 
       // Probability of chosen alternative
-      double V_choice = V_i(chosen_alt);
+      double V_choice = w.v[chosen_alt];
       double log_P_choice = V_choice - log_denom;
       if (!std::isfinite(log_P_choice)) {
         local_nonfinite = true; // H1: note without printing (R-API unsafe here)
@@ -236,17 +291,14 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
 
       // Gradient -------------------------------------------------------------
       // diff_vec[a] = 1{a == chosen_alt} - P_i[a]
-      diff_vec.set_size(num_choices);
-      diff_vec = -P_i;
-      diff_vec(chosen_alt) += 1.0;
+      mnl_diff(w, num_choices, chosen_alt);
+      const arma::vec diff_vec(w.diff, num_choices, false, true);
 
-      // ---- Beta block: single BLAS dgemv ----
-      if (include_outside_option) {
-        const auto diff_inside = diff_vec.subvec(1, m_i); // subview, no copy; m_i elements
-        local_grad.subvec(0, K - 1) += w_i * X_i.t() * diff_inside;
-      } else {
-        local_grad.subvec(0, K - 1) += w_i * X_i.t() * diff_vec;
-      }
+      // ---- Beta block: single BLAS dgemv (w_i X_i' diff, the inside
+      // alternatives' differences), then added ----
+      xt_times(X, start_idx, m_i, w.diff + o, true, w_i, w.kv, w.xi);
+      const arma::vec x_d(w.kv, K, false, true);
+      local_grad.subvec(0, K - 1) += x_d;
 
       // ---- Delta block: scatter (irregular alt-index mapping) ----
       if (use_asc) {
@@ -261,16 +313,14 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
 
       // ---- OPG diagonal (opg_diag): the weight-free score's squares ----
       if (OpgDiag) {
-        if (include_outside_option) {
-          const auto diff_inside = diff_vec.subvec(1, m_i);
-          s_b = X_i.t() * diff_inside;
-          if (use_asc) {
-            scatter_delta_grad(s_d, K, diff_inside, alt_idx0_i, m_i,
+        // the beta block's scores, X_i' diff
+        xt_times(X, start_idx, m_i, w.diff + o, false, 0.0, w.kv, w.xi);
+        const double* s_b = w.kv;
+        if (use_asc) {
+          if (include_outside_option) {
+            scatter_delta_grad(s_d, K, diff_vec.subvec(1, m_i), alt_idx0_i, m_i,
                                include_outside_option, 1.0);
-          }
-        } else {
-          s_b = X_i.t() * diff_vec;
-          if (use_asc) {
+          } else {
             scatter_delta_grad(s_d, K, diff_vec, alt_idx0_i, m_i,
                                include_outside_option, 1.0);
           }
@@ -513,6 +563,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   // allocated here on the primary thread
   SymAcc acc(n_params, n_threads, K, "BHHH", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(K + a_max), n_threads);
   std::vector<std::vector<double>> cols =
@@ -524,10 +575,10 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   {
     const int tid = kernel_thread_num();
     MnlSituationMap& mp = *maps[tid];
+    MnlWork& w = work[tid];
     double* acc_t = acc.base(tid);
     double* s_buf = scores[tid].data();
     double* col = cols[tid].data();
-    arma::vec diff_vec; // resized per individual
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -536,8 +587,8 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
       const double w_i = weights[i];
       mnl_situation_map(lay, i, use_asc, include_outside_option, mp);
       arma::vec s_c(s_buf, K + mp.a, false, true);
-      mnl_situation_score(X, lay, base_util, i, include_outside_option, mp,
-                          diff_vec, s_c);
+      mnl_situation_score(X, lay, base_util, i, include_outside_option, mp, w,
+                          s_c);
 
       // w_i s_c s_c' over the compact block, column by column, each entry
       // formed as the dense rank-one update formed it (`B += w_i * s_i *
@@ -693,6 +744,7 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
   // here on the primary thread.
   SymAcc acc(n_params, n_threads, K, "cluster meat", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(K + a_max), n_threads);
   std::vector<ClusterSum> sums;
@@ -708,10 +760,10 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
   {
     const int tid = kernel_thread_num();
     MnlSituationMap& mp = *maps[tid];
+    MnlWork& w = work[tid];
     ClusterSum& cs = sums[tid];
     double* acc_t = acc.base(tid);
     double* s_buf = scores[tid].data();
-    arma::vec diff_vec; // resized per situation
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -724,8 +776,8 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
         if (q == q0 || cl[order[q - 1]] != g) cs.start(g, K);
         mnl_situation_map(lay, i, use_asc, include_outside_option, mp);
         arma::vec s_c(s_buf, K + mp.a, false, true);
-        mnl_situation_score(X, lay, base_util, i, include_outside_option, mp,
-                            diff_vec, s_c);
+        mnl_situation_score(X, lay, base_util, i, include_outside_option, mp, w,
+                            s_c);
         cs.add(mp, K, s_c, weights[i]);
         mnl_situation_map_clear(mp);
         if (q + 1 == q1 || cl[order[q + 1]] != g) {
@@ -813,7 +865,8 @@ arma::mat mnl_scores_parallel(
 
   // Memory: each thread's score and situation buffers; X beta, the N x n
   // matrix and its copy into R
-  kernel_check_memory("score matrix", kernel_team_threads(N),
+  const int n_threads = kernel_team_threads(N);
+  kernel_check_memory("score matrix", n_threads,
                       mnl_thread_bytes(lay, K, n_params, 1.0), [&](const int) {
                         return 8.0 * static_cast<double>(lay.n_rows) +
                                16.0 * static_cast<double>(N) * n_params;
@@ -826,12 +879,19 @@ arma::mat mnl_scores_parallel(
   // iteration, so no accumulator or critical section is needed).
   arma::mat scores(static_cast<arma::uword>(N), n_params);
 
+  // Every thread's working arrays and score, allocated here on the primary
+  // thread
+  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
+  std::vector<std::vector<double>> score_t =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
+
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
-    arma::vec diff_vec; // resized per individual
-    arma::vec s_i;      // per-individual score
+    const int tid = kernel_thread_num();
+    MnlWork& w = work[tid];
+    arma::vec s_i(score_t[tid].data(), n_params, false, true); // per-individual score
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -840,38 +900,25 @@ arma::mat mnl_scores_parallel(
       const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
-      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
       const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
 
-      // Build utility vector V_i
-      arma::vec V_i(num_choices);
-      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
       // Probabilities
-      arma::vec P_i;
-      stable_softmax(V_i, P_i);
+      mnl_softmax(base_util, lay, i, include_outside_option, w);
 
       // Chosen alternative (validated serially above)
       int chosen_alt = lay.choice[i];
       if (!include_outside_option) chosen_alt -= 1;
 
       // diff_vec[a] = 1{a == chosen_alt} - P_i[a]  (same as gradient kernel)
-      diff_vec.set_size(num_choices);
-      diff_vec = -P_i;
-      diff_vec(chosen_alt) += 1.0;
+      mnl_diff(w, num_choices, chosen_alt);
+      const arma::vec diff_vec(w.diff, num_choices, false, true);
 
       // Assemble the (weight-free) per-individual score s_i.
-      s_i.zeros(n_params);
+      s_i.zeros();
 
-      // Beta block
-      if (include_outside_option) {
-        const auto diff_inside = diff_vec.subvec(1, m_i); // m_i elements
-        s_i.subvec(0, K - 1) = X_i.t() * diff_inside;
-      } else {
-        s_i.subvec(0, K - 1) = X_i.t() * diff_vec;
-      }
+      // Beta block, X_i' diff into s_i's first K entries
+      xt_times(X, start_idx, m_i, w.diff + (include_outside_option ? 1 : 0),
+               false, 0.0, s_i.memptr(), w.xi);
 
       // Delta block (scatter; scale = 1)
       if (use_asc) {
@@ -931,71 +978,83 @@ Rcpp::List mnl_predict(
   const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta);
   const choicer_off N = lay.N;
 
-  // Pre-compute base utility for all individuals (single BLAS call)
+  // Pre-compute base utility for all individuals (single BLAS call). Every
+  // row belongs to one situation, so these are the utilities returned (the
+  // situations' copies of them made the same vector).
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Preallocate predicted values
-  arma::vec V_all = arma::zeros(X.n_rows);
+  // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
+  const int n_threads = kernel_team_threads(N);
+  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel num_threads(n_threads)
 #endif
-  for (choicer_off i = 0; i < N; ++i) {
-    const int m_i         = lay.m(i);
-    const int num_choices = include_outside_option ? m_i + 1 : m_i;
-    const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-    const arma::uword end_idx   = start_idx + m_i - 1;
+  {
+    MnlWork& w = work[kernel_thread_num()];
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i = lay.m(i);
+      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
 
-    // Build utility vector V_i
-    arma::vec V_i(num_choices);
-    arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-    fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
-    V_all.subvec(start_idx, end_idx) = inside_utils;
-
-    // Vector of choice probabilities
-    arma::vec P_i;
-    stable_softmax(V_i, P_i);
-
-    if (include_outside_option) {
-      P_all.subvec(start_idx, end_idx) = P_i.subvec(1, num_choices - 1);
-    } else {
-      P_all.subvec(start_idx, end_idx) = P_i;
-    }
-
-  } // end of i loop
+      // Vector of choice probabilities
+      mnl_softmax(base_util, lay, i, include_outside_option, w);
+      std::copy(w.p + o, w.p + o + m_i, P_all.memptr() + start_idx);
+    } // end of i loop
+  }
 
   // Return predicted choice probabilities and utilities
   return Rcpp::List::create(
     Rcpp::Named("choice_prob") = P_all,
-    Rcpp::Named("utility")  = V_all
+    Rcpp::Named("utility")  = base_util
   );
 }
 
+// The working arrays of mnl_predict_shares_internal(): every thread's
+// situation arrays and shares, allocated on the primary thread once per call
+// (a BLP contraction keeps them across its iterations).
+struct MnlSharesWork {
+  std::vector<MnlWork> work;
+  std::vector<std::vector<double>> local;  // each thread's shares
+  MnlSharesWork(const ChoiceLayout& lay, const int K, const int num_alts)
+      : work(mnl_work(lay, K, kernel_team_threads(lay.N))),
+        local(thread_vectors<double>(static_cast<std::size_t>(num_alts),
+                                     static_cast<int>(work.size()))) {}
+};
+
 // Prediction of shares (internal function), from the base utilities of all
-// rows (X * beta plus the rows' ASCs). denominator is
-// shares_denominator(weights), which the callers check before they form
-// the utilities.
-static arma::vec mnl_predict_shares_internal(
+// rows (X * beta plus the rows' ASCs), into `shares` (num_alts entries).
+// denominator is shares_denominator(weights), which the callers check before
+// they form the utilities.
+static void mnl_predict_shares_internal(
     const arma::vec& base_util,        // sum(M) x 1 vector of base utilities
     const ChoiceLayout& lay,           // layout of the stacked design
     const arma::vec& weights,          // N x 1 vector with weights for each observation
     const double denominator,          // sum of the weights
     const int num_alts,                // total number of distinct alternatives
-    const bool include_outside_option  // whether to include an outside option
+    const bool include_outside_option, // whether to include an outside option
+    MnlSharesWork& ws,                 // the threads' working arrays and shares
+    arma::vec& shares                  // the result
 ) {
   const choicer_off N = lay.N;
+  const int n_threads = static_cast<int>(ws.work.size());
 
   // Initialize global accumulator for predicted shares
-  arma::vec global_shares = arma::zeros(num_alts);
+  shares.zeros(num_alts);
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
 {
+  const int tid = kernel_thread_num();
+  MnlWork& w = ws.work[tid];
   // Thread-local accumulator for predicted shares
-  arma::vec local_shares = arma::zeros(num_alts);
+  arma::vec local_shares(ws.local[tid].data(), num_alts, false, true);
+  local_shares.zeros();
 
   // Loop over individuals in parallel
 #ifdef _OPENMP
@@ -1003,31 +1062,23 @@ static arma::vec mnl_predict_shares_internal(
 #endif
   for (choicer_off i = 0; i < N; ++i) {
     const int m_i         = lay.m(i);
-    const int num_choices = include_outside_option ? m_i + 1 : m_i;
-    const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-    const arma::uword end_idx   = start_idx + m_i - 1;
     const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // M[i]
 
-    // Build utility vector V_i
-    arma::vec V_i(num_choices);
-    arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-    fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
     // Vector of choice probabilities
-    arma::vec P_i;
-    stable_softmax(V_i, P_i);
+    mnl_softmax(base_util, lay, i, include_outside_option, w);
+    const double* P_i = w.p;
 
     // Sum probabilities by alternative
     if (include_outside_option) {
       // outside option at index 0
-      local_shares(0) += weights[i] * P_i(0); // outside option
+      local_shares(0) += weights[i] * P_i[0]; // outside option
     }
     for (int a = 0; a < m_i; ++a) {
       if (include_outside_option) {
         // outside option at index 0
-        local_shares(alt_idx0_i[a] + 1) += weights[i] * P_i(a + 1);
+        local_shares(alt_idx0_i[a] + 1) += weights[i] * P_i[a + 1];
       } else {
-        local_shares(alt_idx0_i[a]) += weights[i] * P_i(a);
+        local_shares(alt_idx0_i[a]) += weights[i] * P_i[a];
       }
     }
 
@@ -1038,11 +1089,11 @@ static arma::vec mnl_predict_shares_internal(
 #endif
   {
     // Combine local sums into global sum
-    global_shares += local_shares;
+    shares += local_shares;
   }
 }
-  // Return predicted choice probabilities and utilities
-  return global_shares / denominator;
+  // The predicted shares
+  shares /= denominator;
 }
 
 //' Prediction of market shares based on fitted model
@@ -1097,9 +1148,10 @@ arma::vec mnl_predict_shares(
   const double denominator = shares_denominator(weights);
   const arma::vec base_util =
       compute_base_util(X, par.beta, lay, use_asc, par.delta);
-  arma::vec global_shares = mnl_predict_shares_internal(
-    base_util, lay, weights, denominator, num_alts, include_outside_option
-  );
+  MnlSharesWork ws(lay, K, num_alts);
+  arma::vec global_shares(num_alts);
+  mnl_predict_shares_internal(base_util, lay, weights, denominator, num_alts,
+                              include_outside_option, ws, global_shares);
 
   return global_shares;
 }
@@ -1161,15 +1213,18 @@ arma::vec blp_contraction(
                                                &weights);
 
   // X * beta, once: only delta changes across the iterations. Each one adds
-  // its ASCs to a copy of it, in one buffer kept across them.
+  // its ASCs to a copy of it, in one buffer kept across them, and predicts the
+  // shares with working arrays allocated once, here.
   const double denominator = shares_denominator(weights);
   const arma::vec Xb = X * beta;
   arma::vec base_util;
+  MnlSharesWork ws(lay, X.n_cols, num_alts);
+  arma::vec shares(num_alts);
   auto predict_shares = [&](const arma::vec& inside_delta) {
     base_util = Xb;
     add_row_asc(base_util, lay, inside_delta);
-    return mnl_predict_shares_internal(base_util, lay, weights, denominator,
-                                       num_alts, include_outside_option);
+    mnl_predict_shares_internal(base_util, lay, weights, denominator, num_alts,
+                                include_outside_option, ws, shares);
   };
 
   // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
@@ -1191,13 +1246,20 @@ arma::vec blp_contraction(
     delta_old -= delta_old[0];
   }
 
-  arma::vec inside_delta_old = include_outside_option
-    ? arma::vec(delta_old.subvec(1, num_alts - 1))
-    : delta_old;
+  // The inside deltas, refilled in place from delta_old at every iteration
+  arma::vec inside_delta_old(include_outside_option ? num_alts - 1 : num_alts);
+  auto set_inside_delta = [&]() {
+    if (include_outside_option) {
+      inside_delta_old = delta_old.subvec(1, num_alts - 1);
+    } else {
+      inside_delta_old = delta_old;
+    }
+  };
+  set_inside_delta();
 
   // Initialize shares and delta_new
-  arma::vec log_shares_old = predict_shares(inside_delta_old);
-  log_shares_old = arma::log(log_shares_old);
+  predict_shares(inside_delta_old);
+  arma::vec log_shares_old = arma::log(shares);
   arma::vec log_shares_target = arma::log(target_shares);
   arma::vec delta_new = delta_old;
 
@@ -1220,11 +1282,9 @@ arma::vec blp_contraction(
           break;
       }
       delta_old = delta_new;
-      inside_delta_old = include_outside_option
-        ? arma::vec(delta_old.subvec(1, num_alts - 1))
-        : delta_old;
-      log_shares_old = predict_shares(inside_delta_old);
-      log_shares_old = arma::log(log_shares_old);
+      set_inside_delta();
+      predict_shares(inside_delta_old);
+      log_shares_old = arma::log(shares);
       ++iter;
   }
 
@@ -1394,6 +1454,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   // non-finite-weight records, all allocated here on the primary thread
   SymAcc acc(n_params, n_threads, K, "Hessian", acc_bytes);
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
   std::vector<std::vector<double>> blocks = thread_vectors<double>(blk, n_threads);
   std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
@@ -1409,6 +1470,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   {
     const int tid = kernel_thread_num();
     MnlSituationMap& mp = *maps[tid];
+    MnlWork& w = work[tid];
     NonFiniteRecord& nf = nonfinite[tid];
     char* nan_row = nan_rows[tid].data();
     double* acc_t = acc.base(tid);
@@ -1424,19 +1486,12 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
-      const int num_choices = include_outside_option ? m_i + 1 : m_i;
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
 
-      // Build utility vector V_i
-      arma::vec V_i(num_choices);
-      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
       // Calculate Probabilities ---------------------------------------------
-      arma::vec P_i;
-      stable_softmax(V_i, P_i);
+      mnl_softmax(base_util, lay, i, include_outside_option, w);
+      const double* P_i = w.p;
 
       // The situation's slots and blocks: BB = sum_a p_a x_a x_a' - mu_b mu_b'
       // (upper triangle), mu_b = sum_a p_a x_a, BD = sum_a p_a x_a e_s(a)' -

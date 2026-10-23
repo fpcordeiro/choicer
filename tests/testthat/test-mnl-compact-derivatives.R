@@ -57,7 +57,17 @@ mcd_cells <- function() {
     mcd_fixture("single-alternative sets", 2007, single = TRUE),
     mcd_fixture("no constants", 2008, use_asc = FALSE),
     mcd_fixture("one coefficient", 2009, K = 1L),
-    mcd_fixture("wide sets", 2010, J = 60L, m_range = c(10L, 40L), N = 30L)
+    mcd_fixture("wide sets", 2010, J = 60L, m_range = c(10L, 40L), N = 30L),
+    # Products X_i' v on a thread's copy of X_i, in the shapes Armadillo
+    # dispatches differently: more than 16 covariates and choices (its
+    # temporaries were heap blocks), 4 x 4 (its tiny-square product), one
+    # covariate (the operands swapped)
+    mcd_fixture("wide covariates and sets", 2011, J = 40L, m_range = c(10L, 30L),
+                K = 17L, N = 30L),
+    mcd_fixture("four alternatives, four covariates", 2012, J = 4L,
+                m_range = c(4L, 4L), K = 4L),
+    mcd_fixture("one coefficient, wide sets", 2013, m_range = c(3L, 20L), K = 1L,
+                shuffle = TRUE)
   )
 }
 
@@ -291,6 +301,63 @@ test_that("the compact BHHH is the weighted cross-product of the scores", {
       expect_equal(unclass(B), crossprod(sqrt(f$weights) * S), tolerance = 1e-12,
                    label = sprintf("[%s, %d threads]", f$name, nt))
     }
+  }
+})
+
+test_that("the gradient, scores, predictions and shares agree with R on every design", {
+  # The kernels form each situation's probabilities and products X_i' v in
+  # per-thread arrays: the gradient against numDeriv of the objective and the
+  # weighted sum of the scores, its OPG diagonal against the scores', the
+  # probabilities and utilities against R's, the shares against the weighted
+  # sums of the probabilities.
+  skip_if_not_installed("numDeriv")
+  on.exit(set_omp_threads(2L), add = TRUE)
+  ns <- asNamespace("choicer")
+  for (f in mcd_cells()) {
+    fr <- mcd_free(f)
+    v_ref <- drop(f$X %*% f$theta[seq_len(f$K)]) + ifelse(is.na(fr), 0, f$theta[fr])
+    row_off <- c(0L, cumsum(f$M))
+    p_ref <- numeric(length(v_ref))
+    shares_ref <- numeric(f$J + f$include_outside_option)
+    for (i in seq_len(f$N)) {
+      r <- (row_off[i] + 1L):row_off[i + 1L]
+      p <- mcd_softmax(if (f$include_outside_option) c(0, v_ref[r]) else v_ref[r])
+      if (f$include_outside_option) {
+        shares_ref[1L] <- shares_ref[1L] + f$weights[i] * p[1L]
+        p <- p[-1L]
+      }
+      p_ref[r] <- p
+      a <- f$alt_idx[r] + f$include_outside_option
+      for (k in seq_along(r)) shares_ref[a[k]] <- shares_ref[a[k]] + f$weights[i] * p[k]
+    }
+    shares_ref <- shares_ref / sum(f$weights)
+    for (nt in 1:2) {
+      set_omp_threads(nt)
+      what <- sprintf("[%s, %d threads]", f$name, nt)
+      g <- mcd_call("gradient", f, opg_diag = TRUE)
+      S <- mcd_call("scores", f)
+      expect_equal(drop(g$gradient), -colSums(f$weights * S), tolerance = 1e-12,
+                   label = what)
+      expect_equal(drop(g$opg_diag), colSums(f$weights * S^2), tolerance = 1e-12,
+                   label = what)
+      pr <- ns$mnl_predict(f$theta, f$X, f$alt_idx, f$M, f$use_asc,
+                           f$include_outside_option)
+      expect_equal(drop(pr$utility), v_ref, tolerance = 1e-14,
+                   label = paste(what, "utilities"))
+      expect_equal(drop(pr$choice_prob), p_ref, tolerance = 1e-14,
+                   label = paste(what, "probabilities"))
+      # one share per code up to the largest offered (the outside option first)
+      sh <- drop(ns$mnl_predict_shares(f$theta, f$X, f$alt_idx, f$M, f$weights,
+                                       f$use_asc, f$include_outside_option))
+      expect_equal(sh, shares_ref[seq_along(sh)], tolerance = 1e-13,
+                   label = paste(what, "shares"))
+      expect_true(all(shares_ref[-seq_along(sh)] == 0), label = paste(what, "unoffered"))
+    }
+    set_omp_threads(1L)
+    num <- numDeriv::grad(function(th) mcd_call("gradient", f, theta = th)$objective,
+                          f$theta)
+    expect_lt(mcd_scale_dev(drop(mcd_call("gradient", f)$gradient), num), 1e-6,
+              label = paste(f$name, "numDeriv"))
   }
 })
 
