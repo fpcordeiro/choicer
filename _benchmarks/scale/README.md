@@ -175,13 +175,19 @@ size would need that evidence on more than one machine.
 
 The multinomial and nested logits' loops over choice situations hand a thread
 about 256 stacked rows per dispatch (`CHOICER_CHUNK_ROWS`,
-`src/choicer_derivs.h`), at least one situation; before 0.3.0 each situation
-was a dispatch of its own, which situations of four rows paid for. On an
-11-core laptop (Apple M3 Pro), against one situation per dispatch, 256 rows
-took 1-6% less time on 2.5 million four-alternative situations at five and
-eleven threads (the median rounds of both models' gradient, BHHH, Hessian and
-predictions), and as much at one thread and on the census-style designs; 64
-and 1,024 rows were within 5% of 256 everywhere, with mixed signs.
+`src/choicer_derivs.h`), at least one situation: the target over the mean rows
+per situation, or over an eighth of the largest situation's rows where that is
+more, so that no dispatch holds more than about 2,048 rows whatever the
+situations' order (the clustered meats keep their own chunks, balanced by
+rows). Before 0.3.0 each situation was a dispatch of its own, which situations
+of four rows paid for. On an 11-core laptop (Apple M3 Pro), against one
+situation per dispatch, 256 rows took 1-6% less time on 2.5 million
+four-alternative situations at five and eleven threads (the median rounds of
+both models' gradient, BHHH, Hessian and predictions); at one thread, and on
+the census- and claims-style designs, the two were within 4% with mixed signs,
+but for the nested logit's census-style predictions at five threads (7% less
+with 256 rows). 1,024 rows were within 5% of 256 everywhere, with mixed signs,
+and 64 rows within 3% in an earlier sweep of the multinomial logit.
 
 The value is fixed at compile time, so `chunk_sweep.sh` builds one library per
 value from a source tree (1, 64, 256 and 1,024 rows by default; 1 is the

@@ -447,7 +447,9 @@ The function accumulates two quantities in parallel across individuals:
 1. **Numerator matrix**: $N_{kj} = \sum_i w_i \, P_{ij} \, P_{ik}$ for each pair $(k, j)$
 2. **Denominator vector**: $d_j = \sum_i w_i \, P_{ij} \, (1 - P_{ij})$ for each $j$
 
-The final matrix is computed as $D_{kj} = N_{kj} / d_j$ for $k \neq j$, with $D_{jj} = 0$.
+The final matrix is computed as $D_{kj} = N_{kj} / d_j$ for $k \neq j$, with $D_{jj} = 0$,
+in place in the numerator's $J \times J$ sum (§12.3); a column whose denominator is at most
+$10^{-15}$ (an alternative no situation offers, say) is set to zero.
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 
@@ -805,14 +807,27 @@ option (first ASC normalized to 0), or $J_{asc} = J$ with outside option.
 ### 12.3 OpenMP Parallelization
 
 The implementation parallelizes over choice situations using OpenMP:
-- Each thread keeps local accumulators: the log-likelihood and gradient, or a packed upper
-  triangle of the Hessian or BHHH matrix (§4.3; one thread adds into the result itself, and
-  above the budget the threads share it), all allocated before the parallel loop once the
-  kernel's memory estimate has been checked
+- Each thread keeps its working arrays (utilities, probabilities, score differences, and a
+  copy of a situation's covariate rows where Armadillo's product needs one) and local
+  accumulators: the log-likelihood and gradient, or a packed upper triangle of the Hessian
+  or BHHH matrix (§4.3; one thread adds into the result itself, and above the budget the
+  threads share it). All are allocated before the parallel loop, once the kernel's memory
+  estimate has been checked, so that no choice situation allocates
 - The Hessian's and BHHH matrix's triangles are added after the loop in thread order (above
   the budget, the constants' entries atomically during it); the log-likelihood and gradient
   in an order that can vary between calls
-- Dynamic scheduling is used for load balancing: `#pragma omp for schedule(dynamic)`
+- Dynamic scheduling balances the load, each dispatch handing a thread about 256 stacked
+  rows, at least one situation (`schedule(dynamic, chunk)`; `CHOICER_CHUNK_ROWS` at
+  compile time), so that situations of a few rows do not pay a dispatch each; fewer where
+  the largest situation has more than eight times the mean rows, so that no dispatch holds
+  more than about 2,048 rows whatever the situations' order
+- The elasticity and diversion-ratio kernels (§5.3, §6.5) add each situation's terms into
+  a $J \times J$ sum: one thread into the result itself, $T$ threads into copies of their
+  own while those fit in 2 GiB (added up in thread order after the loop), and beyond that
+  into the shared result atomically, each thread keeping the outside option's row and
+  column, which every situation touches, to itself. Their memory (the result, the threads'
+  copies and working arrays) is checked before anything is allocated, as the estimation
+  kernels' is; with one thread the sums do not depend on the 2 GiB budget
 
 *Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
 

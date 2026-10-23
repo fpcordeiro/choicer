@@ -210,6 +210,16 @@ where $V_{\max,k} = \max_{j \in B_k} V_{ij}/\lambda_k$.
 
 **Across-nest denominator.** The denominator $D_i = \sum_l \exp(\lambda_l \log I_l)$ is similarly stabilized by subtracting $\max_l \lambda_l \log I_l$ before exponentiation.
 
+**Nests an individual does not face.** A nest none of whose alternatives individual $i$
+faces has $\log I_k = -\infty$, so $\lambda_k \log I_k = -\infty$ when $\lambda_k > 0$: it
+never raises the maximum, and its term $\exp(-\infty) = 0$ adds nothing to $D_i$. Where every
+$\lambda_k$ is positive and the nests outnumber an individual's alternatives on average, the
+kernels therefore form the inclusive values, the maximum and $D_i$ over the nests the
+individual faces, in increasing order and in the same two partial sums (by each nest's index
+parity) as the loops over every nest, which changes no bit of the result. With a $\lambda_k$
+that is NaN, or zero or negative (which only `nl_blp_contraction()` accepts), they loop over
+every nest.
+
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
 ### 2.8 Relation to Other Nested-Logit Parameterizations
@@ -729,12 +739,25 @@ This avoids redundant matrix-vector products inside the per-individual loop.
 The implementation parallelizes over individuals using OpenMP:
 - Each thread keeps local accumulators (the log-likelihood and gradient, or a packed upper
   triangle of the Hessian or BHHH matrix, §4.8; one thread adds into the result itself) and
-  its probability buffers, all allocated before the parallel loop once the kernel's memory
-  estimate has been checked.
+  its working arrays (the probabilities, the individual's nests, a copy of its covariate
+  rows where Armadillo's product needs one), all allocated before the parallel loop once the
+  kernel's memory estimate has been checked, so that no individual allocates.
 - The Hessian's and BHHH matrix's triangles are added after the loop in thread order (above
   the budget, the shared entries atomically during it); the log-likelihood and gradient in
   an order that can vary between calls.
-- Dynamic scheduling balances load across individuals with varying choice set sizes.
+- The loops over the dissimilarities (their gradient, scores and Hessian terms) run over
+  the nests the individual faces, and so do the inclusive values and nest probabilities
+  where every $\lambda_k$ is positive and the nests outnumber the alternatives on average
+  (§2.7).
+- Dynamic scheduling balances load across individuals with varying choice set sizes, each
+  dispatch handing a thread about 256 stacked rows, at least one individual
+  (`CHOICER_CHUNK_ROWS` at compile time), and fewer where the largest choice set has more
+  than eight times the mean rows, so that no dispatch holds more than about 2,048.
+- The elasticity and diversion-ratio kernels add each individual's terms into a
+  $J \times J$ sum, as the multinomial logit's do: one thread into the result itself, $T$
+  threads into copies of their own while those fit in 2 GiB, and beyond that into the
+  shared result atomically, the outside option's row and column kept per thread; its memory
+  is checked before it is allocated.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 

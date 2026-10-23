@@ -242,8 +242,9 @@ if has J; then
       what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
     pair3 ${m}_claims15k_k model=$m regime=claims U=15000 threads=1,5 reps=3 \
       what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
-    # J = 20,000 elasticities and diversion: per-thread copies (B's budget)
-    # against one shared result (acc=0), with the outside option
+    # About 17,000 alternatives (census20k's) and the outside option:
+    # elasticities and diversion at B's default budget, which these thread
+    # counts exceed (one shared result), and with acc=0
     once_b ${m}_census20kJ_jj model=$m regime=census20k U=20000 threads=5,11 reps=1 warm=0 ioo=1 what=elas,dr
     once_b ${m}_census20kJ_jj_shared model=$m regime=census20k U=20000 threads=5,11 reps=1 warm=0 ioo=1 acc=0 what=elas,dr
     mem2 ${m}_small250k_k model=$m regime=small U=250000 nests=2 threads=1,11 \

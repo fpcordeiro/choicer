@@ -9,7 +9,8 @@
 #   (default all five, as model:regime:units:nests, units as bench_mnl_nl.R's U)
 #
 # Those loops hand a thread about CHOICER_CHUNK_ROWS stacked rows per dispatch,
-# at least one situation (ROWS=1 builds the schedule of one situation per
+# at least one situation, and fewer where the largest situation has more than
+# eight times the mean rows (ROWS=1 builds the schedule of one situation per
 # dispatch that 0.3.0 replaced). The value is fixed when the package is
 # compiled, so the script builds one library per value from a copy of the tree,
 # with the machine's Makevars (tools::makevars_user()) plus the define through
