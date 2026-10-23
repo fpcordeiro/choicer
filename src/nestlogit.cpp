@@ -880,16 +880,26 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
       // rank-one update formed it (mnl_bhhh_parallel()); a non-finite weight
       // or score takes the dense update over every entry.
       if (std::isfinite(w_i) && s_c.is_finite()) {
-        if (acc.shared) {
-          bhhh_add<true>(acc, acc_t, mp, K, s_c, w_i, col);
-        } else {
-          bhhh_add<false>(acc, acc_t, mp, K, s_c, w_i, col);
+        switch (acc.mode()) {
+          case SymMode::Single:
+            bhhh_add<SymMode::Single>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          case SymMode::Triangles:
+            bhhh_add<SymMode::Triangles>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          default:
+            bhhh_add<SymMode::Shared>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       } else {
-        if (acc.shared) {
-          bhhh_add_dense<true>(acc, acc_t, mp, K, s_c, w_i, col);
-        } else {
-          bhhh_add_dense<false>(acc, acc_t, mp, K, s_c, w_i, col);
+        switch (acc.mode()) {
+          case SymMode::Single:
+            bhhh_add_dense<SymMode::Single>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          case SymMode::Triangles:
+            bhhh_add_dense<SymMode::Triangles>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          default:
+            bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       }
       nl_situation_map_clear(mp);
@@ -1413,6 +1423,303 @@ arma::mat nl_loglik_numeric_hessian(
   return Hess;
 }
 
+// One situation's inputs to the NL Hessian's terms (nl_hessian_add()): its
+// probabilities, rows' nests, utilities and chosen alternative, the sums of
+// the nests it offers (stride apart, in their slots) and the chosen nest's Q,
+// its slot map, and the thread's buffers for a column of Q_i, its weighted
+// copy, d_V and the products X_i' v. Plain data, so that the terms' loops
+// are a function template on the accumulator's mode, not a capturing lambda.
+struct NlHessianTerms {
+  int K = 0, K_l = 0, m_i = 0, d0 = 0;
+  bool has_delta = false;
+  double w_i = 0.0;
+  const arma::vec* P_i_vec = nullptr;
+  const double* P_j_given_k = nullptr;
+  const double* P_k = nullptr;
+  const int* nest0 = nullptr;
+  const arma::vec* lambda = nullptr;
+  const double* V_inside = nullptr;
+  int chosen_nest_k = -1, chosen_inside_idx = -1;
+  const double* sums = nullptr;
+  std::size_t stride = 0;
+  const int* nest_slot = nullptr;
+  const int* nests_off = nullptr;
+  int n_o = 0;
+  const double* qk = nullptr;
+  const NlSituationMap* mp = nullptr;
+  const int* lam_nest = nullptr;
+  const arma::mat* X_i = nullptr;
+  const arma::vec* Xbar_i = nullptr;
+  double *qcol = nullptr, *hcol = nullptr, *dV = nullptr, *gvec = nullptr,
+         *xdv = nullptr;
+};
+
+// The sums of offered nest k (at its slot).
+static inline const double* nl_hessian_sums(const NlHessianTerms& h, const int k) {
+  return h.sums + static_cast<std::size_t>(h.nest_slot[k]) * h.stride;
+}
+
+// Q_i[a, b], the V-space Hessian of the negated log-likelihood
+// (the dense code's expression)
+static inline double nl_hessian_Q(const NlHessianTerms& h, const int a, const int b) {
+  const int* nest0 = h.nest0;
+  const arma::vec& P_i_vec = *h.P_i_vec;
+  const double* P_j_given_k = h.P_j_given_k;
+  const arma::vec& lambda = *h.lambda;
+  const int chosen_nest_k = h.chosen_nest_k;
+  const int ka = static_cast<int>(nest0[a]);
+  const double Pia = P_i_vec[a];
+  const double Pa_given_ka = P_j_given_k[a];
+  const double lam_ka = lambda[ka];
+  const double inv_lam_ka = 1.0 / lam_ka;
+  const int kb = static_cast<int>(nest0[b]);
+  const double Pib = P_i_vec[b];
+  const double Pb_given_kb = P_j_given_k[b];
+
+  // Base term: -P_ia * P_ib (all pairs)
+  double Qab = -Pia * Pib;
+
+  // Within-nest correction: P_ia * [1_{a=b}/lam_k + P(b|k) * (1 - 1/lam_k)]
+  if (ka == kb) {
+    const double indicator_ab = (a == b) ? 1.0 : 0.0;
+    Qab += Pia * (indicator_ab * inv_lam_ka + Pb_given_kb * (1.0 - inv_lam_ka));
+  }
+
+  // Chosen-nest correction C(a,b), nonzero when k(a)=k(b)=ki
+  if (chosen_nest_k >= 0 && ka == chosen_nest_k && kb == chosen_nest_k) {
+    const double lam_ki = lambda[chosen_nest_k];
+    const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
+    const double ind_ab = (a == b) ? 1.0 : 0.0;
+    Qab -= scale_C * Pa_given_ka * (ind_ab - Pb_given_kb);
+  }
+  return Qab;
+}
+
+// Add a term t(r, c) of the situation's Hessian, with t(c, r) its transposed
+// term, into the upper triangle, r and c global, as their mean: the dense
+// code summed each triangle and halved H + H' at the end. Halving each term
+// is exact (a power of two; below 2^-1021 a term can lose its last bit), so
+// the sums are the halves of the terms' sums, and no running sum is doubled
+// on the way.
+template <SymMode Mode>
+static inline void nl_add2(const SymAcc& acc, double* buf, const int r, const int c,
+                           const double t_rc, const double t_cr) {
+  const double v = 0.5 * t_rc + 0.5 * t_cr;
+  acc.add<Mode>(buf, std::min(r, c), std::max(r, c), v);
+}
+
+// Steps 2d-2g of the NL Hessian for one situation (h): the constants' and
+// coefficients' blocks, then each touched dissimilarity's rows, added into
+// the accumulator in the dense code's order, for its mode.
+template <SymMode Mode>
+static void nl_hessian_add(const SymAcc& acc, double* buf, const NlHessianTerms& h) {
+  const int K = h.K;
+  const int K_l = h.K_l;
+  const int m_i = h.m_i;
+  const int d0 = h.d0;
+  const bool has_delta = h.has_delta;
+  const double w_i = h.w_i;
+  const arma::vec& P_i_vec = *h.P_i_vec;
+  const double* P_j_given_k = h.P_j_given_k;
+  const double* P_k = h.P_k;
+  const int* nest0 = h.nest0;
+  const arma::vec& lambda = *h.lambda;
+  const double* V_inside = h.V_inside;
+  const int chosen_nest_k = h.chosen_nest_k;
+  const int chosen_inside_idx = h.chosen_inside_idx;
+  const double* sums = h.sums;
+  const std::size_t stride = h.stride;
+  const int* nests_off = h.nests_off;
+  const int n_o = h.n_o;
+  const double* qk = h.qk;
+  const NlSituationMap& mp = *h.mp;
+  const int* lam_nest = h.lam_nest;
+  const arma::mat& X_i = *h.X_i;
+  const arma::vec& Xbar_i = *h.Xbar_i;
+  double* qcol = h.qcol;
+  double* hcol = h.hcol;
+  double* dV = h.dV;
+  double* gvec_m = h.gvec;
+  double* xdv_m = h.xdv;
+  (void)K_l;
+
+  // Steps 2d and 2e, delta-delta and beta-delta: for each row b with a
+  // free constant, the column Q_i[, b]; w_i Q_i[a, b] into the constants'
+  // block for each row a with one, and X_i' (w_i Q_i[, b]) into the
+  // coefficients' column of b's constant
+  if (has_delta) {
+    arma::vec h_col_b(hcol, m_i, false, true);
+    arma::vec beta_delta_contrib(gvec_m, K, false, true);
+    for (int b = 0; b < m_i; ++b) {
+      const int sb = mp.row_slot[b];
+      if (sb < 0) continue;
+      const int gb = d0 + mp.delta[sb];
+      for (int a = 0; a < m_i; ++a) qcol[a] = nl_hessian_Q(h, a, b);
+      for (int a = 0; a < m_i; ++a) {
+        const int sa = mp.row_slot[a];
+        if (sa < 0) continue;
+        const double t = w_i * qcol[a];
+        if (sa == sb) {
+          nl_add2<Mode>(acc, buf, gb, gb, t, t);
+        } else {
+          nl_add2<Mode>(acc, buf, d0 + mp.delta[sa], gb, t, 0.0);
+        }
+      }
+      for (int a = 0; a < m_i; ++a) h_col_b[a] = qcol[a] * w_i;
+      beta_delta_contrib = X_i.t() * h_col_b;  // K-vector
+      for (int r = 0; r < K; ++r) {
+        nl_add2<Mode>(acc, buf, r, gb, beta_delta_contrib[r], beta_delta_contrib[r]);
+      }
+    }
+  }
+
+  // Step 2e: Beta-beta block = w_i * X_i^T * Q_i * X_i, term by term in
+  // the dense code's order, each entry as it formed it:
+  // Term A (subtract): -w_i * Xbar_i * Xbar_i^T
+  for (int c = 0; c < K; ++c) {
+    for (int r = 0; r <= c; ++r) {
+      const double xx = Xbar_i[r] * Xbar_i[c];
+      const double t = xx * w_i;
+      nl_add2<Mode>(acc, buf, r, c, -t, -t);
+    }
+  }
+  // Term B (add): w_i * ((1 - 1/lam_k) m_k c_k^T + (1/lam_k) S2_k) for
+  // each nest offered, in nest order
+  for (int o = 0; o < n_o; ++o) {
+    const double* sk = sums + static_cast<std::size_t>(o) * stride;
+    const double* m_k = sk + 4;
+    const double* c_k = m_k + K;
+    const double* S2_k = c_k + K;
+    const double lam_k   = lambda[nests_off[o]];
+    const double inv_lam = 1.0 / lam_k;
+    const double scale_B = 1.0 - inv_lam;  // = 0 for singletons (lam=1)
+    std::size_t e = 0;
+    for (int c = 0; c < K; ++c) {
+      for (int r = 0; r <= c; ++r, ++e) {
+        const double s2 = S2_k[e];
+        const double o_rc = m_k[r] * c_k[c];
+        const double b_rc = o_rc * scale_B;
+        const double s_rc = s2 * inv_lam;
+        double t_rc = b_rc + s_rc;
+        t_rc *= w_i;
+        const double o_cr = m_k[c] * c_k[r];
+        const double b_cr = o_cr * scale_B;
+        double t_cr = b_cr + s_rc;
+        t_cr *= w_i;
+        nl_add2<Mode>(acc, buf, r, c, t_rc, t_cr);
+      }
+    }
+  }
+  // Term C (subtract): -w_i * scale_Ci * (Q_ki - c_ki c_ki^T)
+  if (chosen_nest_k >= 0) {
+    const double* c_k = nl_hessian_sums(h, chosen_nest_k) + 4 + K;
+    const double lam_ki = lambda[chosen_nest_k];
+    const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
+    const double w_scale_C = w_i * scale_C;
+    std::size_t e = 0;
+    for (int c = 0; c < K; ++c) {
+      for (int r = 0; r <= c; ++r, ++e) {
+        const double cc = c_k[r] * c_k[c];
+        double t = qk[e] - cc;
+        t *= w_scale_C;
+        nl_add2<Mode>(acc, buf, r, c, -t, -t);
+      }
+    }
+  }
+
+  // Step 2f: Lambda-beta and lambda-delta cross blocks, and step 2g, the
+  // lambda-lambda block, for each dissimilarity the situation touches
+  arma::vec d_V_k(dV, m_i, false, true);
+  arma::vec x_dV(xdv_m, K, false, true);
+  for (int l = 0; l < mp.n_lam; ++l) {
+    const int k = lam_nest[mp.lam[l]];
+    const int gk = K + mp.lam[l];
+    const double* sk = nl_hessian_sums(h, k);
+    const double lam_k = lambda[k];
+    const double P_k_k = P_k[k];
+    const double T_kk = sk[2];
+    const double Vbar_kk = sk[0];
+
+    // d_V^(k)[b] = dg_{lambda_k}/dV_b
+    if (k != chosen_nest_k) {
+      // Non-chosen nest formula
+      for (int b = 0; b < m_i; ++b) {
+        const int kb = static_cast<int>(nest0[b]);
+        d_V_k[b] = P_k_k * T_kk * P_i_vec[b];
+        if (kb == k) {
+          d_V_k[b] += P_k_k * P_j_given_k[b]
+                      * ((V_inside[b] - Vbar_kk) / (lam_k * lam_k) - T_kk);
+        }
+      }
+    } else {
+      // Chosen nest formula (k == chosen_nest_k, ki >= 0)
+      for (int b = 0; b < m_i; ++b) {
+        const int kb = static_cast<int>(nest0[b]);
+        d_V_k[b] = P_k_k * T_kk * P_i_vec[b];
+        if (b == chosen_inside_idx) {
+          d_V_k[b] -= 1.0 / (lam_k * lam_k);
+        }
+        if (kb == k) {
+          double bracket = -P_k_k * T_kk
+            + (V_inside[b] - Vbar_kk) / (lam_k * lam_k)
+              * (P_k_k - 1.0 + 1.0 / lam_k)
+            + 1.0 / (lam_k * lam_k);
+          d_V_k[b] += P_j_given_k[b] * bracket;
+        }
+      }
+    }
+
+    // lambda-beta cross: K-vector contribution, -w_i (X_i' d_V), the
+    // product scaled after it is formed, as the dense expression did
+    x_dV = X_i.t() * d_V_k;
+    const double mw_i = -w_i;
+    for (int r = 0; r < K; ++r) {
+      const double t = x_dV[r] * mw_i;
+      nl_add2<Mode>(acc, buf, r, gk, t, t);
+    }
+
+    // lambda-delta cross: scatter over free-ASC alternatives
+    if (has_delta) {
+      for (int b = 0; b < m_i; ++b) {
+        const int sb = mp.row_slot[b];
+        if (sb < 0) continue;
+        const double val = -w_i * d_V_k[b];
+        nl_add2<Mode>(acc, buf, gk, d0 + mp.delta[sb], val, val);
+      }
+    }
+
+    // lambda-lambda: off-diagonal with the later touched nests
+    for (int l2 = l + 1; l2 < mp.n_lam; ++l2) {
+      const int k2 = lam_nest[mp.lam[l2]];
+      const double off_diag =
+        -w_i * P_k[k] * P_k[k2] * T_kk * nl_hessian_sums(h, k2)[2];
+      nl_add2<Mode>(acc, buf, gk, K + mp.lam[l2], off_diag, off_diag);
+    }
+
+    // Diagonal
+    const double VarV_kk = sk[3];
+    double diag_val;
+    if (k == chosen_nest_k) {
+      // Chosen-nest diagonal formula
+      const double V_ca = V_inside[chosen_inside_idx];
+      diag_val = w_i * (
+          P_k[k] * (1.0 - P_k[k]) * T_kk * T_kk
+        - (1.0 - P_k[k]) * VarV_kk / (lam_k * lam_k * lam_k)
+        + VarV_kk / (lam_k * lam_k * lam_k * lam_k)
+        + 2.0 * (Vbar_kk - V_ca) / (lam_k * lam_k * lam_k)
+      );
+    } else {
+      // Non-chosen nest diagonal formula
+      diag_val = w_i * (
+          P_k[k] * (1.0 - P_k[k]) * T_kk * T_kk
+        + P_k[k] * VarV_kk / (lam_k * lam_k * lam_k)
+      );
+    }
+    nl_add2<Mode>(acc, buf, gk, gk, diag_val, diag_val);
+  }
+
+}
+
 //' Analytical Hessian of the negated log-likelihood for the Nested Logit model
 //'
 //' Computes the exact (analytical) Hessian of the negated log-likelihood for the
@@ -1573,21 +1880,6 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     double* gvec_m = xbar_m + K;
     double* xdv_m = gvec_m + K;
 
-    // Add a term t(r, c) of the situation's Hessian, with t(c, r) its
-    // transposed term, into the upper triangle, r and c global, as their
-    // mean: the dense code summed each triangle and halved H + H' at the
-    // end. Halving each term is exact (a power of two; below 2^-1021 a term
-    // can lose its last bit), so the sums are the halves of the terms' sums,
-    // and no running sum is doubled on the way.
-    auto add2 = [&](const int r, const int c, const double t_rc, const double t_cr) {
-      const double v = 0.5 * t_rc + 0.5 * t_cr;
-      if (acc.shared) {
-        acc.add<true>(acc_t, std::min(r, c), std::max(r, c), v);
-      } else {
-        acc.add<false>(acc_t, std::min(r, c), std::max(r, c), v);
-      }
-    };
-
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
 #endif
@@ -1640,9 +1932,8 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       const int n_o = nl_offered_nests(b_t, m_i, true);
       std::fill(sums, sums + static_cast<std::size_t>(n_o) * stride, 0.0);
       std::fill(qk, qk + Kp, 0.0);
-      auto nest_sums = [&](const int k) { return sums + static_cast<std::size_t>(nest_slot[k]) * stride; };
       for (int j = 0; j < m_i; ++j) {
-        double* sk = nest_sums(nest0[j]);
+        double* sk = sums + static_cast<std::size_t>(nest_slot[nest0[j]]) * stride;
         double* m_k = sk + 4;
         double* c_k = m_k + K;
         double* S2_k = c_k + K;
@@ -1701,210 +1992,25 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
                        has_delta, include_outside_option, mp);
       const int d0 = K + K_l;  // global index of the first constant
 
-      // Q_i[a, b], the V-space Hessian of the negated log-likelihood
-      // (the dense code's expression)
-      auto Q_ab = [&](const int a, const int b) {
-        const int ka = static_cast<int>(nest0[a]);
-        const double Pia = P_i_vec[a];
-        const double Pa_given_ka = P_j_given_k[a];
-        const double lam_ka = lambda[ka];
-        const double inv_lam_ka = 1.0 / lam_ka;
-        const int kb = static_cast<int>(nest0[b]);
-        const double Pib = P_i_vec[b];
-        const double Pb_given_kb = P_j_given_k[b];
-
-        // Base term: -P_ia * P_ib (all pairs)
-        double Qab = -Pia * Pib;
-
-        // Within-nest correction: P_ia * [1_{a=b}/lam_k + P(b|k) * (1 - 1/lam_k)]
-        if (ka == kb) {
-          const double indicator_ab = (a == b) ? 1.0 : 0.0;
-          Qab += Pia * (indicator_ab * inv_lam_ka + Pb_given_kb * (1.0 - inv_lam_ka));
-        }
-
-        // Chosen-nest correction C(a,b), nonzero when k(a)=k(b)=ki
-        if (chosen_nest_k >= 0 && ka == chosen_nest_k && kb == chosen_nest_k) {
-          const double lam_ki = lambda[chosen_nest_k];
-          const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
-          const double ind_ab = (a == b) ? 1.0 : 0.0;
-          Qab -= scale_C * Pa_given_ka * (ind_ab - Pb_given_kb);
-        }
-        return Qab;
-      };
-
-      // Steps 2d and 2e, delta-delta and beta-delta: for each row b with a
-      // free constant, the column Q_i[, b]; w_i Q_i[a, b] into the constants'
-      // block for each row a with one, and X_i' (w_i Q_i[, b]) into the
-      // coefficients' column of b's constant
-      if (has_delta) {
-        arma::vec h_col_b(hcol, m_i, false, true);
-        arma::vec beta_delta_contrib(gvec_m, K, false, true);
-        for (int b = 0; b < m_i; ++b) {
-          const int sb = mp.row_slot[b];
-          if (sb < 0) continue;
-          const int gb = d0 + mp.delta[sb];
-          for (int a = 0; a < m_i; ++a) qcol[a] = Q_ab(a, b);
-          for (int a = 0; a < m_i; ++a) {
-            const int sa = mp.row_slot[a];
-            if (sa < 0) continue;
-            const double t = w_i * qcol[a];
-            if (sa == sb) {
-              add2(gb, gb, t, t);
-            } else {
-              add2(d0 + mp.delta[sa], gb, t, 0.0);
-            }
-          }
-          for (int a = 0; a < m_i; ++a) h_col_b[a] = qcol[a] * w_i;
-          beta_delta_contrib = X_i.t() * h_col_b;  // K-vector
-          for (int r = 0; r < K; ++r) {
-            add2(r, gb, beta_delta_contrib[r], beta_delta_contrib[r]);
-          }
-        }
-      }
-
-      // Step 2e: Beta-beta block = w_i * X_i^T * Q_i * X_i, term by term in
-      // the dense code's order, each entry as it formed it:
-      // Term A (subtract): -w_i * Xbar_i * Xbar_i^T
-      for (int c = 0; c < K; ++c) {
-        for (int r = 0; r <= c; ++r) {
-          const double xx = Xbar_i[r] * Xbar_i[c];
-          const double t = xx * w_i;
-          add2(r, c, -t, -t);
-        }
-      }
-      // Term B (add): w_i * ((1 - 1/lam_k) m_k c_k^T + (1/lam_k) S2_k) for
-      // each nest offered, in nest order
-      for (int o = 0; o < n_o; ++o) {
-        const double* sk = sums + static_cast<std::size_t>(o) * stride;
-        const double* m_k = sk + 4;
-        const double* c_k = m_k + K;
-        const double* S2_k = c_k + K;
-        const double lam_k   = lambda[nests_off[o]];
-        const double inv_lam = 1.0 / lam_k;
-        const double scale_B = 1.0 - inv_lam;  // = 0 for singletons (lam=1)
-        std::size_t e = 0;
-        for (int c = 0; c < K; ++c) {
-          for (int r = 0; r <= c; ++r, ++e) {
-            const double s2 = S2_k[e];
-            const double o_rc = m_k[r] * c_k[c];
-            const double b_rc = o_rc * scale_B;
-            const double s_rc = s2 * inv_lam;
-            double t_rc = b_rc + s_rc;
-            t_rc *= w_i;
-            const double o_cr = m_k[c] * c_k[r];
-            const double b_cr = o_cr * scale_B;
-            double t_cr = b_cr + s_rc;
-            t_cr *= w_i;
-            add2(r, c, t_rc, t_cr);
-          }
-        }
-      }
-      // Term C (subtract): -w_i * scale_Ci * (Q_ki - c_ki c_ki^T)
-      if (chosen_nest_k >= 0) {
-        const double* c_k = nest_sums(chosen_nest_k) + 4 + K;
-        const double lam_ki = lambda[chosen_nest_k];
-        const double scale_C = (1.0 - 1.0 / lam_ki) / lam_ki;
-        const double w_scale_C = w_i * scale_C;
-        std::size_t e = 0;
-        for (int c = 0; c < K; ++c) {
-          for (int r = 0; r <= c; ++r, ++e) {
-            const double cc = c_k[r] * c_k[c];
-            double t = qk[e] - cc;
-            t *= w_scale_C;
-            add2(r, c, -t, -t);
-          }
-        }
-      }
-
-      // Step 2f: Lambda-beta and lambda-delta cross blocks, and step 2g, the
-      // lambda-lambda block, for each dissimilarity the situation touches
-      arma::vec d_V_k(dV, m_i, false, true);
-      arma::vec x_dV(xdv_m, K, false, true);
-      for (int l = 0; l < mp.n_lam; ++l) {
-        const int k = lam_nest[mp.lam[l]];
-        const int gk = K + mp.lam[l];
-        const double* sk = nest_sums(k);
-        const double lam_k = lambda[k];
-        const double P_k_k = P_k[k];
-        const double T_kk = sk[2];
-        const double Vbar_kk = sk[0];
-
-        // d_V^(k)[b] = dg_{lambda_k}/dV_b
-        if (k != chosen_nest_k) {
-          // Non-chosen nest formula
-          for (int b = 0; b < m_i; ++b) {
-            const int kb = static_cast<int>(nest0[b]);
-            d_V_k[b] = P_k_k * T_kk * P_i_vec[b];
-            if (kb == k) {
-              d_V_k[b] += P_k_k * P_j_given_k[b]
-                          * ((V_inside[b] - Vbar_kk) / (lam_k * lam_k) - T_kk);
-            }
-          }
-        } else {
-          // Chosen nest formula (k == chosen_nest_k, ki >= 0)
-          for (int b = 0; b < m_i; ++b) {
-            const int kb = static_cast<int>(nest0[b]);
-            d_V_k[b] = P_k_k * T_kk * P_i_vec[b];
-            if (b == chosen_inside_idx) {
-              d_V_k[b] -= 1.0 / (lam_k * lam_k);
-            }
-            if (kb == k) {
-              double bracket = -P_k_k * T_kk
-                + (V_inside[b] - Vbar_kk) / (lam_k * lam_k)
-                  * (P_k_k - 1.0 + 1.0 / lam_k)
-                + 1.0 / (lam_k * lam_k);
-              d_V_k[b] += P_j_given_k[b] * bracket;
-            }
-          }
-        }
-
-        // lambda-beta cross: K-vector contribution, -w_i (X_i' d_V), the
-        // product scaled after it is formed, as the dense expression did
-        x_dV = X_i.t() * d_V_k;
-        const double mw_i = -w_i;
-        for (int r = 0; r < K; ++r) {
-          const double t = x_dV[r] * mw_i;
-          add2(r, gk, t, t);
-        }
-
-        // lambda-delta cross: scatter over free-ASC alternatives
-        if (has_delta) {
-          for (int b = 0; b < m_i; ++b) {
-            const int sb = mp.row_slot[b];
-            if (sb < 0) continue;
-            const double val = -w_i * d_V_k[b];
-            add2(gk, d0 + mp.delta[sb], val, val);
-          }
-        }
-
-        // lambda-lambda: off-diagonal with the later touched nests
-        for (int l2 = l + 1; l2 < mp.n_lam; ++l2) {
-          const int k2 = lam_nest[mp.lam[l2]];
-          const double off_diag =
-            -w_i * P_k[k] * P_k[k2] * T_kk * nest_sums(k2)[2];
-          add2(gk, K + mp.lam[l2], off_diag, off_diag);
-        }
-
-        // Diagonal
-        const double VarV_kk = sk[3];
-        double diag_val;
-        if (k == chosen_nest_k) {
-          // Chosen-nest diagonal formula
-          const double V_ca = V_inside[chosen_inside_idx];
-          diag_val = w_i * (
-              P_k[k] * (1.0 - P_k[k]) * T_kk * T_kk
-            - (1.0 - P_k[k]) * VarV_kk / (lam_k * lam_k * lam_k)
-            + VarV_kk / (lam_k * lam_k * lam_k * lam_k)
-            + 2.0 * (Vbar_kk - V_ca) / (lam_k * lam_k * lam_k)
-          );
-        } else {
-          // Non-chosen nest diagonal formula
-          diag_val = w_i * (
-              P_k[k] * (1.0 - P_k[k]) * T_kk * T_kk
-            + P_k[k] * VarV_kk / (lam_k * lam_k * lam_k)
-          );
-        }
-        add2(gk, gk, diag_val, diag_val);
+      NlHessianTerms h;
+      h.K = K; h.K_l = K_l; h.m_i = m_i; h.d0 = d0;
+      h.has_delta = has_delta; h.w_i = w_i;
+      h.P_i_vec = &P_i_vec; h.P_j_given_k = P_j_given_k; h.P_k = P_k;
+      h.nest0 = nest0; h.lambda = &lambda; h.V_inside = V_inside;
+      h.chosen_nest_k = chosen_nest_k; h.chosen_inside_idx = chosen_inside_idx;
+      h.sums = sums; h.stride = stride; h.nest_slot = nest_slot;
+      h.nests_off = nests_off; h.n_o = n_o; h.qk = qk; h.mp = &mp;
+      h.lam_nest = lam_nest.data(); h.X_i = &X_i; h.Xbar_i = &Xbar_i;
+      h.qcol = qcol; h.hcol = hcol; h.dV = dV; h.gvec = gvec_m; h.xdv = xdv_m;
+      switch (acc.mode()) {
+        case SymMode::Single:
+          nl_hessian_add<SymMode::Single>(acc, acc_t, h);
+          break;
+        case SymMode::Triangles:
+          nl_hessian_add<SymMode::Triangles>(acc, acc_t, h);
+          break;
+        default:
+          nl_hessian_add<SymMode::Shared>(acc, acc_t, h);
       }
 
       nl_offered_nests_clear(b_t, n_o);
