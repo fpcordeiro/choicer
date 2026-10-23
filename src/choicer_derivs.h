@@ -87,15 +87,15 @@ inline std::unique_ptr<double[]> padded_buffer(const std::size_t n) {
   return std::unique_ptr<double[]>(n > 0 ? new double[n + 16] : nullptr);
 }
 
-// T vectors of n values each (and 128 bytes of padding, as padded_buffer()),
-// built one at a time on the primary thread: a vector of T copies of one
-// vector would hold T + 1 of them at once.
+// T vectors of n values each (and 128 bytes of padding, as padded_buffer();
+// nothing for n = 0), built one at a time on the primary thread: a vector of
+// T copies of one vector would hold T + 1 of them at once.
 template <typename V>
 inline std::vector<std::vector<V>> thread_vectors(const std::size_t n, const int T,
                                                   const V value = V()) {
   std::vector<std::vector<V>> v;
   v.reserve(static_cast<std::size_t>(T));
-  for (int t = 0; t < T; ++t) v.emplace_back(n + 128 / sizeof(V), value);
+  for (int t = 0; t < T; ++t) v.emplace_back(n > 0 ? n + 128 / sizeof(V) : 0, value);
   return v;
 }
 
@@ -233,11 +233,15 @@ inline std::size_t sym_acc_col_off(const choicer_off j, const choicer_off s) {
 // compiler is GCC, the accumulators' updates store a column's terms and add
 // them in a second loop (as bhhh_add() does); elsewhere they add each term
 // as it is formed, in a statement of its own. Either way each term is the
-// rounded product, as main formed it.
+// rounded product, as main formed it. This follows each compiler's default:
+// a clang build with -ffp-contract=fast contracts across statements too,
+// disregarding pragmas, and can define CHOICER_STORE_TERMS=1 to store them.
+#ifndef CHOICER_STORE_TERMS
 #if defined(__GNUC__) && !defined(__clang__)
 #define CHOICER_STORE_TERMS 1
 #else
 #define CHOICER_STORE_TERMS 0
+#endif
 #endif
 
 // The ways a unit's terms reach a derivative kernel's n x n sums
@@ -524,12 +528,19 @@ struct DenseAcc {
   }
 
   // The threads' copies, or their rows and columns 0, added into the result
-  // in thread order (nothing with one thread).
+  // in thread order. With one thread, +0 is added to every entry, as the
+  // addition of the threads' sums into a zero matrix did: a sum can end at
+  // -0 (a fused multiply-add whose exact product is below the smallest
+  // subnormal rounds to -0 even from +0), which that addition made +0.
   void finish() {
     const int n_part = static_cast<int>(part.size());
-    if (n_part == 0) return;
     const std::size_t nn = n;
     double* o = out;
+    if (n_part == 0) {
+      const std::size_t len = nn * nn;
+      for (std::size_t e = 0; e < len; ++e) o[e] = 0.0 + o[e];
+      return;
+    }
     const std::vector<std::unique_ptr<double[]>>& pt = part;
     if (mode == DenseMode::Copies) {
 #ifdef _OPENMP

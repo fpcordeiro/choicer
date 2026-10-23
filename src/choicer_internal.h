@@ -443,13 +443,18 @@ inline void copy_rows(const arma::mat& X, const arma::uword r0, const int m,
 // without its copy of X_i. Where its product reaches BLAS (K >= 2, X_i not a
 // square of at most 4 x 4: gemv::apply_blas_type()), the same dgemv('T', m,
 // K, alpha = w * 1.0, ..., beta = 0) runs on X in place, with X's leading
-// dimension where the copy had m: OpenBLAS's sums do not depend on it (the
-// golden battery checks the bits); an R matrix has fewer than 2^31 rows, so
-// it fits BLAS's int. Elsewhere (one covariate, whose product Armadillo turns
-// into a gemv of v; the tiny-square emulation) the product runs as before on
-// copy_rows()'s copy in x, viewed as an arma::mat. v (m entries) may be a
-// slice of a longer vector; y is zeroed first (BLAS ignores y at beta = 0,
-// but nothing then depends on that).
+// dimension where the copy had m; an R matrix has fewer than 2^31 rows, so
+// it fits BLAS's int. Bit for bit with OpenBLAS and the reference BLAS,
+// whose sums depend neither on the leading dimension nor on the operand's
+// alignment (the golden battery checks the bits); a BLAS that picks kernels
+// by stride or alignment (MKL outside its reproducible mode) may differ in
+// the last bit. Elsewhere (one covariate, whose product Armadillo turns into
+// a gemv of v; the tiny-square emulation) the product runs as before on
+// copy_rows()'s copy in x, viewed as an arma::mat. The dispatch is
+// Armadillo 15.4.2's (glue_times::apply(), gemv::apply_blas_type()); a later
+// Armadillo that dispatches otherwise needs the golden battery again. v (m
+// entries) may be a slice of a longer vector; y is zeroed first (BLAS
+// ignores y at beta = 0, but nothing then depends on that).
 // ----------------------------------------------------------------------------
 inline void xt_times(const arma::mat& X, const arma::uword r0, const int m,
                      const double* v, const bool use_w, const double w,
