@@ -1639,6 +1639,31 @@ compute_scores <- function(object) {
   invisible(cluster)
 }
 
+#' Cluster labels coded 1..G in order of first appearance
+#'
+#' The codes the cluster meat kernels take:
+#' \code{match(as.character(x), unique(as.character(x)))}, the grouping of
+#' \code{rowsum()}, numbered as the labels first appear. Where the labels'
+#' own values group them as their strings do, the codes come from the values,
+#' without the strings (\code{as.character()} of 10^7 integer labels took
+#' 9.5 s and 1.1 GB): a factor's integer codes, unless two of its levels are
+#' the same string; plain integer, logical and character vectors as they are.
+#' Every other vector (doubles, whose strings merge values that print alike,
+#' dates, integer64 and other classes) goes through \code{as.character()}.
+#' The partition and its numbering are the same either way.
+#'
+#' @param x Cluster labels, checked by \code{.check_cluster_labels()}.
+#' @returns Integer codes, one per label.
+#' @noRd
+.cluster_codes <- function(x) {
+  if (is.factor(x)) {
+    x <- if (anyDuplicated(levels(x))) as.character(x) else as.integer(x)
+  } else if (is.object(x) || !(is.integer(x) || is.logical(x) || is.character(x))) {
+    x <- as.character(x)
+  }
+  match(x, unique(x))
+}
+
 #' Score-based meat of a mixed logit fit, from the C++ kernels
 #'
 #' The meats of \code{.score_meat()} without the \code{U x p} score matrix
@@ -1646,8 +1671,8 @@ compute_scores <- function(object) {
 #' \code{mxl_bhhh_parallel()} with the weights, \code{"robust"} the same
 #' kernel with the squared weights, and \code{"cluster"}
 #' \code{mxl_cluster_meat_parallel()} over the per-unit labels, checked as
-#' \code{.score_meat()} checks them and grouped by \code{as.character()}, as
-#' \code{rowsum()} groups them.
+#' \code{.score_meat()} checks them and grouped as \code{rowsum()} groups
+#' them (\code{.cluster_codes()}).
 #'
 #' @param object A fitted \code{choicer_mxl} with stored data.
 #' @param gp Draw arguments from \code{.mxl_gen_params()}.
@@ -1664,11 +1689,10 @@ compute_scores <- function(object) {
   theta <- object$coefficients
   if (identical(type, "cluster")) {
     .check_cluster_labels(cluster, length(.unit_first(d)))
-    labels <- as.character(cluster)
     return(mxl_cluster_meat_parallel(
       theta = theta, X = d$X, W = d$W,
       alt_idx = d$alt_idx, choice_idx = d$choice_idx,
-      M = d$M, weights = d$weights, cluster = match(labels, unique(labels)),
+      M = d$M, weights = d$weights, cluster = .cluster_codes(cluster),
       eta_draws = gp$eta_draws,
       rc_dist = object$rc_dist, rc_correlation = object$rc_correlation,
       rc_mean = object$rc_mean, use_asc = object$use_asc,
@@ -1696,8 +1720,8 @@ compute_scores <- function(object) {
 #' \code{.mxl_score_meat()} forms the mixed logit's: \code{"bhhh"} is the
 #' BHHH kernel with the weights, \code{"robust"} the same kernel with the
 #' squared weights, and \code{"cluster"} the cluster meat kernel over the
-#' labels, checked as \code{.score_meat()} checks them and grouped by
-#' \code{as.character()}, as \code{rowsum()} groups them.
+#' labels, checked as \code{.score_meat()} checks them and grouped as
+#' \code{rowsum()} groups them (\code{.cluster_codes()}).
 #'
 #' @param object A fitted \code{choicer_mnl} or \code{choicer_nl} with stored
 #'   data.
@@ -1714,8 +1738,7 @@ compute_scores <- function(object) {
   theta <- object$coefficients
   if (identical(type, "cluster")) {
     .check_cluster_labels(cluster, length(d$M))
-    labels <- as.character(cluster)
-    codes <- match(labels, unique(labels))
+    codes <- .cluster_codes(cluster)
     return(switch(object$model,
       mnl = mnl_cluster_meat_parallel(
         theta = theta, X = d$X, alt_idx = d$alt_idx,
