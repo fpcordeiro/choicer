@@ -1554,6 +1554,124 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   return acc.result;
 }
 
+// =============================================================================
+// Elasticities and diversion ratios
+//
+// Each kernel adds every situation's terms, by alternative, into a J x J sum
+// (DenseAcc in choicer_derivs.h: the result itself with one thread, the
+// threads' copies while they fit in acc_bytes, else the shared result) and
+// returns that R matrix, divided in place. The passes over the situations
+// are templates on whether the sum is shared, with each statement of the
+// code they replace: a situation's probabilities in the thread's MnlWork, its
+// alternatives' rows and columns in the thread's map, x_k read from X's
+// column in place.
+// =============================================================================
+
+// Every thread's map of a situation's choices to the rows and columns of the
+// J x J sums, on the primary thread.
+static inline std::vector<std::vector<int>> mnl_global_maps(const ChoiceLayout& lay,
+                                                            const int n_threads) {
+  return thread_vectors<int>(static_cast<std::size_t>(lay.max_m) + 1, n_threads);
+}
+
+// The memory of an elasticity or diversion-ratio kernel with t threads, an
+// upper bound: per thread its MnlWork, its map and n_vecs padded vectors of
+// J_total (its sums); shared, X beta, the J x J sums (dense_acc_need()), a
+// vector of J_total (the summed denominators) and the threads' totals.
+static inline void mnl_dense_check_memory(const char* what, const ChoiceLayout& lay,
+                                          const int n_threads, const int J_total,
+                                          const double n_vecs, const bool outside,
+                                          const double acc_bytes) {
+  const std::size_t J_n = static_cast<std::size_t>(J_total);
+  kernel_check_memory(
+      what, n_threads,
+      mnl_thread_bytes(lay, 0, J_total, n_vecs) +
+          sizeof(int) * (static_cast<double>(lay.max_m) + 1.0 + 32.0),
+      [&](const int t) {
+        return 8.0 * (static_cast<double>(lay.n_rows) + J_total + t) +
+               dense_acc_need(J_n, t, acc_bytes, outside);
+      });
+}
+
+// The elasticity kernel's pass over the choice situations: each one's
+// weighted elasticities added into acc, its weight into its thread's total.
+template <bool Shared>
+static void mnl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
+                                const arma::vec& base_util,
+                                const arma::vec& weights, const int var_idx,
+                                const double beta_k,
+                                const bool include_outside_option,
+                                std::vector<MnlWork>& work,
+                                std::vector<std::vector<int>>& maps,
+                                const DenseAcc& acc,
+                                std::vector<double>& total_weight) {
+  const choicer_off N = lay.N;
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(acc.T)
+#endif
+  {
+    const int tid = kernel_thread_num();
+    MnlWork& w = work[tid];
+    int* global_j_map = maps[tid].data();
+    double* buf = acc.base(tid);
+    double local_total_weight = 0.0;
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (choicer_off i = 0; i < N; ++i) {
+      const int m_i         = lay.m(i);
+      const int num_choices = m_i + o;
+      const double w_i      = weights[i];
+
+      // --- 2. Compute Probabilities (same as loglik) ---
+      mnl_softmax(base_util, lay, i, include_outside_option, w);
+      const double* P_i = w.p;
+
+      // --- 3. Prepare Data for Elasticity Calculation ---
+
+      // The values of the variable k for this individual's choice set, in
+      // place (x_k for the outside option is 0)
+      const double* x_k_i = X.colptr(var_idx) + lay.row_off[i];
+
+      // Map local choice set indices (0...num_choices-1) to global
+      // alternative indices (0...J_total-1)
+      fill_global_alt_map(global_j_map, lay.alt + lay.row_off[i], m_i,
+                          include_outside_option);
+
+      // --- 4. Compute Individual Elasticity Matrix ---
+      // E_n(i, j) = elasticity of P_ni w.r.t attribute x_njk
+      for (int i_local = 0; i_local < num_choices; ++i_local) {
+        const int global_i = global_j_map[i_local]; // Global row index
+        const double P_ni = P_i[i_local];
+
+        for (int j_local = 0; j_local < num_choices; ++j_local) {
+          const int global_j = global_j_map[j_local]; // Global col index
+          const double P_nj = P_i[j_local];
+          const double x_njk = j_local < o ? 0.0 : x_k_i[j_local - o];
+
+          double elasticity;
+          if (global_i == global_j) {
+            // Own-elasticity: beta_k * x_nik * (1 - P_ni)
+            elasticity = beta_k * x_njk * (1.0 - P_ni);
+          } else {
+            // Cross-elasticity: -beta_k * x_njk * P_nj
+            elasticity = -beta_k * x_njk * P_nj;
+          }
+
+          // Accumulate the weighted elasticity
+          acc.add<Shared>(buf, static_cast<std::size_t>(global_i),
+                          static_cast<std::size_t>(global_j), w_i, elasticity);
+        }
+      }
+      local_total_weight += w_i;
+    } // end of i loop
+    total_weight[tid] = local_total_weight;
+  } // end parallel region
+}
+
 //' Compute aggregate elasticities for MNL model
 //'
 //' Computes the aggregate elasticity matrix (weighted average of individual
@@ -1568,6 +1686,11 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
 //' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option
+//' @param acc_bytes Bytes for the threads' copies of the J x J sums (2 GiB by
+//'   default): with more threads than one, each adds into its own copy while
+//'   the copies fit, and into the shared result otherwise (its last bits then
+//'   depend on the threads' timing); \code{0} forces the shared result (for
+//'   tests).
 //' @returns J x J matrix of aggregate elasticities
 //' @examples
 //' \donttest{
@@ -1585,7 +1708,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat mnl_elasticities_parallel(
+Rcpp::NumericMatrix mnl_elasticities_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
@@ -1594,7 +1717,8 @@ arma::mat mnl_elasticities_parallel(
     const arma::vec& weights,
     const int elast_var_idx,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
   (void)choice_idx;
 
@@ -1611,7 +1735,6 @@ arma::mat mnl_elasticities_parallel(
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
   const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta,
                                                &weights);
-  const choicer_off N = lay.N;
   const double beta_k = par.beta(var_idx); // The coefficient for our variable
 
   // Determine total number of alternatives for the output matrix
@@ -1619,23 +1742,66 @@ arma::mat mnl_elasticities_parallel(
   // J_total = total size of matrix (J_inside + 1 if outside option)
   const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
+  check_alternative_count(J_total);
+
+  // Memory: each thread's working arrays and map; X beta and the J x J sums
+  const int n_threads = kernel_team_threads(lay.N);
+  mnl_dense_check_memory("elasticity matrix", lay, n_threads, J_total, 0.0,
+                         include_outside_option, acc_bytes);
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Prepare global accumulators
-  arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
+  // The sums, and every thread's working arrays, map and total weight
+  DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
+               acc_bytes);
+  std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);
+  std::vector<std::vector<int>> maps = mnl_global_maps(lay, n_threads);
+  std::vector<double> total_weight(static_cast<std::size_t>(n_threads), 0.0);
+  if (acc.shared()) {
+    mnl_elasticity_pass<true>(X, lay, base_util, weights, var_idx, beta_k,
+                              include_outside_option, work, maps, acc,
+                              total_weight);
+  } else {
+    mnl_elasticity_pass<false>(X, lay, base_util, weights, var_idx, beta_k,
+                               include_outside_option, work, maps, acc,
+                               total_weight);
+  }
+  acc.finish();
   double global_total_weight = 0.0;
+  for (int t = 0; t < n_threads; ++t) global_total_weight += total_weight[t];
+
+  // --- 5. Finalize ---
+  // Compute the average by dividing by the total weight
+  if (global_total_weight > 1e-10) {
+    const std::size_t nn = acc.n * acc.n;
+    for (std::size_t e = 0; e < nn; ++e) acc.out[e] /= global_total_weight;
+  }
+
+  return acc.result;
+}
+
+// The diversion-ratio kernel's pass over the choice situations: each one's
+// weighted numerators added into acc, its denominators into its thread's.
+template <bool Shared>
+static void mnl_diversion_pass(const ChoiceLayout& lay, const arma::vec& base_util,
+                               const arma::vec& weights,
+                               const bool include_outside_option,
+                               std::vector<MnlWork>& work,
+                               std::vector<std::vector<int>>& maps,
+                               const DenseAcc& acc,
+                               std::vector<std::vector<double>>& dens) {
+  const choicer_off N = lay.N;
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(acc.T)
 #endif
   {
-    // Thread-local accumulators
-    arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
-    double local_total_weight = 0.0;
-    // Local-to-global alternative map, sized once for the largest choice set
-    std::vector<int> global_j_map(static_cast<std::size_t>(lay.max_m) + 1);
+    const int tid = kernel_thread_num();
+    MnlWork& w = work[tid];
+    int* global_j_map = maps[tid].data();
+    double* buf = acc.base(tid);
+    double* local_denominator = dens[tid].data();
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1643,81 +1809,36 @@ arma::mat mnl_elasticities_parallel(
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
       const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
-      const auto X_i        = X.rows(start_idx, end_idx); // M[i] x K
 
-      // --- 2. Compute Probabilities (same as loglik) ---
-      arma::vec V_i(num_choices);
-      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
+      // --- 2. Compute Probabilities ---
+      mnl_softmax(base_util, lay, i, include_outside_option, w);
+      const double* P_i = w.p;
 
-      arma::vec P_i;
-      stable_softmax(V_i, P_i);
-
-      // --- 3. Prepare Data for Elasticity Calculation ---
-
-      // Get the values of the variable k for this individual's choice set
-      arma::vec x_k_i = arma::zeros(num_choices);
-      if (include_outside_option) {
-        // x_k for outside option (index 0) is 0
-        x_k_i.subvec(1, num_choices - 1) = X_i.col(var_idx);
-      } else {
-        x_k_i = X_i.col(var_idx);
-      }
-
-      // Map local choice set indices (0...num_choices-1) to global
-      // alternative indices (0...J_total-1)
-      fill_global_alt_map(global_j_map.data(), lay.alt + lay.row_off[i], m_i,
+      // --- 3. Map local indices to global alternative indices ---
+      fill_global_alt_map(global_j_map, lay.alt + lay.row_off[i], m_i,
                           include_outside_option);
 
-      // --- 4. Compute Individual Elasticity Matrix ---
-      // E_n(i, j) = elasticity of P_ni w.r.t attribute x_njk
-      for (int i_local = 0; i_local < num_choices; ++i_local) {
-        const int global_i = global_j_map[i_local]; // Global row index
-        const double P_ni = P_i[i_local];
+      // --- 4. Accumulate numerator and denominator ---
+      for (int j_local = 0; j_local < num_choices; ++j_local) {
+        const int global_j = global_j_map[j_local];
+        const double P_nj = P_i[j_local];
 
-        for (int j_local = 0; j_local < num_choices; ++j_local) {
-          const int global_j = global_j_map[j_local]; // Global col index
-          const double P_nj = P_i[j_local];
-          const double x_njk = x_k_i[j_local];
-          
-          double elasticity;
-          if (global_i == global_j) {
-            // Own-elasticity: beta_k * x_nik * (1 - P_ni)
-            elasticity = beta_k * x_njk * (1.0 - P_ni);
-          } else {
-            // Cross-elasticity: -beta_k * x_njk * P_nj
-            elasticity = -beta_k * x_njk * P_nj;
-          }
+        // Denominator: w_i * P_nj * (1 - P_nj)
+        local_denominator[global_j] += w_i * P_nj * (1.0 - P_nj);
 
-          // Accumulate the weighted elasticity
-          local_elas_matrix(global_i, global_j) += w_i * elasticity;
+        // Numerator: w_i * P_nj * P_nk for k != j
+        for (int k_local = 0; k_local < num_choices; ++k_local) {
+          if (k_local == j_local) continue;
+          const int global_k = global_j_map[k_local];
+          const double P_nk = P_i[k_local];
+          acc.add<Shared>(buf, static_cast<std::size_t>(global_k),
+                          static_cast<std::size_t>(global_j), w_i * P_nj, P_nk);
         }
       }
-      local_total_weight += w_i;
     } // end of i loop
-
-    // Combine partial accumulators into global accumulators
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_elas_matrix += local_elas_matrix;
-      global_total_weight += local_total_weight;
-    }
   } // end parallel region
-
-  // --- 5. Finalize ---
-  // Compute the average by dividing by the total weight
-  if (global_total_weight > 1e-10) {
-    global_elas_matrix /= global_total_weight;
-  }
-
-  return global_elas_matrix;
 }
-
 
 // =============================================================================
 // Diversion Ratios
@@ -1736,6 +1857,9 @@ arma::mat mnl_elasticities_parallel(
 //' @param weights N x 1 vector with weights for each observation
 //' @param use_asc whether to use alternative-specific constants
 //' @param include_outside_option whether to include outside option
+//' @param acc_bytes Bytes for the threads' copies of the J x J numerators (2
+//'   GiB by default), as in \code{mnl_elasticities_parallel()}; \code{0}
+//'   forces the shared result (for tests).
 //' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
 //' @examples
 //' \donttest{
@@ -1753,14 +1877,15 @@ arma::mat mnl_elasticities_parallel(
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat mnl_diversion_ratios_parallel(
+Rcpp::NumericMatrix mnl_diversion_ratios_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
   // --- 1. Parameter and Variable Setup ---
   const int K = X.n_cols;
@@ -1769,92 +1894,45 @@ arma::mat mnl_diversion_ratios_parallel(
   const MnlParams par = parse_mnl_theta(theta, K, use_asc, include_outside_option);
   const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta,
                                                &weights);
-  const choicer_off N = lay.N;
 
   // Determine total number of alternatives for the output matrix
   const int J_inside = compute_J_inside(use_asc, par.delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
+  check_alternative_count(J_total);
+
+  // Memory: each thread's working arrays, map and denominators; X beta, the
+  // J x J numerators and the denominators' sum
+  const int n_threads = kernel_team_threads(lay.N);
+  mnl_dense_check_memory("diversion-ratio matrix", lay, n_threads, J_total, 1.0,
+                         include_outside_option, acc_bytes);
 
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // Prepare global accumulators
-  // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j)
-  // denominator(j) = sum_n w_n * P_nj * (1 - P_nj)
-  arma::mat global_numerator = arma::zeros(J_total, J_total);
-  arma::vec global_denominator = arma::zeros(J_total);
-
-#ifdef _OPENMP
-#pragma omp parallel
-#endif
-  {
-    // Thread-local accumulators
-    arma::mat local_numerator = arma::zeros(J_total, J_total);
-    arma::vec local_denominator = arma::zeros(J_total);
-    // Local-to-global alternative map, sized once for the largest choice set
-    std::vector<int> global_j_map(static_cast<std::size_t>(lay.max_m) + 1);
-
-#ifdef _OPENMP
-#pragma omp for schedule(dynamic)
-#endif
-    for (choicer_off i = 0; i < N; ++i) {
-      const int m_i         = lay.m(i);
-      const int num_choices = include_outside_option ? m_i + 1 : m_i;
-      const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
-      const double w_i      = weights[i];
-
-      // --- 2. Compute Probabilities ---
-      arma::vec V_i(num_choices);
-      arma::vec inside_utils = base_util.subvec(start_idx, end_idx);
-      fill_choice_utilities(V_i, inside_utils, num_choices, include_outside_option);
-
-      arma::vec P_i;
-      stable_softmax(V_i, P_i);
-
-      // --- 3. Map local indices to global alternative indices ---
-      fill_global_alt_map(global_j_map.data(), lay.alt + lay.row_off[i], m_i,
-                          include_outside_option);
-
-      // --- 4. Accumulate numerator and denominator ---
-      for (int j_local = 0; j_local < num_choices; ++j_local) {
-        const int global_j = global_j_map[j_local];
-        const double P_nj = P_i[j_local];
-
-        // Denominator: w_i * P_nj * (1 - P_nj)
-        local_denominator(global_j) += w_i * P_nj * (1.0 - P_nj);
-
-        // Numerator: w_i * P_nj * P_nk for k != j
-        for (int k_local = 0; k_local < num_choices; ++k_local) {
-          if (k_local == j_local) continue;
-          const int global_k = global_j_map[k_local];
-          const double P_nk = P_i[k_local];
-          local_numerator(global_k, global_j) += w_i * P_nj * P_nk;
-        }
-      }
-    } // end of i loop
-
-    // Combine partial accumulators into global accumulators
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_numerator += local_numerator;
-      global_denominator += local_denominator;
-    }
-  } // end parallel region
-
-  // --- 5. Compute diversion ratios ---
-  arma::mat diversion_matrix = arma::zeros(J_total, J_total);
-  for (int j = 0; j < J_total; ++j) {
-    if (global_denominator(j) > 1e-15) {
-      for (int k = 0; k < J_total; ++k) {
-        if (k != j) {
-          diversion_matrix(k, j) = global_numerator(k, j) / global_denominator(j);
-        }
-      }
-    }
+  // Accumulators
+  // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j), into acc
+  // denominator(j) = sum_n w_n * P_nj * (1 - P_nj), by thread
+  const std::size_t J_n = static_cast<std::size_t>(J_total);
+  DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
+               acc_bytes);
+  std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);
+  std::vector<std::vector<int>> maps = mnl_global_maps(lay, n_threads);
+  std::vector<std::vector<double>> dens = thread_vectors<double>(J_n, n_threads, 0.0);
+  if (acc.shared()) {
+    mnl_diversion_pass<true>(lay, base_util, weights, include_outside_option,
+                             work, maps, acc, dens);
+  } else {
+    mnl_diversion_pass<false>(lay, base_util, weights, include_outside_option,
+                              work, maps, acc, dens);
+  }
+  acc.finish();
+  std::vector<double> global_denominator(J_n, 0.0);
+  for (int t = 0; t < n_threads; ++t) {
+    for (std::size_t j = 0; j < J_n; ++j) global_denominator[j] += dens[t][j];
   }
 
-  return diversion_matrix;
+  // --- 5. Compute diversion ratios ---
+  dense_diversion_ratios(acc.out, J_n, global_denominator,
+                         [](const double d) { return d > 1e-15; });
+  return acc.result;
 }

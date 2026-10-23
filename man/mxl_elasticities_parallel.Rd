@@ -22,7 +22,8 @@ mxl_elasticities_parallel(
   include_outside_option = FALSE,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L
+  gen_S = 0L,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -70,6 +71,10 @@ randtoolbox and choicer are compiled with the same floating-point
 contraction).}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
+
+\item{acc_bytes}{Bytes for the threads' copies of the J x J sums (2 GiB by
+default), as in \code{mxl_diversion_ratios_parallel()}; \code{0} forces
+the shared result (for tests).}
 }
 \value{
 J x J matrix of aggregate elasticities
