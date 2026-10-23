@@ -82,6 +82,7 @@ test_that("shared, per-thread and one-thread sums agree", {
   # shared result (acc_bytes = 0), with row and column 0 per thread when they
   # are the outside option's; the sums differ from one thread's in the order
   # of their additions only.
+  skip_if_not(isTRUE(thread_info()$openmp_enabled), "needs OpenMP")
   on.exit(set_omp_threads(2L), add = TRUE)
   for (ioo in c(FALSE, TRUE)) {
     f <- dac_fixture(5111 + ioo, ioo = ioo, N = 120L)
@@ -95,6 +96,21 @@ test_that("shared, per-thread and one-thread sums agree", {
       expect_equal(dac_call(k, f, acc_bytes = 0), one, tolerance = 1e-12,
                    label = paste(what, "shared"))
     }
+  }
+})
+
+test_that("one thread's J x J sums are +0 where a fused term rounds to -0", {
+  # Alternative 2's probability is subnormal, and its weighted
+  # cross-elasticity's exact value lies below the smallest subnormal: a fused
+  # multiply-add from +0 rounds it to -0. The threads' sums were always added
+  # into a zero matrix, which made it +0; with one thread too.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  ns <- asNamespace("choicer")
+  for (nt in 1:2) {
+    set_omp_threads(nt)
+    x <- ns$mnl_elasticities_parallel(c(1, -746), matrix(c(0, 1), 2L), c(1L, 2L),
+                                      1L, 2L, 0.25, 1L, TRUE, FALSE)
+    expect_identical(1 / x[1L, 2L], Inf, label = sprintf("%d thread(s)", nt))
   }
 })
 

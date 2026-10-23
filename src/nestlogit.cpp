@@ -55,8 +55,9 @@ static inline void nl_gather_nests(int* nest0, const int* alt, const int* nest,
 // adds both rows into one constant slot, in row order, as
 // scatter_delta_grad() adds them into one constant. NlSituationMap holds the
 // slots, one per thread, sized on the primary thread for the largest
-// situation, so that building them allocates nothing; the markers are -1
-// except while a situation is mapped.
+// situation, so that building them allocates nothing; the markers hold the
+// situation the map was built for (-1 elsewhere), kept while the next
+// situations have its codes and its nests' finiteness.
 // ============================================================================
 struct NlSituationMap {
   std::vector<int> slot_of;      // free constant j -> slot, or -1 (J_d entries)
@@ -116,7 +117,7 @@ static inline double nl_map_bytes(const int J_d, const int K_l,
   const double m = static_cast<double>(max_m);
   const double a = std::min<double>(J_d, m), l = std::min<double>(K_l, m);
   return sizeof(int) * (J_d + 2.0 * a + m + K_l + 4.0 * l + K + 256.0) +
-         (K_l + l + 256.0) + 256.0;
+         (K_l + l + 256.0) + sizeof(NlSituationMap);
 }
 
 // The rows each of T threads keeps privately when they share a derivative
@@ -716,6 +717,7 @@ Rcpp::List nl_loglik_gradient_parallel(
   kernel_check_memory(
       "gradient", n_threads,
       nl_thread_bytes(lay, K, n_nests, n_params, opg_diag ? 3.0 : 1.0) +
+          sizeof(OpgDiagTerms) + 3.0 * sizeof(std::vector<double>) +
           (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m) + n_nests) + 8.0 * K
                     : 0.0),
       [&](const int) {
@@ -2655,11 +2657,13 @@ Rcpp::NumericMatrix nl_elasticities_parallel(
   nl_dense_check_memory("elasticity matrix", lay, n_nests, n_threads, J_total,
                         0.0, include_outside_option, acc_bytes);
 
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
-
-  // The sums, and every thread's working arrays, map and total weight
+  // The J x J sums first (an R allocation), then X beta
   DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
                acc_bytes);
+
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+
+  // Every thread's working arrays, map and total weight
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
   std::vector<std::vector<int>> maps =
       thread_vectors<int>(static_cast<std::size_t>(lay.max_m), n_threads);
@@ -2860,13 +2864,15 @@ Rcpp::NumericMatrix nl_diversion_ratios_parallel(
   nl_dense_check_memory("diversion-ratio matrix", lay, n_nests, n_threads,
                         J_total, 1.0, include_outside_option, acc_bytes);
 
+  // The J x J sums first (an R allocation), then X beta
+  DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
+               acc_bytes);
+
   arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
   // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j, into acc
   // denominator(j)  = sum_i w_i * (dP_ij/dV_ij), by thread
   const std::size_t J_n = static_cast<std::size_t>(J_total);
-  DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
-               acc_bytes);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
   std::vector<std::vector<int>> maps =
       thread_vectors<int>(static_cast<std::size_t>(lay.max_m), n_threads);

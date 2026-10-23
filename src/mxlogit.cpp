@@ -1007,7 +1007,8 @@ inline double mxl_map_bytes(const MxlUnitData& ud) {
   const double m = static_cast<double>(ud.lay.max_m);
   const double a = std::min(J_d, R);
   return sizeof(int) * (J_d + 3.0 * a + std::min(J_d, m) + R + m +
-                        ud.par.idx_delta_start + 192.0) + 256.0;
+                        ud.par.idx_delta_start + 224.0) +
+         sizeof(MxlUnitMap);
 }
 
 // Every thread's maps, each in its own allocation, on the primary thread;
@@ -2228,7 +2229,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
   // of the chunks' cut parts (two per chunk, four chunks per thread).
   kernel_check_memory("cluster meat", kernel_team_threads(U),
                       ud.scratch_bytes() + mxl_map_bytes(ud) +
-                          (8.0 + 8 * 13.0 + 13.0) * n_params,
+                          8.0 * n_params + 9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
                         return sym_acc_need(n_params, K_c, t, acc_bytes) +
                                8.0 * (static_cast<double>(U) + 2.0 * G);

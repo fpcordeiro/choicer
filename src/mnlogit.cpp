@@ -89,7 +89,8 @@ inline void mnl_diff(MnlWork& w, const int num_choices, const int chosen) {
 // one slot, in row order, as scatter_delta_grad() adds them into one
 // constant. MnlSituationMap holds the slots, one per thread, sized on the
 // primary thread for the largest situation, so that building them allocates
-// nothing; slot_of is -1 except while a situation is mapped.
+// nothing; slot_of holds the situation the map was built for (-1 elsewhere),
+// kept while the next situations have its codes.
 // ============================================================================
 struct MnlSituationMap {
   std::vector<int> slot_of;   // free constant j -> slot, or -1 (J_d entries)
@@ -126,7 +127,8 @@ struct MnlSituationMap {
 // Bytes of one thread's MnlSituationMap.
 inline double mnl_map_bytes(const int J_d, const choicer_off max_m, const int K) {
   const double m = static_cast<double>(max_m);
-  return sizeof(int) * (J_d + 2.0 * std::min<double>(J_d, m) + m + K + 128.0) + 256.0;
+  return sizeof(int) * (J_d + 2.0 * std::min<double>(J_d, m) + m + K + 128.0) +
+         sizeof(MnlSituationMap);
 }
 
 // Every thread's map, each in its own allocation, on the primary thread.
@@ -447,6 +449,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
   kernel_check_memory(
       "gradient", n_threads,
       mnl_thread_bytes(lay, K, n_params, opg_diag ? 3.0 : 1.0) +
+          sizeof(OpgDiagTerms) + 3.0 * sizeof(std::vector<double>) +
           (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m)) + 8.0 * K : 0.0),
       [&](const int) {
         return 8.0 * static_cast<double>(lay.n_rows) +
@@ -623,12 +626,13 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
       // w_i s_c s_c' over the compact block, column by column, each entry
       // formed as the dense rank-one update formed it (`B += w_i * s_i *
       // s_i.t()` is Armadillo's syrk_vec: the product of the two scores,
-      // times the weight, then added). A column's terms are stored before
-      // they are added, so that the weight's product is never fused into the
-      // addition (bit for bit under clang and under GCC at R's default -O2;
-      // GCC's -O3 loop vectorizer rounds the dense update differently). The
-      // dense update added w_i * (0 * s) outside the block, +-0, which
-      // changes nothing: no accumulator, which starts at +0, is ever -0.
+      // times the weight, then added). Each term is the rounded product,
+      // never fused into its addition (CHOICER_STORE_TERMS: under GCC a
+      // column's terms are stored before they are added), bit for bit under
+      // clang and under GCC at R's default -O2 (GCC's -O3 loop vectorizer
+      // rounds the dense update differently). The dense update added w_i *
+      // (0 * s) outside the block, +-0, which changes nothing: no
+      // accumulator, which starts at +0, is ever -0.
       if (unit_finite(w_i, s_c.memptr(), static_cast<int>(s_c.n_elem))) {
         switch (acc.mode()) {
           case SymMode::Single:
@@ -1024,7 +1028,7 @@ Rcpp::List mnl_predict(
   // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
   const int n_threads = kernel_team_threads(N);
-  std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
+  std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);  // no products
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
 #ifdef _OPENMP
@@ -1058,8 +1062,8 @@ Rcpp::List mnl_predict(
 struct MnlSharesWork {
   std::vector<MnlWork> work;
   std::vector<std::vector<double>> local;  // each thread's shares
-  MnlSharesWork(const ChoiceLayout& lay, const int K, const int num_alts)
-      : work(mnl_work(lay, K, kernel_team_threads(lay.N))),
+  MnlSharesWork(const ChoiceLayout& lay, const int num_alts)
+      : work(mnl_work(lay, 0, kernel_team_threads(lay.N))),  // no products
         local(thread_vectors<double>(static_cast<std::size_t>(num_alts),
                                      static_cast<int>(work.size()))) {}
 };
@@ -1186,7 +1190,7 @@ arma::vec mnl_predict_shares(
   const double denominator = shares_denominator(weights);
   const arma::vec base_util =
       compute_base_util(X, par.beta, lay, use_asc, par.delta);
-  MnlSharesWork ws(lay, K, num_alts);
+  MnlSharesWork ws(lay, num_alts);
   arma::vec global_shares(num_alts);
   mnl_predict_shares_internal(base_util, lay, weights, denominator, num_alts,
                               include_outside_option, ws, global_shares);
@@ -1256,7 +1260,7 @@ arma::vec blp_contraction(
   const double denominator = shares_denominator(weights);
   const arma::vec Xb = X * beta;
   arma::vec base_util;
-  MnlSharesWork ws(lay, X.n_cols, num_alts);
+  MnlSharesWork ws(lay, num_alts);
   arma::vec shares(num_alts);
   auto predict_shares = [&](const arma::vec& inside_delta) {
     base_util = Xb;
@@ -1829,12 +1833,14 @@ Rcpp::NumericMatrix mnl_elasticities_parallel(
   mnl_dense_check_memory("elasticity matrix", lay, n_threads, J_total, 0.0,
                          include_outside_option, acc_bytes);
 
+  // The J x J sums first (an R allocation), then X beta
+  DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
+               acc_bytes);
+
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
-  // The sums, and every thread's working arrays, map and total weight
-  DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
-               acc_bytes);
+  // Every thread's working arrays, map and total weight
   std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);
   std::vector<std::vector<int>> maps = mnl_global_maps(lay, n_threads);
   std::vector<double> total_weight(static_cast<std::size_t>(n_threads), 0.0);
@@ -1986,6 +1992,10 @@ Rcpp::NumericMatrix mnl_diversion_ratios_parallel(
   mnl_dense_check_memory("diversion-ratio matrix", lay, n_threads, J_total, 1.0,
                          include_outside_option, acc_bytes);
 
+  // The J x J sums first (an R allocation), then X beta
+  DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
+               acc_bytes);
+
   // Pre-compute base utility for all individuals (single BLAS call)
   arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
 
@@ -1993,8 +2003,6 @@ Rcpp::NumericMatrix mnl_diversion_ratios_parallel(
   // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j), into acc
   // denominator(j) = sum_n w_n * P_nj * (1 - P_nj), by thread
   const std::size_t J_n = static_cast<std::size_t>(J_total);
-  DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
-               acc_bytes);
   std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);
   std::vector<std::vector<int>> maps = mnl_global_maps(lay, n_threads);
   std::vector<std::vector<double>> dens = thread_vectors<double>(J_n, n_threads, 0.0);
