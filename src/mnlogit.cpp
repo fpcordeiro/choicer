@@ -93,44 +93,50 @@ inline void mnl_diff(MnlWork& w, const int num_choices, const int chosen) {
 // ============================================================================
 struct MnlSituationMap {
   std::vector<int> slot_of;   // free constant j -> slot, or -1 (J_d entries)
-  std::vector<int> delta;     // slot -> free constant, increasing
+  std::vector<int> delta;     // slot -> free constant, increasing (a of them)
   std::vector<int> row_slot;  // row of the situation -> slot, or -1
+  std::vector<int> glob;      // local index -> global parameter (the K coefficients first)
   int a = 0;                  // free constants of the situation
+  int K = 0;                  // coefficients
+  choicer_off built = -1;     // first row of the situation the map was built for, or -1
+  int built_m = 0;            // and its rows
   char pad[128];              // keeps the next thread's map off these lines
 
-  // Each array is reserved 32 entries (128 bytes) beyond its largest size,
-  // so that no two threads' arrays share a cache line.
-  MnlSituationMap(const int J_d, const choicer_off max_m)
-      : slot_of(static_cast<std::size_t>(J_d) + 32, -1) {
-    delta.reserve(static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32);
-    row_slot.reserve(static_cast<std::size_t>(max_m) + 32);
+  // Each array is 32 entries (128 bytes) beyond its largest size, so that no
+  // two threads' arrays share a cache line.
+  MnlSituationMap(const int J_d, const choicer_off max_m, const int K_)
+      : slot_of(static_cast<std::size_t>(J_d) + 32, -1),
+        delta(static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32),
+        row_slot(static_cast<std::size_t>(max_m) + 32),
+        glob(static_cast<std::size_t>(K_) +
+             static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32),
+        K(K_) {
+    for (int k = 0; k < K; ++k) glob[k] = k;
   }
   // Global parameter of local index i (the K coefficients first).
-  int global(const int i, const int K) const {
-    return i < K ? i : K + delta[i - K];
-  }
+  int global(const int i, const int) const { return glob[i]; }
   // Local index of global parameter g, or -1 outside the situation's block.
-  int local(const int g, const int K) const {
-    if (g < K) return g;
-    const int k = slot_of[g - K];
-    return k >= 0 ? K + k : -1;
+  int local(const int g, const int K_) const {
+    if (g < K_) return g;
+    const int k = slot_of[g - K_];
+    return k >= 0 ? K_ + k : -1;
   }
 };
 
 // Bytes of one thread's MnlSituationMap.
-inline double mnl_map_bytes(const int J_d, const choicer_off max_m) {
+inline double mnl_map_bytes(const int J_d, const choicer_off max_m, const int K) {
   const double m = static_cast<double>(max_m);
-  return sizeof(int) * (J_d + std::min<double>(J_d, m) + m + 96.0) + 256.0;
+  return sizeof(int) * (J_d + 2.0 * std::min<double>(J_d, m) + m + K + 128.0) + 256.0;
 }
 
 // Every thread's map, each in its own allocation, on the primary thread.
 using MnlSituationMaps = std::vector<std::unique_ptr<MnlSituationMap>>;
 inline MnlSituationMaps mnl_situation_maps(const int J_d, const choicer_off max_m,
-                                           const int n_threads) {
+                                           const int K, const int n_threads) {
   MnlSituationMaps maps;
   maps.reserve(n_threads);
   for (int i = 0; i < n_threads; ++i) {
-    maps.emplace_back(new MnlSituationMap(J_d, max_m));
+    maps.emplace_back(new MnlSituationMap(J_d, max_m, K));
   }
   return maps;
 }
@@ -144,34 +150,58 @@ inline int mnl_free_delta(const int alt0, const bool use_asc,
 }
 
 // The slots of situation i: its distinct free constants, in increasing
-// order, and the slot of each of its rows. mnl_situation_map_clear() resets
-// the markers.
-inline void mnl_situation_map(const ChoiceLayout& lay, const choicer_off i,
-                              const bool use_asc,
-                              const bool include_outside_option,
-                              MnlSituationMap& mp) {
-  const int* alt = lay.alt + lay.row_off[i];
+// order, the slot of each of its rows and the global parameter of each
+// local index. The map depends on the rows' codes only, so it is kept while
+// the situations a thread meets list the codes of the one it was built for.
+// Constants met in increasing order (prepared data list a situation's
+// alternatives in order) need no sort; otherwise they are sorted (distinct
+// keys, so any sort gives the same order) and the rows' slots set again.
+CHOICER_ALWAYS_INLINE void mnl_situation_map(const ChoiceLayout& lay,
+                                             const choicer_off i,
+                                             const bool use_asc,
+                                             const bool include_outside_option,
+                                             MnlSituationMap& mp) {
+  const choicer_off r0 = lay.row_off[i];
+  const int* alt = lay.alt + r0;
   const int m = lay.m(i);
-  mp.delta.clear();
+  if (mp.built >= 0 && mp.built_m == m &&
+      std::equal(alt, alt + m, lay.alt + mp.built)) {
+    return;
+  }
+  int* slot_of = mp.slot_of.data();
+  int* delta = mp.delta.data();
+  int* row_slot = mp.row_slot.data();
+  for (int k = 0; k < mp.a; ++k) slot_of[delta[k]] = -1;  // the previous map's
+  int a = 0;
+  int last = -1;
+  bool increasing = true;
   for (int r = 0; r < m; ++r) {
     const int j = mnl_free_delta(alt[r] - 1, use_asc, include_outside_option);
-    if (j >= 0 && mp.slot_of[j] < 0) {
-      mp.slot_of[j] = 0;  // seen
-      mp.delta.push_back(j);
+    if (j < 0) {
+      row_slot[r] = -1;
+      continue;
+    }
+    if (slot_of[j] < 0) {
+      if (j < last) increasing = false;
+      last = j;
+      slot_of[j] = a;
+      delta[a++] = j;
+    }
+    row_slot[r] = slot_of[j];
+  }
+  if (!increasing) {
+    std::sort(delta, delta + a);
+    for (int k = 0; k < a; ++k) slot_of[delta[k]] = k;
+    for (int r = 0; r < m; ++r) {
+      const int j = mnl_free_delta(alt[r] - 1, use_asc, include_outside_option);
+      row_slot[r] = j >= 0 ? slot_of[j] : -1;
     }
   }
-  std::sort(mp.delta.begin(), mp.delta.end());
-  mp.a = static_cast<int>(mp.delta.size());
-  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = k;
-  mp.row_slot.resize(static_cast<std::size_t>(m));
-  for (int r = 0; r < m; ++r) {
-    const int j = mnl_free_delta(alt[r] - 1, use_asc, include_outside_option);
-    mp.row_slot[r] = j >= 0 ? mp.slot_of[j] : -1;
-  }
-}
-
-inline void mnl_situation_map_clear(MnlSituationMap& mp) {
-  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = -1;
+  const int K = mp.K;
+  for (int k = 0; k < a; ++k) mp.glob[K + k] = K + delta[k];
+  mp.a = a;
+  mp.built = r0;
+  mp.built_m = m;
 }
 
 // The weight-free score of situation i on its compact block, into s_c (K + a
@@ -549,7 +579,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("BHHH matrix", n_threads,
-                      mnl_map_bytes(J_d, lay.max_m) + 8.0 * (K + a_max + n_params + 32.0) +
+                      mnl_map_bytes(J_d, lay.max_m, K) + 8.0 * (K + a_max + n_params + 32.0) +
                           mnl_thread_bytes(lay, K, n_params, 0.0),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) +
@@ -562,7 +592,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   // The result and the threads' accumulators, slot maps and buffers, all
   // allocated here on the primary thread
   SymAcc acc(n_params, n_threads, K, "BHHH", acc_bytes);
-  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, K, n_threads);
   std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(K + a_max), n_threads);
@@ -599,7 +629,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
       // GCC's -O3 loop vectorizer rounds the dense update differently). The
       // dense update added w_i * (0 * s) outside the block, +-0, which
       // changes nothing: no accumulator, which starts at +0, is ever -0.
-      if (std::isfinite(w_i) && s_c.is_finite()) {
+      if (unit_finite(w_i, s_c.memptr(), static_cast<int>(s_c.n_elem))) {
         switch (acc.mode()) {
           case SymMode::Single:
             bhhh_add<SymMode::Single>(acc, acc_t, mp, K, s_c, w_i, col);
@@ -626,7 +656,6 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
             bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       }
-      mnl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 
@@ -705,7 +734,7 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("cluster meat", n_threads,
-                      mnl_map_bytes(J_d, lay.max_m) + 8.0 * (K + a_max + 32.0) +
+                      mnl_map_bytes(J_d, lay.max_m, K) + 8.0 * (K + a_max + 32.0) +
                           mnl_thread_bytes(lay, K, n_params, 0.0) +
                           9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
@@ -753,7 +782,7 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
   // chunk: the cluster it starts in and the one it ends in), all allocated
   // here on the primary thread.
   SymAcc acc(n_params, n_threads, K, "cluster meat", acc_bytes);
-  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, K, n_threads);
   std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(K + a_max), n_threads);
@@ -789,7 +818,6 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
         mnl_situation_score(X, lay, base_util, i, include_outside_option, mp, w,
                             s_c);
         cs.add(mp, K, s_c, weights[i]);
-        mnl_situation_map_clear(mp);
         if (q + 1 == q1 || cl[order[q + 1]] != g) {
           // The cluster ends here or at the chunk's end: update it, or keep
           // the part of a cluster the chunk boundary cuts.
@@ -1484,7 +1512,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("Hessian", n_threads,
-                      mnl_map_bytes(J_d, lay.max_m) +
+                      mnl_map_bytes(J_d, lay.max_m, K) +
                           8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + (K + a_max + 1.0) + 64.0) +
                           7.0 * n_params + 128.0 + mnl_thread_bytes(lay, K, n_params, 0.0),
                       [&](const int t) {
@@ -1498,7 +1526,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   // The result and the threads' accumulators, slot maps, block buffers and
   // non-finite-weight records, all allocated here on the primary thread
   SymAcc acc(n_params, n_threads, K, "Hessian", acc_bytes);
-  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
+  MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, K, n_threads);
   std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
   const std::size_t n_ct = static_cast<std::size_t>(K + a_max + 1.0);
@@ -1596,7 +1624,6 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
           mnl_hessian_add<SymMode::Shared>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
                                            nan_row, ct);
       }
-      mnl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 

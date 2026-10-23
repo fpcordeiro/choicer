@@ -30,6 +30,23 @@
 // row <= column.
 // ============================================================================
 
+// A helper the per-unit loops call for every unit, inlined where the
+// compiler would rather call it (GCC and clang; Armadillo's guard for its
+// own arma_inline).
+#if defined(__GNUC__)
+#define CHOICER_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define CHOICER_ALWAYS_INLINE inline
+#endif
+
+// Whether the weight w and the n entries of s are all finite, in one pass
+// without an early exit: x - x is 0 for a finite x and NaN otherwise.
+CHOICER_ALWAYS_INLINE bool unit_finite(const double w, const double* s, const int n) {
+  double z = w - w;
+  for (int k = 0; k < n; ++k) z += s[k] - s[k];
+  return z == 0.0;
+}
+
 // ============================================================================
 // Threads and per-thread buffers (estimation and prediction kernels)
 // ============================================================================
@@ -625,7 +642,7 @@ struct ClusterSum {
   void add(const Map& mp, const int K_c, const arma::vec& s_u,
            const double w_u) {
     const int m_u = static_cast<int>(s_u.n_elem);
-    if (!std::isfinite(w_u) || !s_u.is_finite()) make_dense();
+    if (!unit_finite(w_u, s_u.memptr(), m_u)) make_dense();
     if (dense && !std::isfinite(w_u)) {
       // w_u times every entry of the unit's n-vector score, zeros included
       for (int k = 0; k < static_cast<int>(s.size()); ++k) {
@@ -849,23 +866,32 @@ inline void sym_add_block(const SymAcc& acc, double* buf, const Map& mp,
 // Add w_u s_u s_u', s_u the unit's compact score, into the accumulator's
 // upper triangle, column by column; c holds a column (m_u entries). Each term
 // is formed as Armadillo's syrk_vec formed the dense rank-one update
-// w * s * s.t() (the product of the two scores, times the weight), stored,
-// then added, so that the weight's product is never fused into the addition
-// (see mxl_bhhh_parallel()).
+// w * s * s.t() (the product of the two scores, times the weight) and added
+// as that rounded product, never fused into the addition: where the
+// compiler contracts across statements a column's terms are stored first
+// (CHOICER_STORE_TERMS; see mxl_bhhh_parallel()).
 template <SymMode Mode, typename Map>
-inline void bhhh_add(const SymAcc& acc, double* buf, const Map& mp,
-                     const int K_c, const arma::vec& s_u, const double w_u,
-                     double* c) {
+CHOICER_ALWAYS_INLINE void bhhh_add(const SymAcc& acc, double* buf, const Map& mp,
+                                    const int K_c, const arma::vec& s_u,
+                                    const double w_u, double* c) {
   const int m_u = static_cast<int>(s_u.n_elem);
   for (int b = 0; b < m_u; ++b) {
     const double s_b = s_u[b];
-    for (int a = 0; a <= b; ++a) {
-      const double acc1 = s_u[a] * s_b;
-      c[a] = w_u * acc1;
-    }
     const SymCol<Mode> col = acc.col<Mode>(buf, mp.global(b, K_c));
-    for (int a = 0; a <= b; ++a) {
-      col.add(static_cast<std::size_t>(mp.global(a, K_c)), c[a]);
+    if (CHOICER_STORE_TERMS) {
+      for (int a = 0; a <= b; ++a) {
+        const double acc1 = s_u[a] * s_b;
+        c[a] = w_u * acc1;
+      }
+      for (int a = 0; a <= b; ++a) {
+        col.add(static_cast<std::size_t>(mp.global(a, K_c)), c[a]);
+      }
+    } else {
+      for (int a = 0; a <= b; ++a) {
+        const double acc1 = s_u[a] * s_b;
+        const double t = w_u * acc1;
+        col.add(static_cast<std::size_t>(mp.global(a, K_c)), t);
+      }
     }
   }
 }

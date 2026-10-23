@@ -64,44 +64,59 @@ struct NlSituationMap {
   std::vector<int> row_slot;     // row of the situation -> constant slot, or -1
   std::vector<int> lam_slot_of;  // dissimilarity d -> slot, or -1 (K_l entries)
   std::vector<int> lam;          // lambda slot -> dissimilarity, increasing
+  std::vector<int> glob;         // local index -> global parameter
+  // The dissimilarities of the non-singleton nests the situation offers, in
+  // the order its rows meet them, each with its nest and whether its log I_k
+  // was finite (in the block): what the map depends on besides the codes
+  std::vector<int> met, met_nest;
+  std::vector<char> met_finite, met_seen;  // met_seen: K_l entries
   int a = 0;                     // constant slots
   int n_lam = 0;                 // lambda slots
+  int n_met = 0;
   int K_l = 0;                   // dissimilarities in theta
+  int K = 0;                     // coefficients
+  choicer_off built = -1;        // first row of the situation the map was built for, or -1
+  int built_m = 0;               // and its rows
   char pad[128];                 // keeps the next thread's map off these lines
 
-  // Each array is reserved 32 entries (128 bytes) beyond its largest size,
-  // so that no two threads' arrays share a cache line.
-  NlSituationMap(const int J_d, const int K_l_, const choicer_off max_m)
+  // Each array is 32 entries beyond its largest size, so that no two
+  // threads' arrays share a cache line.
+  NlSituationMap(const int J_d, const int K_l_, const choicer_off max_m, const int K_)
       : slot_of(static_cast<std::size_t>(J_d) + 32, -1),
-        lam_slot_of(static_cast<std::size_t>(K_l_) + 32, -1), K_l(K_l_) {
-    delta.reserve(static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32);
-    row_slot.reserve(static_cast<std::size_t>(max_m) + 32);
-    lam.reserve(static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) + 32);
+        delta(static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32),
+        row_slot(static_cast<std::size_t>(max_m) + 32),
+        lam_slot_of(static_cast<std::size_t>(K_l_) + 32, -1),
+        lam(static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) + 32),
+        glob(static_cast<std::size_t>(K_) +
+             static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) +
+             static_cast<std::size_t>(std::min<choicer_off>(J_d, max_m)) + 32),
+        met(static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) + 32),
+        met_nest(static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) + 32),
+        met_finite(static_cast<std::size_t>(std::min<choicer_off>(K_l_, max_m)) + 128),
+        met_seen(static_cast<std::size_t>(K_l_) + 128, 0), K_l(K_l_), K(K_) {
+    for (int k = 0; k < K; ++k) glob[k] = k;
   }
   // Global parameter of local index i (the K coefficients first).
-  int global(const int i, const int K) const {
-    if (i < K) return i;
-    if (i < K + n_lam) return K + lam[i - K];
-    return K + K_l + delta[i - K - n_lam];
-  }
+  int global(const int i, const int) const { return glob[i]; }
   // Local index of global parameter g, or -1 outside the situation's block.
-  int local(const int g, const int K) const {
-    if (g < K) return g;
-    if (g < K + K_l) {
-      const int k = lam_slot_of[g - K];
-      return k >= 0 ? K + k : -1;
+  int local(const int g, const int K_) const {
+    if (g < K_) return g;
+    if (g < K_ + K_l) {
+      const int k = lam_slot_of[g - K_];
+      return k >= 0 ? K_ + k : -1;
     }
-    const int k = slot_of[g - K - K_l];
-    return k >= 0 ? K + n_lam + k : -1;
+    const int k = slot_of[g - K_ - K_l];
+    return k >= 0 ? K_ + n_lam + k : -1;
   }
 };
 
 // Bytes of one thread's NlSituationMap.
 static inline double nl_map_bytes(const int J_d, const int K_l,
-                                  const choicer_off max_m) {
+                                  const choicer_off max_m, const int K) {
   const double m = static_cast<double>(max_m);
-  return sizeof(int) * (J_d + std::min<double>(J_d, m) + m + K_l +
-                        std::min<double>(K_l, m) + 160.0) + 256.0;
+  const double a = std::min<double>(J_d, m), l = std::min<double>(K_l, m);
+  return sizeof(int) * (J_d + 2.0 * a + m + K_l + 4.0 * l + K + 256.0) +
+         (K_l + l + 256.0) + 256.0;
 }
 
 // The rows each of T threads keeps privately when they share a derivative
@@ -121,11 +136,12 @@ static inline int nl_acc_rows(const int n, const int K, const int K_l, const int
 using NlSituationMaps = std::vector<std::unique_ptr<NlSituationMap>>;
 static inline NlSituationMaps nl_situation_maps(const int J_d, const int K_l,
                                                 const choicer_off max_m,
+                                                const int K,
                                                 const int n_threads) {
   NlSituationMaps maps;
   maps.reserve(n_threads);
   for (int i = 0; i < n_threads; ++i) {
-    maps.emplace_back(new NlSituationMap(J_d, K_l, max_m));
+    maps.emplace_back(new NlSituationMap(J_d, K_l, max_m, K));
   }
   return maps;
 }
@@ -242,49 +258,97 @@ static inline int nl_free_delta(const int alt0, const bool has_delta,
 }
 
 // The slots of situation i: its distinct free constants and the slot of each
-// of its rows (has_delta: use_asc with constants in theta), and the
+// of its rows (has_delta: use_asc with constants in theta), the
 // dissimilarities of its rows' non-singleton nests whose log I_k is finite
-// (lam_theta: each nest's position in theta, -1 for a singleton).
-// nl_situation_map_clear() resets the markers.
-static inline void nl_situation_map(const ChoiceLayout& lay, const choicer_off i,
-                                    const int* nest0, const double* log_I_k,
-                                    const arma::ivec& lam_theta, const int K,
-                                    const bool has_delta,
-                                    const bool include_outside_option,
-                                    NlSituationMap& mp) {
-  const int* alt = lay.alt + lay.row_off[i];
+// (lam_theta: each nest's position in theta, -1 for a singleton), each in
+// increasing order, and the global parameter of each local index. The map
+// depends on the rows' codes and on which of those nests' log I_k are
+// finite, so it is kept while the situations a thread meets list the codes
+// of the one it was built for with the same nests finite. Slots met in
+// increasing order need no sort; otherwise they are sorted (distinct keys,
+// so any sort gives the same order) and the rows' slots set again.
+CHOICER_ALWAYS_INLINE void nl_situation_map(const ChoiceLayout& lay,
+                                            const choicer_off i,
+                                            const int* nest0,
+                                            const double* log_I_k,
+                                            const arma::ivec& lam_theta,
+                                            const int K, const bool has_delta,
+                                            const bool include_outside_option,
+                                            NlSituationMap& mp) {
+  const choicer_off r0 = lay.row_off[i];
+  const int* alt = lay.alt + r0;
   const int m = lay.m(i);
-  mp.delta.clear();
-  mp.lam.clear();
+  if (mp.built >= 0 && mp.built_m == m &&
+      std::equal(alt, alt + m, lay.alt + mp.built)) {
+    bool same = true;
+    for (int f = 0; f < mp.n_met; ++f) {
+      const char fin = std::isfinite(log_I_k[mp.met_nest[f]]) ? 1 : 0;
+      same = same && fin == mp.met_finite[f];
+    }
+    if (same) return;
+  }
+  int* slot_of = mp.slot_of.data();
+  int* delta = mp.delta.data();
+  int* row_slot = mp.row_slot.data();
+  int* lam_slot_of = mp.lam_slot_of.data();
+  int* lam = mp.lam.data();
+  // the previous map's markers
+  for (int k = 0; k < mp.a; ++k) slot_of[delta[k]] = -1;
+  for (int k = 0; k < mp.n_lam; ++k) lam_slot_of[lam[k]] = -1;
+  for (int f = 0; f < mp.n_met; ++f) mp.met_seen[mp.met[f]] = 0;
+  int a = 0, n_lam = 0, n_met = 0;
+  int last_d = -1, last_l = -1;
+  bool increasing_d = true, increasing_l = true;
   for (int r = 0; r < m; ++r) {
     const int j = nl_free_delta(alt[r] - 1, has_delta, include_outside_option);
-    if (j >= 0 && mp.slot_of[j] < 0) {
-      mp.slot_of[j] = 0;  // seen
-      mp.delta.push_back(j);
+    if (j < 0) {
+      row_slot[r] = -1;
+    } else {
+      if (slot_of[j] < 0) {
+        if (j < last_d) increasing_d = false;
+        last_d = j;
+        slot_of[j] = a;
+        delta[a++] = j;
+      }
+      row_slot[r] = slot_of[j];
     }
     const int k = nest0[r];
     const int t = static_cast<int>(lam_theta[k]);
-    if (t >= 0 && std::isfinite(log_I_k[k]) && mp.lam_slot_of[t - K] < 0) {
-      mp.lam_slot_of[t - K] = 0;  // seen
-      mp.lam.push_back(t - K);
+    if (t >= 0 && !mp.met_seen[t - K]) {
+      const int d = t - K;
+      const char fin = std::isfinite(log_I_k[k]) ? 1 : 0;
+      mp.met_seen[d] = 1;
+      mp.met[n_met] = d;
+      mp.met_nest[n_met] = k;
+      mp.met_finite[n_met++] = fin;
+      if (fin) {
+        if (d < last_l) increasing_l = false;
+        last_l = d;
+        lam_slot_of[d] = n_lam;
+        lam[n_lam++] = d;
+      }
     }
   }
-  std::sort(mp.delta.begin(), mp.delta.end());
-  std::sort(mp.lam.begin(), mp.lam.end());
-  mp.a = static_cast<int>(mp.delta.size());
-  mp.n_lam = static_cast<int>(mp.lam.size());
-  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = k;
-  for (int k = 0; k < mp.n_lam; ++k) mp.lam_slot_of[mp.lam[k]] = k;
-  mp.row_slot.resize(static_cast<std::size_t>(m));
-  for (int r = 0; r < m; ++r) {
-    const int j = nl_free_delta(alt[r] - 1, has_delta, include_outside_option);
-    mp.row_slot[r] = j >= 0 ? mp.slot_of[j] : -1;
+  if (!increasing_d) {
+    std::sort(delta, delta + a);
+    for (int k = 0; k < a; ++k) slot_of[delta[k]] = k;
+    for (int r = 0; r < m; ++r) {
+      const int j = nl_free_delta(alt[r] - 1, has_delta, include_outside_option);
+      row_slot[r] = j >= 0 ? slot_of[j] : -1;
+    }
   }
-}
-
-static inline void nl_situation_map_clear(NlSituationMap& mp) {
-  for (int k = 0; k < mp.a; ++k) mp.slot_of[mp.delta[k]] = -1;
-  for (int k = 0; k < mp.n_lam; ++k) mp.lam_slot_of[mp.lam[k]] = -1;
+  if (!increasing_l) {
+    std::sort(lam, lam + n_lam);
+    for (int k = 0; k < n_lam; ++k) lam_slot_of[lam[k]] = k;
+  }
+  int* glob = mp.glob.data();
+  for (int l = 0; l < n_lam; ++l) glob[K + l] = K + lam[l];
+  for (int k = 0; k < a; ++k) glob[K + n_lam + k] = K + mp.K_l + delta[k];
+  mp.a = a;
+  mp.n_lam = n_lam;
+  mp.n_met = n_met;
+  mp.built = r0;
+  mp.built_m = m;
 }
 
 // The weight-free score of situation i on its compact block (the map built
@@ -803,7 +867,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
   const double blk_max = K + std::min<double>(K_l, m_max) + std::min<double>(J_d, m_max);
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("BHHH matrix", n_threads,
-                      nl_map_bytes(J_d, K_l, lay.max_m) + 8.0 * (blk_max + n_params + 64.0) +
+                      nl_map_bytes(J_d, K_l, lay.max_m, K) + 8.0 * (blk_max + n_params + 64.0) +
                           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
@@ -827,7 +891,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
   SymAcc acc(n_params, n_threads,
              nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "BHHH",
              acc_bytes);
-  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
+  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, K, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
@@ -879,7 +943,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
       // w_i s_c s_c' over the compact block, each entry formed as the dense
       // rank-one update formed it (mnl_bhhh_parallel()); a non-finite weight
       // or score takes the dense update over every entry.
-      if (std::isfinite(w_i) && s_c.is_finite()) {
+      if (unit_finite(w_i, s_c.memptr(), static_cast<int>(s_c.n_elem))) {
         switch (acc.mode()) {
           case SymMode::Single:
             bhhh_add<SymMode::Single>(acc, acc_t, mp, K, s_c, w_i, col);
@@ -902,7 +966,6 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
             bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       }
-      nl_situation_map_clear(mp);
     } // end of i loop
   } // end parallel region
 
@@ -986,7 +1049,7 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
   const double blk_max = K + std::min<double>(K_l, m_max) + std::min<double>(J_d, m_max);
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("cluster meat", n_threads,
-                      nl_map_bytes(J_d, K_l, lay.max_m) + 8.0 * (blk_max + 64.0) +
+                      nl_map_bytes(J_d, K_l, lay.max_m, K) + 8.0 * (blk_max + 64.0) +
                           nl_thread_bytes(lay, K, n_nests, n_params, 0.0) +
                           9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
@@ -1045,7 +1108,7 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
   SymAcc acc(n_params, n_threads,
              nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "cluster meat",
              acc_bytes);
-  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
+  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, K, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
@@ -1097,7 +1160,6 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
         nl_situation_score(X, start_idx, m_i, V_inside, b, lambda, lam_nest.data(),
                            chosen_nest_k, chosen_inside_idx, mp, K, s_c);
         cs.add(mp, K, s_c, weights[i]);
-        nl_situation_map_clear(mp);
 
         if (q + 1 == q1 || cl[order[q + 1]] != g) {
           // The cluster ends here or at the chunk's end: update it, or keep
@@ -1823,7 +1885,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory(
       "Hessian", n_threads,
-      nl_map_bytes(J_d, K_l, lay.max_m) +
+      nl_map_bytes(J_d, K_l, lay.max_m, K) +
           8.0 * (m_max * K + off_max * stride + Kp + 3.0 * m_max + 3.0 * K + 96.0) +
           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
       [&](const int t) {
@@ -1847,7 +1909,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
   SymAcc acc(n_params, n_threads,
              nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "Hessian",
              acc_bytes);
-  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
+  NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, K, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
   // per thread: X_i (max_m x K), the offered nests' sums (off_max x stride),
   // the chosen nest's Q (Kp), a column of Q_i, its weighted copy and d_V
@@ -2014,7 +2076,6 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       }
 
       nl_offered_nests_clear(b_t, n_o);
-      nl_situation_map_clear(mp);
     }  // end individual loop
   }  // end parallel region
 
