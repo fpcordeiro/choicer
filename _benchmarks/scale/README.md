@@ -77,6 +77,7 @@ offered, so that every constant has a finite estimate.
 | `prep_mem.R` | One `prepare_mxl_data()`, `prepare_mnl_data()` or `prepare_nl_data()` call from long data |
 | `fit_study.R` | `run_mxlogit()` fits (default, `polish`, `concentrate_out_asc`) with every kernel's calls counted; per-pass costs; a table against a Newton-certified reference |
 | `budget_sweep.R` | Server run: the draw-batch budget (below) |
+| `chunk_sweep.sh` | The multinomial and nested logits' rows per dispatch (below) |
 | `layout_cost.R` | Server run: the per-call layout at 10^9 rows (below) |
 | `make_rmc.sh`, `memcount.c` | macOS: the malloc shim and the `Rmc` front end that preloads it |
 
@@ -169,6 +170,40 @@ within the timings' noise, and where it batches every row as 4 MiB does, its
 times are 4 MiB's by construction; both are left out. The results must be complete, agree across budgets to 1e-10, and
 come from thread teams of the size asked. A budget that depends on the cache
 size would need that evidence on more than one machine.
+
+### The multinomial and nested logits' rows per dispatch
+
+The multinomial and nested logits' loops over choice situations hand a thread
+about 256 stacked rows per dispatch (`CHOICER_CHUNK_ROWS`,
+`src/choicer_derivs.h`), at least one situation; before 0.3.0 each situation
+was a dispatch of its own, which situations of four rows paid for. On an
+11-core laptop (Apple M3 Pro), against one situation per dispatch, 256 rows
+took 2-6% less time on 2.5 million four-alternative situations at five and
+eleven threads (the median rounds of both models' gradient, BHHH, Hessian and
+predictions), and as much at one thread and on the census-style designs; 64
+and 1,024 rows were within 5% of 256 everywhere, with mixed signs.
+
+The value is fixed at compile time, so `chunk_sweep.sh` builds one library per
+value from a source tree (1, 64, 256 and 1,024 rows by default; 1 is the
+schedule of one situation per dispatch), with the machine's Makevars plus
+`-DCHOICER_CHUNK_ROWS=<rows>`, checks the define in each build's log, and times
+the gradient, BHHH, Hessian and predictions with each, in alternated rounds:
+the multinomial logit on the small design (2.5 million four-alternative
+situations) and the census- and claims-style designs, the nested logit on the
+small design (two nests) and the census-style one (50 nests). The package's
+tests assume the default, so don't run them against these libraries.
+
+```sh
+THREADS=1,32,64 sh _benchmarks/scale/chunk_sweep.sh <choicer source tree>
+```
+
+`ROWS`, `THREADS` (1, 5 and 11 by default) and `ROUNDS` (4) set the sweep, and
+`OUT` the output directory, where an interrupted sweep resumes. Send back
+`summary.txt`, `run.log` and the `install-*.log` files.
+
+**Decision rule.** Keep 256 unless another value is more than 5% faster in
+every round at the largest thread count on both models' small design, for
+every kernel, and at most 2% slower in every other case and thread count.
 
 ### The per-call layout at 10^9 rows
 

@@ -275,6 +275,7 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
     terms_t.emplace_back(OpgDiag ? K + lay.max_m : 0);
   }
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -290,7 +291,7 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
     OpgDiagTerms& terms = terms_t[tid];
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -445,7 +446,7 @@ Rcpp::List mnl_loglik_gradient_parallel(
   // negated gradient and R's copies of it and of the diagonal. The pass
   // allocates every thread's sums and buffers on the primary thread, for the
   // team checked here.
-  const int n_threads = kernel_team_threads(lay.N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory(
       "gradient", n_threads,
       mnl_thread_bytes(lay, K, n_params, opg_diag ? 3.0 : 1.0) +
@@ -580,7 +581,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   // the result and the threads' accumulators
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory("BHHH matrix", n_threads,
                       mnl_map_bytes(J_d, lay.max_m, K) + 8.0 * (K + a_max + n_params + 32.0) +
                           mnl_thread_bytes(lay, K, n_params, 0.0),
@@ -602,6 +603,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   std::vector<std::vector<double>> cols =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -614,7 +616,7 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
     double* col = cols[tid].data();
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const double w_i = weights[i];
@@ -907,7 +909,7 @@ arma::mat mnl_scores_parallel(
 
   // Memory: each thread's score and situation buffers; X beta, the N x n
   // matrix and its copy into R
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory("score matrix", n_threads,
                       mnl_thread_bytes(lay, K, n_params, 1.0), [&](const int) {
                         return 8.0 * static_cast<double>(lay.n_rows) +
@@ -927,6 +929,7 @@ arma::mat mnl_scores_parallel(
   std::vector<std::vector<double>> score_t =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -936,7 +939,7 @@ arma::mat mnl_scores_parallel(
     arma::vec s_i(score_t[tid].data(), n_params, false, true); // per-individual score
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -1027,17 +1030,18 @@ Rcpp::List mnl_predict(
 
   // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);  // no products
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
     MnlWork& w = work[kernel_thread_num()];
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i = lay.m(i);
@@ -1063,7 +1067,7 @@ struct MnlSharesWork {
   std::vector<MnlWork> work;
   std::vector<std::vector<double>> local;  // each thread's shares
   MnlSharesWork(const ChoiceLayout& lay, const int num_alts)
-      : work(mnl_work(lay, 0, kernel_team_threads(lay.N))),  // no products
+      : work(mnl_work(lay, 0, situation_team(lay))),  // no products
         local(thread_vectors<double>(static_cast<std::size_t>(num_alts),
                                      static_cast<int>(work.size()))) {}
 };
@@ -1088,6 +1092,7 @@ static void mnl_predict_shares_internal(
   // Initialize global accumulator for predicted shares
   shares.zeros(num_alts);
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -1100,7 +1105,7 @@ static void mnl_predict_shares_internal(
 
   // Loop over individuals in parallel
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
   for (choicer_off i = 0; i < N; ++i) {
     const int m_i         = lay.m(i);
@@ -1514,7 +1519,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   // situation buffers; X beta, the result and the threads' accumulators
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
-  const int n_threads = kernel_team_threads(N);
+  const int n_threads = situation_team(lay);
   kernel_check_memory("Hessian", n_threads,
                       mnl_map_bytes(J_d, lay.max_m, K) +
                           8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + (K + a_max + 1.0) + 64.0) +
@@ -1542,6 +1547,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   const double* Xm = X.memptr();
   const arma::uword n_rows = X.n_rows;
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
@@ -1561,7 +1567,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
     double* ct = blocks[tid].data() + blk;
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -1692,6 +1698,7 @@ static void mnl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
   const choicer_off N = lay.N;
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(acc.T)
 #endif
@@ -1703,7 +1710,7 @@ static void mnl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
     double local_total_weight = 0.0;
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -1829,7 +1836,7 @@ Rcpp::NumericMatrix mnl_elasticities_parallel(
   check_alternative_count(J_total);
 
   // Memory: each thread's working arrays and map; X beta and the J x J sums
-  const int n_threads = kernel_team_threads(lay.N);
+  const int n_threads = situation_team(lay);
   mnl_dense_check_memory("elasticity matrix", lay, n_threads, J_total, 0.0,
                          include_outside_option, acc_bytes);
 
@@ -1879,6 +1886,7 @@ static void mnl_diversion_pass(const ChoiceLayout& lay, const arma::vec& base_ut
                                std::vector<std::vector<double>>& dens) {
   const choicer_off N = lay.N;
 
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
 #pragma omp parallel num_threads(acc.T)
 #endif
@@ -1890,7 +1898,7 @@ static void mnl_diversion_pass(const ChoiceLayout& lay, const arma::vec& base_ut
     double* local_denominator = dens[tid].data();
 
 #ifdef _OPENMP
-#pragma omp for schedule(dynamic)
+#pragma omp for schedule(dynamic, chunk)
 #endif
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
@@ -1988,7 +1996,7 @@ Rcpp::NumericMatrix mnl_diversion_ratios_parallel(
 
   // Memory: each thread's working arrays, map and denominators; X beta, the
   // J x J numerators and the denominators' sum
-  const int n_threads = kernel_team_threads(lay.N);
+  const int n_threads = situation_team(lay);
   mnl_dense_check_memory("diversion-ratio matrix", lay, n_threads, J_total, 1.0,
                          include_outside_option, acc_bytes);
 
