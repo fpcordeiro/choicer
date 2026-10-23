@@ -177,6 +177,54 @@ Rcpp::List test_nl_individual_probs(const arma::vec& V,
       Rcpp::Named("log_P_outside") = pr.log_P_outside);
 }
 
+//' nl_individual_probs_offered() over the nests of one individual's rows, for
+//' a bitwise comparison with nl_individual_probs() in tests
+//'
+//' @inheritParams test_nl_individual_probs
+//' @return List with the outputs, the per-nest ones over every nest: R's NA
+//'   (the buffers' fill) where a nest is not offered, which the routine must
+//'   not write; and `nests`, the offered nests (0-based, increasing).
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List test_nl_individual_probs_offered(const arma::vec& V,
+                                            const Rcpp::IntegerVector& nest0,
+                                            const arma::vec& lambda,
+                                            const bool include_outside_option) {
+  const int m = V.n_elem;
+  const int n_nests = lambda.n_elem;
+  if (nest0.size() != m) Rcpp::stop("nest0 must have one entry per utility.");
+  for (int j = 0; j < m; ++j) {
+    if (nest0[j] < 0 || nest0[j] >= n_nests) Rcpp::stop("nest0 out of range.");
+  }
+  if (!nl_lambda_positive(lambda)) Rcpp::stop("every lambda must be positive.");
+  std::vector<int> nests(nest0.begin(), nest0.end());
+  std::sort(nests.begin(), nests.end());
+  nests.erase(std::unique(nests.begin(), nests.end()), nests.end());
+  const int n_o = static_cast<int>(nests.size());
+  // Buffers filled with R's NA, as in test_nl_individual_probs()
+  NlProbs pr(m + 3, n_nests);
+  for (std::vector<double>* b :
+       {&pr.P_i, &pr.P_j_given_k, &pr.log_P_i, &pr.P_k, &pr.log_I_k,
+        &pr.V_over_lambda, &pr.log_P_j_given_k, &pr.max_V_k,
+        &pr.I_k_unscaled, &pr.nest_terms, &pr.log_P_k}) {
+    std::fill(b->begin(), b->end(), NA_REAL);
+  }
+  pr.log_P_outside = NA_REAL;
+  nl_individual_probs_offered(V.memptr(), nest0.begin(), m, lambda, nests.data(),
+                              n_o, include_outside_option, pr);
+  auto num = [](const std::vector<double>& x, const int n) {
+    return Rcpp::NumericVector(x.begin(), x.begin() + n);
+  };
+  return Rcpp::List::create(
+      Rcpp::Named("P_i") = num(pr.P_i, m),
+      Rcpp::Named("P_j_given_k") = num(pr.P_j_given_k, m),
+      Rcpp::Named("P_k") = num(pr.P_k, n_nests),
+      Rcpp::Named("log_I_k") = num(pr.log_I_k, n_nests),
+      Rcpp::Named("log_P_i") = num(pr.log_P_i, m),
+      Rcpp::Named("log_P_outside") = pr.log_P_outside,
+      Rcpp::Named("nests") = Rcpp::IntegerVector(nests.begin(), nests.end()));
+}
+
 //' Bytes in Armadillo's index type, arma::uword: 8 when choicer is built with
 //' ARMA_64BIT_WORD (src/Makevars) on a 64-bit platform
 //'

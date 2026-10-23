@@ -217,8 +217,9 @@ static inline double nl_thread_bytes(const ChoiceLayout& lay, const int K,
 // offered) and by sorting otherwise. Each is marked with its slot in
 // b.nest_slot until nl_offered_nests_clear(). Returns their count. Loops
 // whose terms each update their own nest's entries take them unsorted; sums
-// over the nests into shared entries take them in increasing order, as the
-// loops over every nest did.
+// over the nests into shared entries (the probabilities over the offered
+// nests, nl_listed_probs(); the Hessian's) take them in increasing order,
+// as the loops over every nest did.
 static inline int nl_offered_nests(NlThreadBuffers& b, const int m,
                                    const bool sorted) {
   const int* nest0 = b.nest0.data();
@@ -248,6 +249,54 @@ static inline int nl_offered_nests(NlThreadBuffers& b, const int m,
 
 static inline void nl_offered_nests_clear(NlThreadBuffers& b, const int n_o) {
   for (int o = 0; o < n_o; ++o) b.nest_slot[b.nests[o]] = -1;
+}
+
+// Whether a call takes each situation's probabilities over the nests it
+// offers (nl_individual_probs_offered()): where every lambda is positive,
+// the condition for its bits to be nl_individual_probs()'s, and the nests
+// outnumber a situation's rows on average, so that most situations leave
+// many of them out. With fewer nests than rows, listing a situation's nests
+// costs about what the loops over every nest save.
+static inline bool nl_offered_probs(const arma::vec& lambda, const ChoiceLayout& lay) {
+  return nl_lambda_positive(lambda) &&
+         static_cast<double>(lambda.n_elem) * static_cast<double>(lay.N) >
+             static_cast<double>(lay.n_rows);
+}
+
+// The probabilities of a situation whose nests nl_offered_nests() listed
+// (n_o of them, in increasing order when offered), into b.pr: over those
+// nests when offered (nl_offered_probs(), once per call), else over every
+// nest. Bit for bit the same either way; the entries of the nests the
+// situation does not offer are then not written.
+static inline void nl_listed_probs(const double* V, const int m,
+                                   const arma::vec& lambda, const int n_nests,
+                                   const bool include_outside_option,
+                                   const bool offered, NlThreadBuffers& b,
+                                   const int n_o) {
+  if (offered) {
+    nl_individual_probs_offered(V, b.nest0.data(), m, lambda, b.nests.data(), n_o,
+                                include_outside_option, b.pr);
+  } else {
+    nl_individual_probs(V, b.nest0.data(), m, lambda, n_nests,
+                        include_outside_option, b.pr);
+  }
+}
+
+// The same for a kernel that does not use the list: when offered, the
+// situation's nests are listed in increasing order and unlisted here.
+static inline void nl_situation_probs(const double* V, const int m,
+                                      const arma::vec& lambda, const int n_nests,
+                                      const bool include_outside_option,
+                                      const bool offered, NlThreadBuffers& b) {
+  if (offered) {
+    const int n_o = nl_offered_nests(b, m, true);
+    nl_individual_probs_offered(V, b.nest0.data(), m, lambda, b.nests.data(), n_o,
+                                include_outside_option, b.pr);
+    nl_offered_nests_clear(b, n_o);
+  } else {
+    nl_individual_probs(V, b.nest0.data(), m, lambda, n_nests,
+                        include_outside_option, b.pr);
+  }
 }
 
 // Free constant of a row with 0-based alternative alt0 (as
@@ -463,6 +512,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
   for (int t = 0; t < n_threads; ++t) {
     terms_t.emplace_back(OpgDiag ? K + max_m + n_nests : 0);
   }
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -470,7 +520,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
   {
     const int tid = kernel_thread_num();
     NlThreadBuffers& b = bufs[tid];
-    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    NlProbs& pr = b.pr;                 // nl_situation_probs() buffers
     double* sum_P_V_k = b.sum_P_V.data(); // zero between situations
     // Thread-local accumulators
     double local_loglik = 0.0;
@@ -497,9 +547,11 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       // V_ij = X_ij * beta + delta_j (pre-computed)
       const double* V_inside = base_util.memptr() + start_idx;
 
-      // Per-individual probability block (shared helper)
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      // Per-individual probability block (shared helper), over the nests
+      // the situation offers
+      const int n_o = nl_offered_nests(b, m_i, offered);
+      nl_listed_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                      offered, b, n_o);
       const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double* P_k = pr.P_k.data();
@@ -584,7 +636,6 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       // 4.3: Gradient w.r.t. lambda_k, over the nests the situation offers
       // (every other nest has log I_k = -Inf and was skipped; each updates
       // its own entry once, so their order is free)
-      const int n_o = nl_offered_nests(b, m_i, false);
       for (int o = 0; o < n_o; ++o) {
         const int k = b.nests[o];
 
@@ -895,6 +946,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
              acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, K, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
   std::vector<std::vector<double>> cols =
@@ -924,9 +976,10 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
       // V_ij = X_ij * beta + delta_j (pre-computed)
       const double* V_inside = base_util.memptr() + start_idx;
 
-      // Per-individual probability block (shared helper)
-      nl_individual_probs(V_inside, nest0, m_i, lambda, n_nests,
-                          include_outside_option, b.pr);
+      // Per-individual probability block (shared helper), over the nests
+      // the situation offers
+      nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                         offered, b);
 
       const int chosen_alt_idx = lay.choice[i];
       int chosen_nest_k = -1;
@@ -1112,6 +1165,7 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
              acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, K, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
   std::vector<ClusterSum> sums;
@@ -1147,8 +1201,8 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
         const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
         nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
         const double* V_inside = base_util.memptr() + start_idx;
-        nl_individual_probs(V_inside, nest0, m_i, lambda, n_nests,
-                            include_outside_option, b.pr);
+        nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                           offered, b);
         const int chosen_alt_idx = lay.choice[i];
         int chosen_nest_k = -1;
         int chosen_inside_idx = -1;
@@ -1278,6 +1332,7 @@ arma::mat nl_scores_parallel(
   // Every thread's working arrays and score, allocated here on the primary
   // thread
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   std::vector<std::vector<double>> score_t =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
   const bool has_delta = use_asc && delta_length > 0;
@@ -1288,7 +1343,7 @@ arma::mat nl_scores_parallel(
   {
     const int tid = kernel_thread_num();
     NlThreadBuffers& b = bufs[tid];
-    NlProbs& pr = b.pr;                   // nl_individual_probs() buffers
+    NlProbs& pr = b.pr;                   // nl_situation_probs() buffers
     double* sum_P_V_k = b.sum_P_V.data(); // zero between situations
     arma::vec s_i(score_t[tid].data(), n_params, false, true); // per-individual score
 
@@ -1306,9 +1361,11 @@ arma::mat nl_scores_parallel(
       // V_ij = X_ij * beta + delta_j (pre-computed)
       const double* V_inside = base_util.memptr() + start_idx;
 
-      // Per-individual probability block (shared helper)
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      // Per-individual probability block (shared helper), over the nests
+      // the situation offers
+      const int n_o = nl_offered_nests(b, m_i, offered);
+      nl_listed_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                      offered, b, n_o);
       const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double* P_k = pr.P_k.data();
@@ -1358,7 +1415,6 @@ arma::mat nl_scores_parallel(
       for (int j = 0; j < m_i; ++j) {
         sum_P_V_k[nest_idx0_i[j]] += P_j_given_k[j] * V_inside[j];
       }
-      const int n_o = nl_offered_nests(b, m_i, false);
       for (int o = 0; o < n_o; ++o) {
         const int k = b.nests[o];
         const int theta_idx_k = nest_k_to_theta_idx[k];
@@ -1913,6 +1969,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
              acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, K, n_threads);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   // per thread: X_i (max_m x K), the offered nests' sums (off_max x stride),
   // the chosen nest's Q (Kp), a column of Q_i, its weighted copy and d_V
   // (max_m each), Xbar_i, X_i' v and X_i' d_V (K each)
@@ -1955,10 +2012,12 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside     = base_util.memptr() + start_idx;
 
-      // Step 2b: Compute probabilities
+      // Step 2b: Compute probabilities, over the nests the situation offers
+      // (in increasing order, as the sums below take them)
       NlProbs& pr = b_t.pr;
-      nl_individual_probs(V_inside, nest0, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      const int n_o = nl_offered_nests(b_t, m_i, true);
+      nl_listed_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                      offered, b_t, n_o);
       const arma::vec P_i_vec(pr.P_i.data(), m_i, false, true);
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double* P_k = pr.P_k.data();
@@ -1981,19 +2040,21 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       }
 
       // H1 clamp: skip individual if log_P_choice is non-finite
-      if (!std::isfinite(log_P_choice)) continue;
+      if (!std::isfinite(log_P_choice)) {
+        nl_offered_nests_clear(b_t, n_o);
+        continue;
+      }
 
       // X_i, copied once (the dense code's copy, the operand of its BLAS
       // products)
       arma::mat X_i(xbuf, m_i, K, false, true);
       X_i = X.rows(start_idx, end_idx);
 
-      // The nests the situation offers, increasing, and their sums
-      // (Step 2c): per offered slot o, at sums + o * stride, Vbar, S2Vbar,
+      // The sums of the nests the situation offers (Step 2c): per
+      // offered slot o, at sums + o * stride, Vbar, S2Vbar,
       // T, VarV, m (K), c (K) and S2 (a packed upper triangle); at qk the
       // chosen nest's Q (packed), the only nest's Q Term C reads. Nests the
       // situation does not offer added exact zeros in the dense code.
-      const int n_o = nl_offered_nests(b_t, m_i, true);
       std::fill(sums, sums + static_cast<std::size_t>(n_o) * stride, 0.0);
       std::fill(qk, qk + Kp, 0.0);
       for (int j = 0; j < m_i; ++j) {
@@ -2266,13 +2327,14 @@ Rcpp::List nl_predict(
   arma::vec P_all = arma::zeros(X.n_rows);
   const int n_threads = kernel_team_threads(N);
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
     NlThreadBuffers& b = bufs[kernel_thread_num()];
-    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    NlProbs& pr = b.pr;                 // nl_situation_probs() buffers
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -2285,8 +2347,8 @@ Rcpp::List nl_predict(
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                         offered, b);
       std::copy(pr.P_i.data(), pr.P_i.data() + m_i, P_all.memptr() + start_idx);
     }
   }
@@ -2330,6 +2392,7 @@ static void nl_predict_shares_internal(
 ) {
   const choicer_off N = lay.N;
   const int n_threads = static_cast<int>(ws.bufs.size());
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   shares.zeros(num_alts);
 
 #ifdef _OPENMP
@@ -2338,7 +2401,7 @@ static void nl_predict_shares_internal(
   {
     const int tid = kernel_thread_num();
     NlThreadBuffers& b = ws.bufs[tid];
-    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    NlProbs& pr = b.pr;                 // nl_situation_probs() buffers
     arma::vec local_shares(ws.local[tid].data(), num_alts, false, true);
     local_shares.zeros();
 
@@ -2355,8 +2418,8 @@ static void nl_predict_shares_internal(
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                         offered, b);
       const arma::vec P_i(pr.P_i.data(), m_i, false, true);
       const double log_P_outside = pr.log_P_outside;
 
@@ -2490,6 +2553,7 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
                                const DenseAcc& acc,
                                std::vector<double>& total_weight) {
   const choicer_off N = lay.N;
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(acc.T)
@@ -2497,7 +2561,7 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
   {
     const int tid = kernel_thread_num();
     NlThreadBuffers& b = bufs[tid];
-    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    NlProbs& pr = b.pr;                 // nl_situation_probs() buffers
     int* global_map = maps[tid].data(); // each inside alternative's global index
     double* buf = acc.base(tid);
     double local_total_weight = 0.0;
@@ -2514,8 +2578,8 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                         offered, b);
       const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
 
@@ -2701,6 +2765,7 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
                               const DenseAcc& acc,
                               std::vector<std::vector<double>>& dens) {
   const choicer_off N = lay.N;
+  const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(acc.T)
@@ -2708,7 +2773,7 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
   {
     const int tid = kernel_thread_num();
     NlThreadBuffers& b = bufs[tid];
-    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    NlProbs& pr = b.pr;                 // nl_situation_probs() buffers
     int* global_map = maps[tid].data(); // each inside alternative's global index
     double* buf = acc.base(tid);
     double* local_denominator = dens[tid].data();
@@ -2725,8 +2790,8 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
-      nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
-                          include_outside_option, pr);
+      nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
+                         offered, b);
       const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double log_P_outside = pr.log_P_outside;

@@ -390,6 +390,18 @@ test_nl_individual_probs <- function(V, nest0, lambda, include_outside_option) {
     .Call(`_choicer_test_nl_individual_probs`, V, nest0, lambda, include_outside_option)
 }
 
+#' nl_individual_probs_offered() over the nests of one individual's rows, for
+#' a bitwise comparison with nl_individual_probs() in tests
+#'
+#' @inheritParams test_nl_individual_probs
+#' @return List with the outputs, the per-nest ones over every nest: R's NA
+#'   (the buffers' fill) where a nest is not offered, which the routine must
+#'   not write; and `nests`, the offered nests (0-based, increasing).
+#' @noRd
+test_nl_individual_probs_offered <- function(V, nest0, lambda, include_outside_option) {
+    .Call(`_choicer_test_nl_individual_probs_offered`, V, nest0, lambda, include_outside_option)
+}
+
 #' Bytes in Armadillo's index type, arma::uword: 8 when choicer is built with
 #' ARMA_64BIT_WORD (src/Makevars) on a 64-bit platform
 #'

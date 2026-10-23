@@ -740,6 +740,122 @@ inline void nl_individual_probs(const double* V, const int* nest, const int m,
   for (int k = 0; k < n_nests; ++k) P_k[k] = std::exp(log_P_k[k]);
 }
 
+// Whether every dissimilarity is positive (NaN is not), the condition under
+// which nl_individual_probs_offered() is nl_individual_probs().
+inline bool nl_lambda_positive(const arma::vec& lambda) {
+  for (arma::uword k = 0; k < lambda.n_elem; ++k) {
+    if (!(lambda[k] > 0)) return false;
+  }
+  return true;
+}
+
+// nl_individual_probs() over the n_o nests the situation offers (nests, in
+// increasing order: every nest of its rows), for a lambda whose entries are
+// all positive (nl_lambda_positive()). A nest the situation does not offer
+// has log I_k = -Inf there, so its term lambda_k log I_k is -Inf: it never
+// raises either maximum of the paired scan, and its exponential, +0, leaves
+// the accumulator of its index's parity as it was. Taking the offered nests
+// in increasing order within each parity, this forms every offered nest's
+// entries, the outside option's and the rows' bit for bit as
+// nl_individual_probs() does; the other nests' entries are not written, and
+// no caller reads them.
+inline void nl_individual_probs_offered(const double* V, const int* nest, const int m,
+                                        const arma::vec& lambda, const int* nests,
+                                        const int n_o,
+                                        const bool include_outside_option,
+                                        NlProbs& pr) {
+  const double* lam = lambda.memptr();
+  const double inf = arma::datum::inf;
+
+  // V_ij / lambda_k  (lambda_k = 1 for singletons)
+  double* V_over_lambda = pr.V_over_lambda.data();
+  for (int j = 0; j < m; ++j) V_over_lambda[j] = V[j] / lam[nest[j]];
+
+  // --- log_I_k (inclusive value) via log-sum-exp within each nest ---
+  double* max_V_k = pr.max_V_k.data();
+  for (int o = 0; o < n_o; ++o) max_V_k[nests[o]] = -inf;
+  for (int j = 0; j < m; ++j) {
+    const int k = nest[j];
+    if (V_over_lambda[j] > max_V_k[k]) {
+      max_V_k[k] = V_over_lambda[j];
+    }
+  }
+
+  double* I_k_unscaled = pr.I_k_unscaled.data();
+  for (int o = 0; o < n_o; ++o) I_k_unscaled[nests[o]] = 0.0;
+  for (int j = 0; j < m; ++j) {
+    const int k = nest[j];
+    if (std::isfinite(max_V_k[k])) {
+      I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
+    }
+  }
+
+  double* log_I_k = pr.log_I_k.data();
+  for (int o = 0; o < n_o; ++o) {
+    const int k = nests[o];
+    log_I_k[k] = -inf;
+    if (I_k_unscaled[k] > 0) {
+      log_I_k[k] = max_V_k[k] + std::log(I_k_unscaled[k]);
+    }
+  }
+
+  // --- log(P_k) (nest probability) ---
+  double* nest_terms = pr.nest_terms.data();
+  for (int o = 0; o < n_o; ++o) nest_terms[nests[o]] = lam[nests[o]] * log_I_k[nests[o]];
+
+  // direct_max_n()'s two maxima, the even nests' and the odd nests', then
+  // the sum's two accumulators: each nest's index parity picks its own, by
+  // an array index rather than a branch (the parities of a situation's
+  // nests follow no pattern a branch predictor could learn)
+  double mx[2] = {-inf, -inf};
+  for (int o = 0; o < n_o; ++o) {
+    const int k = nests[o];
+    const double t = nest_terms[k];
+    double& m_k = mx[k & 1];
+    m_k = t > m_k ? t : m_k;
+  }
+  double max_nest_term = (mx[0] > mx[1]) ? mx[0] : mx[1];
+  if (!std::isfinite(max_nest_term)) {
+    max_nest_term = 0;
+  }
+
+  double acc[2] = {0.0, 0.0};
+  for (int o = 0; o < n_o; ++o) {
+    const int k = nests[o];
+    acc[k & 1] += std::exp(nest_terms[k] - max_nest_term);
+  }
+  double sum_exp_nest_terms = acc[0] + acc[1];
+  if (include_outside_option) {
+    // Outside option: V=0, lambda=1 -> term = 0
+    sum_exp_nest_terms += std::exp(0.0 - max_nest_term);
+  }
+
+  const double log_denom_P_nest = max_nest_term + std::log(sum_exp_nest_terms);
+
+  double* log_P_k = pr.log_P_k.data();
+  for (int o = 0; o < n_o; ++o) {
+    log_P_k[nests[o]] = nest_terms[nests[o]] - log_denom_P_nest;
+  }
+  pr.log_P_outside = include_outside_option ? (0.0 - log_denom_P_nest) : -inf;
+
+  // --- log(P_j|k) and log(P_ij) ---
+  double* log_P_j_given_k = pr.log_P_j_given_k.data();
+  double* log_P_i = pr.log_P_i.data();
+  for (int j = 0; j < m; ++j) {
+    log_P_j_given_k[j] = V_over_lambda[j] - log_I_k[nest[j]];
+  }
+  for (int j = 0; j < m; ++j) {
+    log_P_i[j] = log_P_j_given_k[j] + log_P_k[nest[j]];
+  }
+
+  double* P_i = pr.P_i.data();
+  double* P_j_given_k = pr.P_j_given_k.data();
+  double* P_k = pr.P_k.data();
+  for (int j = 0; j < m; ++j) P_i[j] = std::exp(log_P_i[j]);
+  for (int j = 0; j < m; ++j) P_j_given_k[j] = std::exp(log_P_j_given_k[j]);
+  for (int o = 0; o < n_o; ++o) P_k[nests[o]] = std::exp(log_P_k[nests[o]]);
+}
+
 // ----------------------------------------------------------------------------
 // Delta-block (ASC) gradient scatter, in inside-alternative space:
 // diff_inside has one entry per inside alternative (callers with an outside
