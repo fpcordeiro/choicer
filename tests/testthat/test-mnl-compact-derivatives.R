@@ -16,7 +16,7 @@
 mcd_fixture <- function(name, seed, N = 60L, J = 30L, m_range = c(3L, 8L),
                         K = 2L, include_outside_option = FALSE, use_asc = TRUE,
                         dup = FALSE, absent_ref = FALSE, ref_only = FALSE,
-                        shuffle = FALSE, single = FALSE) {
+                        shuffle = FALSE, single = FALSE, runs = FALSE) {
   set.seed(seed)
   pool <- if (absent_ref) 2:J else seq_len(J)
   alts <- lapply(seq_len(N), function(t) {
@@ -31,6 +31,13 @@ mcd_fixture <- function(name, seed, N = 60L, J = 30L, m_range = c(3L, 8L),
     if (shuffle) a <- a[sample.int(length(a))]
     a
   })
+  # `runs`: most situations repeat the previous one's rows, as panels and
+  # fixed menus do (the kernels keep a slot map while the codes repeat)
+  if (runs) {
+    for (t in seq_along(alts)[-1L]) {
+      if (stats::runif(1L) < 0.7) alts[[t]] <- alts[[t - 1L]]
+    }
+  }
   M <- lengths(alts)
   n_rows <- sum(M)
   choice_idx <- vapply(M, function(m) {
@@ -67,7 +74,13 @@ mcd_cells <- function() {
     mcd_fixture("four alternatives, four covariates", 2012, J = 4L,
                 m_range = c(4L, 4L), K = 4L),
     mcd_fixture("one coefficient, wide sets", 2013, m_range = c(3L, 20L), K = 1L,
-                shuffle = TRUE)
+                shuffle = TRUE),
+    # Runs of situations with the same rows, the map kept across them:
+    # unsorted rows with a repeat, and with the outside option
+    mcd_fixture("runs of equal sets, unsorted, repeated", 2014, runs = TRUE,
+                dup = TRUE, shuffle = TRUE),
+    mcd_fixture("runs of equal sets, outside option", 2015, runs = TRUE,
+                include_outside_option = TRUE)
   )
 }
 

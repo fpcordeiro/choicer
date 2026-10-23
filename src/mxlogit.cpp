@@ -963,14 +963,17 @@ struct MxlUnitMap {
   std::vector<int> sit_of;    // unit slot -> situation slot, or -1
   std::vector<int> sit_slot;  // situation slot -> unit slot, increasing
   std::vector<int> row_sit;   // row of the situation -> situation slot, or -1
+  std::vector<int> glob;      // unit-local index -> global parameter (the K_c first)
   int a = 0;                  // free ASCs of the unit
   int a_t = 0;                // free ASCs of the situation
+  int K_c = 0;                // continuous parameters of the kernel's block
   char pad[128];              // keeps the next thread's map off these lines
 
   // Each array is reserved 32 entries (128 bytes) beyond its largest size,
   // so that no two threads' arrays share a cache line.
-  MxlUnitMap(const int J_d, const mxl_off max_unit_rows, const mxl_off max_m)
-      : unit_of(static_cast<std::size_t>(J_d) + 32, -1) {
+  MxlUnitMap(const int J_d, const mxl_off max_unit_rows, const mxl_off max_m,
+             const int K_c_)
+      : unit_of(static_cast<std::size_t>(J_d) + 32, -1), K_c(K_c_) {
     const std::size_t a_max = static_cast<std::size_t>(
         std::min<mxl_off>(J_d, max_unit_rows));
     delta.reserve(a_max + 32);
@@ -979,11 +982,12 @@ struct MxlUnitMap {
     sit_slot.reserve(static_cast<std::size_t>(std::min<mxl_off>(J_d, max_m)) + 32);
     row_slot.reserve(static_cast<std::size_t>(max_unit_rows) + 32);
     row_sit.reserve(static_cast<std::size_t>(max_m) + 32);
+    glob.assign(static_cast<std::size_t>(K_c) + a_max + 32, 0);
+    for (int k = 0; k < K_c; ++k) glob[k] = k;
   }
-  // Global parameter index of unit-local index i (K_c continuous first).
-  int global(const int i, const int K_c) const {
-    return i < K_c ? i : K_c + delta[i - K_c];
-  }
+  // Global parameter index of unit-local index i (K_c continuous first; the
+  // map's K_c, the kernel's).
+  int global(const int i, const int) const { return glob[i]; }
   // Unit-local index of situation-local index i.
   int unit(const int i, const int K_c) const {
     return i < K_c ? i : K_c + sit_slot[i - K_c];
@@ -1002,17 +1006,20 @@ inline double mxl_map_bytes(const MxlUnitData& ud) {
   const double R = static_cast<double>(ud.lay.max_unit_rows);
   const double m = static_cast<double>(ud.lay.max_m);
   const double a = std::min(J_d, R);
-  return sizeof(int) * (J_d + 2.0 * a + std::min(J_d, m) + R + m + 160.0) + 256.0;
+  return sizeof(int) * (J_d + 3.0 * a + std::min(J_d, m) + R + m +
+                        ud.par.idx_delta_start + 192.0) + 256.0;
 }
 
-// Every thread's maps, each in its own allocation, on the primary thread.
+// Every thread's maps, each in its own allocation, on the primary thread;
+// K_c is the kernel's continuous block (0 for the constants' Hessian).
 using MxlUnitMaps = std::vector<std::unique_ptr<MxlUnitMap>>;
-inline MxlUnitMaps mxl_unit_maps(const MxlUnitData& ud, const int n_threads) {
+inline MxlUnitMaps mxl_unit_maps(const MxlUnitData& ud, const int n_threads,
+                                 const int K_c) {
   const int J_d = ud.n_params - ud.par.idx_delta_start;
   MxlUnitMaps maps;
   maps.reserve(n_threads);
   for (int i = 0; i < n_threads; ++i) {
-    maps.emplace_back(new MxlUnitMap(J_d, ud.lay.max_unit_rows, ud.lay.max_m));
+    maps.emplace_back(new MxlUnitMap(J_d, ud.lay.max_unit_rows, ud.lay.max_m, K_c));
   }
   return maps;
 }
@@ -1032,6 +1039,7 @@ inline void mxl_unit_map(const MxlUnitData& ud, const MxlUnitScratch& sc,
   std::sort(mp.delta.begin(), mp.delta.end());
   mp.a = static_cast<int>(mp.delta.size());
   for (int k = 0; k < mp.a; ++k) mp.unit_of[mp.delta[k]] = k;
+  for (int k = 0; k < mp.a; ++k) mp.glob[mp.K_c + k] = mp.K_c + mp.delta[k];
   mp.row_slot.resize(static_cast<std::size_t>(sc.R));
   for (mxl_off i = 0; i < sc.R; ++i) {
     const int j = mxl_free_delta(ud, sc.r0 + i);
@@ -1228,7 +1236,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
                           mxl_hessian_unit_bytes(ud) + 8.0 * (n_params + 16.0),
                       [&](const int t) { return sym_acc_need(n_params, Kc, t, acc_bytes); });
   SymAcc acc(n_params, n_threads, Kc, "Hessian", acc_bytes);
-  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, Kc);
   std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
   std::vector<std::vector<double>> cols =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
@@ -1720,7 +1728,7 @@ Rcpp::List mxl_delta_hessian_parallel(
                         return sym_acc_need(J_d, 0, t, acc_bytes) + 16.0 * n_params;
                       });
   SymAcc acc(J_d, n_threads, 0, "Hessian of the constants", acc_bytes);
-  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, 0);
   std::vector<std::vector<double>> cols =
       thread_vectors<double>(static_cast<std::size_t>(J_d), n_threads);
 
@@ -2001,10 +2009,15 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
   // on the primary thread.
   const int n_threads = kernel_team_threads(lay.U);
   kernel_check_memory("BHHH matrix", n_threads,
-                      ud.scratch_bytes() + mxl_map_bytes(ud) + 16.0 * n_params,
+                      ud.scratch_bytes() + mxl_map_bytes(ud) + 8.0 * n_params +
+                          8.0 * (n_params + 16.0),
                       [&](const int t) { return sym_acc_need(n_params, K_c, t, acc_bytes); });
   SymAcc acc(n_params, n_threads, K_c, "BHHH", acc_bytes);
-  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, K_c);
+  // each thread's column of the update, formed before it is added (every
+  // parameter, for the dense fallback)
+  std::vector<std::vector<double>> cols =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -2015,7 +2028,7 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
     double* acc_t = acc.base(tid);
     MxlUnitScratch sc;
     arma::vec s_u;  // score of unit u in its compact block
-    std::vector<double> col;  // one column of the update, formed before it is added
+    double* col = cols[tid].data();
 
 // Loop over likelihood units in parallel
 #ifdef _OPENMP
@@ -2039,17 +2052,16 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
       // may GCC main's tiny-matrix product for a one-parameter model). Main
       // added w_u * (0 * s) outside the block, +-0, which changes nothing: no
       // accumulator, which starts at +0, is ever -0.
-      if (std::isfinite(w_u) && s_u.is_finite()) {
-        col.resize(static_cast<std::size_t>(m_u));
+      if (unit_finite(w_u, s_u.memptr(), static_cast<int>(s_u.n_elem))) {
         switch (acc.mode()) {
           case SymMode::Single:
-            bhhh_add<SymMode::Single>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            bhhh_add<SymMode::Single>(acc, acc_t, mp, K_c, s_u, w_u, col);
             break;
           case SymMode::Triangles:
-            bhhh_add<SymMode::Triangles>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            bhhh_add<SymMode::Triangles>(acc, acc_t, mp, K_c, s_u, w_u, col);
             break;
           default:
-            bhhh_add<SymMode::Shared>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            bhhh_add<SymMode::Shared>(acc, acc_t, mp, K_c, s_u, w_u, col);
         }
       } else {
         // A non-finite weight, or a non-finite score (utilities that
@@ -2057,16 +2069,15 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
         // utilities): main's update over every entry, whose 0 * NaN and
         // 0 * Inf spread it over whole rows and columns. The scores come
         // from the slot map, zero outside the block.
-        col.resize(static_cast<std::size_t>(n_params));
         switch (acc.mode()) {
           case SymMode::Single:
-            bhhh_add_dense<SymMode::Single>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            bhhh_add_dense<SymMode::Single>(acc, acc_t, mp, K_c, s_u, w_u, col);
             break;
           case SymMode::Triangles:
-            bhhh_add_dense<SymMode::Triangles>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            bhhh_add_dense<SymMode::Triangles>(acc, acc_t, mp, K_c, s_u, w_u, col);
             break;
           default:
-            bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K_c, s_u, w_u, col);
         }
       }
       mxl_unit_map_clear(mp);
@@ -2261,7 +2272,7 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
   // cluster it starts in and the one it ends in), all allocated here on the
   // primary thread.
   SymAcc acc(n_params, n_threads, K_c, "cluster meat", acc_bytes);
-  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, K_c);
   std::vector<ClusterSum> sums;
   sums.reserve(n_threads);
   for (int i = 0; i < n_threads; ++i) sums.emplace_back(n_params);

@@ -16,7 +16,7 @@
 ncd_fixture <- function(name, seed, N = 60L, J = 30L, m_range = c(3L, 8L),
                         K = 2L, nest_idx = as.integer(c(rep(1:8, each = 3L), 9:14)),
                         include_outside_option = FALSE, use_asc = TRUE,
-                        dup = FALSE, shuffle = FALSE) {
+                        dup = FALSE, shuffle = FALSE, runs = FALSE) {
   set.seed(seed)
   alts <- lapply(seq_len(N), function(t) {
     m <- sample(m_range[1L]:m_range[2L], 1L)
@@ -25,6 +25,13 @@ ncd_fixture <- function(name, seed, N = 60L, J = 30L, m_range = c(3L, 8L),
     if (shuffle) a <- a[sample.int(length(a))]
     a
   })
+  # `runs`: most situations repeat the previous one's rows (the kernels keep
+  # a slot map while the codes repeat)
+  if (runs) {
+    for (t in seq_along(alts)[-1L]) {
+      if (stats::runif(1L) < 0.7) alts[[t]] <- alts[[t - 1L]]
+    }
+  }
   M <- lengths(alts)
   n_rows <- sum(M)
   choice_idx <- vapply(M, function(m) {
@@ -65,7 +72,11 @@ ncd_cells <- function() {
     ncd_fixture("four alternatives, four covariates", 3022, J = 4L,
                 m_range = c(4L, 4L), K = 4L, nest_idx = c(1L, 1L, 2L, 2L)),
     ncd_fixture("many nests, few offered", 3023, J = 120L, m_range = c(2L, 6L),
-                nest_idx = c(rep(1:50, each = 2L), 51:70), shuffle = TRUE)
+                nest_idx = c(rep(1:50, each = 2L), 51:70), shuffle = TRUE),
+    ncd_fixture("runs of equal sets, unsorted, repeated", 3024, runs = TRUE,
+                dup = TRUE, shuffle = TRUE),
+    ncd_fixture("runs of equal sets, outside option", 3025, runs = TRUE,
+                include_outside_option = TRUE)
   )
 }
 
@@ -600,4 +611,33 @@ test_that("shared NL BHHH and meat results equal the per-thread accumulators' su
                        paste(nm, k, "shared"))
     }
   }
+})
+
+test_that("a kept NL slot map follows which nests' inclusive values are finite", {
+  # Three situations with one set of rows, nests (1, 1, 2, 2): the second
+  # sends nest 2's utilities to -Inf. Its log I_2 = -Inf leaves nest 2's
+  # dissimilarity out of its block (a zero score there) while its other
+  # scores turn NaN, so the BHHH and the meat take the dense update, whose
+  # NaN reach every entry but those the excluded zero meets with a finite
+  # score. The map built for the first situation, where nest 2 is finite,
+  # must not serve the second, nor the second's the third.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  set.seed(3201)
+  X <- matrix(stats::rnorm(12L * 2L), 12L, 2L)
+  X[7:8, 1L] <- -1e308  # theta[1] = 2: V = -Inf in nest 2 of situation 2
+  f <- list(name = "finiteness", X = X, alt_idx = rep(1:4, 3L),
+            choice_idx = c(1L, 2L, 1L), nest_idx = c(1L, 1L, 2L, 2L),
+            M = rep(4L, 3L), weights = c(0.7, 1.3, 1.1),
+            theta = c(2, -0.4, 0.6, 0.8, 0.3, -0.2, 0.5),
+            use_asc = TRUE, include_outside_option = FALSE, J = 4L, K = 2L,
+            K_l = 2L, N = 3L)
+  S <- ncd_call("scores", f)
+  expect_identical(S[2L, 4L], 0)  # nest 2's dissimilarity: out of the block
+  expect_true(any(is.nan(S[2L, ])) && all(is.finite(S[-2L, ])))
+  B <- ncd_call("bhhh", f)
+  ncd_same_pattern(B, ncd_bhhh_ref(S, f$weights), "BHHH")
+  expect_true(all(is.finite(B[4L, c(3L, 5L)])), label = "excluded score meets finite ones")
+  cl <- c(1L, 1L, 2L)
+  ncd_same_pattern(ncd_meat(f, cl), ncd_meat_ref(f, cl), "meat")
 })
