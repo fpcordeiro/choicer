@@ -2041,16 +2041,16 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
       mxl_unit_map(ud, sc, mp);
       mxl_unit_score_local(ud, sc, mp, s_u);
       const double w_u = weights[lay.unit_first(u)];
-      const int m_u = K_c + mp.a;
       // w_u s_u s_u' over the compact block, column by column, each entry
       // formed as main's rank-one update formed it (`local_bhhh +=
       // w_u * s_u * s_u.t()` is Armadillo's syrk_vec: the product of the two
-      // scores, row operand first, times the weight, then added). A column's
-      // terms are stored before they are added, so that the weight's product
-      // is never fused into the addition, as main's is not under clang or
-      // under GCC at R's default -O2 (bit for bit there; GCC's -O3 loop
-      // vectorizer rounds main's update differently in the last bit, and so
-      // may GCC main's tiny-matrix product for a one-parameter model). Main
+      // scores, row operand first, times the weight, then added). Each term
+      // is the rounded product, never fused into its addition
+      // (CHOICER_STORE_TERMS: under GCC a column's terms are stored before
+      // they are added), as main's is not under clang or under GCC at R's
+      // default -O2 (bit for bit there; GCC's -O3 loop vectorizer rounds
+      // main's update differently in the last bit, and so may GCC main's
+      // tiny-matrix product for a one-parameter model). Main
       // added w_u * (0 * s) outside the block, +-0, which changes nothing: no
       // accumulator, which starts at +0, is ever -0.
       if (unit_finite(w_u, s_u.memptr(), static_cast<int>(s_u.n_elem))) {
@@ -2232,7 +2232,8 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
                           8.0 * n_params + 9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
                         return sym_acc_need(n_params, K_c, t, acc_bytes) +
-                               8.0 * (static_cast<double>(U) + 2.0 * G);
+                               8.0 * (static_cast<double>(U) + 2.0 * G +
+                                      4.0 * t + 2.0);
                       });
 
   // Units sorted by cluster: order[off[g - 1], off[g]) holds cluster g's
