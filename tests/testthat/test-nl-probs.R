@@ -1,7 +1,10 @@
 # One individual's nested logit probabilities: nl_individual_probs() works on
 # raw arrays in per-thread buffers, and must reproduce bit for bit the
 # Armadillo expressions it replaced, kept as a reference in
-# src/kernel_test_exports.cpp.
+# src/kernel_test_exports.cpp. The kernels run nl_individual_probs_offered()
+# instead when every lambda is positive: over the nests the situation offers,
+# it must give the full routine's outputs bit for bit, the per-nest ones on
+# those nests, and leave the other nests' entries unwritten.
 
 nl_probs_fields <- c("P_i", "P_j_given_k", "P_k", "log_I_k", "log_P_i",
                      "log_P_outside")
@@ -50,32 +53,79 @@ test_that("nl_individual_probs() matches its reference, every nest occupied", {
   }
 })
 
+nl_probs_edges <- list(
+  list("one alternative", 1.3, 0L, 0.7),
+  list("lambda near 0", c(0.4, -0.2, 1.1), c(0L, 0L, 1L), c(1e-3, 1)),
+  list("a -Inf utility", c(-Inf, 0.3, 0.1), c(0L, 0L, 1L), c(0.6, 0.9)),
+  list("a whole nest at -Inf", c(-Inf, -Inf, 0.2), c(0L, 0L, 1L),
+       c(0.6, 0.9)),
+  list("every utility -Inf", c(-Inf, -Inf), c(0L, 1L), c(0.5, 1)),
+  list("a +Inf utility", c(Inf, 0.3, 0.1), c(0L, 0L, 1L), c(0.6, 0.9)),
+  list("a NaN utility", c(NaN, 0.3, 0.1), c(0L, 1L, 1L), c(0.6, 0.9)),
+  list("large utilities", c(800, 790, -700, 760), c(0L, 1L, 1L, 2L),
+       c(0.3, 0.8, 1)),
+  list("empty nests", c(0.1, 0.2), c(3L, 3L), c(0.5, 0.6, 0.7, 0.8)),
+  list("signed zeros", c(0, -0, 0), c(0L, 0L, 1L), c(1, 1)),
+  # Three singleton nests whose sums change in the last bit when the nest
+  # sum uses one accumulator, adds the outside term first, or puts the odd
+  # term in the second accumulator (found on arm64)
+  list("three singletons, a", c(1.01, -0.07, -1.14), 0:2, c(1, 1, 1)),
+  list("three singletons, b", c(0.35, 1.17, -0.48), 0:2, c(1, 1, 1)),
+  list("three singletons, c", c(0.19, -0.03, 0.47), 0:2, c(1, 1, 1))
+)
+
 test_that("nl_individual_probs() matches its reference on edge inputs", {
-  edge <- list(
-    list("one alternative", 1.3, 0L, 0.7),
-    list("lambda near 0", c(0.4, -0.2, 1.1), c(0L, 0L, 1L), c(1e-3, 1)),
-    list("a -Inf utility", c(-Inf, 0.3, 0.1), c(0L, 0L, 1L), c(0.6, 0.9)),
-    list("a whole nest at -Inf", c(-Inf, -Inf, 0.2), c(0L, 0L, 1L),
-         c(0.6, 0.9)),
-    list("every utility -Inf", c(-Inf, -Inf), c(0L, 1L), c(0.5, 1)),
-    list("a +Inf utility", c(Inf, 0.3, 0.1), c(0L, 0L, 1L), c(0.6, 0.9)),
-    list("a NaN utility", c(NaN, 0.3, 0.1), c(0L, 1L, 1L), c(0.6, 0.9)),
-    list("large utilities", c(800, 790, -700, 760), c(0L, 1L, 1L, 2L),
-         c(0.3, 0.8, 1)),
-    list("empty nests", c(0.1, 0.2), c(3L, 3L), c(0.5, 0.6, 0.7, 0.8)),
-    list("signed zeros", c(0, -0, 0), c(0L, 0L, 1L), c(1, 1)),
-    # Three singleton nests whose sums change in the last bit when the nest
-    # sum uses one accumulator, adds the outside term first, or puts the odd
-    # term in the second accumulator (found on arm64)
-    list("three singletons, a", c(1.01, -0.07, -1.14), 0:2, c(1, 1, 1)),
-    list("three singletons, b", c(0.35, 1.17, -0.48), 0:2, c(1, 1, 1)),
-    list("three singletons, c", c(0.19, -0.03, 0.47), 0:2, c(1, 1, 1))
-  )
-  for (e in edge) {
+  for (e in nl_probs_edges) {
     for (ioo in c(FALSE, TRUE)) {
       expect_nl_probs_identical(e[[2]], e[[3]], e[[4]], ioo, e[[1]])
     }
   }
+})
+
+expect_nl_probs_offered <- function(V, nest0, lambda, ioo, what) {
+  full <- choicer:::test_nl_individual_probs(V, nest0, lambda, ioo)
+  r <- choicer:::test_nl_individual_probs_offered(V, nest0, lambda, ioo)
+  what <- sprintf("%s (outside option %s)", what, ioo)
+  on <- r$nests + 1L
+  expect_identical(on, sort(unique(nest0)) + 1L, label = what)
+  for (f in c("P_i", "P_j_given_k", "log_P_i", "log_P_outside")) {
+    expect_true(identical(r[[f]], full[[f]], num.eq = FALSE),
+                label = paste0(what, ": ", f))
+  }
+  for (f in c("P_k", "log_I_k")) {
+    expect_true(identical(r[[f]][on], full[[f]][on], num.eq = FALSE),
+                label = paste0(what, ": ", f))
+    expect_identical(r[[f]][-on], rep(NA_real_, length(lambda) - length(on)),
+                     label = paste0(what, ": ", f, " of the nests not offered"))
+  }
+}
+
+test_that("nl_individual_probs_offered() matches nl_individual_probs()", {
+  set.seed(20261023)
+  for (rep in seq_len(80)) {
+    n_nests <- sample(c(1:6, 17L, 25L, 60L), 1L)
+    m <- sample(c(1:8, 15:18, 40L), 1L)
+    # A subset of the nests offered: even ones only, odd ones only, or any
+    pool <- switch(sample.int(3L, 1L),
+                   seq.int(1L, n_nests, by = 2L),
+                   if (n_nests > 1L) seq.int(2L, n_nests, by = 2L) else 1L,
+                   seq_len(n_nests))
+    used <- pool[sample.int(length(pool), sample.int(length(pool), 1L))]
+    nest0 <- as.integer(used[sample.int(length(used), m, replace = TRUE)] - 1L)
+    lambda <- runif(n_nests, 0.05, 1)
+    lambda[sample.int(n_nests, max(1L, n_nests %/% 3L))] <- 1
+    V <- rnorm(m, sd = sample(c(0.5, 5, 50), 1L))
+    for (ioo in c(FALSE, TRUE)) {
+      expect_nl_probs_offered(V, nest0, lambda, ioo, sprintf("draw %d", rep))
+    }
+  }
+  for (e in nl_probs_edges) {
+    for (ioo in c(FALSE, TRUE)) {
+      expect_nl_probs_offered(e[[2]], e[[3]], e[[4]], ioo, e[[1]])
+    }
+  }
+  expect_error(choicer:::test_nl_individual_probs_offered(0.1, 0L, 0, TRUE),
+               "every lambda must be positive")
 })
 
 test_that("nl_blp_contraction() checks nest codes and lambda before its loop", {

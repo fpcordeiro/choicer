@@ -282,6 +282,20 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// test_nl_individual_probs_offered
+Rcpp::List test_nl_individual_probs_offered(const arma::vec& V, const Rcpp::IntegerVector& nest0, const arma::vec& lambda, const bool include_outside_option);
+RcppExport SEXP _choicer_test_nl_individual_probs_offered(SEXP VSEXP, SEXP nest0SEXP, SEXP lambdaSEXP, SEXP include_outside_optionSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::vec& >::type V(VSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type nest0(nest0SEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type lambda(lambdaSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    rcpp_result_gen = Rcpp::wrap(test_nl_individual_probs_offered(V, nest0, lambda, include_outside_option));
+    return rcpp_result_gen;
+END_RCPP
+}
 // test_arma_word_bytes
 int test_arma_word_bytes();
 RcppExport SEXP _choicer_test_arma_word_bytes() {
@@ -1361,6 +1375,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_hmnp_gibbs", (DL_FUNC) &_choicer_hmnp_gibbs, 24},
     {"_choicer_test_softmax_n", (DL_FUNC) &_choicer_test_softmax_n, 1},
     {"_choicer_test_nl_individual_probs", (DL_FUNC) &_choicer_test_nl_individual_probs, 4},
+    {"_choicer_test_nl_individual_probs_offered", (DL_FUNC) &_choicer_test_nl_individual_probs_offered, 4},
     {"_choicer_test_arma_word_bytes", (DL_FUNC) &_choicer_test_arma_word_bytes, 0},
     {"_choicer_test_arma_view_n_elem", (DL_FUNC) &_choicer_test_arma_view_n_elem, 0},
     {"_choicer_test_sym_acc", (DL_FUNC) &_choicer_test_sym_acc, 4},
