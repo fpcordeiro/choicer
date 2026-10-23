@@ -21,7 +21,8 @@ mxl_diversion_ratios_parallel(
   include_outside_option = FALSE,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L
+  gen_S = 0L,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -67,6 +68,12 @@ randtoolbox and choicer are compiled with the same floating-point
 contraction).}
 
 \item{gen_S}{Integer number of draws per individual, used only when \code{gen_seed >= 0}.}
+
+\item{acc_bytes}{Bytes for the threads' copies of the J x J numerators (2
+GiB by default): with more threads than one, each adds into its own copy
+while the copies fit, and into the shared result otherwise (its last bits
+then depend on the threads' timing); \code{0} forces the shared result
+(for tests).}
 }
 \value{
 J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.

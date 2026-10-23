@@ -678,6 +678,11 @@ mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weight
 #' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option
+#' @param acc_bytes Bytes for the threads' copies of the J x J sums (2 GiB by
+#'   default): with more threads than one, each adds into its own copy while
+#'   the copies fit, and into the shared result otherwise (its last bits then
+#'   depend on the threads' timing); \code{0} forces the shared result (for
+#'   tests).
 #' @returns J x J matrix of aggregate elasticities
 #' @examples
 #' \donttest{
@@ -694,8 +699,8 @@ mnl_loglik_hessian_parallel <- function(theta, X, alt_idx, choice_idx, M, weight
 #' elas
 #' }
 #' @keywords internal
-mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mnl_elasticities_parallel`, theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
+mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mnl_elasticities_parallel`, theta, X, alt_idx, choice_idx, M, weights, elast_var_idx, use_asc, include_outside_option, acc_bytes)
 }
 
 #' Compute MNL diversion ratios (parallelized over individuals)
@@ -711,6 +716,9 @@ mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
 #' @param weights N x 1 vector with weights for each observation
 #' @param use_asc whether to use alternative-specific constants
 #' @param include_outside_option whether to include outside option
+#' @param acc_bytes Bytes for the threads' copies of the J x J numerators (2
+#'   GiB by default), as in \code{mnl_elasticities_parallel()}; \code{0}
+#'   forces the shared result (for tests).
 #' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
 #' @examples
 #' \donttest{
@@ -727,8 +735,8 @@ mnl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, M, weights,
 #' dr
 #' }
 #' @keywords internal
-mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_mnl_diversion_ratios_parallel`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
+mnl_diversion_ratios_parallel <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mnl_diversion_ratios_parallel`, theta, X, alt_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
 #' Gibbs sampler for the Bayesian multinomial probit model
@@ -1278,10 +1286,15 @@ mxl_predict_shares <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_d
 #'   randtoolbox and choicer are compiled with the same floating-point
 #'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
+#' @param acc_bytes Bytes for the threads' copies of the J x J numerators (2
+#'   GiB by default): with more threads than one, each adds into its own copy
+#'   while the copies fit, and into the shared result otherwise (its last bits
+#'   then depend on the threads' timing); \code{0} forces the shared result
+#'   (for tests).
 #' @returns J x J (or (J+1) x (J+1)) matrix of diversion ratios with zero diagonal.
 #' @keywords internal
-mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, acc_bytes)
 }
 
 #' BLP contraction mapping for mixed logit
@@ -1402,6 +1415,9 @@ mxl_blp_contraction_cached <- function(delta, target_shares, X, W, beta, mu, L_p
 #'   randtoolbox and choicer are compiled with the same floating-point
 #'   contraction).
 #' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
+#' @param acc_bytes Bytes for the threads' copies of the J x J sums (2 GiB by
+#'   default), as in \code{mxl_diversion_ratios_parallel()}; \code{0} forces
+#'   the shared result (for tests).
 #' @returns J x J matrix of aggregate elasticities
 #' @examples
 #' \donttest{
@@ -1422,8 +1438,8 @@ mxl_blp_contraction_cached <- function(delta, target_shares, X, W, beta, mu, L_p
 #' elas
 #' }
 #' @keywords internal
-mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S)
+mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_elasticities_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, acc_bytes)
 }
 
 #' Log-likelihood and gradient for Nested Logit model
@@ -1709,6 +1725,9 @@ nl_predict_shares <- function(theta, X, alt_idx, M, weights, nest_idx, use_asc =
 #' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @param acc_bytes Bytes for the threads' copies of the J x J sums (2 GiB by
+#'   default), as in \code{mnl_elasticities_parallel()}; \code{0} forces the
+#'   shared result (for tests).
 #' @returns J x J matrix of aggregate elasticities (row = responding alt, col = perturbed alt).
 #' @examples
 #' \donttest{
@@ -1727,8 +1746,8 @@ nl_predict_shares <- function(theta, X, alt_idx, M, weights, nest_idx, use_asc =
 #' elas
 #' }
 #' @keywords internal
-nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_nl_elasticities_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc, include_outside_option)
+nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_nl_elasticities_parallel`, theta, X, alt_idx, choice_idx, nest_idx, M, weights, elast_var_idx, use_asc, include_outside_option, acc_bytes)
 }
 
 #' Compute Nested Logit diversion ratios (parallelized over individuals)
@@ -1746,6 +1765,9 @@ nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M,
 #' @param weights N x 1 vector with weights for each observation.
 #' @param use_asc whether to use alternative-specific constants.
 #' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+#' @param acc_bytes Bytes for the threads' copies of the J x J numerators (2
+#'   GiB by default), as in \code{mnl_elasticities_parallel()}; \code{0}
+#'   forces the shared result (for tests).
 #' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
 #' @examples
 #' \donttest{
@@ -1763,8 +1785,8 @@ nl_elasticities_parallel <- function(theta, X, alt_idx, choice_idx, nest_idx, M,
 #' dr
 #' }
 #' @keywords internal
-nl_diversion_ratios_parallel <- function(theta, X, alt_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE) {
-    .Call(`_choicer_nl_diversion_ratios_parallel`, theta, X, alt_idx, nest_idx, M, weights, use_asc, include_outside_option)
+nl_diversion_ratios_parallel <- function(theta, X, alt_idx, nest_idx, M, weights, use_asc = TRUE, include_outside_option = FALSE, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_nl_diversion_ratios_parallel`, theta, X, alt_idx, nest_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
 #' BLP95 contraction mapping for the Nested Logit model

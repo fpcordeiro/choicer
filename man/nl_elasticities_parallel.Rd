@@ -14,7 +14,8 @@ nl_elasticities_parallel(
   weights,
   elast_var_idx,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -38,6 +39,10 @@ parameters. Order: \verb{[beta (K), lambda (non-singleton), delta]}.}
 \item{use_asc}{whether to use alternative-specific constants.}
 
 \item{include_outside_option}{whether to include outside option normalized to V=0, lambda=1.}
+
+\item{acc_bytes}{Bytes for the threads' copies of the J x J sums (2 GiB by
+default), as in \code{mnl_elasticities_parallel()}; \code{0} forces the
+shared result (for tests).}
 }
 \value{
 J x J matrix of aggregate elasticities (row = responding alt, col = perturbed alt).

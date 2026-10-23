@@ -13,7 +13,8 @@ mnl_elasticities_parallel(
   weights,
   elast_var_idx,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -34,6 +35,12 @@ mnl_elasticities_parallel(
 \item{use_asc}{whether to use alternative-specific constants}
 
 \item{include_outside_option}{whether to include outside option}
+
+\item{acc_bytes}{Bytes for the threads' copies of the J x J sums (2 GiB by
+default): with more threads than one, each adds into its own copy while
+the copies fit, and into the shared result otherwise (its last bits then
+depend on the threads' timing); \code{0} forces the shared result (for
+tests).}
 }
 \value{
 J x J matrix of aggregate elasticities

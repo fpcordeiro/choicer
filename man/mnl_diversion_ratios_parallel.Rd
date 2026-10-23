@@ -11,7 +11,8 @@ mnl_diversion_ratios_parallel(
   M,
   weights,
   use_asc = TRUE,
-  include_outside_option = FALSE
+  include_outside_option = FALSE,
+  acc_bytes = 2147483648
 )
 }
 \arguments{
@@ -28,6 +29,10 @@ mnl_diversion_ratios_parallel(
 \item{use_asc}{whether to use alternative-specific constants}
 
 \item{include_outside_option}{whether to include outside option}
+
+\item{acc_bytes}{Bytes for the threads' copies of the J x J numerators (2
+GiB by default), as in \code{mnl_elasticities_parallel()}; \code{0}
+forces the shared result (for tests).}
 }
 \value{
 J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.

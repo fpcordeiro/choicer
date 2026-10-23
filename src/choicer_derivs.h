@@ -351,6 +351,177 @@ inline double sym_acc_need(const choicer_off n, const int K_c, const int t,
   return result + sizeof(double) * t * static_cast<double>(sym_acc_col_off(n, s));
 }
 
+// ----------------------------------------------------------------------------
+// The J x J sums of the elasticity and diversion-ratio kernels (every
+// model's): each choice situation's terms, weighted and added by
+// alternative into an R matrix allocated once, the result the kernel
+// returns. With one thread the situations add into it (Single). With T > 1,
+// while T copies of it fit in acc_bytes (2 GiB by default: J of about 4,900
+// at eleven threads), each thread adds into its own copy, zeroed by its
+// thread before the region, and the copies are added up in thread order
+// after it, from +0 (Copies). Above that the threads share the result and
+// add into it atomically (Shared), except row 0 and column 0 when they are
+// the outside option's, which every situation touches: each thread keeps
+// those 2J entries (row 0 at buf[j], column 0 at buf[J + i]) and adds them
+// in thread order at the end, as SymAcc keeps its leading rows. The mode is
+// chosen once per call (dense_acc_mode()), and the kernels' loops are
+// templates on whether it is shared (add<Shared>()), so that a thread's loop
+// holds neither an atomic nor a branch on the mode. Everything is allocated
+// here, on the primary thread.
+// ----------------------------------------------------------------------------
+enum class DenseMode { Single, Copies, Shared };
+
+inline DenseMode dense_acc_mode(const std::size_t n, const int T,
+                                const double acc_bytes) {
+  if (T <= 1) return DenseMode::Single;
+  const double copies = sizeof(double) * static_cast<double>(T) *
+                        static_cast<double>(n) * static_cast<double>(n);
+  return copies <= acc_bytes ? DenseMode::Copies : DenseMode::Shared;
+}
+
+// Bytes of the result and the threads' accumulators with t threads, each
+// padded as padded_buffer() pads it (DenseAcc).
+inline double dense_acc_need(const std::size_t n, const int t,
+                             const double acc_bytes, const bool outside) {
+  const double nn = static_cast<double>(n) * static_cast<double>(n);
+  switch (dense_acc_mode(n, t, acc_bytes)) {
+    case DenseMode::Single:
+      return sizeof(double) * nn;
+    case DenseMode::Copies:
+      return sizeof(double) * (nn + t * (nn + 16.0));
+    default:
+      return sizeof(double) *
+             (nn + (outside ? t * (2.0 * static_cast<double>(n) + 16.0) : 0.0));
+  }
+}
+
+struct DenseAcc {
+  const std::size_t n;
+  const int T;
+  const bool outside;          // row and column 0 are the outside option's
+  const DenseMode mode;
+  Rcpp::NumericMatrix result;  // n x n, zero
+  double* out = nullptr;       // its elements
+  std::vector<std::unique_ptr<double[]>> part;  // each thread's copy, or row and column 0
+
+  DenseAcc(const int n_, const int T_, const bool outside_, const char* what,
+           const double acc_bytes)
+      : n(static_cast<std::size_t>(n_)), T(T_), outside(outside_),
+        mode(dense_acc_mode(static_cast<std::size_t>(n_), T_, acc_bytes)),
+        result(n_, n_) {
+    out = result.begin();
+    const std::size_t len = mode == DenseMode::Copies ? n * n
+                            : mode == DenseMode::Shared && outside ? 2 * n
+                            : 0;
+    if (len == 0) return;
+    try {
+      part.reserve(T);
+      for (int i = 0; i < T; ++i) part.push_back(padded_buffer(len));
+    } catch (const std::bad_alloc&) {
+      std::vector<std::unique_ptr<double[]>>().swap(part);  // release
+      Rcpp::stop("Not enough memory for the %s accumulators: %.2f GB per "
+                 "thread for %d threads. Run fewer threads with "
+                 "set_num_threads().", what,
+                 sizeof(double) * static_cast<double>(len) / 1e9, T);
+    }
+    // Thread i zeros buffer i (schedule(static)), touching first the memory
+    // it will add to.
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(T)
+#endif
+    for (int i = 0; i < T; ++i) {
+      std::fill(part[i].get(), part[i].get() + len, 0.0);
+    }
+  }
+  DenseAcc(const DenseAcc&) = delete;
+  DenseAcc& operator=(const DenseAcc&) = delete;
+
+  bool shared() const { return mode == DenseMode::Shared; }
+  // Thread tid's buffer, to pass to add() only: its layout depends on the
+  // mode.
+  double* base(const int tid) const { return part.empty() ? out : part[tid].get(); }
+
+  // Entry (i, j) += a * b, from the thread whose buffer is buf: the product
+  // and the sum in one statement, as the kernels' `local(i, j) += a * b`
+  // formed them (a compiler that contracts that into a fused multiply-add
+  // contracts this the same way). Shared must be shared().
+  template <bool Shared>
+  void add(double* buf, const std::size_t i, const std::size_t j, const double a,
+           const double b) const {
+    if (!Shared) {
+      buf[i + j * n] += a * b;
+    } else if (outside && (i == 0 || j == 0)) {
+      buf[i == 0 ? j : n + i] += a * b;
+    } else {
+      double& t = out[i + j * n];
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+      t += a * b;
+    }
+  }
+
+  // The threads' copies, or their rows and columns 0, added into the result
+  // in thread order (nothing with one thread).
+  void finish() {
+    const int n_part = static_cast<int>(part.size());
+    if (n_part == 0) return;
+    const std::size_t nn = n;
+    double* o = out;
+    const std::vector<std::unique_ptr<double[]>>& pt = part;
+    if (mode == DenseMode::Copies) {
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(T)
+#endif
+      for (std::size_t j = 0; j < nn; ++j) {
+        double* oc = o + j * nn;
+        for (int k = 0; k < n_part; ++k) {
+          const double* pc = pt[k].get() + j * nn;
+          for (std::size_t i = 0; i < nn; ++i) oc[i] += pc[i];
+        }
+      }
+    } else {
+      for (int k = 0; k < n_part; ++k) {
+        const double* p = pt[k].get();
+        for (std::size_t j = 0; j < nn; ++j) o[j * nn] += p[j];
+        for (std::size_t i = 1; i < nn; ++i) o[i] += p[nn + i];
+      }
+    }
+  }
+};
+
+// The diversion ratios from their sums, in place: column j of `num` (n x n)
+// divided by den[j] off the diagonal where `keep` holds for den[j], and +0
+// elsewhere (the diagonal, and every column failing it).
+template <typename Keep>
+inline void dense_diversion_ratios(double* num, const std::size_t n,
+                                   const std::vector<double>& den,
+                                   const Keep& keep) {
+  for (std::size_t j = 0; j < n; ++j) {
+    double* col = num + j * n;
+    if (keep(den[j])) {
+      for (std::size_t k = 0; k < n; ++k) {
+        if (k != j) col[k] = col[k] / den[j];
+      }
+      col[j] = 0.0;
+    } else {
+      std::fill(col, col + n, 0.0);
+    }
+  }
+}
+
+// The count of alternatives a prediction kernel's sums index (its shares,
+// elasticities or diversion ratios): compute_J_total() wraps the largest
+// code, 2^31 - 1, plus the outside option to a negative int, which reached
+// the allocation as an enormous size.
+inline void check_alternative_count(const int J_total) {
+  if (J_total <= 0) {
+    Rcpp::stop("alt_idx references alternative %d, which with the outside "
+               "option is more alternatives than an int can count.",
+               std::numeric_limits<int>::max());
+  }
+}
+
 // The weighted score sum s_g = sum_{u in g} w_u s_u of the cluster in hand,
 // as a dense n-vector, zero outside the parameters its units touch (its
 // support: the first K_c parameters and the rest of its units' blocks). One

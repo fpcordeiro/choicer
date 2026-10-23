@@ -2281,90 +2281,57 @@ arma::vec nl_predict_shares(
   return shares;
 }
 
-//' Compute aggregate elasticities for the Nested Logit model
-//'
-//' Computes the aggregate (weighted-average) elasticity matrix for the Nested
-//' Logit model. Reduces to the MNL elasticities when all lambda = 1.
-//'
-//' @param theta (K + n_non_singleton_nests + n_delta) vector with model
-//'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
-//' @param X sum(M) x K design matrix with covariates.
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
-//' @param choice_idx N x 1 vector (kept for API consistency, not used).
-//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
-//' @param M N x 1 vector with number of alternatives for each individual.
-//' @param weights N x 1 vector with weights for each observation.
-//' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity.
-//' @param use_asc whether to use alternative-specific constants.
-//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-//' @returns J x J matrix of aggregate elasticities (row = responding alt, col = perturbed alt).
-//' @examples
-//' \donttest{
-//' library(data.table)
-//' set.seed(42)
-//' N <- 50; J <- 4
-//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-//' dt[, nest := ifelse(alt <= 2, "A", "B")]
-//' dt[, choice := 0L]
-//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' elas <- choicer:::nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
-//'   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
-//'   elast_var_idx = 1L)
-//' elas
-//' }
-//' @keywords internal
-// [[Rcpp::export]]
-arma::mat nl_elasticities_parallel(
-    const arma::vec& theta,
-    const arma::mat& X,
-    const Rcpp::IntegerVector& alt_idx,
-    const Rcpp::IntegerVector& choice_idx, // kept for consistency, not used
-    const Rcpp::IntegerVector& nest_idx,
-    const Rcpp::IntegerVector& M,
-    const arma::vec& weights,
-    const int elast_var_idx,
-    const bool use_asc = true,
-    const bool include_outside_option = false
-) {
-  (void)choice_idx;
-  const int K = X.n_cols;
-  const int n_nests = nl_n_nests(nest_idx);
+// The elasticity and diversion-ratio kernels add every situation's terms, by
+// alternative, into a J x J sum (DenseAcc in choicer_derivs.h; see the MNL
+// kernels) and return that R matrix, divided in place. The passes over the
+// situations are templates on whether the sum is shared, with each statement
+// of the code they replace, on the thread's NlThreadBuffers and map.
 
-  const int var_idx = elast_var_idx - 1;
-  if (var_idx < 0 || var_idx >= K) {
-    Rcpp::stop("elast_var_idx is out of bounds for design matrix X.");
-  }
+// The memory of an NL elasticity or diversion-ratio kernel with t threads,
+// an upper bound: per thread its NlThreadBuffers, its map and n_vecs padded
+// vectors of J_total (its sums); shared, X beta, the J x J sums
+// (dense_acc_need()), a vector of J_total (the summed denominators) and the
+// threads' totals.
+static inline void nl_dense_check_memory(const char* what, const ChoiceLayout& lay,
+                                         const int n_nests, const int n_threads,
+                                         const int J_total, const double n_vecs,
+                                         const bool outside, const double acc_bytes) {
+  const std::size_t J_n = static_cast<std::size_t>(J_total);
+  kernel_check_memory(
+      what, n_threads,
+      nl_thread_bytes(lay, 0, n_nests, J_total, n_vecs) +
+          sizeof(int) * (static_cast<double>(lay.max_m) + 32.0),
+      [&](const int t) {
+        return 8.0 * (static_cast<double>(lay.n_rows) + J_total + t) +
+               dense_acc_need(J_n, t, acc_bytes, outside);
+      });
+}
 
-  arma::vec beta, lambda, delta;
-  int delta_start_idx, delta_length;
-  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
-                 beta, lambda, delta, delta_start_idx, delta_length);
-  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
-                                           delta, &weights);
+// The elasticity kernel's pass over the choice situations: each one's
+// weighted elasticities added into acc, its weight into its thread's total.
+template <bool Shared>
+static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
+                               const int* nest, const arma::vec& base_util,
+                               const arma::vec& lambda, const int n_nests,
+                               const arma::vec& weights, const int var_idx,
+                               const double beta_k,
+                               const bool include_outside_option,
+                               std::vector<NlThreadBuffers>& bufs,
+                               std::vector<std::vector<int>>& maps,
+                               const DenseAcc& acc,
+                               std::vector<double>& total_weight) {
   const choicer_off N = lay.N;
-  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
-  const double beta_k = beta(var_idx);
-
-  const int J_inside = compute_J_inside(use_asc, delta, lay);
-  const int J_total = compute_J_total(J_inside, include_outside_option);
-
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
-
-  arma::mat global_elas_matrix = arma::zeros(J_total, J_total);
-  double global_total_weight = 0.0;
-  const choicer_off max_m = lay.max_m;
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(acc.T)
 #endif
   {
-    arma::mat local_elas_matrix = arma::zeros(J_total, J_total);
+    const int tid = kernel_thread_num();
+    NlThreadBuffers& b = bufs[tid];
+    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    int* global_map = maps[tid].data(); // each inside alternative's global index
+    double* buf = acc.base(tid);
     double local_total_weight = 0.0;
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
-    std::vector<int> global_map_buf(max_m); // each one's global index
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -2372,24 +2339,21 @@ arma::mat nl_elasticities_parallel(
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i    = weights[i];
-      const auto X_i      = X.rows(start_idx, end_idx);
 
-      int* nest_idx0_i = nest_buf.data();
+      int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
                           include_outside_option, pr);
-      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
 
-      // x_k for each inside alternative
-      arma::vec x_k_i = X_i.col(var_idx);
+      // x_k for each inside alternative, in place
+      const double* x_k_i = X.colptr(var_idx) + start_idx;
 
       // Global alternative index for each inside alt (outside option = 0)
-      int* global_map = global_map_buf.data();
       fill_global_alt_map_inside(global_map, lay.alt + lay.row_off[i], m_i,
                                  include_outside_option);
 
@@ -2420,7 +2384,8 @@ arma::mat nl_elasticities_parallel(
           }
 
           const double elasticity = beta_k * x_ia * dlogP;
-          local_elas_matrix(global_j, global_a) += w_i * elasticity;
+          acc.add<Shared>(buf, static_cast<std::size_t>(global_j),
+                          static_cast<std::size_t>(global_a), w_i, elasticity);
         }
       }
 
@@ -2434,45 +2399,37 @@ arma::mat nl_elasticities_parallel(
           const double x_ia = x_k_i[a];
           const double P_ia = P_i[a];
           const double elasticity = beta_k * x_ia * (-P_ia);
-          local_elas_matrix(0, global_a) += w_i * elasticity;
+          acc.add<Shared>(buf, 0, static_cast<std::size_t>(global_a), w_i,
+                          elasticity);
         }
       }
 
       local_total_weight += w_i;
     }
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_elas_matrix += local_elas_matrix;
-      global_total_weight += local_total_weight;
-    }
+    total_weight[tid] = local_total_weight;
   }
-
-  if (global_total_weight > 1e-10) {
-    global_elas_matrix /= global_total_weight;
-  }
-
-  return global_elas_matrix;
 }
 
-//' Compute Nested Logit diversion ratios (parallelized over individuals)
+//' Compute aggregate elasticities for the Nested Logit model
 //'
-//' Computes the diversion ratio matrix DR(j->k) for the Nested Logit model.
-//' Entry (k, j) = fraction of demand lost by alternative j captured by k.
-//' Reduces to the MNL diversion ratios when all lambda = 1.
+//' Computes the aggregate (weighted-average) elasticity matrix for the Nested
+//' Logit model. Reduces to the MNL elasticities when all lambda = 1.
 //'
 //' @param theta (K + n_non_singleton_nests + n_delta) vector with model
 //'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
 //' @param X sum(M) x K design matrix with covariates.
 //' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param choice_idx N x 1 vector (kept for API consistency, not used).
 //' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
 //' @param M N x 1 vector with number of alternatives for each individual.
 //' @param weights N x 1 vector with weights for each observation.
+//' @param elast_var_idx 1-based index of the column in X for which to compute the elasticity.
 //' @param use_asc whether to use alternative-specific constants.
 //' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-//' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+//' @param acc_bytes Bytes for the threads' copies of the J x J sums (2 GiB by
+//'   default), as in \code{mnl_elasticities_parallel()}; \code{0} forces the
+//'   shared result (for tests).
+//' @returns J x J matrix of aggregate elasticities (row = responding alt, col = perturbed alt).
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -2484,24 +2441,34 @@ arma::mat nl_elasticities_parallel(
 //' dt[, choice := 0L]
 //' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 //' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' dr <- choicer:::nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
-//'   fit$data$nest_idx, fit$data$M, fit$data$weights)
-//' dr
+//' elas <- choicer:::nl_elasticities_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$choice_idx, fit$data$nest_idx, fit$data$M, fit$data$weights,
+//'   elast_var_idx = 1L)
+//' elas
 //' }
 //' @keywords internal
 // [[Rcpp::export]]
-arma::mat nl_diversion_ratios_parallel(
+Rcpp::NumericMatrix nl_elasticities_parallel(
     const arma::vec& theta,
     const arma::mat& X,
     const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& choice_idx, // kept for consistency, not used
     const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
+    const int elast_var_idx,
     const bool use_asc = true,
-    const bool include_outside_option = false
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
 ) {
+  (void)choice_idx;
   const int K = X.n_cols;
   const int n_nests = nl_n_nests(nest_idx);
+
+  const int var_idx = elast_var_idx - 1;
+  if (var_idx < 0 || var_idx >= K) {
+    Rcpp::stop("elast_var_idx is out of bounds for design matrix X.");
+  }
 
   arma::vec beta, lambda, delta;
   int delta_start_idx, delta_length;
@@ -2509,29 +2476,71 @@ arma::mat nl_diversion_ratios_parallel(
                  beta, lambda, delta, delta_start_idx, delta_length);
   const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
                                            delta, &weights);
-  const choicer_off N = lay.N;
   const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
+  const double beta_k = beta(var_idx);
 
   const int J_inside = compute_J_inside(use_asc, delta, lay);
   const int J_total = compute_J_total(J_inside, include_outside_option);
+  check_alternative_count(J_total);
+
+  // Memory: each thread's working arrays and map; X beta and the J x J sums
+  const int n_threads = kernel_team_threads(lay.N);
+  nl_dense_check_memory("elasticity matrix", lay, n_nests, n_threads, J_total,
+                        0.0, include_outside_option, acc_bytes);
 
   arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
-  // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j
-  // denominator(j)  = sum_i w_i * (dP_ij/dV_ij)
-  arma::mat global_numerator = arma::zeros(J_total, J_total);
-  arma::vec global_denominator = arma::zeros(J_total);
-  const choicer_off max_m = lay.max_m;
+  // The sums, and every thread's working arrays, map and total weight
+  DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
+               acc_bytes);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
+  std::vector<std::vector<int>> maps =
+      thread_vectors<int>(static_cast<std::size_t>(lay.max_m), n_threads);
+  std::vector<double> total_weight(static_cast<std::size_t>(n_threads), 0.0);
+  if (acc.shared()) {
+    nl_elasticity_pass<true>(X, lay, nest, base_util, lambda, n_nests, weights,
+                             var_idx, beta_k, include_outside_option, bufs,
+                             maps, acc, total_weight);
+  } else {
+    nl_elasticity_pass<false>(X, lay, nest, base_util, lambda, n_nests, weights,
+                              var_idx, beta_k, include_outside_option, bufs,
+                              maps, acc, total_weight);
+  }
+  acc.finish();
+  double global_total_weight = 0.0;
+  for (int t = 0; t < n_threads; ++t) global_total_weight += total_weight[t];
+
+  if (global_total_weight > 1e-10) {
+    const std::size_t nn = acc.n * acc.n;
+    for (std::size_t e = 0; e < nn; ++e) acc.out[e] /= global_total_weight;
+  }
+
+  return acc.result;
+}
+
+// The diversion-ratio kernel's pass over the choice situations: each one's
+// weighted numerators added into acc, its denominators into its thread's.
+template <bool Shared>
+static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
+                              const arma::vec& base_util, const arma::vec& lambda,
+                              const int n_nests, const arma::vec& weights,
+                              const bool include_outside_option,
+                              std::vector<NlThreadBuffers>& bufs,
+                              std::vector<std::vector<int>>& maps,
+                              const DenseAcc& acc,
+                              std::vector<std::vector<double>>& dens) {
+  const choicer_off N = lay.N;
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(acc.T)
 #endif
   {
-    arma::mat local_numerator = arma::zeros(J_total, J_total);
-    arma::vec local_denominator = arma::zeros(J_total);
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
-    std::vector<int> global_map_buf(max_m); // each one's global index
+    const int tid = kernel_thread_num();
+    NlThreadBuffers& b = bufs[tid];
+    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    int* global_map = maps[tid].data(); // each inside alternative's global index
+    double* buf = acc.base(tid);
+    double* local_denominator = dens[tid].data();
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -2541,20 +2550,19 @@ arma::mat nl_diversion_ratios_parallel(
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
       const double w_i    = weights[i];
 
-      int* nest_idx0_i = nest_buf.data();
+      int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
                           include_outside_option, pr);
-      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double log_P_outside = pr.log_P_outside;
 
       const double P_out = include_outside_option ? std::exp(log_P_outside) : 0.0;
 
       // Global alternative index for each inside alt (outside option = 0)
-      int* global_map = global_map_buf.data();
       fill_global_alt_map_inside(global_map, lay.alt + lay.row_off[i], m_i,
                                  include_outside_option);
 
@@ -2573,7 +2581,7 @@ arma::mat nl_diversion_ratios_parallel(
         // denominator (own derivative)
         const double dP_own =
           P_ij * (1.0 / lam_r + (1.0 - 1.0 / lam_r) * Pj_given_r - P_ij);
-        local_denominator(global_j) += w_i * dP_own;
+        local_denominator[global_j] += w_i * dP_own;
 
         // numerator: inside alts m != j
         for (int m = 0; m < m_i; ++m) {
@@ -2588,13 +2596,15 @@ arma::mat nl_diversion_ratios_parallel(
           } else {
             dP_cross = -P_im * P_ij;
           }
-          local_numerator(global_m, global_j) += w_i * (-dP_cross);
+          acc.add<Shared>(buf, static_cast<std::size_t>(global_m),
+                          static_cast<std::size_t>(global_j), w_i, -dP_cross);
         }
 
         // outside option as a *destination* (always a different nest from j)
         if (include_outside_option) {
           const double dP_out_cross = -P_out * P_ij;
-          local_numerator(0, global_j) += w_i * (-dP_out_cross);
+          acc.add<Shared>(buf, 0, static_cast<std::size_t>(global_j), w_i,
+                          -dP_out_cross);
         }
       }
 
@@ -2602,37 +2612,114 @@ arma::mat nl_diversion_ratios_parallel(
       //   own:   dP_out/dV_out = P_out (1 - P_out)
       //   cross: dP_im/dV_out  = -P_im P_out  (different nest)
       if (include_outside_option) {
-        local_denominator(0) += w_i * P_out * (1.0 - P_out);
+        local_denominator[0] += w_i * P_out * (1.0 - P_out);
         for (int m = 0; m < m_i; ++m) {
           const int global_m = global_map[m];
           const double P_im = P_i[m];
           const double dP_cross = -P_im * P_out;
-          local_numerator(global_m, 0) += w_i * (-dP_cross);
-        }
-      }
-    }
-
-#ifdef _OPENMP
-#pragma omp critical
-#endif
-    {
-      global_numerator += local_numerator;
-      global_denominator += local_denominator;
-    }
-  }
-
-  arma::mat diversion_matrix = arma::zeros(J_total, J_total);
-  for (int j = 0; j < J_total; ++j) {
-    if (global_denominator(j) > 1e-15) {
-      for (int k = 0; k < J_total; ++k) {
-        if (k != j) {
-          diversion_matrix(k, j) = global_numerator(k, j) / global_denominator(j);
+          acc.add<Shared>(buf, static_cast<std::size_t>(global_m), 0, w_i,
+                          -dP_cross);
         }
       }
     }
   }
+}
 
-  return diversion_matrix;
+//' Compute Nested Logit diversion ratios (parallelized over individuals)
+//'
+//' Computes the diversion ratio matrix DR(j->k) for the Nested Logit model.
+//' Entry (k, j) = fraction of demand lost by alternative j captured by k.
+//' Reduces to the MNL diversion ratios when all lambda = 1.
+//'
+//' @param theta (K + n_non_singleton_nests + n_delta) vector with model
+//'        parameters. Order: `[beta (K), lambda (non-singleton), delta]`.
+//' @param X sum(M) x K design matrix with covariates.
+//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
+//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
+//' @param M N x 1 vector with number of alternatives for each individual.
+//' @param weights N x 1 vector with weights for each observation.
+//' @param use_asc whether to use alternative-specific constants.
+//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
+//' @param acc_bytes Bytes for the threads' copies of the J x J numerators (2
+//'   GiB by default), as in \code{mnl_elasticities_parallel()}; \code{0}
+//'   forces the shared result (for tests).
+//' @returns J x J matrix where entry (k, j) = DR(j->k). Diagonal is 0.
+//' @examples
+//' \donttest{
+//' library(data.table)
+//' set.seed(42)
+//' N <- 50; J <- 4
+//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
+//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
+//' dt[, nest := ifelse(alt <= 2, "A", "B")]
+//' dt[, choice := 0L]
+//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
+//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
+//' dr <- choicer:::nl_diversion_ratios_parallel(coef(fit), fit$data$X, fit$data$alt_idx,
+//'   fit$data$nest_idx, fit$data$M, fit$data$weights)
+//' dr
+//' }
+//' @keywords internal
+// [[Rcpp::export]]
+Rcpp::NumericMatrix nl_diversion_ratios_parallel(
+    const arma::vec& theta,
+    const arma::mat& X,
+    const Rcpp::IntegerVector& alt_idx,
+    const Rcpp::IntegerVector& nest_idx,
+    const Rcpp::IntegerVector& M,
+    const arma::vec& weights,
+    const bool use_asc = true,
+    const bool include_outside_option = false,
+    const double acc_bytes = 2147483648.0
+) {
+  const int K = X.n_cols;
+  const int n_nests = nl_n_nests(nest_idx);
+
+  arma::vec beta, lambda, delta;
+  int delta_start_idx, delta_length;
+  nl_parse_theta(theta, nest_idx, K, use_asc, include_outside_option,
+                 beta, lambda, delta, delta_start_idx, delta_length);
+  const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
+                                           delta, &weights);
+  const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
+
+  const int J_inside = compute_J_inside(use_asc, delta, lay);
+  const int J_total = compute_J_total(J_inside, include_outside_option);
+  check_alternative_count(J_total);
+
+  // Memory: each thread's working arrays, map and denominators; X beta, the
+  // J x J numerators and the denominators' sum
+  const int n_threads = kernel_team_threads(lay.N);
+  nl_dense_check_memory("diversion-ratio matrix", lay, n_nests, n_threads,
+                        J_total, 1.0, include_outside_option, acc_bytes);
+
+  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+
+  // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j, into acc
+  // denominator(j)  = sum_i w_i * (dP_ij/dV_ij), by thread
+  const std::size_t J_n = static_cast<std::size_t>(J_total);
+  DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
+               acc_bytes);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
+  std::vector<std::vector<int>> maps =
+      thread_vectors<int>(static_cast<std::size_t>(lay.max_m), n_threads);
+  std::vector<std::vector<double>> dens = thread_vectors<double>(J_n, n_threads, 0.0);
+  if (acc.shared()) {
+    nl_diversion_pass<true>(lay, nest, base_util, lambda, n_nests, weights,
+                            include_outside_option, bufs, maps, acc, dens);
+  } else {
+    nl_diversion_pass<false>(lay, nest, base_util, lambda, n_nests, weights,
+                             include_outside_option, bufs, maps, acc, dens);
+  }
+  acc.finish();
+  std::vector<double> global_denominator(J_n, 0.0);
+  for (int t = 0; t < n_threads; ++t) {
+    for (std::size_t j = 0; j < J_n; ++j) global_denominator[j] += dens[t][j];
+  }
+
+  dense_diversion_ratios(acc.out, J_n, global_denominator,
+                         [](const double d) { return d > 1e-15; });
+  return acc.result;
 }
 
 //' BLP95 contraction mapping for the Nested Logit model
