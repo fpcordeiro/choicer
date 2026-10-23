@@ -33,8 +33,12 @@
 # p6d_batteries.R (p6d_diag, p6d_coord, p6d_vcov, p6d_new),
 # start_batteries.R (start_unit), optim_batteries.R (optim_ro, optim_fit),
 # uasc_batteries.R (uasc), shares_batteries.R (pred_shares),
-# p5a_batteries.R (ucon, polish), p5b_batteries.R (pdelta, profile) and
-# p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit).
+# p5a_batteries.R (ucon, polish), p5b_batteries.R (pdelta, profile),
+# p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit) and p8b_batteries.R
+# (p8b_mnl, p8b_nl, p8b_edge, p8b_mxl, p8b_cl).
+# `check --bitwise` compares every leaf with identical(num.eq = FALSE,
+# single.NA = FALSE), which also tells +0 from -0 and NaN payloads apart
+# (identical()'s defaults do not); the tolerance group is unchanged.
 # A new battery: a file here that defines run_<name>(), sourced and added to
 # `results` below. A build that lacks what a battery calls records the error
 # as that battery's output, so a battery can be added before the change it
@@ -90,10 +94,11 @@ mode <- if (length(args) >= 1) args[1] else ""
 if (!mode %in% c("baseline", "check")) {
   stop("Usage: R_LIBS=<lib> Rscript _validation/golden/refactor_identity_check.R ",
        "baseline|check [--ref=<name>] [--tol-slots=<slots>|none] [--out=<dir>] ",
-       "[--force] [--verbose]")
+       "[--bitwise] [--force] [--verbose]")
 }
 force_overwrite <- "--force" %in% args
 verbose <- "--verbose" %in% args
+bitwise <- "--bitwise" %in% args
 
 # The batteries are sourced from this script's directory.
 .script_dir <- local({
@@ -1149,6 +1154,12 @@ cat("Running MNL derivative battery (P8)...\n");      res_p8_mnl <- run_p8_mnl()
 cat("Running NL derivative battery (P8)...\n");       res_p8_nl <- run_p8_nl()
 cat("Running MNL/NL non-finite battery (P8)...\n");   res_p8_edge <- run_p8_edge()
 cat("Running MNL/NL fits battery (P8)...\n");         res_p8_fit <- run_p8_fit()
+source(file.path(.script_dir, "p8b_batteries.R"))
+cat("Running MNL kernels battery (P8B)...\n");        res_p8b_mnl <- run_p8b_mnl()
+cat("Running NL kernels battery (P8B)...\n");         res_p8b_nl <- run_p8b_nl()
+cat("Running MNL/NL edge battery (P8B)...\n");        res_p8b_edge <- run_p8b_edge()
+cat("Running MXL elasticity battery (P8B)...\n");     res_p8b_mxl <- run_p8b_mxl()
+cat("Running cluster-label battery (P8B)...\n");      res_p8b_cl <- run_p8b_cl()
 oc_save_calls()
 
 results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
@@ -1175,7 +1186,10 @@ results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
                 ucon = res_ucon, polish = res_polish,
                 pdelta = res_pdelta, profile = res_profile,
                 p8_mnl = res_p8_mnl, p8_nl = res_p8_nl,
-                p8_edge = res_p8_edge, p8_fit = res_p8_fit)
+                p8_edge = res_p8_edge, p8_fit = res_p8_fit,
+                p8b_mnl = res_p8b_mnl, p8b_nl = res_p8b_nl,
+                p8b_edge = res_p8b_edge, p8b_mxl = res_p8b_mxl,
+                p8b_cl = res_p8b_cl)
 
 flatten <- function(x, prefix = "") {
   if (is.list(x) && !isTRUE(attr(x, "golden_leaf"))) {
@@ -1318,7 +1332,8 @@ if (length(only_base) || length(only_new)) {
 
 keys <- intersect(names(base_flat), names(new_flat))
 rep_df <- entry_info(keys)
-rep_df$criterion <- ifelse(rep_df$tol, sprintf("rel<=%.0e", TOL_REL), "identical")
+rep_df$criterion <- ifelse(rep_df$tol, sprintf("rel<=%.0e", TOL_REL),
+                           if (bitwise) "bitwise" else "identical")
 rep_df$identical <- NA
 rep_df$rel_dev <- NA_real_
 rep_df$abs_dev <- NA_real_
@@ -1326,7 +1341,11 @@ rep_df$pass <- NA
 for (i in seq_along(keys)) {
   b <- base_flat[[keys[i]]]
   n <- new_flat[[keys[i]]]
-  ident <- identical(b, n)
+  ident <- if (bitwise) {
+    identical(b, n, num.eq = FALSE, single.NA = FALSE)
+  } else {
+    identical(b, n)
+  }
   rd <- if (is.numeric(b)) (if (ident) 0 else rel_dev(n, b)) else NA_real_
   rep_df$identical[i] <- ident
   rep_df$rel_dev[i] <- rd
