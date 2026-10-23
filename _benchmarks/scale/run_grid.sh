@@ -3,7 +3,7 @@
 #
 #   sh _benchmarks/scale/run_grid.sh <tagA>=<library A> <tagB>=<library B>
 #   env: OUT (default _benchmarks/scale/output/grid-<date>), SECTIONS (default
-#   "A B C D E F G H I"), MC_SHIM (the malloc shim, macOS: memory runs through
+#   "A B C D E F G H I J"), MC_SHIM (the malloc shim, macOS: memory runs through
 #   output/Rmc, see make_rmc.sh; without it, time runs only)
 #
 # Each library holds one choicer build (R CMD INSTALL --library=<dir>); every
@@ -24,7 +24,10 @@
 # Hessian, BHHH, scores, meats, tastes and prediction; E data preparation;
 # F the per-call layout (B); G B's Hessian at 10^8 rows; H the multinomial and
 # nested logits' derivative kernels and meats (bench_mnl_nl.R); I their fits
-# per se_method (fit_mnl_nl.R, one round each). In H, kernels a build lacks
+# per se_method (fit_mnl_nl.R, one round each); J the multinomial and nested
+# logits' per-situation kernels (gradient, BHHH, prediction, shares, BLP),
+# every model's elasticity and diversion kernels, their heap, and instruction
+# counts per situation (bench_pmc.R, macOS). In H, kernels a build lacks
 # (the clustered meat before 0.3.0) record their error, and the dense kernels
 # of builds before 0.3.0 run once (at 17,000 parameters on a few hundred
 # situations: a full call would take days).
@@ -34,7 +37,7 @@ A=${1%%=*}; LIB_A=${1#*=}; B=${2%%=*}; LIB_B=${2#*=}
   echo "usage: sh run_grid.sh <tagA>=<libA> <tagB>=<libB>"; exit 1; }
 OUT=${OUT:-$D/output/grid-$(date +%Y%m%d-%H%M%S)}; mkdir -p "$OUT"
 LOG=$OUT/run.log
-SECTIONS=${SECTIONS:-"A B C D E F G H I"}
+SECTIONS=${SECTIONS:-"A B C D E F G H I J"}
 SCRIPT=
 ROUND=
 
@@ -223,5 +226,46 @@ if has I; then
         tag=$t model=$m regime=${spec%%:*} U=${spec##*:} threads=5 out="$f" >> "$LOG" 2>&1
     done; done
   done
+fi
+if has J; then
+  SCRIPT=bench_mnl_nl.R
+  for m in mnl nl; do
+    # Per-situation work where it shows (4 alternatives; NL two nests of two)
+    pair3 ${m}_small2500k_1t_k model=$m regime=small U=2500000 nests=2 threads=1 reps=3 \
+      what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
+    pair3 ${m}_small2500k_5t_k model=$m regime=small U=2500000 nests=2 threads=5 reps=3 \
+      what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
+    pair6 ${m}_small2500k_11t_k model=$m regime=small U=2500000 nests=2 threads=11 reps=3 \
+      what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
+    # Choice sets of 10-100 and 20-200
+    pair3 ${m}_census20k_k model=$m regime=census U=20000 threads=1,5 reps=3 \
+      what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
+    pair3 ${m}_claims15k_k model=$m regime=claims U=15000 threads=1,5 reps=3 \
+      what=grad,grad_opg,bhhh,hess,predict,shares,elas,dr,blp
+    # J = 20,000 elasticities and diversion: per-thread copies (B's budget)
+    # against one shared result (acc=0), with the outside option
+    once_b ${m}_census20kJ_jj model=$m regime=census20k U=20000 threads=5,11 reps=1 warm=0 ioo=1 what=elas,dr
+    once_b ${m}_census20kJ_jj_shared model=$m regime=census20k U=20000 threads=5,11 reps=1 warm=0 ioo=1 acc=0 what=elas,dr
+    mem2 ${m}_small250k_k model=$m regime=small U=250000 nests=2 threads=1,11 \
+      what=grad,grad_opg,bhhh,hess,scores,meat_cluster,predict,shares,elas,dr,blp
+    mem2 ${m}_census20k_k model=$m regime=census U=20000 threads=1,11 \
+      what=grad,grad_opg,bhhh,hess,scores,meat_cluster,predict,shares,elas,dr,blp
+  done
+  SCRIPT=
+  pair3 mxl_census20k_jj regime=census U=20000 S=100 threads=1,5 reps=1 what=elas,elas_r,dr,dr_r
+  mem2 mxl_census20k_jj regime=census U=20000 S=100 threads=1,11 what=elas,dr
+  # Instructions and cycles per situation at one thread, both builds alternated
+  # (the mixed logit on 100,000 decision makers: its store-mode cube)
+  for r in 1 2 3; do for t in $A $B; do
+    for spec in mnl,nl:2500000 mxl:100000; do
+      f=$OUT/pmc_small_${spec%%:*}_${t}_r$r.rds
+      [ -f "$f" ] && continue
+      wait_quiet
+      echo "---- $(date +%H:%M:%S) $t pmc ${spec} r$r | load $(load_avg) | $(ps_top)" >> "$LOG"
+      env KMP_BLOCKTIME=0 R_LIBS="$(lib_of $t)" CHOICER_SCALE_OUT="$OUT" Rscript --no-echo --no-restore \
+        "$D/bench_pmc.R" tag=$t models=${spec%%:*} kernels=grad,grad_opg,bhhh,hess U=${spec##*:} S=100 \
+        out="$f" >> "$LOG" 2>&1
+    done
+  done; done
 fi
 echo "==== done $(date) | load $(load_avg)" >> "$LOG"

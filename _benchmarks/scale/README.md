@@ -69,10 +69,11 @@ offered, so that every constant has a finite estimate.
 |---|---|
 | `scale_common.R` | Shared helpers: the build's namespace check, `gen_regime()`, the shim's counters |
 | `gen_data.cpp` | The synthetic data (Rcpp, compiled on first use into `output/cpp-cache`) |
-| `bench_kernels.R` | One build, one configuration: the kernels behind the log-likelihood and gradient, Hessian, BHHH, scores, conditional tastes, prediction and the meats (`mode=time` or `mode=mem`) |
-| `bench_mnl_nl.R` | The same for the multinomial and nested logits (`model=mnl\|nl`): the regimes read as cross-sections, constants for every alternative but the first, NL nests a partition of the alternatives (`nests=`, dissimilarity 0.7); `situations=` keeps the first situations, to time per situation the dense kernels of releases before 0.3.0 |
+| `bench_kernels.R` | One build, one configuration: the kernels behind the log-likelihood and gradient, Hessian, BHHH, scores, conditional tastes, prediction, elasticities and diversion ratios (`elas`, `dr`; `elas_r`, `dr_r` for a random coefficient) and the meats (`mode=time` or `mode=mem`) |
+| `bench_mnl_nl.R` | The same for the multinomial and nested logits (`model=mnl\|nl`): the regimes read as cross-sections, constants for every alternative but the first, NL nests a partition of the alternatives (`nests=`, dissimilarity 0.7); `situations=` keeps the first situations, to time per situation the dense kernels of releases before 0.3.0; `ioo=1` adds the outside option; `blp` runs `blp_iter` contraction iterations; `acc=` sets the elasticity and diversion kernels' `acc_bytes` (0 forces one shared result) where the build has it |
+| `bench_pmc.R`, `pmc.c` | macOS: instructions retired and cycles per call at one thread (the process's own counters, no root), per situation or decision maker, for the multinomial, nested and mixed logits' kernels; `KMP_BLOCKTIME=0` |
 | `fit_mnl_nl.R` | `run_mnlogit()` / `run_nestlogit()` fits per `se_method` on prepared data (optimizer's time and the rest, the fit-time variance mostly), then each post-hoc `vcov(fit, type = )` |
-| `run_grid.sh` | The grid of the report: two builds alternated over the gradient grid, heavy panels, the other kernels at scale, data preparation and the per-call layout; sections H and I add the multinomial and nested logits' variance kernels and fits (written for macOS: `vm_stat`, `sysctl`, the shim) |
+| `run_grid.sh` | The grid of the report: two builds alternated over the gradient grid, heavy panels, the other kernels at scale, data preparation and the per-call layout; sections H and I add the multinomial and nested logits' variance kernels and fits, J their per-situation kernels, every model's elasticity and diversion kernels, and instruction counts (written for macOS: `vm_stat`, `sysctl`, the shim) |
 | `prep_mem.R` | One `prepare_mxl_data()`, `prepare_mnl_data()` or `prepare_nl_data()` call from long data |
 | `fit_study.R` | `run_mxlogit()` fits (default, `polish`, `concentrate_out_asc`) with every kernel's calls counted; per-pass costs; a table against a Newton-certified reference |
 | `budget_sweep.R` | Server run: the draw-batch budget (below) |
@@ -95,6 +96,9 @@ R_LIBS=/tmp/lib-B Rscript _benchmarks/scale/fit_study.R fit regime=census U=2000
 R_LIBS=/tmp/lib-B Rscript _benchmarks/scale/bench_mnl_nl.R model=nl regime=census U=200000 \
   nests=150 threads=1,11 reps=3 what=hess,bhhh,meat_cluster
 R_LIBS=/tmp/lib-B Rscript _benchmarks/scale/fit_mnl_nl.R model=mnl regime=claims U=15000 threads=11
+# Instructions per situation at one thread (macOS):
+KMP_BLOCKTIME=0 R_LIBS=/tmp/lib-B Rscript _benchmarks/scale/bench_pmc.R models=mnl,nl \
+  kernels=grad,bhhh U=2500000
 ```
 
 Outputs go to `output/` (ignored by git), or to `CHOICER_SCALE_OUT`.
