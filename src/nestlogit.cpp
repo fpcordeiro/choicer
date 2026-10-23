@@ -42,22 +42,6 @@ static inline void nl_gather_nests(int* nest0, const int* alt, const int* nest,
   for (int j = 0; j < m; ++j) nest0[j] = nest[alt[j] - 1] - 1;
 }
 
-// Memory of the NL kernels' loop over the choice situations, an upper bound
-// per thread: the probability buffers (NlProbs: five of max_m and six of
-// n_nests doubles), the thread's copy of the nest map and the per-nest sums
-// (two of n_nests), the score differences (max_m), each row's nest (max_m
-// ints), the copy of X_i that Armadillo makes for X_i.t() * v (max_m x K) and
-// its product (K), and n_vecs vectors of the n parameters (the thread's sums
-// or scores).
-static inline double nl_thread_bytes(const ChoiceLayout& lay, const int K,
-                                     const int n_nests, const int n_params,
-                                     const double n_vecs) {
-  const double m = static_cast<double>(lay.max_m);
-  return sizeof(double) * (6.0 * m + 8.0 * n_nests + m * K + K +
-                           n_vecs * static_cast<double>(n_params)) +
-         sizeof(int) * m;
-}
-
 // ============================================================================
 // Compact blocks of the NL derivative kernels
 //
@@ -146,23 +130,107 @@ static inline NlSituationMaps nl_situation_maps(const int J_d, const int K_l,
   return maps;
 }
 
-// Every thread's probability buffers, nests of a situation's rows and per-nest
-// sums, on the primary thread.
+// ============================================================================
+// The NL kernels' working arrays
+//
+// One thread's arrays for the choice situation in hand, allocated on the
+// primary thread for the largest one (max_m rows, K covariates, n_nests
+// nests), so that no loop over situations allocates (as MnlWork in
+// mnlogit.cpp): the probability buffers (NlProbs), each row's nest, the sums
+// of P(j|k) V_j by nest (zero between situations), the nests the situation
+// offers with their slots (nl_offered_nests()), the
+// V-space gradient, a copy of X_i for the products X_i' v that do not reach
+// BLAS (xt_times()), a K-vector for a product added into a sum afterwards,
+// and the covariate of an elasticity.
+// ============================================================================
 struct NlThreadBuffers {
   NlProbs pr;
   std::vector<int> nest0;        // each row's 0-based nest
   std::vector<double> sum_P_V;   // sum_{j in B_k} P(j|k) V_j, zero between situations
-  NlThreadBuffers(const choicer_off max_m, const int n_nests)
-      : pr(max_m, n_nests), nest0(static_cast<std::size_t>(max_m) + 32),
-        sum_P_V(static_cast<std::size_t>(n_nests) + 16, 0.0) {}
+  std::vector<int> nest_slot;    // nest -> slot in `nests` while mapped, else -1
+  std::vector<int> nests;        // the situation's nests
+  int n_nests = 0;
+  AlignedBuffer buf;
+  double *grad = nullptr, *xk = nullptr, *xi = nullptr, *kv = nullptr;
+
+  NlThreadBuffers(const choicer_off max_m, const int n_nests_, const int K)
+      : pr(max_m, n_nests_), nest0(static_cast<std::size_t>(max_m) + 32),
+        sum_P_V(static_cast<std::size_t>(n_nests_) + 16, 0.0),
+        nest_slot(static_cast<std::size_t>(n_nests_) + 32, -1),
+        nests(static_cast<std::size_t>(std::min<choicer_off>(max_m, n_nests_)) + 32),
+        n_nests(n_nests_) {
+    const std::size_t m1 = aligned_len(static_cast<std::size_t>(max_m) + 1);
+    const std::size_t mk = aligned_len(static_cast<std::size_t>(max_m) *
+                                       static_cast<std::size_t>(K));
+    buf = AlignedBuffer(2 * m1 + mk + aligned_len(static_cast<std::size_t>(K)));
+    grad = buf.data;
+    xk = grad + m1;
+    xi = xk + m1;
+    kv = xi + mk;
+  }
 };
 static inline std::vector<NlThreadBuffers> nl_thread_buffers(const choicer_off max_m,
                                                              const int n_nests,
+                                                             const int K,
                                                              const int n_threads) {
   std::vector<NlThreadBuffers> buf;
   buf.reserve(n_threads);
-  for (int i = 0; i < n_threads; ++i) buf.emplace_back(max_m, n_nests);
+  for (int i = 0; i < n_threads; ++i) buf.emplace_back(max_m, n_nests, K);
   return buf;
+}
+
+// Memory of the NL kernels' loop over the choice situations, an upper bound
+// per thread: NlThreadBuffers (NlProbs's five arrays of max_m and six of
+// n_nests doubles, the rows' nests, the per-nest sums, the nests' slots and
+// list, and the aligned arrays, each rounded up to a 64-byte line), and n_vecs
+// padded vectors of the n parameters (the thread's sums or scores).
+static inline double nl_thread_bytes(const ChoiceLayout& lay, const int K,
+                                     const int n_nests, const int n_params,
+                                     const double n_vecs) {
+  const double m = static_cast<double>(lay.max_m);
+  return sizeof(NlThreadBuffers) + sizeof(double) * (5.0 * m + 7.0 * n_nests + 16.0) +
+         sizeof(int) * (m + 2.0 * n_nests + 96.0) +
+         AlignedBuffer::bytes(2.0 * (m + 8.0) + (m * K + 7.0) + (K + 7.0)) +
+         sizeof(double) * n_vecs * (static_cast<double>(n_params) + 16.0);
+}
+
+// The nests of a situation's m rows (b.nest0), distinct, into b.nests: in
+// the order the rows first meet them, or with `sorted` in increasing order,
+// by a scan of the markers where the nests are few (at most 16 per nest
+// offered) and by sorting otherwise. Each is marked with its slot in
+// b.nest_slot until nl_offered_nests_clear(). Returns their count. Loops
+// whose terms each update their own nest's entries take them unsorted; sums
+// over the nests into shared entries take them in increasing order, as the
+// loops over every nest did.
+static inline int nl_offered_nests(NlThreadBuffers& b, const int m,
+                                   const bool sorted) {
+  const int* nest0 = b.nest0.data();
+  int* slot = b.nest_slot.data();
+  int* nests = b.nests.data();
+  int n_o = 0;
+  for (int j = 0; j < m; ++j) {
+    const int k = nest0[j];
+    if (slot[k] < 0) {
+      slot[k] = 0;  // seen
+      nests[n_o++] = k;
+    }
+  }
+  if (sorted && n_o > 1) {
+    if (b.n_nests <= 16 * n_o) {
+      int o = 0;
+      for (int k = 0; k < b.n_nests; ++k) {
+        if (slot[k] >= 0) nests[o++] = k;
+      }
+    } else {
+      std::sort(nests, nests + n_o);
+    }
+  }
+  for (int o = 0; o < n_o; ++o) slot[nests[o]] = o;
+  return n_o;
+}
+
+static inline void nl_offered_nests_clear(NlThreadBuffers& b, const int n_o) {
+  for (int o = 0; o < n_o; ++o) b.nest_slot[b.nests[o]] = -1;
 }
 
 // Free constant of a row with 0-based alternative alt0 (as
@@ -220,24 +288,26 @@ static inline void nl_situation_map_clear(NlSituationMap& mp) {
 }
 
 // The weight-free score of situation i on its compact block (the map built
-// for i), into s_c, and its V-space gradient g into grad_vec, with the
-// expressions of the dense kernels: the coefficients' entries as X_i' g, each
-// slot's differences in row order at scale 1.0 (as scatter_delta_grad()), and
-// each dissimilarity's score from its nest's sum of P(j|k) V_j. lam_nest maps
-// a dissimilarity to its nest; sum_P_V (one entry per nest) is zero on entry
+// for i), into s_c, and its V-space gradient g into b.grad, with the
+// expressions of the dense kernels: the coefficients' entries as X_i' g
+// (xt_times(), written into s_c's first K entries), each slot's differences
+// in row order at scale 1.0 (as scatter_delta_grad()), and each
+// dissimilarity's score from its nest's sum of P(j|k) V_j. lam_nest maps a
+// dissimilarity to its nest; b.sum_P_V (one entry per nest) is zero on entry
 // and left zero.
 static inline void nl_situation_score(const arma::mat& X,
                                       const arma::uword start_idx, const int m_i,
-                                      const int* nest0, const double* V_inside,
-                                      NlProbs& pr, const arma::vec& lambda,
+                                      const double* V_inside,
+                                      NlThreadBuffers& b, const arma::vec& lambda,
                                       const int* lam_nest,
                                       const int chosen_nest_k,
                                       const int chosen_inside_idx,
                                       const NlSituationMap& mp, const int K,
-                                      double* sum_P_V, arma::vec& grad_vec,
                                       arma::vec& s_c) {
-  const auto X_i = X.rows(start_idx, start_idx + m_i - 1); // m_i x K
-  const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+  const NlProbs& pr = b.pr;
+  const int* nest0 = b.nest0.data();
+  double* sum_P_V = b.sum_P_V.data();
+  const double* P_i = pr.P_i.data();
   const double* P_j_given_k = pr.P_j_given_k.data();
   const double* P_k = pr.P_k.data();
   const double* log_I_k = pr.log_I_k.data();
@@ -245,8 +315,8 @@ static inline void nl_situation_score(const arma::mat& X,
   // grad_vec[j] = -P_i[j]
   //             + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
   //             + 1/lambda_k                          if j == chosen alt
-  grad_vec.set_size(m_i);
-  grad_vec = -P_i;
+  double* grad_vec = b.grad;
+  for (int j = 0; j < m_i; ++j) grad_vec[j] = -P_i[j];
   if (chosen_nest_k >= 0) { // not outside option
     const double lambda_chosen = lambda[chosen_nest_k];
     const double term_scale = 1.0 - 1.0 / lambda_chosen;
@@ -259,7 +329,7 @@ static inline void nl_situation_score(const arma::mat& X,
   }
 
   s_c.zeros();
-  s_c.subvec(0, K - 1) = X_i.t() * grad_vec;
+  xt_times(X, start_idx, m_i, grad_vec, false, 0.0, s_c.memptr(), b.xi);
   const int d0 = K + mp.n_lam;  // the first constant slot
   for (int r = 0; r < m_i; ++r) {
     const int k = mp.row_slot[r];
@@ -311,28 +381,38 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
                              const int n_threads) {
   const choicer_off N = lay.N;
   const choicer_off max_m = lay.max_m;
+  const bool has_delta = use_asc && delta_length > 0;
+
+  // Every thread's working arrays and sums, allocated here on the primary
+  // thread: the gradient and, with OpgDiag, the diagonal, the constants'
+  // scores (zero between situations) and a situation's terms
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(max_m, n_nests, K, n_threads);
+  std::vector<std::vector<double>> grads =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads, 0.0);
+  std::vector<std::vector<double>> diags = thread_vectors<double>(
+      OpgDiag ? static_cast<std::size_t>(n_params) : 0, n_threads, 0.0);
+  std::vector<std::vector<double>> sds = thread_vectors<double>(
+      OpgDiag && has_delta ? static_cast<std::size_t>(n_params) : 0, n_threads, 0.0);
+  std::vector<OpgDiagTerms> terms_t;
+  terms_t.reserve(static_cast<std::size_t>(n_threads));
+  for (int t = 0; t < n_threads; ++t) {
+    terms_t.emplace_back(OpgDiag ? K + max_m + n_nests : 0);
+  }
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
+    const int tid = kernel_thread_num();
+    NlThreadBuffers& b = bufs[tid];
+    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    double* sum_P_V_k = b.sum_P_V.data(); // zero between situations
     // Thread-local accumulators
     double local_loglik = 0.0;
-    arma::vec local_grad = arma::zeros(n_params);
-    arma::vec grad_vec; // pre-allocated per-thread, resized per individual
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
-    // The diagonal, the constants' scores (zero between situations), the
-    // beta block's scores and a situation's terms
-    arma::vec local_diag, s_d, s_b;
-    OpgDiagTerms terms(OpgDiag ? K + max_m + n_nests : 0);
-    if (OpgDiag) {
-      local_diag.zeros(n_params);
-      if (use_asc && delta_length > 0) s_d.zeros(n_params);
-    }
-
-    // Make the index map thread-private
-    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
+    arma::vec local_grad(grads[tid].data(), n_params, false, true);
+    arma::vec local_diag(diags[tid].data(), OpgDiag ? n_params : 0, false, true);
+    arma::vec s_d(sds[tid].data(), OpgDiag && has_delta ? n_params : 0, false, true);
+    OpgDiagTerms& terms = terms_t[tid];
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -340,13 +420,11 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i      = weights[i];
 
       // Get individual-specific data
-      const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
       const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // m_i
-      int* nest_idx0_i      = nest_buf.data(); // m_i
+      int* nest_idx0_i      = b.nest0.data(); // m_i
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
 
       // --- 2. Calculate Utilities and Probabilities ---
@@ -357,7 +435,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       // Per-individual probability block (shared helper)
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
                           include_outside_option, pr);
-      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double* P_k = pr.P_k.data();
       const double* log_I_k = pr.log_I_k.data();
@@ -388,8 +466,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
 
       // --- 4. Gradient Calculation ---
 
-      // 4.1: Pre-calculate sum_{j in B_k} P(j|B_k) * V_ij
-      arma::vec sum_P_V_k = arma::zeros(n_nests);
+      // 4.1: Pre-calculate sum_{j in B_k} P(j|B_k) * V_ij, by nest
       for (int j = 0; j < m_i; ++j) {
         sum_P_V_k[nest_idx0_i[j]] += P_j_given_k[j] * V_inside[j];
       }
@@ -399,24 +476,27 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       //   grad_vec[j] = -P_i[j]
       //               + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
       //               + 1/lambda_k                          if j == chosen alt
-      grad_vec.set_size(m_i);
-      grad_vec = -P_i;
+      double* gv = b.grad;
+      for (int j = 0; j < m_i; ++j) gv[j] = -P_i[j];
       if (chosen_nest_k >= 0) { // not outside option
         const double lambda_chosen = lambda[chosen_nest_k];
         const double term_scale = 1.0 - 1.0 / lambda_chosen;
         for (int j = 0; j < m_i; ++j) {
           if ((int)nest_idx0_i[j] == chosen_nest_k) {
-            grad_vec[j] += P_j_given_k[j] * term_scale;
+            gv[j] += P_j_given_k[j] * term_scale;
           }
         }
-        grad_vec[chosen_inside_idx] += 1.0 / lambda_chosen;
+        gv[chosen_inside_idx] += 1.0 / lambda_chosen;
       }
+      const arma::vec grad_vec(gv, m_i, false, true);
 
-      // Beta block: single BLAS dgemv (analogous to MNL)
-      local_grad.subvec(0, K - 1) += w_i * X_i.t() * grad_vec;
+      // Beta block: single BLAS dgemv (analogous to MNL), then added
+      xt_times(X, start_idx, m_i, gv, true, w_i, b.kv, b.xi);
+      const arma::vec x_g(b.kv, K, false, true);
+      local_grad.subvec(0, K - 1) += x_g;
 
       // Delta block: scatter loop (irregular alt-index mapping)
-      if (use_asc && delta_length > 0) {
+      if (has_delta) {
         scatter_delta_grad(local_grad, delta_start_idx, grad_vec, alt_idx0_i,
                            m_i, include_outside_option, w_i);
       } // end gradient block for beta/delta
@@ -425,9 +505,10 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       // squares, the beta block from the unweighted product as
       // nl_bhhh_parallel() forms it
       if (OpgDiag) {
-        s_b = X_i.t() * grad_vec;
+        xt_times(X, start_idx, m_i, gv, false, 0.0, b.kv, b.xi);
+        const double* s_b = b.kv;
         for (int k = 0; k < K; ++k) terms.push(k, s_b[k], w_i);
-        if (use_asc && delta_length > 0) {
+        if (has_delta) {
           scatter_delta_grad(s_d, delta_start_idx, grad_vec, alt_idx0_i,
                              m_i, include_outside_option, 1.0);
           opg_diag_push_delta(terms, s_d, delta_start_idx, alt_idx0_i,
@@ -435,11 +516,15 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
         }
       }
 
-      // 4.3: Gradient w.r.t. lambda_k
-      for (int k = 0; k < n_nests; ++k) {
+      // 4.3: Gradient w.r.t. lambda_k, over the nests the situation offers
+      // (every other nest has log I_k = -Inf and was skipped; each updates
+      // its own entry once, so their order is free)
+      const int n_o = nl_offered_nests(b, m_i, false);
+      for (int o = 0; o < n_o; ++o) {
+        const int k = b.nests[o];
 
         // Check if this nest 'k' corresponds to an estimated parameter
-        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
+        const int theta_idx_k = nest_k_to_theta_idx[k];
         if (theta_idx_k == -1) continue;
 
         if (!std::isfinite(log_I_k[k])) continue;
@@ -465,6 +550,8 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
         if (OpgDiag) terms.push(theta_idx_k, grad_lambda_k, w_i);
 
       } // end gradient loop for lambda
+      nl_offered_nests_clear(b, n_o);
+      for (int j = 0; j < m_i; ++j) sum_P_V_k[nest_idx0_i[j]] = 0.0;
       if (OpgDiag) terms.flush(local_diag);
     } // end of i loop
 
@@ -558,9 +645,9 @@ Rcpp::List nl_loglik_gradient_parallel(
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
   // diagonal, the constants' scores and the terms), X beta, the sums, the
-  // negated gradient and R's copies of it and of the diagonal. Each thread
-  // allocates its sums and buffers before its first situation, so the pass
-  // runs on the team checked here.
+  // negated gradient and R's copies of it and of the diagonal. The pass
+  // allocates every thread's sums and buffers on the primary thread, for the
+  // team checked here.
   const int n_threads = kernel_team_threads(lay.N);
   kernel_check_memory(
       "gradient", n_threads,
@@ -741,7 +828,7 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
              nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "BHHH",
              acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
-  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
   std::vector<std::vector<double>> cols =
@@ -758,7 +845,6 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
     double* acc_t = acc.base(tid);
     double* s_buf = scores[tid].data();
     double* col = cols[tid].data();
-    arma::vec grad_vec; // resized per situation
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -787,9 +873,8 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
       nl_situation_map(lay, i, nest0, b.pr.log_I_k.data(), nest_k_to_theta_idx,
                        K, has_delta, include_outside_option, mp);
       arma::vec s_c(s_buf, K + mp.n_lam + mp.a, false, true);
-      nl_situation_score(X, start_idx, m_i, nest0, V_inside, b.pr, lambda,
-                         lam_nest.data(), chosen_nest_k, chosen_inside_idx, mp,
-                         K, b.sum_P_V.data(), grad_vec, s_c);
+      nl_situation_score(X, start_idx, m_i, V_inside, b, lambda, lam_nest.data(),
+                         chosen_nest_k, chosen_inside_idx, mp, K, s_c);
 
       // w_i s_c s_c' over the compact block, each entry formed as the dense
       // rank-one update formed it (mnl_bhhh_parallel()); a non-finite weight
@@ -951,7 +1036,7 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
              nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "cluster meat",
              acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
-  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
   std::vector<std::vector<double>> scores =
       thread_vectors<double>(static_cast<std::size_t>(blk_max), n_threads);
   std::vector<ClusterSum> sums;
@@ -972,7 +1057,6 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
     ClusterSum& cs = sums[tid];
     double* acc_t = acc.base(tid);
     double* s_buf = scores[tid].data();
-    arma::vec grad_vec; // resized per situation
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1000,9 +1084,8 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
         nl_situation_map(lay, i, nest0, b.pr.log_I_k.data(), nest_k_to_theta_idx,
                          K, has_delta, include_outside_option, mp);
         arma::vec s_c(s_buf, K + mp.n_lam + mp.a, false, true);
-        nl_situation_score(X, start_idx, m_i, nest0, V_inside, b.pr, lambda,
-                           lam_nest.data(), chosen_nest_k, chosen_inside_idx, mp,
-                           K, b.sum_P_V.data(), grad_vec, s_c);
+        nl_situation_score(X, start_idx, m_i, V_inside, b, lambda, lam_nest.data(),
+                           chosen_nest_k, chosen_inside_idx, mp, K, s_c);
         cs.add(mp, K, s_c, weights[i]);
         nl_situation_map_clear(mp);
 
@@ -1117,21 +1200,23 @@ arma::mat nl_scores_parallel(
   // Output: one row per choice situation (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
   arma::mat scores(static_cast<arma::uword>(N), n_params);
-  const choicer_off max_m = lay.max_m;
 
-  // Each thread allocates its probability buffers before its first
-  // situation: the team checked above
+  // Every thread's working arrays and score, allocated here on the primary
+  // thread
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
+  std::vector<std::vector<double>> score_t =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
+  const bool has_delta = use_asc && delta_length > 0;
+
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
-    arma::vec grad_vec; // resized per individual
-    arma::vec s_i;      // per-individual score
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
-
-    // Make the index map thread-private
-    const arma::ivec thread_nest_k_to_theta_idx = nest_k_to_theta_idx;
+    const int tid = kernel_thread_num();
+    NlThreadBuffers& b = bufs[tid];
+    NlProbs& pr = b.pr;                   // nl_individual_probs() buffers
+    double* sum_P_V_k = b.sum_P_V.data(); // zero between situations
+    arma::vec s_i(score_t[tid].data(), n_params, false, true); // per-individual score
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1139,11 +1224,9 @@ arma::mat nl_scores_parallel(
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i         = lay.m(i);
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
 
-      const auto X_i        = X.rows(start_idx, end_idx); // m_i x K
       const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]}; // m_i
-      int* nest_idx0_i      = nest_buf.data(); // m_i
+      int* nest_idx0_i      = b.nest0.data(); // m_i
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
 
       // V_ij = X_ij * beta + delta_j (pre-computed)
@@ -1152,7 +1235,7 @@ arma::mat nl_scores_parallel(
       // Per-individual probability block (shared helper)
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
                           include_outside_option, pr);
-      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+      const double* P_i = pr.P_i.data();
       const double* P_j_given_k = pr.P_j_given_k.data();
       const double* P_k = pr.P_k.data();
       const double* log_I_k = pr.log_I_k.data();
@@ -1166,42 +1249,45 @@ arma::mat nl_scores_parallel(
       }
 
       // Assemble the (weight-free) per-individual score s_i.
-      s_i.zeros(n_params);
+      s_i.zeros();
 
       // --- beta / delta blocks: build grad_vec exactly as in the gradient ---
       // grad_vec[j] = -P_i[j]
       //             + P_j_given_k[j] * (1 - 1/lambda_k)  if j in chosen nest
       //             + 1/lambda_k                          if j == chosen alt
-      grad_vec.set_size(m_i);
-      grad_vec = -P_i;
+      double* gv = b.grad;
+      for (int j = 0; j < m_i; ++j) gv[j] = -P_i[j];
       if (chosen_nest_k >= 0) { // not outside option
         const double lambda_chosen = lambda[chosen_nest_k];
         const double term_scale = 1.0 - 1.0 / lambda_chosen;
         for (int j = 0; j < m_i; ++j) {
           if ((int)nest_idx0_i[j] == chosen_nest_k) {
-            grad_vec[j] += P_j_given_k[j] * term_scale;
+            gv[j] += P_j_given_k[j] * term_scale;
           }
         }
-        grad_vec[chosen_inside_idx] += 1.0 / lambda_chosen;
+        gv[chosen_inside_idx] += 1.0 / lambda_chosen;
       }
+      const arma::vec grad_vec(gv, m_i, false, true);
 
-      // Beta block (scale = 1)
-      s_i.subvec(0, K - 1) = X_i.t() * grad_vec;
+      // Beta block (scale = 1), into s_i's first K entries
+      xt_times(X, start_idx, m_i, gv, false, 0.0, s_i.memptr(), b.xi);
 
       // Delta block: scatter
-      if (use_asc && delta_length > 0) {
+      if (has_delta) {
         scatter_delta_grad(s_i, delta_start_idx, grad_vec, alt_idx0_i,
                            m_i, include_outside_option, 1.0);
       }
 
-      // --- lambda blocks: same expression as the gradient kernel ---
+      // --- lambda blocks: same expression as the gradient kernel, over the
+      // nests the situation offers ---
       // sum_{j in B_k} P(j|B_k) * V_ij
-      arma::vec sum_P_V_k = arma::zeros(n_nests);
       for (int j = 0; j < m_i; ++j) {
         sum_P_V_k[nest_idx0_i[j]] += P_j_given_k[j] * V_inside[j];
       }
-      for (int k = 0; k < n_nests; ++k) {
-        const int theta_idx_k = thread_nest_k_to_theta_idx[k];
+      const int n_o = nl_offered_nests(b, m_i, false);
+      for (int o = 0; o < n_o; ++o) {
+        const int k = b.nests[o];
+        const int theta_idx_k = nest_k_to_theta_idx[k];
         if (theta_idx_k == -1) continue;
         if (!std::isfinite(log_I_k[k])) continue;
 
@@ -1219,6 +1305,8 @@ arma::mat nl_scores_parallel(
         }
         s_i[theta_idx_k] += grad_lambda_k;
       }
+      nl_offered_nests_clear(b, n_o);
+      for (int j = 0; j < m_i; ++j) sum_P_V_k[nest_idx0_i[j]] = 0.0;
 
       scores.row(i) = s_i.t();
     } // end of i loop
@@ -1415,10 +1503,9 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
 
   // Memory: each thread's slot map, X_i, the sums of the nests a situation
   // offers (four numbers, two K-vectors and a packed K x K triangle each),
-  // the chosen nest's Q (a packed triangle), the nests' slots, a column of
-  // Q_i, its weighted copy, d_V and situation buffers; X beta, the result
-  // and the threads' accumulators (in a shared result, the rows
-  // nl_acc_rows() keeps private)
+  // the chosen nest's Q (a packed triangle), a column of Q_i, its weighted
+  // copy, d_V and situation buffers; X beta, the result and the threads'
+  // accumulators (in a shared result, the rows nl_acc_rows() keeps private)
   const int K_l = delta_start_idx - K;  // dissimilarities
   const bool has_delta = use_asc && delta_length > 0;
   const int J_d = has_delta ? delta_length : 0;  // free constants
@@ -1431,7 +1518,6 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       "Hessian", n_threads,
       nl_map_bytes(J_d, K_l, lay.max_m) +
           8.0 * (m_max * K + off_max * stride + Kp + 3.0 * m_max + 3.0 * K + 96.0) +
-          sizeof(int) * (n_nests + off_max + 64.0) +
           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
       [&](const int t) {
         return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
@@ -1455,19 +1541,16 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
              nl_acc_rows(n_params, K, K_l, n_threads, acc_bytes), "Hessian",
              acc_bytes);
   NlSituationMaps maps = nl_situation_maps(J_d, K_l, lay.max_m, n_threads);
-  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, n_threads);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, K, n_threads);
   // per thread: X_i (max_m x K), the offered nests' sums (off_max x stride),
   // the chosen nest's Q (Kp), a column of Q_i, its weighted copy and d_V
-  // (max_m each), Xbar_i, X_i' v and a coefficients' column (K each)
+  // (max_m each), Xbar_i, X_i' v and X_i' d_V (K each)
   const std::size_t mK = static_cast<std::size_t>(lay.max_m) * static_cast<std::size_t>(K);
   const std::size_t n_off = static_cast<std::size_t>(off_max);
   const std::size_t n_buf = mK + n_off * stride + Kp +
                             3 * static_cast<std::size_t>(lay.max_m) +
                             3 * static_cast<std::size_t>(K);
   std::vector<std::vector<double>> work = thread_vectors<double>(n_buf, n_threads);
-  std::vector<std::vector<int>> nest_slots =
-      thread_vectors<int>(static_cast<std::size_t>(n_nests), n_threads, -1);
-  std::vector<std::vector<int>> offers = thread_vectors<int>(n_off, n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -1477,8 +1560,8 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     NlSituationMap& mp = *maps[tid];
     NlThreadBuffers& b_t = bufs[tid];
     int* nest0 = b_t.nest0.data();
-    int* nest_slot = nest_slots[tid].data();  // nest -> offered slot, or -1
-    int* nests_off = offers[tid].data();      // offered nests, increasing
+    const int* nest_slot = b_t.nest_slot.data();  // nest -> offered slot, or -1
+    const int* nests_off = b_t.nests.data();      // offered nests, increasing
     double* acc_t = acc.base(tid);
     double* xbuf = work[tid].data();
     double* sums = xbuf + mK;
@@ -1488,6 +1571,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
     double* dV = hcol + lay.max_m;
     double* xbar_m = dV + lay.max_m;
     double* gvec_m = xbar_m + K;
+    double* xdv_m = gvec_m + K;
 
     // Add a term t(r, c) of the situation's Hessian, with t(c, r) its
     // transposed term, into the upper triangle, r and c global, as their
@@ -1553,16 +1637,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       // T, VarV, m (K), c (K) and S2 (a packed upper triangle); at qk the
       // chosen nest's Q (packed), the only nest's Q Term C reads. Nests the
       // situation does not offer added exact zeros in the dense code.
-      int n_o = 0;
-      for (int j = 0; j < m_i; ++j) {
-        const int k = nest0[j];
-        if (nest_slot[k] < 0) {
-          nest_slot[k] = 0;  // seen
-          nests_off[n_o++] = k;
-        }
-      }
-      std::sort(nests_off, nests_off + n_o);
-      for (int o = 0; o < n_o; ++o) nest_slot[nests_off[o]] = o;
+      const int n_o = nl_offered_nests(b_t, m_i, true);
       std::fill(sums, sums + static_cast<std::size_t>(n_o) * stride, 0.0);
       std::fill(qk, qk + Kp, 0.0);
       auto nest_sums = [&](const int k) { return sums + static_cast<std::size_t>(nest_slot[k]) * stride; };
@@ -1744,7 +1819,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       // Step 2f: Lambda-beta and lambda-delta cross blocks, and step 2g, the
       // lambda-lambda block, for each dissimilarity the situation touches
       arma::vec d_V_k(dV, m_i, false, true);
-      arma::vec lambda_beta_contrib(gvec_m, K, false, true);
+      arma::vec x_dV(xdv_m, K, false, true);
       for (int l = 0; l < mp.n_lam; ++l) {
         const int k = lam_nest[mp.lam[l]];
         const int gk = K + mp.lam[l];
@@ -1783,10 +1858,13 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
           }
         }
 
-        // lambda-beta cross: K-vector contribution
-        lambda_beta_contrib = -w_i * (X_i.t() * d_V_k);
+        // lambda-beta cross: K-vector contribution, -w_i (X_i' d_V), the
+        // product scaled after it is formed, as the dense expression did
+        x_dV = X_i.t() * d_V_k;
+        const double mw_i = -w_i;
         for (int r = 0; r < K; ++r) {
-          add2(r, gk, lambda_beta_contrib[r], lambda_beta_contrib[r]);
+          const double t = x_dV[r] * mw_i;
+          add2(r, gk, t, t);
         }
 
         // lambda-delta cross: scatter over free-ASC alternatives
@@ -1829,7 +1907,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
         add2(gk, gk, diag_val, diag_val);
       }
 
-      for (int o = 0; o < n_o; ++o) nest_slot[nests_off[o]] = -1;
+      nl_offered_nests_clear(b_t, n_o);
       nl_situation_map_clear(mp);
     }  // end individual loop
   }  // end parallel region
@@ -2011,18 +2089,21 @@ Rcpp::List nl_predict(
   const choicer_off N = lay.N;
   const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
+  // Every row belongs to one situation, so these are the utilities returned
+  // (the situations' copies of them made the same vector)
   arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
 
-  arma::vec V_all = arma::zeros(X.n_rows);
+  // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
-  const choicer_off max_m = lay.max_m;
+  const int n_threads = kernel_team_threads(N);
+  std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
+    NlThreadBuffers& b = bufs[kernel_thread_num()];
+    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -2030,34 +2111,42 @@ Rcpp::List nl_predict(
     for (choicer_off i = 0; i < N; ++i) {
       const int m_i       = lay.m(i);
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
-      const arma::uword end_idx   = start_idx + m_i - 1;
 
-      int* nest_idx0_i = nest_buf.data();
+      int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
       nl_individual_probs(V_inside, nest_idx0_i, m_i, lambda, n_nests,
                           include_outside_option, pr);
-      const arma::vec P_i(pr.P_i.data(), m_i, false, true);
-
-      V_all.subvec(start_idx, end_idx) = base_util.subvec(start_idx, end_idx);
-      P_all.subvec(start_idx, end_idx) = P_i;
+      std::copy(pr.P_i.data(), pr.P_i.data() + m_i, P_all.memptr() + start_idx);
     }
   }
 
   return Rcpp::List::create(
     Rcpp::Named("choice_prob") = P_all,
-    Rcpp::Named("utility")     = V_all
+    Rcpp::Named("utility")     = base_util
   );
 }
 
+// The working arrays of nl_predict_shares_internal(): every thread's
+// situation arrays and shares, allocated on the primary thread once per call
+// (a BLP contraction keeps them across its iterations).
+struct NlSharesWork {
+  std::vector<NlThreadBuffers> bufs;
+  std::vector<std::vector<double>> local;  // each thread's shares
+  NlSharesWork(const ChoiceLayout& lay, const int n_nests, const int num_alts)
+      : bufs(nl_thread_buffers(lay.max_m, n_nests, 0, kernel_team_threads(lay.N))),
+        local(thread_vectors<double>(static_cast<std::size_t>(num_alts),
+                                     static_cast<int>(bufs.size()))) {}
+};
+
 // Predicted NL market shares (file-local internal), from the base utilities
-// of all rows (X * beta plus the rows' ASCs). nest holds the 1-based nest
-// codes of the alternatives, and denominator is shares_denominator(weights),
-// which the callers check before they form the utilities. Returns weighted
-// shares of length num_alts (index 0 = outside option when present, then
-// inside alts in order).
-static arma::vec nl_predict_shares_internal(
+// of all rows (X * beta plus the rows' ASCs), into `shares`: weighted shares
+// of length num_alts (index 0 = outside option when present, then inside alts
+// in order). nest holds the 1-based nest codes of the alternatives, and
+// denominator is shares_denominator(weights), which the callers check before
+// they form the utilities.
+static void nl_predict_shares_internal(
     const arma::vec& base_util,
     const ChoiceLayout& lay,
     const int* nest,
@@ -2066,19 +2155,23 @@ static arma::vec nl_predict_shares_internal(
     const double denominator,
     const int n_nests,
     const int num_alts,
-    const bool include_outside_option
+    const bool include_outside_option,
+    NlSharesWork& ws,
+    arma::vec& shares
 ) {
   const choicer_off N = lay.N;
-  arma::vec global_shares = arma::zeros(num_alts);
-  const choicer_off max_m = lay.max_m;
+  const int n_threads = static_cast<int>(ws.bufs.size());
+  shares.zeros(num_alts);
 
 #ifdef _OPENMP
-#pragma omp parallel
+#pragma omp parallel num_threads(n_threads)
 #endif
   {
-    arma::vec local_shares = arma::zeros(num_alts);
-    NlProbs pr(max_m, n_nests);         // nl_individual_probs() buffers
-    std::vector<int> nest_buf(max_m);   // each inside alternative's nest
+    const int tid = kernel_thread_num();
+    NlThreadBuffers& b = ws.bufs[tid];
+    NlProbs& pr = b.pr;                 // nl_individual_probs() buffers
+    arma::vec local_shares(ws.local[tid].data(), num_alts, false, true);
+    local_shares.zeros();
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -2089,7 +2182,7 @@ static arma::vec nl_predict_shares_internal(
       const double w_i    = weights[i];
 
       const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]};
-      int* nest_idx0_i = nest_buf.data();
+      int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
       const double* V_inside = base_util.memptr() + start_idx;
 
@@ -2114,11 +2207,12 @@ static arma::vec nl_predict_shares_internal(
 #pragma omp critical
 #endif
     {
-      global_shares += local_shares;
+      shares += local_shares;
     }
   }
 
-  return global_shares / denominator;
+  // The predicted shares
+  shares /= denominator;
 }
 
 //' Prediction of market shares for the Nested Logit model
@@ -2179,10 +2273,12 @@ arma::vec nl_predict_shares(
 
   const double denominator = shares_denominator(weights);
   const arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
-  return nl_predict_shares_internal(
-    base_util, lay, nest_idx.begin(), lambda, weights, denominator, n_nests,
-    num_alts, include_outside_option
-  );
+  NlSharesWork ws(lay, n_nests, num_alts);
+  arma::vec shares(num_alts);
+  nl_predict_shares_internal(base_util, lay, nest_idx.begin(), lambda, weights,
+                             denominator, n_nests, num_alts,
+                             include_outside_option, ws, shares);
+  return shares;
 }
 
 //' Compute aggregate elasticities for the Nested Logit model
@@ -2625,16 +2721,19 @@ arma::vec nl_blp_contraction(
   }
 
   // X * beta, once: only delta changes across the iterations. Each one adds
-  // its ASCs to a copy of it, in one buffer kept across them.
+  // its ASCs to a copy of it, in one buffer kept across them, and predicts the
+  // shares with working arrays allocated once, here.
   const double denominator = shares_denominator(weights);
   const arma::vec Xb = X * beta;
   arma::vec base_util;
+  NlSharesWork ws(lay, n_nests, num_alts);
+  arma::vec shares(num_alts);
   auto predict_shares = [&](const arma::vec& inside_delta) {
     base_util = Xb;
     add_row_asc(base_util, lay, inside_delta);
-    return nl_predict_shares_internal(base_util, lay, nest_idx.begin(), lambda,
-                                      weights, denominator, n_nests, num_alts,
-                                      include_outside_option);
+    nl_predict_shares_internal(base_util, lay, nest_idx.begin(), lambda,
+                               weights, denominator, n_nests, num_alts,
+                               include_outside_option, ws, shares);
   };
 
   // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
@@ -2656,12 +2755,19 @@ arma::vec nl_blp_contraction(
     delta_old -= delta_old[0];
   }
 
-  arma::vec inside_delta_old = include_outside_option
-    ? arma::vec(delta_old.subvec(1, num_alts - 1))
-    : delta_old;
+  // The inside deltas, refilled in place from delta_old at every iteration
+  arma::vec inside_delta_old(include_outside_option ? num_alts - 1 : num_alts);
+  auto set_inside_delta = [&]() {
+    if (include_outside_option) {
+      inside_delta_old = delta_old.subvec(1, num_alts - 1);
+    } else {
+      inside_delta_old = delta_old;
+    }
+  };
+  set_inside_delta();
 
-  arma::vec log_shares_old = predict_shares(inside_delta_old);
-  log_shares_old = arma::log(log_shares_old);
+  predict_shares(inside_delta_old);
+  arma::vec log_shares_old = arma::log(shares);
   arma::vec log_shares_target = arma::log(target_shares);
   arma::vec delta_new = delta_old;
 
@@ -2682,11 +2788,9 @@ arma::vec nl_blp_contraction(
       break;
     }
     delta_old = delta_new;
-    inside_delta_old = include_outside_option
-      ? arma::vec(delta_old.subvec(1, num_alts - 1))
-      : delta_old;
-    log_shares_old = predict_shares(inside_delta_old);
-    log_shares_old = arma::log(log_shares_old);
+    set_inside_delta();
+    predict_shares(inside_delta_old);
+    log_shares_old = arma::log(shares);
     ++iter;
   }
 

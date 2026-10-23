@@ -56,8 +56,49 @@ ncd_cells <- function() {
                 nest_idx = c(rep(1L, 20L), 2:11)),
     ncd_fixture("wide sets", 3009, J = 60L, m_range = c(10L, 40L), N = 30L,
                 nest_idx = rep(1:20, each = 3L)),
-    ncd_fixture("twenty coefficients", 3010, K = 20L)
+    ncd_fixture("twenty coefficients", 3010, K = 20L),
+    # Products X_i' v in the shapes Armadillo dispatches differently (more
+    # than 16 covariates and choices, a 4 x 4 X_i), and many nests of which a
+    # situation offers a few (the loops over the nests it offers)
+    ncd_fixture("wide covariates and sets", 3021, J = 40L, m_range = c(10L, 30L),
+                K = 17L, N = 30L, nest_idx = c(rep(1:10, each = 3L), 11:20)),
+    ncd_fixture("four alternatives, four covariates", 3022, J = 4L,
+                m_range = c(4L, 4L), K = 4L, nest_idx = c(1L, 1L, 2L, 2L)),
+    ncd_fixture("many nests, few offered", 3023, J = 120L, m_range = c(2L, 6L),
+                nest_idx = c(rep(1:50, each = 2L), 51:70), shuffle = TRUE)
   )
+}
+
+# The free constant of each row (its position in theta), NA where none.
+ncd_free <- function(f) {
+  if (!f$use_asc) return(rep(NA_integer_, length(f$alt_idx)))
+  j <- if (f$include_outside_option) f$alt_idx else f$alt_idx - 1L
+  ifelse(j >= 1L, f$K + f$K_l + j, NA_integer_)
+}
+
+# Each nest's dissimilarity at theta (1 for a singleton).
+ncd_lambda <- function(f, theta = f$theta) {
+  n_k <- tabulate(f$nest_idx)
+  lam <- rep(1, length(n_k))
+  lam[n_k > 1L] <- theta[f$K + seq_len(f$K_l)]
+  lam
+}
+
+# NL probabilities of one situation's rows (nests: their nests) and of the
+# outside option, in R.
+ncd_probs <- function(v, nests, lambda, outside) {
+  ks <- unique(nests)
+  iv <- vapply(ks, function(k) {
+    u <- v[nests == k] / lambda[k]
+    max(u) + log(sum(exp(u - max(u))))
+  }, numeric(1L))
+  a <- lambda[ks] * iv
+  top <- max(c(if (outside) 0, a))
+  den <- (if (outside) exp(-top) else 0) + sum(exp(a - top))
+  p_k <- exp(a - top) / den
+  pos <- match(nests, ks)
+  list(p = exp(v / lambda[nests] - iv[pos]) * p_k[pos],
+       p0 = if (outside) exp(-top) / den else 0)
 }
 
 ncd_call <- function(kernel, f, theta = f$theta, weights = f$weights, ...) {
@@ -304,6 +345,64 @@ test_that("the compact NL BHHH is the weighted cross-product of the scores", {
       expect_equal(unclass(B), crossprod(sqrt(f$weights) * S), tolerance = 1e-12,
                    label = sprintf("[%s, %d threads]", f$name, nt))
     }
+  }
+})
+
+test_that("the NL gradient, scores, predictions and shares agree with R on every design", {
+  # The kernels form each situation's probabilities, nest sums and products
+  # X_i' v in per-thread arrays, and loop over the nests the situation
+  # offers: the gradient against numDeriv of the objective (the
+  # dissimilarities' entries included) and the weighted sum of the scores,
+  # its OPG diagonal against the scores', the probabilities and utilities
+  # against R's, the shares against the weighted sums of the probabilities.
+  skip_if_not_installed("numDeriv")
+  on.exit(set_omp_threads(2L), add = TRUE)
+  ns <- asNamespace("choicer")
+  for (f in ncd_cells()) {
+    fr <- ncd_free(f)
+    lam <- ncd_lambda(f)
+    v_ref <- drop(f$X %*% f$theta[seq_len(f$K)]) + ifelse(is.na(fr), 0, f$theta[fr])
+    row_off <- c(0L, cumsum(f$M))
+    p_ref <- numeric(length(v_ref))
+    shares_ref <- numeric(f$J + f$include_outside_option)
+    for (i in seq_len(f$N)) {
+      r <- (row_off[i] + 1L):row_off[i + 1L]
+      p <- ncd_probs(v_ref[r], f$nest_idx[f$alt_idx[r]], lam, f$include_outside_option)
+      p_ref[r] <- p$p
+      if (f$include_outside_option) {
+        shares_ref[1L] <- shares_ref[1L] + f$weights[i] * p$p0
+      }
+      a <- f$alt_idx[r] + f$include_outside_option
+      for (k in seq_along(r)) shares_ref[a[k]] <- shares_ref[a[k]] + f$weights[i] * p$p[k]
+    }
+    shares_ref <- shares_ref / sum(f$weights)
+    for (nt in 1:2) {
+      set_omp_threads(nt)
+      what <- sprintf("[%s, %d threads]", f$name, nt)
+      g <- ncd_call("gradient", f, opg_diag = TRUE)
+      S <- ncd_call("scores", f)
+      expect_equal(drop(g$gradient), -colSums(f$weights * S), tolerance = 1e-12,
+                   label = what)
+      expect_equal(drop(g$opg_diag), colSums(f$weights * S^2), tolerance = 1e-12,
+                   label = what)
+      pr <- ns$nl_predict(f$theta, f$X, f$alt_idx, f$M, f$nest_idx, f$use_asc,
+                          f$include_outside_option)
+      expect_equal(drop(pr$utility), v_ref, tolerance = 1e-14,
+                   label = paste(what, "utilities"))
+      expect_equal(drop(pr$choice_prob), p_ref, tolerance = 1e-12,
+                   label = paste(what, "probabilities"))
+      # one share per code up to the largest offered (the outside option first)
+      sh <- drop(ns$nl_predict_shares(f$theta, f$X, f$alt_idx, f$M, f$weights,
+                                      f$nest_idx, f$use_asc, f$include_outside_option))
+      expect_equal(sh, shares_ref[seq_along(sh)], tolerance = 1e-12,
+                   label = paste(what, "shares"))
+      expect_true(all(shares_ref[-seq_along(sh)] == 0), label = paste(what, "unoffered"))
+    }
+    set_omp_threads(1L)
+    num <- numDeriv::grad(function(th) ncd_call("gradient", f, theta = th)$objective,
+                          f$theta)
+    expect_lt(ncd_scale_dev(drop(ncd_call("gradient", f)$gradient), num), 1e-6,
+              label = f$name)
   }
 })
 
