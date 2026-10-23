@@ -275,8 +275,8 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
     terms_t.emplace_back(OpgDiag ? K + lay.max_m : 0);
   }
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -603,8 +603,8 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   std::vector<std::vector<double>> cols =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -929,8 +929,8 @@ arma::mat mnl_scores_parallel(
   std::vector<std::vector<double>> score_t =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -1034,8 +1034,8 @@ Rcpp::List mnl_predict(
   std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);  // no products
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -1092,8 +1092,8 @@ static void mnl_predict_shares_internal(
   // Initialize global accumulator for predicted shares
   shares.zeros(num_alts);
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
 {
@@ -1547,8 +1547,8 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   const double* Xm = X.memptr();
   const arma::uword n_rows = X.n_rows;
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -1698,8 +1698,8 @@ static void mnl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
   const choicer_off N = lay.N;
   const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(acc.T)
 #endif
   {
@@ -1886,8 +1886,8 @@ static void mnl_diversion_pass(const ChoiceLayout& lay, const arma::vec& base_ut
                                std::vector<std::vector<double>>& dens) {
   const choicer_off N = lay.N;
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(acc.T)
 #endif
   {
