@@ -4,6 +4,7 @@
 #include "choicer.h"
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -415,6 +416,64 @@ inline arma::vec compute_base_util(const arma::mat& X, const arma::vec& beta,
   arma::vec base_util = X * beta;
   if (use_asc) add_row_asc(base_util, lay, delta);
   return base_util;
+}
+
+// ----------------------------------------------------------------------------
+// A situation's rows of X, r0 .. r0 + m - 1, copied column-major (m x K) into
+// a thread's buffer x: the copy Armadillo's partial_unwrap makes of
+// X.rows(r0, r0 + m - 1) for each product with its transpose. A no-copy
+// arma::mat over x (an arma::mat even for K = 1: a row and a column vector
+// would take Armadillo's dot-product shortcut instead) makes the same BLAS
+// call as X_i.t() * v made, with the same dimensions, leading dimension m and
+// alpha, on the same values, without a heap block per product.
+// ----------------------------------------------------------------------------
+inline void copy_rows(const arma::mat& X, const arma::uword r0, const int m,
+                      double* x) {
+  const arma::uword n_rows = X.n_rows;
+  const std::size_t mm = static_cast<std::size_t>(m);
+  const double* src = X.memptr() + r0;
+  for (arma::uword k = 0; k < X.n_cols; ++k) {
+    std::memcpy(x + k * mm, src + k * n_rows, mm * sizeof(double));
+  }
+}
+
+// ----------------------------------------------------------------------------
+// y (K entries) = X_i' v, or w X_i' v with use_w, for the m rows of X from r0:
+// what Armadillo's [w *] X.rows(r0, r0 + m - 1).t() * v computes, bit for bit,
+// without its copy of X_i. Where its product reaches BLAS (K >= 2, X_i not a
+// square of at most 4 x 4: gemv::apply_blas_type()), the same dgemv('T', m,
+// K, alpha = w * 1.0, ..., beta = 0) runs on X in place, with X's leading
+// dimension where the copy had m: OpenBLAS's sums do not depend on it (the
+// golden battery checks the bits); an R matrix has fewer than 2^31 rows, so
+// it fits BLAS's int. Elsewhere (one covariate, whose product Armadillo turns
+// into a gemv of v; the tiny-square emulation) the product runs as before on
+// copy_rows()'s copy in x, viewed as an arma::mat. v (m entries) may be a
+// slice of a longer vector; y is zeroed first (BLAS ignores y at beta = 0,
+// but nothing then depends on that).
+// ----------------------------------------------------------------------------
+inline void xt_times(const arma::mat& X, const arma::uword r0, const int m,
+                     const double* v, const bool use_w, const double w,
+                     double* y, double* x) {
+  const int K = static_cast<int>(X.n_cols);
+  std::fill(y, y + K, 0.0);
+  if (K >= 2 && !(m <= 4 && m == K)) {
+    const char trans = 'T';
+    const arma::blas_int bm = m, bn = K, inc = 1;
+    const arma::blas_int lda = static_cast<arma::blas_int>(X.n_rows);
+    const double alpha = use_w ? w * 1.0 : 1.0, beta = 0.0;
+    arma::blas::gemv<double>(&trans, &bm, &bn, &alpha, X.memptr() + r0, &lda,
+                             v, &inc, &beta, y, &inc);
+    return;
+  }
+  copy_rows(X, r0, m, x);
+  const arma::mat X_i(x, m, K, false, true);
+  const arma::vec v_i(const_cast<double*>(v), m, false, true);
+  arma::vec y_i(y, K, false, true);
+  if (use_w) {
+    y_i = w * X_i.t() * v_i;
+  } else {
+    y_i = X_i.t() * v_i;
+  }
 }
 
 // ----------------------------------------------------------------------------

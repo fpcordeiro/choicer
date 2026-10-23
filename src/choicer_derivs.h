@@ -82,6 +82,25 @@ inline std::vector<std::vector<V>> thread_vectors(const std::size_t n, const int
   return v;
 }
 
+// n rounded up to whole 64-byte lines of doubles (8 of them), so that arrays
+// carved one after another from an AlignedBuffer each start a line.
+inline std::size_t aligned_len(const std::size_t n) { return (n + 7) / 8 * 8; }
+
+// An uninitialized array of n doubles from a 64-byte boundary (a cache line
+// on x86-64; Armadillo's own blocks start at 16 or 32 bytes), with 128 bytes
+// of padding after it: the thread that uses it touches it first.
+struct AlignedBuffer {
+  std::unique_ptr<double[]> mem;
+  double* data = nullptr;
+  AlignedBuffer() = default;
+  explicit AlignedBuffer(const std::size_t n) : mem(new double[n + 8 + 16]) {
+    const std::uintptr_t a = reinterpret_cast<std::uintptr_t>(mem.get());
+    data = reinterpret_cast<double*>((a + 63) & ~static_cast<std::uintptr_t>(63));
+  }
+  // Bytes of a buffer of n doubles, its slack included (memory checks).
+  static double bytes(const double n) { return sizeof(double) * (n + 24.0); }
+};
+
 // ============================================================================
 // Memory guard
 //
