@@ -514,8 +514,8 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
   }
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -953,8 +953,8 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
   std::vector<std::vector<double>> cols =
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -1339,8 +1339,8 @@ arma::mat nl_scores_parallel(
       thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
   const bool has_delta = use_asc && delta_length > 0;
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -1983,8 +1983,8 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
                             3 * static_cast<std::size_t>(K);
   std::vector<std::vector<double>> work = thread_vectors<double>(n_buf, n_threads);
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -2333,8 +2333,8 @@ Rcpp::List nl_predict(
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -2400,8 +2400,8 @@ static void nl_predict_shares_internal(
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
   shares.zeros(num_alts);
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(n_threads)
 #endif
   {
@@ -2561,8 +2561,8 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
   const choicer_off N = lay.N;
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(acc.T)
 #endif
   {
@@ -2774,8 +2774,8 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
   const choicer_off N = lay.N;
   const bool offered = nl_offered_probs(lambda, lay);  // the nests' probabilities
 
-  const int chunk = situation_chunk(lay);  // situations per dispatch
 #ifdef _OPENMP
+  const int chunk = situation_chunk(lay);  // situations per dispatch
 #pragma omp parallel num_threads(acc.T)
 #endif
   {

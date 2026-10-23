@@ -76,20 +76,28 @@ inline int kernel_team_threads(const choicer_off n_items) {
 // and nested logits' loops over choice situations (schedule(dynamic,
 // chunk)): about CHOICER_CHUNK_ROWS rows, at least one situation, so that
 // situations of a few rows do not pay a dispatch each. Set at compile time
-// with -DCHOICER_CHUNK_ROWS=<rows> (_benchmarks/scale/chunk_sweep.sh). One
-// thread's results do not depend on it; with more, it decides which thread
-// adds which situation.
+// with -DCHOICER_CHUNK_ROWS=<rows> (_benchmarks/scale/chunk_sweep.sh), an
+// integer (the braces refuse anything else). One thread's results do not
+// depend on it; with more, it decides which thread adds which situation.
 #ifndef CHOICER_CHUNK_ROWS
 #define CHOICER_CHUNK_ROWS 256
 #endif
-static_assert(CHOICER_CHUNK_ROWS >= 1 && CHOICER_CHUNK_ROWS <= 1048576,
+constexpr long choicer_chunk_rows{CHOICER_CHUNK_ROWS};
+static_assert(choicer_chunk_rows >= 1 && choicer_chunk_rows <= 1048576,
               "CHOICER_CHUNK_ROWS must be between 1 and 2^20 rows");
 
-// The situations per dispatch of a loop over lay's situations.
+// The situations per dispatch of a loop over lay's situations: the target
+// over the mean rows per situation, or over an eighth of the largest
+// situation's where that is more, so that a dispatch holds at most about
+// 8 x CHOICER_CHUNK_ROWS rows whatever the situations' order (data sorted
+// with its largest choice sets together would otherwise give one thread a
+// run of them).
 inline int situation_chunk(const ChoiceLayout& lay) {
   if (lay.N <= 0 || lay.n_rows <= 0) return 1;
-  const double rows = static_cast<double>(lay.n_rows) / static_cast<double>(lay.N);
-  const double c = std::floor(CHOICER_CHUNK_ROWS / rows + 0.5);
+  const double rows =
+      std::max(static_cast<double>(lay.n_rows) / static_cast<double>(lay.N),
+               static_cast<double>(lay.max_m) / 8.0);
+  const double c = std::floor(static_cast<double>(choicer_chunk_rows) / rows + 0.5);
   return c < 1.0 ? 1 : static_cast<int>(std::min(c, 1048576.0));
 }
 

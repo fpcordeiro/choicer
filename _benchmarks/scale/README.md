@@ -178,7 +178,7 @@ about 256 stacked rows per dispatch (`CHOICER_CHUNK_ROWS`,
 `src/choicer_derivs.h`), at least one situation; before 0.3.0 each situation
 was a dispatch of its own, which situations of four rows paid for. On an
 11-core laptop (Apple M3 Pro), against one situation per dispatch, 256 rows
-took 2-6% less time on 2.5 million four-alternative situations at five and
+took 1-6% less time on 2.5 million four-alternative situations at five and
 eleven threads (the median rounds of both models' gradient, BHHH, Hessian and
 predictions), and as much at one thread and on the census-style designs; 64
 and 1,024 rows were within 5% of 256 everywhere, with mixed signs.

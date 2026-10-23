@@ -6,15 +6,17 @@
 #   sh _benchmarks/scale/chunk_sweep.sh <choicer source tree>
 #   env: OUT (default _benchmarks/scale/output/chunk-<date>), ROWS (default
 #   "1 64 256 1024"), THREADS (default "1,5,11"), ROUNDS (default 4), CASES
-#   (default all five, as model:regime:situations:nests)
+#   (default all five, as model:regime:units:nests, units as bench_mnl_nl.R's U)
 #
 # Those loops hand a thread about CHOICER_CHUNK_ROWS stacked rows per dispatch,
 # at least one situation (ROWS=1 builds the schedule of one situation per
 # dispatch that 0.3.0 replaced). The value is fixed when the package is
 # compiled, so the script builds one library per value from a copy of the tree,
 # with the machine's Makevars (tools::makevars_user()) plus the define through
-# R_MAKEVARS_USER, checks the define in each build's log and OpenMP in each
-# library, and times bench_mnl_nl.R's gradient, BHHH, Hessian and predictions on
+# R_MAKEVARS_USER, checks that the tree uses the define, finds it in each
+# build's log, and checks that each library loads from where it was installed
+# and has OpenMP (and the summary, that every run loaded its own). It times
+# bench_mnl_nl.R's gradient, BHHH, Hessian and predictions on
 # the same synthetic data with each: per round, every case under every library,
 # the libraries in reverse order in alternate rounds, one R process per run.
 # Cases: the multinomial logit on 2.5 million four-alternative situations
@@ -28,6 +30,8 @@
 D=$(cd "$(dirname "$0")" && pwd)
 SRC=$1
 [ -n "$SRC" ] && [ -f "$SRC/DESCRIPTION" ] || { echo "usage: sh chunk_sweep.sh <choicer source tree>"; exit 1; }
+grep -q CHOICER_CHUNK_ROWS "$SRC/src/choicer_derivs.h" ||
+  { echo "$SRC does not use CHOICER_CHUNK_ROWS (a tree from before 0.3.0?)"; exit 1; }
 OUT=${OUT:-$D/output/chunk-$(date +%Y%m%d-%H%M%S)}; mkdir -p "$OUT"
 ROWS=${ROWS:-"1 64 256 1024"}; THREADS=${THREADS:-1,5,11}; ROUNDS=${ROUNDS:-4}
 case " $ROWS " in *" 256 "*) ;; *) echo "ROWS must include 256, the default the summary compares with"; exit 1 ;; esac
@@ -52,11 +56,14 @@ for v in $ROWS; do
   fi
   grep -q -- "-DCHOICER_CHUNK_ROWS=$v" "$OUT/install-$v.log" ||
     { echo "lib-$v: the define is not in $OUT/install-$v.log"; exit 1; }
-  R_LIBS="$lib" Rscript --no-echo -e 'lib <- Sys.getenv("R_LIBS")
+  # the library to load comes as an argument, not from R_LIBS, which a user
+  # Renviron can override (the benchmarks would then all time that library)
+  R_LIBS="$lib" Rscript --no-echo -e 'lib <- commandArgs(TRUE)[1]
     suppressMessages(library(choicer, lib.loc = lib))
-    stopifnot(normalizePath(dirname(getNamespaceInfo("choicer", "path"))) == normalizePath(lib),
-              isTRUE(thread_info()$openmp_enabled))' ||
-    { echo "lib-$v does not load from $lib with OpenMP"; exit 1; }
+    stopifnot(normalizePath(strsplit(Sys.getenv("R_LIBS"), ":")[[1]][1]) == normalizePath(lib),
+              normalizePath(dirname(getNamespaceInfo("choicer", "path"))) == normalizePath(lib),
+              isTRUE(thread_info()$openmp_enabled))' "$lib" ||
+    { echo "lib-$v does not load from $lib with OpenMP (does a user Renviron set R_LIBS?)"; exit 1; }
 done
 
 echo "==== start $(date) | rows $ROWS | threads $THREADS | rounds $ROUNDS | source $SRC | load $(load_avg)" >> "$LOG"
@@ -79,24 +86,35 @@ while [ "$r" -le "$ROUNDS" ]; do
 done
 echo "==== done $(date)" >> "$LOG"
 
-Rscript --no-echo -e '
+# The summary, from a file: R's front end passes -e code through echo, which
+# eats backslashes on macOS's sh and dash
+cat > "$OUT/summary.R" <<'EOR'
 out <- commandArgs(TRUE)[1]
 fs <- list.files(out, "_r[0-9]+[.]rds$", full.names = TRUE)
 rows <- do.call(rbind, lapply(fs, function(f) {
-  x <- readRDS(f); i <- attr(x, "info"); x <- x[!is.na(x$sec), ]
+  x <- readRDS(f); i <- attr(x, "info")
+  # each run must have loaded its own library
+  if (basename(i$lib) != paste0("lib-", sub("ch", "", i$tag)))
+    stop(basename(f), " loaded ", i$lib)
+  x <- x[!is.na(x$sec), ]
+  if (!nrow(x)) return(NULL)  # every kernel failed
   a <- aggregate(sec ~ what + threads, data = x, FUN = median)
   cbind(tag = i$tag, case = paste0(i$model, ":", i$regime),
-        round = sub(".*_r([0-9]+)[.]rds$", "\\1", basename(f)), a)
+        round = gsub("^.*_r|[.]rds$", "", basename(f)), a)
 }))
 tags <- unique(rows$tag[order(as.numeric(sub("ch", "", rows$tag)))])
 for (g in split(rows, interaction(rows$case, rows$what, rows$threads, drop = TRUE))) {
   med <- sapply(tags, function(t) median(g$sec[g$tag == t]))
+  rounds <- sort(unique(as.integer(g$round)))
+  # ratios to 256 round by round; NA where either run is missing
+  sec_of <- function(t, r) { v <- g$sec[g$tag == t & as.integer(g$round) == r]; if (length(v)) v else NA }
   rr <- sapply(setdiff(tags, "ch256"), function(t) {
-    q <- sapply(unique(g$round), function(r) g$sec[g$tag == t & g$round == r] /
-                  g$sec[g$tag == "ch256" & g$round == r])
-    sprintf("%s %s", t, paste(sprintf("%.2f", unlist(q)), collapse = " "))
+    q <- vapply(rounds, function(r) sec_of(t, r) / sec_of("ch256", r), 0)
+    sprintf("%s %s", t, paste(sprintf("%.2f", q), collapse = " "))
   })
   cat(sprintf("%-11s %-8s t=%-2d %s | vs ch256: %s\n", g$case[1], g$what[1], g$threads[1],
               paste(sprintf("%s %.4f", tags, med), collapse = "  "), paste(rr, collapse = " ; ")))
-}' "$OUT" > "$OUT/summary.txt"
+}
+EOR
+Rscript --no-echo "$OUT/summary.R" "$OUT" > "$OUT/summary.txt"
 cat "$OUT/summary.txt"
