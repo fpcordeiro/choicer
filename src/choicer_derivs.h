@@ -209,6 +209,53 @@ inline std::size_t sym_acc_col_off(const choicer_off j, const choicer_off s) {
   return j <= s ? jj * (jj + 1) / 2 : jj * ss - ss * (ss - 1) / 2;
 }
 
+// Whether a term formed as a product must be stored before it is added to
+// keep its rounding. GCC contracts a product into a later addition across
+// statements (its default -ffp-contract=fast for GNU C++); clang contracts
+// within a statement only, which is how main's terms were written. Where the
+// compiler is GCC, the accumulators' updates store a column's terms and add
+// them in a second loop (as bhhh_add() does); elsewhere they add each term
+// as it is formed, in a statement of its own. Either way each term is the
+// rounded product, as main formed it.
+#if defined(__GNUC__) && !defined(__clang__)
+#define CHOICER_STORE_TERMS 1
+#else
+#define CHOICER_STORE_TERMS 0
+#endif
+
+// The ways a unit's terms reach a derivative kernel's n x n sums
+// (SymAcc::mode()): one thread adds into the result (Single); T > 1 threads
+// into their own packed upper triangles (Triangles); threads sharing the
+// result into their private leading rows and, atomically, into the result's
+// other entries (Shared); or, after the parallel region, plainly into the
+// same places (Serial: the cluster meat's cut clusters). The kernels choose
+// the mode once per unit, and their loops are templates on it, so that no
+// addition selects a layout, or the atomic, entry by entry.
+enum class SymMode { Single, Triangles, Shared, Serial };
+
+// Column j of a thread's sums (SymAcc::col()): entry (i, j), i <= j, is p[i]
+// (every row in Single and Triangles, the private rows i < s in Shared and
+// Serial) or q[i] (the result's column, the other rows).
+template <SymMode Mode>
+struct SymCol {
+  double* p;
+  double* q;
+  std::size_t s;
+  void add(const std::size_t i, const double v) const {
+    if (Mode == SymMode::Single || Mode == SymMode::Triangles || i < s) {
+      p[i] += v;
+    } else if (Mode == SymMode::Shared) {
+      double& t = q[i];
+#ifdef _OPENMP
+#pragma omp atomic update
+#endif
+      t += v;
+    } else {
+      q[i] += v;
+    }
+  }
+};
+
 // The n x n result of a derivative kernel (Hessian, BHHH, cluster meat): the
 // units' compact blocks are added into its upper triangle, which is mirrored
 // at the end (every block is exactly symmetric, so the mirror is the sum the
@@ -271,36 +318,34 @@ struct SymAcc {
   SymAcc(const SymAcc&) = delete;
   SymAcc& operator=(const SymAcc&) = delete;
 
-  // Thread tid's buffer, to pass to add() only: its layout depends on the
-  // mode.
+  // The mode of this call's adds (SymMode): the same predicate as base().
+  SymMode mode() const {
+    return part.empty() ? SymMode::Single
+                        : shared ? SymMode::Shared : SymMode::Triangles;
+  }
+  // Thread tid's buffer, to pass to col() and add() only: its layout depends
+  // on the mode.
   double* base(const int tid) const { return part.empty() ? out : part[tid].get(); }
-  // Add v to entry (i, j), i <= j, from the thread whose buffer is `buf`.
-  // Shared must be `shared` (the other instantiation writes outside the
-  // buffer): the callers' loops are templates instantiated for each and
-  // chosen once per unit (sym_add_block(), bhhh_add(), bhhh_add_dense(),
-  // ClusterSum::update_into()), so that the per-thread loops hold no atomic
-  // operation (a branch per entry made the per-thread BHHH 12% slower).
-  // Atomic = false is for a shared result's serial pass after the parallel
-  // region.
-  template <bool Shared, bool Atomic = Shared>
-  void add(double* buf, const choicer_off i, const choicer_off j, const double v) const {
-    const std::size_t ii = static_cast<std::size_t>(i);
+  // Column j of the sums of the thread whose buffer is `buf` (SymCol). Mode
+  // must be mode(), or Serial for a shared result after the parallel region
+  // (the other instantiations write outside the buffer): the callers' loops
+  // are templates instantiated for each and chosen once per unit
+  // (sym_add_block(), bhhh_add(), bhhh_add_dense(), mnl_hessian_add(),
+  // ClusterSum::update_into(), the NL Hessian's situation terms).
+  template <SymMode Mode>
+  SymCol<Mode> col(double* buf, const choicer_off j) const {
     const std::size_t jj = static_cast<std::size_t>(j);
-    if (!Shared) {
-      buf[T > 1 ? jj * (jj + 1) / 2 + ii : ii + jj * static_cast<std::size_t>(n)] += v;
-    } else if (i < s) {
-      buf[sym_acc_col_off(j, s) + ii] += v;
-    } else {
-      double& t = out[ii + jj * static_cast<std::size_t>(n)];
-      if (Atomic) {
-#ifdef _OPENMP
-#pragma omp atomic update
-#endif
-        t += v;
-      } else {
-        t += v;
-      }
+    if (Mode == SymMode::Single) {
+      return {buf + jj * static_cast<std::size_t>(n), nullptr, 0};
     }
+    if (Mode == SymMode::Triangles) return {buf + jj * (jj + 1) / 2, nullptr, 0};
+    return {buf + sym_acc_col_off(j, s), out + jj * static_cast<std::size_t>(n),
+            static_cast<std::size_t>(s)};
+  }
+  // Add v to entry (i, j), i <= j, from the thread whose buffer is `buf`.
+  template <SymMode Mode>
+  void add(double* buf, const choicer_off i, const choicer_off j, const double v) const {
+    col<Mode>(buf, j).add(static_cast<std::size_t>(i), v);
   }
 
   // The upper triangle of the result: the entries the threads kept, added
@@ -535,6 +580,7 @@ struct ClusterSum {
   std::vector<double> s;     // n_params, zero outside the support
   std::vector<char> in;      // support marker
   std::vector<int> supp;     // support, in the order first touched
+  std::vector<double> c;     // a column of s_g s_g', its terms stored before they are added
   bool dense = false;        // support is every parameter
   bool used = false;         // a cut part holds a sum
   int g = 0;                 // its cluster
@@ -544,7 +590,8 @@ struct ClusterSum {
   // share a cache line.
   explicit ClusterSum(const int n)
       : s(static_cast<std::size_t>(n) + 16, 0.0),
-        in(static_cast<std::size_t>(n) + 128, 0) {
+        in(static_cast<std::size_t>(n) + 128, 0),
+        c(static_cast<std::size_t>(n) + 16) {
     s.resize(static_cast<std::size_t>(n));
     in.resize(static_cast<std::size_t>(n));
     supp.reserve(static_cast<std::size_t>(n) + 32);
@@ -552,7 +599,7 @@ struct ClusterSum {
   // Bytes of one sum over n parameters, its arrays' slack included (for the
   // memory checks).
   static double bytes(const int n) {
-    return sizeof(ClusterSum) + sizeof(double) * (n + 16.0) + (n + 128.0) +
+    return sizeof(ClusterSum) + 2.0 * sizeof(double) * (n + 16.0) + (n + 128.0) +
            sizeof(int) * (n + 32.0);
   }
   void touch(const int k) {
@@ -614,23 +661,42 @@ struct ClusterSum {
         }))
       make_dense();
     std::sort(supp.begin(), supp.end());
-    if (!acc.shared) {
-      update_into<false, false>(acc, buf);
-    } else if (serial) {
-      update_into<true, false>(acc, buf);
-    } else {
-      update_into<true, true>(acc, buf);
+    switch (acc.mode()) {
+      case SymMode::Single:
+        update_into<SymMode::Single>(acc, buf);
+        break;
+      case SymMode::Triangles:
+        update_into<SymMode::Triangles>(acc, buf);
+        break;
+      default:
+        if (serial) {
+          update_into<SymMode::Serial>(acc, buf);
+        } else {
+          update_into<SymMode::Shared>(acc, buf);
+        }
     }
   }
-  template <bool Shared, bool Atomic>
-  void update_into(const SymAcc& acc, double* buf) const {
+  // Column by column, each term the rounded product, never fused into its
+  // addition (CHOICER_STORE_TERMS).
+  template <SymMode Mode>
+  void update_into(const SymAcc& acc, double* buf) {
     const int n = static_cast<int>(supp.size());
+    double* cb = c.data();
     for (int b = 0; b < n; ++b) {
       const int g_b = supp[b];
       const double s_b = s[g_b];
-      for (int a = 0; a <= b; ++a) {
-        const double v = s[supp[a]] * s_b;
-        acc.add<Shared, Atomic>(buf, supp[a], g_b, v);
+      const SymCol<Mode> col = acc.col<Mode>(buf, g_b);
+      if (CHOICER_STORE_TERMS) {
+        for (int a = 0; a <= b; ++a) {
+          const double v = s[supp[a]] * s_b;
+          cb[a] = v;
+        }
+        for (int a = 0; a <= b; ++a) col.add(static_cast<std::size_t>(supp[a]), cb[a]);
+      } else {
+        for (int a = 0; a <= b; ++a) {
+          const double v = s[supp[a]] * s_b;
+          col.add(static_cast<std::size_t>(supp[a]), v);
+        }
       }
     }
   }
@@ -754,17 +820,28 @@ inline void apply_nonfinite(SymAcc& acc,
 // Add w_u H_u, the unit's m_u x m_u Hessian block (exactly symmetric), into
 // the accumulator's upper triangle; each term is the block's entry times the
 // weight, formed before it is added, as Armadillo's element-wise update of
-// the dense code formed it (see mxl_hessian_parallel()).
-template <bool Shared, typename Map>
+// the dense code formed it (see mxl_hessian_parallel()), and never fused into
+// the addition (CHOICER_STORE_TERMS; c holds a column, m_u entries).
+template <SymMode Mode, typename Map>
 inline void sym_add_block(const SymAcc& acc, double* buf, const Map& mp,
-                          const int Kc, const arma::mat& H, const double w_u) {
+                          const int Kc, const arma::mat& H, const double w_u,
+                          double* c) {
   const int m_u = static_cast<int>(H.n_rows);
   for (int j = 0; j < m_u; ++j) {
-    const int gj = mp.global(j, Kc);
-    for (int i = 0; i <= j; ++i) {
-      double v = H(i, j);
-      v *= w_u;
-      acc.add<Shared>(buf, mp.global(i, Kc), gj, v);
+    const SymCol<Mode> col = acc.col<Mode>(buf, mp.global(j, Kc));
+    if (CHOICER_STORE_TERMS) {
+      for (int i = 0; i <= j; ++i) {
+        double v = H(i, j);
+        v *= w_u;
+        c[i] = v;
+      }
+      for (int i = 0; i <= j; ++i) col.add(static_cast<std::size_t>(mp.global(i, Kc)), c[i]);
+    } else {
+      for (int i = 0; i <= j; ++i) {
+        double v = H(i, j);
+        v *= w_u;
+        col.add(static_cast<std::size_t>(mp.global(i, Kc)), v);
+      }
     }
   }
 }
@@ -775,7 +852,7 @@ inline void sym_add_block(const SymAcc& acc, double* buf, const Map& mp,
 // w * s * s.t() (the product of the two scores, times the weight), stored,
 // then added, so that the weight's product is never fused into the addition
 // (see mxl_bhhh_parallel()).
-template <bool Shared, typename Map>
+template <SymMode Mode, typename Map>
 inline void bhhh_add(const SymAcc& acc, double* buf, const Map& mp,
                      const int K_c, const arma::vec& s_u, const double w_u,
                      double* c) {
@@ -786,15 +863,17 @@ inline void bhhh_add(const SymAcc& acc, double* buf, const Map& mp,
       const double acc1 = s_u[a] * s_b;
       c[a] = w_u * acc1;
     }
-    const int g_b = mp.global(b, K_c);
-    for (int a = 0; a <= b; ++a) acc.add<Shared>(buf, mp.global(a, K_c), g_b, c[a]);
+    const SymCol<Mode> col = acc.col<Mode>(buf, mp.global(b, K_c));
+    for (int a = 0; a <= b; ++a) {
+      col.add(static_cast<std::size_t>(mp.global(a, K_c)), c[a]);
+    }
   }
 }
 
 // The same update over every entry, the score read from the slot map (zero
 // outside the block), for a unit whose score or weight is not finite; c holds
 // a column (n_params entries).
-template <bool Shared, typename Map>
+template <SymMode Mode, typename Map>
 inline void bhhh_add_dense(const SymAcc& acc, double* buf, const Map& mp,
                            const int K_c, const arma::vec& s_u,
                            const double w_u, double* c) {
@@ -809,7 +888,8 @@ inline void bhhh_add_dense(const SymAcc& acc, double* buf, const Map& mp,
       const double acc1 = s_of(k) * s_i;
       c[k] = w_u * acc1;
     }
-    for (int k = 0; k <= i; ++k) acc.add<Shared>(buf, k, i, c[k]);
+    const SymCol<Mode> col = acc.col<Mode>(buf, i);
+    for (int k = 0; k <= i; ++k) col.add(static_cast<std::size_t>(k), c[k]);
   }
 }
 

@@ -1219,16 +1219,19 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
   // Pass 1 (the shared draw loop) yields omega; pass 2 accumulates the O3
   // buffers with omega_s where the cross-section used P_choice_s / P_i_hat.
 
-  // The result and the threads' accumulators, slot maps and non-finite
-  // records, all allocated here on the primary thread.
+  // The result and the threads' accumulators, slot maps, non-finite
+  // records and a column of a unit's terms (sym_add_block()), all allocated
+  // here on the primary thread.
   const int n_threads = kernel_team_threads(lay.U);
   kernel_check_memory("Hessian", n_threads,
                       ud.scratch_bytes() + mxl_map_bytes(ud) +
-                          mxl_hessian_unit_bytes(ud),
+                          mxl_hessian_unit_bytes(ud) + 8.0 * (n_params + 16.0),
                       [&](const int t) { return sym_acc_need(n_params, Kc, t, acc_bytes); });
   SymAcc acc(n_params, n_threads, Kc, "Hessian", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
   std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
+  std::vector<std::vector<double>> cols =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
 
 #ifdef _OPENMP
 #pragma omp parallel num_threads(n_threads)
@@ -1238,6 +1241,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
     MxlUnitMap& mp = *maps[tid];
     NonFiniteRecord& nf = nonfinite[tid];
     double* acc_t = acc.base(tid);
+    double* col = cols[tid].data();
 
     // Thread-private scratch — sized per unit or situation, reset inside
     // loops as needed; Armadillo keeps a member's memory as it shrinks.
@@ -1585,10 +1589,15 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
       //     only; GCC, which may fuse main's element-wise loop, can round
       //     these additions differently in the last bit (class T, as are the
       //     smaller BLAS products).
-      if (acc.shared) {
-        sym_add_block<true>(acc, acc_t, mp, Kc, opg_pz, w_u);
-      } else {
-        sym_add_block<false>(acc, acc_t, mp, Kc, opg_pz, w_u);
+      switch (acc.mode()) {
+        case SymMode::Single:
+          sym_add_block<SymMode::Single>(acc, acc_t, mp, Kc, opg_pz, w_u, col);
+          break;
+        case SymMode::Triangles:
+          sym_add_block<SymMode::Triangles>(acc, acc_t, mp, Kc, opg_pz, w_u, col);
+          break;
+        default:
+          sym_add_block<SymMode::Shared>(acc, acc_t, mp, Kc, opg_pz, w_u, col);
       }
       if (!std::isfinite(w_u)) {
         nonfinite_weight(w_u, m_u, [&](const int i) { return mp.global(i, Kc); },
@@ -1705,12 +1714,15 @@ Rcpp::List mxl_delta_hessian_parallel(
   // here on the primary thread
   const int n_threads = kernel_team_threads(lay.U);
   kernel_check_memory("Hessian of the constants", n_threads,
-                      ud.scratch_bytes() + mxl_map_bytes(ud) + mxl_delta_unit_bytes(ud),
+                      ud.scratch_bytes() + mxl_map_bytes(ud) + mxl_delta_unit_bytes(ud) +
+                          8.0 * (J_d + 16.0),
                       [&](const int t) {
                         return sym_acc_need(J_d, 0, t, acc_bytes) + 16.0 * n_params;
                       });
   SymAcc acc(J_d, n_threads, 0, "Hessian of the constants", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads);
+  std::vector<std::vector<double>> cols =
+      thread_vectors<double>(static_cast<std::size_t>(J_d), n_threads);
 
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
@@ -1723,6 +1735,7 @@ Rcpp::List mxl_delta_hessian_parallel(
     const int tid = kernel_thread_num();
     MxlUnitMap& mp = *maps[tid];
     double* acc_t = acc.base(tid);
+    double* col = cols[tid].data();  // a column of the unit's block
     MxlUnitScratch sc;
     double local_loglik = 0.0;
     arma::vec local_grad = arma::zeros(n_params);
@@ -1834,10 +1847,15 @@ Rcpp::List mxl_delta_hessian_parallel(
       H_u.diag() -= diag_u;
       // w_u H_u into the accumulator's upper triangle (K_c = 0: the slots'
       // global indices are the constants')
-      if (acc.shared) {
-        sym_add_block<true>(acc, acc_t, mp, 0, H_u, w_u);
-      } else {
-        sym_add_block<false>(acc, acc_t, mp, 0, H_u, w_u);
+      switch (acc.mode()) {
+        case SymMode::Single:
+          sym_add_block<SymMode::Single>(acc, acc_t, mp, 0, H_u, w_u, col);
+          break;
+        case SymMode::Triangles:
+          sym_add_block<SymMode::Triangles>(acc, acc_t, mp, 0, H_u, w_u, col);
+          break;
+        default:
+          sym_add_block<SymMode::Shared>(acc, acc_t, mp, 0, H_u, w_u, col);
       }
       mxl_unit_map_clear(mp);
     }
@@ -2023,10 +2041,15 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
       // accumulator, which starts at +0, is ever -0.
       if (std::isfinite(w_u) && s_u.is_finite()) {
         col.resize(static_cast<std::size_t>(m_u));
-        if (acc.shared) {
-          bhhh_add<true>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
-        } else {
-          bhhh_add<false>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+        switch (acc.mode()) {
+          case SymMode::Single:
+            bhhh_add<SymMode::Single>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            break;
+          case SymMode::Triangles:
+            bhhh_add<SymMode::Triangles>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            break;
+          default:
+            bhhh_add<SymMode::Shared>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
         }
       } else {
         // A non-finite weight, or a non-finite score (utilities that
@@ -2035,10 +2058,15 @@ Rcpp::NumericMatrix mxl_bhhh_parallel(
         // 0 * Inf spread it over whole rows and columns. The scores come
         // from the slot map, zero outside the block.
         col.resize(static_cast<std::size_t>(n_params));
-        if (acc.shared) {
-          bhhh_add_dense<true>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
-        } else {
-          bhhh_add_dense<false>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+        switch (acc.mode()) {
+          case SymMode::Single:
+            bhhh_add_dense<SymMode::Single>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            break;
+          case SymMode::Triangles:
+            bhhh_add_dense<SymMode::Triangles>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
+            break;
+          default:
+            bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K_c, s_u, w_u, col.data());
         }
       }
       mxl_unit_map_clear(mp);

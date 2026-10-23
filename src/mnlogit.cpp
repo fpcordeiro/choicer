@@ -600,20 +600,30 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
       // dense update added w_i * (0 * s) outside the block, +-0, which
       // changes nothing: no accumulator, which starts at +0, is ever -0.
       if (std::isfinite(w_i) && s_c.is_finite()) {
-        if (acc.shared) {
-          bhhh_add<true>(acc, acc_t, mp, K, s_c, w_i, col);
-        } else {
-          bhhh_add<false>(acc, acc_t, mp, K, s_c, w_i, col);
+        switch (acc.mode()) {
+          case SymMode::Single:
+            bhhh_add<SymMode::Single>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          case SymMode::Triangles:
+            bhhh_add<SymMode::Triangles>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          default:
+            bhhh_add<SymMode::Shared>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       } else {
         // A non-finite weight, or a non-finite score (utilities that
         // overflowed): the dense update over every entry, whose 0 * NaN and
         // 0 * Inf spread it over whole rows and columns. The scores come
         // from the slot map, zero outside the block.
-        if (acc.shared) {
-          bhhh_add_dense<true>(acc, acc_t, mp, K, s_c, w_i, col);
-        } else {
-          bhhh_add_dense<false>(acc, acc_t, mp, K, s_c, w_i, col);
+        switch (acc.mode()) {
+          case SymMode::Single:
+            bhhh_add_dense<SymMode::Single>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          case SymMode::Triangles:
+            bhhh_add_dense<SymMode::Triangles>(acc, acc_t, mp, K, s_c, w_i, col);
+            break;
+          default:
+            bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K, s_c, w_i, col);
         }
       }
       mnl_situation_map_clear(mp);
@@ -1320,37 +1330,72 @@ arma::vec blp_contraction(
 // makes its whole row NaN in this thread's sums, inside the block through
 // the products and outside through these terms, so nan_row marks the row
 // and its later spreads, which change nothing, are skipped.
-template <bool Shared>
+template <SymMode Mode>
 inline void mnl_hessian_add(const SymAcc& acc, double* buf,
                             const MnlSituationMap& mp, const int K,
                             const int J_d, const double* BB,
                             const double* mu_b, const double* BD,
                             const double* mu_d, const double w,
-                            char* nan_row) {
+                            char* nan_row, double* ct) {
+  // Each term is the rounded product, never fused into its addition: where
+  // the compiler contracts across statements a column's terms are stored in
+  // ct first (CHOICER_STORE_TERMS).
   const std::size_t Ks = static_cast<std::size_t>(K);
   for (int c = 0; c < K; ++c) {
-    for (int r = 0; r <= c; ++r) {
-      double v = BB[r + c * Ks];
-      v *= w;
-      acc.add<Shared>(buf, r, c, -v);
+    const SymCol<Mode> col = acc.col<Mode>(buf, c);
+    if (CHOICER_STORE_TERMS) {
+      for (int r = 0; r <= c; ++r) {
+        double v = BB[r + c * Ks];
+        v *= w;
+        ct[r] = v;
+      }
+      for (int r = 0; r <= c; ++r) col.add(static_cast<std::size_t>(r), -ct[r]);
+    } else {
+      for (int r = 0; r <= c; ++r) {
+        double v = BB[r + c * Ks];
+        v *= w;
+        col.add(static_cast<std::size_t>(r), -v);
+      }
     }
   }
   for (int s = 0; s < mp.a; ++s) {
     const int g = K + mp.delta[s];
-    for (int r = 0; r < K; ++r) {
-      double v = BD[r + s * Ks];
-      v *= w;
-      acc.add<Shared>(buf, r, g, -v);
-    }
+    const SymCol<Mode> col = acc.col<Mode>(buf, g);
     const double ms = mu_d[s];
-    for (int t = 0; t < s; ++t) {
-      double v = 0.0 - mu_d[t] * ms;
+    if (CHOICER_STORE_TERMS) {
+      for (int r = 0; r < K; ++r) {
+        double v = BD[r + s * Ks];
+        v *= w;
+        ct[r] = v;
+      }
+      for (int t = 0; t < s; ++t) {
+        double v = 0.0 - mu_d[t] * ms;
+        v *= w;
+        ct[K + t] = v;
+      }
+      double v = ms - ms * ms;
       v *= w;
-      acc.add<Shared>(buf, K + mp.delta[t], g, -v);
+      ct[K + s] = v;
+      for (int r = 0; r < K; ++r) col.add(static_cast<std::size_t>(r), -ct[r]);
+      for (int t = 0; t < s; ++t) {
+        col.add(static_cast<std::size_t>(K + mp.delta[t]), -ct[K + t]);
+      }
+      col.add(static_cast<std::size_t>(g), -ct[K + s]);
+    } else {
+      for (int r = 0; r < K; ++r) {
+        double v = BD[r + s * Ks];
+        v *= w;
+        col.add(static_cast<std::size_t>(r), -v);
+      }
+      for (int t = 0; t < s; ++t) {
+        double v = 0.0 - mu_d[t] * ms;
+        v *= w;
+        col.add(static_cast<std::size_t>(K + mp.delta[t]), -v);
+      }
+      double v = ms - ms * ms;
+      v *= w;
+      col.add(static_cast<std::size_t>(g), -v);
     }
-    double v = ms - ms * ms;
-    v *= w;
-    acc.add<Shared>(buf, g, g, -v);
   }
   for (int l = 0; l < K + mp.a; ++l) {
     const double mean = l < K ? mu_b[l] : mu_d[l - K];
@@ -1365,7 +1410,7 @@ inline void mnl_hessian_add(const SymAcc& acc, double* buf,
     for (int j = 0; j < J_d; ++j) {
       if (mp.slot_of[j] >= 0) continue;  // inside the block
       const int h = K + j;
-      acc.add<Shared>(buf, std::min(g, h), std::max(g, h), -v);
+      acc.add<Mode>(buf, std::min(g, h), std::max(g, h), -v);
     }
   }
 }
@@ -1440,7 +1485,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   const int n_threads = kernel_team_threads(N);
   kernel_check_memory("Hessian", n_threads,
                       mnl_map_bytes(J_d, lay.max_m) +
-                          8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + 64.0) +
+                          8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + (K + a_max + 1.0) + 64.0) +
                           7.0 * n_params + 128.0 + mnl_thread_bytes(lay, K, n_params, 0.0),
                       [&](const int t) {
                         return 8.0 * static_cast<double>(lay.n_rows) +
@@ -1456,7 +1501,8 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
   MnlSituationMaps maps = mnl_situation_maps(J_d, lay.max_m, n_threads);
   std::vector<MnlWork> work = mnl_work(lay, K, n_threads);
   const std::size_t blk = static_cast<std::size_t>(K * (K + 2.0) + (K + 1.0) * a_max);
-  std::vector<std::vector<double>> blocks = thread_vectors<double>(blk, n_threads);
+  const std::size_t n_ct = static_cast<std::size_t>(K + a_max + 1.0);
+  std::vector<std::vector<double>> blocks = thread_vectors<double>(blk + n_ct, n_threads);
   std::vector<NonFiniteRecord> nonfinite = nonfinite_records(n_params, n_threads);
   std::vector<std::vector<char>> nan_rows =
       thread_vectors<char>(static_cast<std::size_t>(n_params), n_threads, 0);
@@ -1474,12 +1520,13 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
     NonFiniteRecord& nf = nonfinite[tid];
     char* nan_row = nan_rows[tid].data();
     double* acc_t = acc.base(tid);
-    // BB (K x K), mu_b (K), BD (K x a), mu_d (a) and K products, in one
-    // buffer
+    // BB (K x K), mu_b (K), BD (K x a), mu_d (a), K products and a column's
+    // terms (mnl_hessian_add()), in one buffer
     const std::size_t Ks = static_cast<std::size_t>(K);
     double* BB = blocks[tid].data();
     double* mu_b = BB + Ks * Ks;
     double* BD = mu_b + K;
+    double* ct = blocks[tid].data() + blk;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1536,12 +1583,18 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
         nonfinite_weight(w_i, K + a, [&](const int l) { return mp.global(l, K); }, nf);
       }
 
-      if (acc.shared) {
-        mnl_hessian_add<true>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
-                              nan_row);
-      } else {
-        mnl_hessian_add<false>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
-                               nan_row);
+      switch (acc.mode()) {
+        case SymMode::Single:
+          mnl_hessian_add<SymMode::Single>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
+                                           nan_row, ct);
+          break;
+        case SymMode::Triangles:
+          mnl_hessian_add<SymMode::Triangles>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
+                                           nan_row, ct);
+          break;
+        default:
+          mnl_hessian_add<SymMode::Shared>(acc, acc_t, mp, K, J_d, BB, mu_b, BD, mu_d, w_i,
+                                           nan_row, ct);
       }
       mnl_situation_map_clear(mp);
     } // end of i loop
