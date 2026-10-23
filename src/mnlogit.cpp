@@ -410,8 +410,8 @@ Rcpp::List mnl_loglik_gradient_parallel(
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
   // diagonal, the constants' scores and the terms), X beta, the sums, the
-  // negated gradient and R's copies of it and of the diagonal. Each thread
-  // allocates its sums before its first situation, so the pass runs on the
+  // negated gradient and R's copies of it and of the diagonal. The pass
+  // allocates every thread's sums and buffers on the primary thread, for the
   // team checked here.
   const int n_threads = kernel_team_threads(lay.N);
   kernel_check_memory(
