@@ -1646,19 +1646,32 @@ compute_scores <- function(object) {
 #' \code{rowsum()}, numbered as the labels first appear. Where the labels'
 #' own values group them as their strings do, the codes come from the values,
 #' without the strings (\code{as.character()} of 10^7 integer labels took
-#' 9.5 s and 1.1 GB): a factor's integer codes, unless two of its levels are
-#' the same string; plain integer, logical and character vectors as they are.
-#' Every other vector (doubles, whose strings merge values that print alike,
-#' dates, integer64 and other classes) goes through \code{as.character()}.
-#' The partition and its numbering are the same either way.
+#' 9.5 s and 1.1 GB): the integer codes of a plain factor or ordered factor
+#' whose codes are not \code{NA} and index distinct levels, none of them
+#' marked \code{"bytes"} (which makes \code{match()} compare bytewise);
+#' plain integer, logical and character vectors as they are. Every other
+#' vector goes through \code{as.character()}: doubles, whose strings merge
+#' values that print alike, dates, integer64, matrices, other classes,
+#' factor subclasses (which may have their own \code{as.character()}), and
+#' malformed factors, which it reports. The partition and its numbering are
+#' the same either way.
 #'
 #' @param x Cluster labels, checked by \code{.check_cluster_labels()}.
 #' @returns Integer codes, one per label.
 #' @noRd
 .cluster_codes <- function(x) {
-  if (is.factor(x)) {
-    x <- if (anyDuplicated(levels(x))) as.character(x) else as.integer(x)
-  } else if (is.object(x) || !(is.integer(x) || is.logical(x) || is.character(x))) {
+  cls <- oldClass(x)
+  if (identical(cls, "factor") || identical(cls, c("ordered", "factor"))) {
+    lev <- attr(x, "levels")
+    if (typeof(x) == "integer" && is.character(lev) && !anyDuplicated(lev) &&
+        !any(Encoding(lev) == "bytes")) {
+      codes <- as.integer(x)
+      u <- unique(codes)
+      if (!anyNA(u) && all(u >= 1L & u <= length(lev))) return(match(codes, u))
+    }
+    x <- as.character(x)
+  } else if (is.object(x) || !is.null(dim(x)) ||
+             !(is.integer(x) || is.logical(x) || is.character(x))) {
     x <- as.character(x)
   }
   match(x, unique(x))
