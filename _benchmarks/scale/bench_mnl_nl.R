@@ -6,8 +6,9 @@
 #   R_LIBS=<lib> Rscript _benchmarks/scale/bench_mnl_nl.R tag=<label> \
 #     model=<mnl|nl> regime=<claims|census|census20k|small> U=<units> \
 #     threads=1,11 reps=3 mode=<time|mem> out=<file.rds> \
-#     what=grad[,hess,bhhh,robust,scores,meat_cluster,meatr_robust,meatr_cluster,elas,dr,predict,shares] \
-#     [nests=50] [clusters=unit|<G>] [weights=unit|runif] [situations=<n>] [seed=1] [Kx=10] [warm=1]
+#     what=grad[,grad_opg,hess,bhhh,robust,scores,meat_cluster,meatr_robust,meatr_cluster,elas,dr,predict,shares,blp] \
+#     [nests=50] [clusters=unit|<G>] [weights=unit|runif] [situations=<n>] [seed=1] [Kx=10] [warm=1] \
+#     [ioo=0] [acc=<bytes>] [blp_iter=3]
 #
 # Data: gen_regime()'s design (the mixed logit's generator; its choices come
 # from that model), read as a cross-section of choice situations: X (Kx
@@ -22,8 +23,13 @@
 # Clusters: the decision maker of each situation (`unit`, the default), or
 # `G` groups of decision makers.
 #
+# `ioo=1` adds the outside option (a constant for every alternative). `acc`
+# passes acc_bytes to the elasticity and diversion kernels of builds that take
+# it (0.3.0's J x J accumulators; 0 forces the threads to share one result).
+#
 # Kernels:
 #   grad          the log-likelihood and gradient;
+#   grad_opg      the same with the OPG diagonal (scale_vars = "bhhh"'s pass);
 #   hess, bhhh    the Hessian and the BHHH matrix (weights w);
 #   robust        the BHHH kernel with weights w^2 (the sandwich's meat);
 #   scores        the N x n score matrix;
@@ -32,7 +38,9 @@
 #                 post hoc: the score matrix, then crossprod(w * S) (and
 #                 rowsum() by cluster);
 #   elas, dr      elasticities (of the first covariate) and diversion ratios;
-#   predict, shares  probabilities and utilities, and predicted shares.
+#   predict, shares  probabilities and utilities, and predicted shares;
+#   blp           blp_contraction() / nl_blp_contraction() at tol = 0: blp_iter
+#                 iterations, so blp_iter + 1 passes of the shares.
 source(file.path(dirname(normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE),
   value = TRUE)))), "scale_common.R"))
 lib <- load_choicer()
@@ -55,6 +63,9 @@ n_nests <- as.integer(get_opt("nests", "50"))
 clusters <- get_opt("clusters", "unit")
 wmode <- get_opt("weights", "unit")
 n_sit <- as.numeric(get_opt("situations", "0"))
+ioo <- get_opt("ioo", "0") == "1"
+acc <- get_opt("acc", "")
+blp_iter <- as.integer(get_opt("blp_iter", "3"))
 out <- get_opt("out", file.path(scale_output("kernels"),
                                 sprintf("%s_%s_%s_U%d_%s.rds", tag, model, regime, U, mode)))
 stopifnot(model %in% c("mnl", "nl"), mode %in% c("time", "mem"),
@@ -63,8 +74,9 @@ if (mode == "mem" && !shim_loaded()) stop("mode=mem needs the malloc shim (outpu
 if (mode == "time" && shim_loaded()) stop("mode=time must run without the shim")
 dir.create(dirname(out), showWarnings = FALSE, recursive = TRUE)
 
-cat(sprintf("== %s %s %s | %s U=%d Kx=%d%s | weights %s clusters %s%s | threads %s | what %s | load %s\n",
+cat(sprintf("== %s %s %s | %s U=%d Kx=%d%s%s | weights %s clusters %s%s | threads %s | what %s | load %s\n",
             tag, model, mode, regime, U, Kx, if (model == "nl") sprintf(" nests=%d", n_nests) else "",
+            if (ioo) " outside option" else "",
             wmode, clusters, if (n_sit > 0) sprintf(" | first %.0f situations", n_sit) else "",
             paste(threads, collapse = ","), paste(what, collapse = ","), loadavg()))
 
@@ -86,12 +98,13 @@ if (n_sit > 0 && n_sit < length(d$M)) {
 g$W <- NULL
 J <- g$J
 beta <- 0.5 * seq(-1, 1, length.out = Kx)
-delta <- g$delta[-1]
+delta <- if (ioo) g$delta else g$delta[-1]
 nest_idx <- NULL
 if (model == "nl") {
   nest_idx <- as.integer((seq_len(J) - 1L) %% n_nests + 1L)
   K_l <- sum(tabulate(nest_idx) > 1L)
   theta <- c(beta, rep(0.7, K_l), delta)
+  lambda_full <- ifelse(tabulate(nest_idx) > 1L, 0.7, 1)
 } else {
   theta <- c(beta, delta)
 }
@@ -107,7 +120,7 @@ kern <- function(name) get0(paste0(model, "_", name), envir = ns, inherits = FAL
 w_args <- function(w) {
   a <- list(theta = theta, X = d$X, alt_idx = d$alt_idx, choice_idx = d$choice_idx)
   if (model == "nl") a$nest_idx <- nest_idx
-  c(a, list(M = d$M, weights = w, use_asc = TRUE, include_outside_option = FALSE))
+  c(a, list(M = d$M, weights = w, use_asc = TRUE, include_outside_option = ioo))
 }
 nw_args <- function() {
   a <- w_args(NULL); a$weights <- NULL; a
@@ -116,11 +129,27 @@ p_args <- function(w = NULL) {
   a <- list(theta = theta, X = d$X, alt_idx = d$alt_idx, M = d$M)
   if (model == "nl") a$nest_idx <- nest_idx
   if (!is.null(w)) a$weights <- w
-  c(a, list(use_asc = TRUE, include_outside_option = FALSE))
+  c(a, list(use_asc = TRUE, include_outside_option = ioo))
+}
+# acc_bytes for the J x J kernels of builds that take it
+acc_arg <- function(f) {
+  if (nzchar(acc) && "acc_bytes" %in% names(formals(f))) list(acc_bytes = as.numeric(acc)) else list()
+}
+call_blp <- function() {
+  target <- rep(1 / (J + ioo), J + ioo)
+  utils::capture.output(r <- if (model == "nl") {
+    ns$nl_blp_contraction(rep(0, J), target, d$X, beta, lambda_full, d$alt_idx, nest_idx, d$M,
+                          d$weights, ioo, tol = 0, max_iter = blp_iter)
+  } else {
+    ns$blp_contraction(rep(0, J), target, d$X, beta, d$alt_idx, d$M, d$weights, ioo,
+                       tol = 0, max_iter = blp_iter)
+  })
+  r
 }
 call_kernel <- function(k) {
   switch(k,
     grad = do.call(kern("loglik_gradient_parallel"), w_args(d$weights)),
+    grad_opg = do.call(kern("loglik_gradient_parallel"), c(w_args(d$weights), list(opg_diag = TRUE))),
     hess = do.call(kern("loglik_hessian_parallel"), w_args(d$weights)),
     bhhh = do.call(kern("bhhh_parallel"), w_args(d$weights)),
     robust = do.call(kern("bhhh_parallel"), w_args(d$weights^2)),
@@ -135,8 +164,11 @@ call_kernel <- function(k) {
       S <- do.call(kern("scores_parallel"), nw_args())
       crossprod(rowsum(d$weights * S, group = as.character(cl)))
     },
-    elas = do.call(kern("elasticities_parallel"), c(w_args(d$weights), list(elast_var_idx = 1L))),
-    dr = do.call(kern("diversion_ratios_parallel"), p_args(d$weights)),
+    elas = do.call(kern("elasticities_parallel"), c(w_args(d$weights), list(elast_var_idx = 1L),
+                                                     acc_arg(kern("elasticities_parallel")))),
+    dr = do.call(kern("diversion_ratios_parallel"), c(p_args(d$weights),
+                                                     acc_arg(kern("diversion_ratios_parallel")))),
+    blp = call_blp(),
     predict = do.call(kern("predict"), p_args()),
     shares = do.call(kern("predict_shares"), p_args(d$weights)),
     stop("unknown kernel ", k))
@@ -150,6 +182,7 @@ check_value <- function(x) {
 rows_out <- list()
 add_row <- function(...) rows_out[[length(rows_out) + 1L]] <<- data.frame(..., stringsAsFactors = FALSE)
 info <- list(tag = tag, lib = lib, model = model, mode = mode, regime = regime, U = U, N = N,
+             ioo = ioo, acc = acc, blp_iter = blp_iter,
              rows = rows, J = J, n_par = length(theta), nests = if (model == "nl") n_nests,
              Kx = Kx, seed = seed, weights = wmode, clusters = clusters, n_clusters = n_cl,
              situations = n_sit, t_gen = t_gen, rss0 = rss0, rss_data = rss_data,

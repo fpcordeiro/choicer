@@ -5,8 +5,8 @@
 #   R_LIBS=<lib> Rscript _benchmarks/scale/bench_kernels.R tag=<label> \
 #     regime=<claims|census|census20k|small> U=<units> S=<draws> threads=1,11 reps=3 \
 #     mode=<time|mem> draws=<generate|store> out=<file.rds> \
-#     what=grad[,hess,bhhh,scores,tastes,predict,meat_cluster,meatr_robust,meatr_cluster,layout] \
-#     [seed=1] [Kx=10] [Kw=3] [warm=1] [clusters=2000]
+#     what=grad[,hess,bhhh,scores,tastes,predict,elas,elas_r,dr,dr_r,meat_cluster,meatr_robust,meatr_cluster,layout] \
+#     [seed=1] [Kx=10] [Kw=3] [warm=1] [clusters=2000] [acc=<bytes>]
 #
 # mode=time runs without the shim: per (kernel, threads) a warm call (warm=1)
 # and `reps` timed calls. mode=mem runs under the malloc shim (output/Rmc with
@@ -21,6 +21,10 @@
 #   grad, hess, bhhh, scores, tastes, predict  the internal kernels behind the
 #     log-likelihood and gradient, the Hessian, the BHHH matrix, the score
 #     matrix, conditional_tastes() and predict();
+#   elas, dr       the elasticities and diversion ratios of the first fixed
+#     coefficient (elas_r, dr_r: of the first random one), with the prediction
+#     draws; `acc` passes acc_bytes to builds that take it (0.3.0's J x J
+#     accumulators; 0 forces the threads to share one result);
 #   meat_cluster   the clustered meat kernel (0.3.0), `clusters` clusters of units;
 #   meatr_robust, meatr_cluster  the meats as releases before 0.3.0 formed them:
 #     the U x n score matrix, then crossprod() (and rowsum() by cluster);
@@ -49,6 +53,7 @@ Kw <- as.integer(get_opt("Kw", "3"))
 warm <- get_opt("warm", "1") == "1"
 G <- as.integer(get_opt("clusters", "2000"))
 draws_mode <- get_opt("draws", "generate")
+acc <- get_opt("acc", "")
 out <- get_opt("out", file.path(scale_output("kernels"),
                                 sprintf("%s_%s_U%d_S%d_%s.rds", tag, regime, U, S, mode)))
 stopifnot(mode %in% c("time", "mem"), draws_mode %in% c("generate", "store"))
@@ -88,7 +93,7 @@ est_flags <- list(rc_correlation = TRUE, rc_mean = TRUE, use_asc = TRUE,
                   gen_S = if (draws_mode == "store") 0L else S)
 pred <- list(eta_draws = empty, gen_seed = 17L, gen_scramble = 1L, gen_S = S)
 t_pd <- NA_real_
-if (draws_mode == "store" && "predict" %in% what) {
+if (draws_mode == "store" && any(c("predict", "elas", "elas_r", "dr", "dr_r") %in% what)) {
   if (store_points) {
     pred <- list(eta_draws = empty, gen_seed = 0L, gen_scramble = 2L, gen_S = S)
   } else {
@@ -105,6 +110,18 @@ est_args <- c(list(theta = theta, X = d$X, W = d$W, alt_idx = d$alt_idx,
                    choice_idx = d$choice_idx, M = d$M, eta_draws = eta_est,
                    rc_dist = rep(0L, d$K_w)), est_flags, list(Ti = d$Ti))
 weighted <- c(est_args, list(weights = d$weights))
+# The elasticity and diversion kernels (prediction draws), and acc_bytes for
+# builds that take it
+pred_kernel <- function(f, random, with_choice) {
+  a <- list(theta = theta, X = d$X, W = d$W, alt_idx = d$alt_idx)
+  if (with_choice) a$choice_idx <- d$choice_idx
+  a <- c(a, list(M = d$M, weights = d$weights, eta_draws = pred$eta_draws,
+                 rc_dist = rep(0L, d$K_w), elast_var_idx = 1L, is_random_coef = random),
+         est_flags[c("rc_correlation", "rc_mean", "use_asc", "include_outside_option")],
+         pred[c("gen_seed", "gen_scramble", "gen_S")])
+  if (nzchar(acc) && "acc_bytes" %in% names(formals(f))) a$acc_bytes <- as.numeric(acc)
+  do.call(f, a)
+}
 call_kernel <- function(k) {
   switch(k,
     grad = do.call(ns$mxl_loglik_gradient_parallel, weighted),
@@ -120,6 +137,10 @@ call_kernel <- function(k) {
                              eta_draws = pred$eta_draws, rc_dist = rep(0L, d$K_w)),
                         est_flags[c("rc_correlation", "rc_mean", "use_asc", "include_outside_option")],
                         pred[c("gen_seed", "gen_scramble", "gen_S")])),
+    elas = pred_kernel(ns$mxl_elasticities_parallel, FALSE, TRUE),
+    elas_r = pred_kernel(ns$mxl_elasticities_parallel, TRUE, TRUE),
+    dr = pred_kernel(ns$mxl_diversion_ratios_parallel, FALSE, FALSE),
+    dr_r = pred_kernel(ns$mxl_diversion_ratios_parallel, TRUE, FALSE),
     layout = {
       if (!store_points) stop("layout needs the memory check of choicer 0.3.0")
       old <- options(choicer.max_memory = 1)
@@ -140,7 +161,7 @@ check_value <- function(x) {
 
 rows <- list()
 add_row <- function(...) rows[[length(rows) + 1L]] <<- data.frame(..., stringsAsFactors = FALSE)
-info <- list(tag = tag, lib = lib, store_points = store_points, mode = mode, regime = regime,
+info <- list(tag = tag, lib = lib, store_points = store_points, mode = mode, regime = regime, acc = acc,
              U = U, N = d$N, rows = d$rows, J = d$J, n_par = length(theta), S = S, Kx = Kx,
              Kw = Kw, seed = seed, draws = draws_mode, t_gen = t_gen, t_draws = t_draws,
              draws_alloc = draws_alloc, draws_rss = draws_rss, t_pred_cube = t_pd,
