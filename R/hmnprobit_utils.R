@@ -25,6 +25,7 @@
 #'   components as [prepare_hmnl_data()] (minus `rc_dist`).
 #' @seealso [prepare_hmnl_data()] for the component-by-component description.
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -108,6 +109,7 @@ prepare_hmnp_data <- function(
 #' @seealso [prepare_hmnp_data()], [simulate_hmnp_data()], [run_hmnlogit()],
 #'   [ess()], [mcse()], [traceplot()]
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnp_data(N = 100, T = 3, J = 4, seed = 42)

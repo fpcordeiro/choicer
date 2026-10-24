@@ -36,25 +36,6 @@
   paste0(nchar(person_chr, type = "bytes"), ":", person_chr, "|", id_key)
 }
 
-#' Rows with a non-finite value in any of the given columns
-#'
-#' Column-by-column `!is.finite()`, the counterpart of `.rows_with_na()`:
-#' no rows-by-columns logical matrix, and a column holding only finite values
-#' is not ORed into the result.
-#'
-#' @param x A data frame or data.table.
-#' @param cols Column positions to scan.
-#' @returns Logical vector with one element per row.
-#' @noRd
-.rows_not_finite <- function(x, cols) {
-  bad <- logical(nrow(x))
-  for (j in cols) {
-    finite <- is.finite(.subset2(x, j))
-    if (!all(finite)) bad <- bad | !finite
-  }
-  bad
-}
-
 #' Drop every choice situation that has a flagged row
 #'
 #' An anti-join on keys with fixed names: data.table parses the strings of
@@ -197,17 +178,16 @@
   if (!all(vapply(num_pos, function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
-  ## Non-finite covariate values (Inf/-Inf/NaN) are as fatal as NAs: same
-  ## graceful task-drop path, instead of failing the terminal
-  ## stopifnot(all(is.finite(X))) with an unactionable assertion.
-  has_bad <- .rows_not_finite(src, num_pos)[dt$.choicer_row]
-  if (any(has_bad)) {
-    dropped <- .drop_flagged_tasks(dt, has_bad, task_by)
+  ## Infinite covariate values (Inf, -Inf) are as fatal as NAs (a NaN is one,
+  ## dropped above): same graceful task-drop path, instead of failing the
+  ## terminal stopifnot(all(is.finite(X))) with an unactionable assertion.
+  not_finite <- .rows_not_finite(src, num_pos, dt$.choicer_row)
+  if (any(not_finite$rows)) {
+    dropped <- .drop_flagged_tasks(dt, not_finite$rows, task_by)
     dt <- dropped$dt
-    warning("Removed ", dropped$n_tasks,
-            " choice situations containing non-finite covariate values.")
+    .warn_not_finite(dropped$n_tasks, not_finite$cols)
   }
-  rm(has_bad)
+  rm(not_finite)
   if (nrow(dt) == 0) {
     stop("All choice situations removed due to non-finite covariate values.")
   }

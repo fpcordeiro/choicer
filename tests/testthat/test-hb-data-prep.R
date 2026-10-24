@@ -377,9 +377,13 @@ test_that("a non-finite covariate value drops its whole task", {
   bad[task == 5 & alt == "a", qual := -Inf]    # alternative-level covariate
   bad[task == 1 & alt == "c", cfres := Inf]    # control-function residual
   bad[task == 2 & alt == "out", x2 := Inf]     # outside row, removed before
+  # The warning names the columns, in the order they are scanned; x2's value
+  # is in a row removed before
   expect_warning(
     d <- hb_prep(bad, cf_residual_col = "cfres"),
-    "Removed 3 choice situations containing non-finite covariate values"
+    paste("Removed 3 choice situations containing non-finite covariate values",
+          "(in x1, cfres, qual)."),
+    fixed = TRUE
   )
   expect_equal(d$n_tasks, 2L)
   expect_identical(d, hb_prep(dt[!task %in% c(1, 3, 5)],

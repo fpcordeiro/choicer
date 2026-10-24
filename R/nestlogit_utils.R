@@ -132,6 +132,7 @@
 #'   per-situation buffers are allocated inside their parallel loops, where
 #'   an allocation that fails still terminates R.
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -486,6 +487,7 @@ run_nestlogit <- function(
 #'     \item \code{data_spec}: List with column name metadata including \code{nest_col}.
 #'   }
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' library(data.table)
 #' set.seed(42)

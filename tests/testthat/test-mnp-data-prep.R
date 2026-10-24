@@ -137,6 +137,19 @@ test_that("a missing value in a used column drops its choice situation", {
                                        c("x1", "x2")))
 })
 
+test_that("an infinite covariate value drops its choice situation, naming the column", {
+  dt <- create_small_mnl_data()
+  dt[id == 3 & alt == 2, x2 := Inf]
+  dt[id == 5 & alt == 1, x1 := -Inf]   # the base alternative's row
+  expect_warning(
+    d <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2")),
+    "Removed 2 choice situations containing non-finite covariate values (in x1, x2).",
+    fixed = TRUE)
+  expect_equal(d$N, 18L)
+  expect_identical(d, prepare_mnp_data(dt[!id %in% c(3, 5)], "id", "alt",
+                                       "choice", c("x1", "x2")))
+})
+
 test_that("the differenced design is gathered in double from the source columns", {
   dt <- create_small_mnl_data()
   dt[, k := as.integer(round(10 * x1))]   # an integer covariate

@@ -85,6 +85,7 @@
 #'   }
 #' @seealso [prepare_hmnp_data()] for the hierarchical probit counterpart.
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -232,6 +233,7 @@ prepare_hmnl_data <- function(
 #' @seealso [prepare_hmnl_data()], [simulate_hmnl_data()],
 #'   [recovery_table()], [rhat()], [ess()], [mcse()], [traceplot()]
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' \donttest{
 #' sim <- simulate_hmnl_data(N = 100, T = 3, J = 4, seed = 42)

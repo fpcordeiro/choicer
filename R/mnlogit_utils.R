@@ -121,6 +121,7 @@
 #'   per-situation buffers are allocated inside their parallel loops, where
 #'   an allocation that fails still terminates R.
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -467,6 +468,16 @@ run_mnlogit <- function(
 #' `TAKE_RATE` or `MKT_SHARE`, the names of the other columns of
 #' `alt_mapping`. Either is an error that names the column. Columns the model
 #' does not use may have any name.
+#' @section Missing and non-finite values:
+#' A choice situation with a missing value (`NA` or `NaN`) in a covariate is
+#' dropped, with a warning that counts the situations dropped, and so is one
+#' with an infinite value (`Inf` or `-Inf`), with a warning that also names
+#' the covariates that hold such values. A preparation that would drop every
+#' choice situation stops instead. Infinite values usually come from a
+#' transformation such as `log(0)`; dropping their situations selects the
+#' sample on that covariate, so they are often better fixed before the data
+#' are prepared. Prepared data passed to a fitting function as `input_data`
+#' are not filtered again: such values in them are an error.
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -550,6 +561,22 @@ prepare_mnl_data <- function(
                   function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
+  ## Drop ids with non-finite covariate values (Inf, -Inf) too, which would
+  ## otherwise stop the collinearity check's qr() or the final checks with an
+  ## error that does not name the column
+  not_finite <- .rows_not_finite(src, unique(match(covariate_cols, names(src))),
+                                 dt$.choicer_row)
+  ids_not_finite <- unique(dt[[id_col]][not_finite$rows])
+  if (length(ids_not_finite) > 0) {
+    keep <- !(dt[[id_col]] %in% ids_not_finite)
+    dt <- dt[keep]
+    .warn_not_finite(length(ids_not_finite), not_finite$cols)
+  }
+  rm(not_finite)
+  if (nrow(dt) == 0) {
+    stop("All choice situations removed due to non-finite covariate values.")
+  }
+
   ## choice column must be 0/1 and exactly one '1' per choice situation
   if (!.is_zero_one(dt[[choice_col]]))
     stop("`", choice_col, "` must contain only 0 and 1.")
@@ -576,7 +603,7 @@ prepare_mnl_data <- function(
   dt <- .code_alternatives(dt, alt_col, levels)
   if (base_label) {
     .check_base_codes(dt$.choicer_alt_int, outside_opt_label, dt[[alt_col]],
-                      alt_col, length(ids_to_drop))
+                      alt_col, length(ids_to_drop), length(ids_not_finite))
   }
 
   ## Order rows ----------------------------------------------------------------

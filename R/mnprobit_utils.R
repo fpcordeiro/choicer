@@ -83,6 +83,7 @@
 #' McCulloch, R., & Rossi, P. E. (1994). An exact likelihood analysis of the
 #' multinomial probit model. \emph{Journal of Econometrics}, 64(1-2), 207-240.
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -301,6 +302,7 @@ run_mnprobit <- function(
 #'     \item `data_spec`: List with column name metadata.
 #'   }
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -361,6 +363,24 @@ prepare_mnp_data <- function(
   if (!all(vapply(match(covariate_cols, names(src)),
                   function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
+
+  ## Drop ids with non-finite covariate values (Inf, -Inf) too, which would
+  ## otherwise stop the collinearity check's qr() or the final checks with an
+  ## error that does not name the column
+  not_finite <- .rows_not_finite(src, unique(match(covariate_cols, names(src))),
+                                 dt$.choicer_row)
+  ids_not_finite <- unique(dt[[id_col]][not_finite$rows])
+  if (length(ids_not_finite) > 0) {
+    # computed outside dt[...], where a column named ids_not_finite would
+    # mask it
+    keep <- !(dt[[id_col]] %in% ids_not_finite)
+    dt <- dt[keep]
+    .warn_not_finite(length(ids_not_finite), not_finite$cols)
+  }
+  rm(not_finite)
+  if (nrow(dt) == 0) {
+    stop("All choice situations removed due to non-finite covariate values.")
+  }
 
   ## choice column must be 0/1 and exactly one '1' per choice situation
   if (!.is_zero_one(dt[[choice_col]]))

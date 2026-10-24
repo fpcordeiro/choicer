@@ -720,6 +720,31 @@ otherwise.
   "`input_data$X` must contain only finite values."). The check reads the
   matrices in place, without a copy. Objects as the preparations return
   them fit as before, bit for bit.
+- `prepare_mnl_data()`, `prepare_nl_data()`, `prepare_mxl_data()` and
+  `prepare_mnp_data()`, and the `run_*()` functions that call them, stopped
+  on an infinite covariate value (`Inf` or `-Inf`) with an internal error
+  that did not name the column: "NA/NaN/Inf in foreign function call
+  (arg 1)", from the collinearity check's `qr()`, or, for a design of one
+  column, "all(is.finite(X)) is not TRUE" (or `W`). They did so in every
+  release (`prepare_mnp_data()` since it was added in 0.2.0), while a `NaN`
+  in the same place dropped its choice situation as a missing value, and
+  `prepare_hmnl_data()` and `prepare_hmnp_data()`, also added in 0.2.0,
+  dropped such situations with a warning. The four now drop them too, with
+  a warning that names the covariates holding such values ("Removed 2
+  choice situations containing non-finite covariate values (in x1, w1).";
+  the hierarchical preparations' warning names them now as well), and stop
+  when none is left; the error for an `outside_opt_label` that no remaining
+  situation offers counts these situations too. A new section of the
+  documentation of all six preparations and their fitting functions,
+  "Missing and non-finite values", says so, and notes that dropping such
+  situations selects the sample on the covariate (an infinite value usually
+  comes from a transformation such as `log(0)`). The scan reads each
+  covariate column in place first, without its missing values, so data
+  without infinite values cost no copy: on 10^7 rows and 10 covariates it
+  takes 0.10 s and 40 MB (one logical flag per row), with or without
+  missing values, where the hierarchical preparations' former scan took
+  0.15 s and 440 MB, and 1.1 GB with missing values. Data without infinite
+  covariate values are prepared as before, bit for bit.
 - The data preparations (`prepare_mnl_data()`, `prepare_mxl_data()`,
   `prepare_nl_data()`, `prepare_mnp_data()`, `prepare_hmnl_data()`,
   `prepare_hmnp_data()`, and the `run_*()` functions that call them) could

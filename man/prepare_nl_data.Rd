@@ -83,6 +83,19 @@ alternative column may not be named \code{alt_int}, \code{N_OBS}, \code{N_CHOICE
 does not use may have any name.
 }
 
+\section{Missing and non-finite values}{
+
+A choice situation with a missing value (\code{NA} or \code{NaN}) in a covariate is
+dropped, with a warning that counts the situations dropped, and so is one
+with an infinite value (\code{Inf} or \code{-Inf}), with a warning that also names
+the covariates that hold such values. A preparation that would drop every
+choice situation stops instead. Infinite values usually come from a
+transformation such as \code{log(0)}; dropping their situations selects the
+sample on that covariate, so they are often better fixed before the data
+are prepared. Prepared data passed to a fitting function as \code{input_data}
+are not filtered again: such values in them are an error.
+}
+
 \examples{
 library(data.table)
 set.seed(42)
