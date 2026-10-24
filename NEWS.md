@@ -600,8 +600,15 @@ designs of their own, described where they appear.
   choices over the taste distribution, instead of integrating every choice
   situation separately as before. `id_col` must still identify choice
   situations uniquely across the whole data set (ids do not restart within
-  person). `NULL` (the default) keeps every choice situation its own decision
-  maker, reproducing the existing cross-sectional likelihood.
+  person): an id under two decision makers is an error, found before
+  situations with missing or infinite values are dropped (they are dropped
+  by id, which would remove such an id from every decision maker), over the
+  rows whose id and decision maker are known. A choice situation whose
+  decision maker is missing is dropped like one with any other missing
+  value, so a shared id one of whose copies has no decision maker in any
+  row is dropped whole rather than reported. `NULL` (the default) keeps
+  every choice situation its own decision maker, reproducing the existing
+  cross-sectional likelihood.
   - `simulate_mxl_data()` gains `T` (choice situations per decision maker;
     default `1`, a cross-section) and records the realized random coefficients
     in `true_params$gamma_i` (`K_w x N`), the realized tastes that

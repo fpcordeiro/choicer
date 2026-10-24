@@ -650,9 +650,14 @@
 #'   decision makers (respondents). When supplied, all choice situations of a
 #'   decision maker share one draw of the random coefficients (panel
 #'   likelihood); \code{id_col} must still identify choice situations uniquely
-#'   across the data set. \code{NULL} (default) makes each choice situation its
-#'   own decision maker (cross-sectional likelihood). Convenience workflow
-#'   only; in the advanced workflow pass \code{person_col} to
+#'   across the data set: an id under two decision makers is an error, even
+#'   where a missing or infinite value would drop it, and a choice situation
+#'   whose decision maker is missing is dropped like one with any other
+#'   missing value. That drop goes by id, so a shared id one of whose copies
+#'   has no decision maker in any row is dropped whole rather than reported.
+#'   \code{NULL} (default) makes each choice situation its own
+#'   decision maker (cross-sectional likelihood). Convenience workflow only;
+#'   in the advanced workflow pass \code{person_col} to
 #'   \code{\link{prepare_mxl_data}}.
 #' @param polish A Newton phase after the optimizer (see the section
 #'   below): \code{"none"} (default) has none; \code{"newton"} steps on the
@@ -1818,8 +1823,13 @@ run_mxlogit <- function(
 #'   (respondents). When supplied, all choice situations of a decision maker
 #'   share one draw of the random coefficients (panel likelihood);
 #'   \code{id_col} must still identify choice situations uniquely across the
-#'   data set. \code{NULL} (default) makes each choice situation its own
-#'   decision maker (cross-sectional likelihood). Choice-based (WESML) samples
+#'   data set: an id under two decision makers is an error, even where a
+#'   missing or infinite value would drop it, and a choice situation whose
+#'   decision maker is missing is dropped like one with any other missing
+#'   value. That drop goes by id, so a shared id one of whose copies has no
+#'   decision maker in any row is dropped whole rather than reported.
+#'   \code{NULL} (default) makes each choice situation its own decision maker
+#'   (cross-sectional likelihood). Choice-based (WESML) samples
 #'   are not supported with \code{person_col}: their weights vary with the
 #'   chosen alternative, not by decision maker.
 #' @returns A `choicer_data_mxl` object (list) containing:
@@ -1910,6 +1920,33 @@ prepare_mxl_data <- function(
   dt[, .choicer_row := seq_len(.N)]
   .int64_cols_to_double(dt, weights_col)
 
+  ## Panel: choice situations nest in decision makers. Checked first: the
+  ## drops below go by id, and would remove an id shared by decision makers
+  ## from all of them, leaving this check nothing to find (and the per-id
+  ## choice counts would misfire). Rows whose id or person is missing are
+  ## left to the missing-value drop.
+  if (!is.null(person_col)) {
+    ids <- dt[[id_col]]
+    persons <- dt[[person_col]]
+    if (anyNA(ids) || anyNA(persons)) {
+      known <- !(is.na(ids) | is.na(persons))
+      ids <- ids[known]
+      persons <- persons[known]
+      rm(known)
+    }
+    n_persons_per_id <- .n_distinct_by(
+      data.table::setDT(list(id = ids, person = persons)), "person", "id")
+    rm(ids, persons)
+    if (any(n_persons_per_id != 1L)) {
+      stop("Each '", id_col, "' must belong to exactly one '", person_col,
+           "': `id_col` must identify choice situations uniquely across ",
+           "decision makers, but ", sum(n_persons_per_id != 1L), " id(s) ",
+           "appear under several. If situation ids restart within each ",
+           "decision maker, build a unique id, e.g. paste(", person_col, ", ",
+           id_col, ").", call. = FALSE)
+    }
+  }
+
   ## Drop ids with missing observations ----------------------------------------
   has_na <- .rows_with_na(src, prep_src$scan)
   ids_to_drop <- unique(dt[[id_col]][has_na[dt$.choicer_row]])
@@ -1934,28 +1971,9 @@ prepare_mxl_data <- function(
                   function(j) is.numeric(.subset2(src, j)), NA)))
     stop("All covariates must be numeric.")
 
-  ## choice column must be 0 or 1
-  if (!.is_zero_one(dt[[choice_col]]))
-    stop("`", choice_col, "` must contain only 0 and 1.")
-
-  ## Panel: choice situations nest in decision makers. Checked before the
-  ## per-id choice counts, which would misfire if ids restart within persons.
-  if (!is.null(person_col)) {
-    n_persons_per_id <- .n_distinct_by(dt, person_col, id_col)
-    if (any(n_persons_per_id != 1L)) {
-      stop("Each '", id_col, "' must belong to exactly one '", person_col,
-           "': `id_col` must identify choice situations uniquely across ",
-           "decision makers, but ", sum(n_persons_per_id != 1L), " id(s) ",
-           "appear under several. If situation ids restart within each ",
-           "decision maker, build a unique id, e.g. paste(", person_col, ", ",
-           id_col, ").", call. = FALSE)
-    }
-  }
-
   ## Drop ids with non-finite covariate values (Inf, -Inf) too, which would
   ## otherwise stop the collinearity check's qr() or the final checks with an
-  ## error that does not name the column. After the panel check: the drop is
-  ## by id, which must name one choice situation.
+  ## error that does not name the column
   not_finite <- .rows_not_finite(
     src, unique(match(c(covariate_cols, random_var_cols), names(src))),
     dt$.choicer_row)
@@ -1971,6 +1989,10 @@ prepare_mxl_data <- function(
   if (nrow(dt) == 0) {
     stop("All choice situations removed due to non-finite covariate values.")
   }
+
+  ## choice column must be 0 or 1
+  if (!.is_zero_one(dt[[choice_col]]))
+    stop("`", choice_col, "` must contain only 0 and 1.")
 
   ## Exactly one '1' per choice situation
   n_chosen <- .n_chosen_by(dt, choice_col, id_col)
