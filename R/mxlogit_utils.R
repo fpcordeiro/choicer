@@ -389,14 +389,18 @@
 #'   coefficient, \code{exp(Mu_<variable>)}.
 #' @param random_var_cols Vector of column names for random coefficients.
 #' @param input_data List output from \code{\link{prepare_mxl_data}} (advanced
-#'   workflow). Mutually exclusive with \code{data}.
+#'   workflow). Mutually exclusive with \code{data}. Its weights must be
+#'   finite and strictly positive and its \code{X} and \code{W} finite, which
+#'   \code{prepare_mxl_data()} ensures; the fit checks them again, in case the
+#'   object was edited, before it first evaluates the likelihood (integer64
+#'   weights are converted to double).
 #' @param eta_draws Array of shape K_w x S x U with standard normal draws, one
 #'   K_w x S block per likelihood unit: U is the number of decision makers
 #'   when \code{input_data} was prepared with \code{person_col}
 #'   (\code{length(input_data$Ti)}), and the number of choice situations
-#'   otherwise. Required for the advanced workflow; auto-generated from
-#'   \code{S} in the convenience workflow. Post-hoc methods
-#'   (\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
+#'   otherwise. Required for the advanced workflow, where its values must be
+#'   finite; auto-generated from \code{S} in the convenience workflow.
+#'   Post-hoc methods (\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
 #'   \code{\link{conditional_tastes}}, prediction)
 #'   regenerate the Halton draws \code{\link{get_halton_normals}} builds from
 #'   the recorded draw count, so build \code{eta_draws} with it for them to
@@ -1063,6 +1067,10 @@ run_mxlogit <- function(
     if (is.null(eta_draws)) {
       stop("'eta_draws' is required when using 'input_data' (advanced workflow).")
     }
+    # input_data's weights (finite and strictly positive), X and W (finite),
+    # and the draws below (finite), checked before any evaluation of the
+    # likelihood
+    input_data <- .check_input_data(input_data, c("X", "W"))
     # The kernels read the cube in place as doubles: one stored as integers
     # would be converted into a temporary that R may free while they read it.
     if (!is.double(eta_draws) || inherits(eta_draws, "integer64")) {
@@ -1071,6 +1079,9 @@ run_mxlogit <- function(
              call. = FALSE)
       }
       storage.mode(eta_draws) <- "double"
+    }
+    if (!.all_finite(eta_draws)) {
+      stop("`eta_draws` must contain only finite values.", call. = FALSE)
     }
     # `S` is a convenience-workflow argument; record the draws actually used so
     # post-hoc methods regenerate the same Halton blocks.
@@ -2072,18 +2083,10 @@ prepare_mxl_data <- function(
   if (is.null(weights)) weights <- rep(1, N)
   weights <- .int64_to_double(weights, "`weights`")
 
-  ## Weights must be finite and strictly positive. Zero/negative weights would
-  ## silently invalidate weighted and WESML sandwich inference (w in the bread,
-  ## w^2 in the meat). Validated here so every resolution path (weights=,
-  ## weights_col=, and the uniform default) is covered.
-  if (any(!is.finite(weights))) {
-    stop("Weights must be finite, but non-finite values (NA/NaN/Inf) were found.",
-         call. = FALSE)
-  }
-  if (any(weights <= 0)) {
-    stop("Weights must be strictly positive, but values <= 0 were found.",
-         call. = FALSE)
-  }
+  ## Weights must be finite and strictly positive. Validated here so every
+  ## resolution path (weights=, weights_col=, and the uniform default) is
+  ## covered.
+  .check_weights(weights)
 
   ## Panel: the likelihood has one term per decision maker, so weights and
   ## cluster labels must be constant within each (identity otherwise).

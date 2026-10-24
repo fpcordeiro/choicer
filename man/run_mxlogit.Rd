@@ -62,15 +62,19 @@ coefficient, \code{exp(Mu_<variable>)}.}
 \item{random_var_cols}{Vector of column names for random coefficients.}
 
 \item{input_data}{List output from \code{\link{prepare_mxl_data}} (advanced
-workflow). Mutually exclusive with \code{data}.}
+workflow). Mutually exclusive with \code{data}. Its weights must be
+finite and strictly positive and its \code{X} and \code{W} finite, which
+\code{prepare_mxl_data()} ensures; the fit checks them again, in case the
+object was edited, before it first evaluates the likelihood (integer64
+weights are converted to double).}
 
 \item{eta_draws}{Array of shape K_w x S x U with standard normal draws, one
 K_w x S block per likelihood unit: U is the number of decision makers
 when \code{input_data} was prepared with \code{person_col}
 (\code{length(input_data$Ti)}), and the number of choice situations
-otherwise. Required for the advanced workflow; auto-generated from
-\code{S} in the convenience workflow. Post-hoc methods
-(\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
+otherwise. Required for the advanced workflow, where its values must be
+finite; auto-generated from \code{S} in the convenience workflow.
+Post-hoc methods (\code{vcov(fit, type = )}, \code{\link{wesml_vcov}},
 \code{\link{conditional_tastes}}, prediction)
 regenerate the Halton draws \code{\link{get_halton_normals}} builds from
 the recorded draw count, so build \code{eta_draws} with it for them to

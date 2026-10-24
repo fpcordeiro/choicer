@@ -20,7 +20,11 @@
 #'   With \code{use_asc = TRUE}, none may be named like a constant,
 #'   \code{ASC_<label>}.
 #' @param input_data List output from \code{\link{prepare_mnl_data}} (advanced
-#'   workflow). Mutually exclusive with \code{data}.
+#'   workflow). Mutually exclusive with \code{data}. Its weights must be
+#'   finite and strictly positive and its \code{X} finite, which
+#'   \code{prepare_mnl_data()} ensures; the fit checks them again, in case the
+#'   object was edited, before it first evaluates the likelihood (integer64
+#'   weights are converted to double).
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"}, or
 #'   a custom function with signature \code{f(theta_init, eval_f, lower, upper, control)}
 #'   where \code{eval_f(theta)} returns \code{list(objective, gradient)}.
@@ -224,8 +228,10 @@ run_mnlogit <- function(
       cluster_col = cluster_col
     )
   } else {
-    # Advanced workflow: use input_data directly
-    input_list <- input_data
+    # Advanced workflow: use input_data directly, once its weights (finite
+    # and strictly positive) and X (finite) are checked, before any
+    # evaluation of the likelihood
+    input_list <- .check_input_data(input_data)
   }
 
   if (se_method == "cluster" && is.null(input_list$cluster)) {
@@ -651,18 +657,10 @@ prepare_mnl_data <- function(
   if (is.null(weights)) weights <- rep(1, length(M))
   weights <- .int64_to_double(weights, "`weights`")
 
-  ## Weights must be finite and strictly positive. Zero/negative weights would
-  ## silently invalidate weighted and WESML sandwich inference (w in the bread,
-  ## w^2 in the meat). Validated here so every resolution path (weights=,
-  ## weights_col=, and the uniform default) is covered.
-  if (any(!is.finite(weights))) {
-    stop("Weights must be finite, but non-finite values (NA/NaN/Inf) were found.",
-         call. = FALSE)
-  }
-  if (any(weights <= 0)) {
-    stop("Weights must be strictly positive, but values <= 0 were found.",
-         call. = FALSE)
-  }
+  ## Weights must be finite and strictly positive. Validated here so every
+  ## resolution path (weights=, weights_col=, and the uniform default) is
+  ## covered.
+  .check_weights(weights)
 
   ## Alternatives summary ------------------------------------------------------
   ## One inside-alternative aggregation; the outside branch only prepends its
