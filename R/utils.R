@@ -566,9 +566,12 @@ label_matrix <- function(mat, alt_mapping) {
 #' @param alt_col Name of the alternative column.
 #' @param n_dropped Choice situations removed for missing values before the
 #'   coding.
+#' @param n_not_finite Choice situations removed for non-finite covariate
+#'   values before the coding.
 #' @returns `NULL`, invisibly; errors as above.
 #' @noRd
-.check_base_codes <- function(codes, label, alts, alt_col, n_dropped = 0L) {
+.check_base_codes <- function(codes, label, alts, alt_col, n_dropped = 0L,
+                              n_not_finite = 0L) {
   uncoded <- anyNA(codes)
   # factor() drops NA labels from the levels: the others keep their order
   absent <- is.na(label)
@@ -594,12 +597,19 @@ label_matrix <- function(mat, alt_mapping) {
   }
   found <- sort(unique(alts))
   shown <- utils::head(found, 10L)
+  n_removed <- n_dropped + n_not_finite
   stop("`outside_opt_label` (", paste(fmt(label[absent]), collapse = ", "),
        ") names none of the alternatives in '", alt_col, "'",
-       if (n_dropped > 0) {
-         paste0(" that remain after removing the ", n_dropped, " choice ",
-                if (n_dropped == 1) "situation" else "situations",
-                " with missing values")
+       if (n_removed > 0) {
+         paste0(" that remain after removing the ", n_removed, " choice ",
+                if (n_removed == 1) "situation" else "situations", " with ",
+                if (n_not_finite == 0) {
+                  "missing values"
+                } else if (n_dropped == 0) {
+                  "non-finite covariate values"
+                } else {
+                  "missing values or non-finite covariate values"
+                })
        }, ": ", paste(fmt(shown), collapse = ", "),
        if (length(found) > 10L) paste0(" and ", length(found) - 10L, " more"),
        ". Without the outside option it names the base alternative, coded ",
@@ -1063,6 +1073,63 @@ label_matrix <- function(mat, alt_mapping) {
   has_na
 }
 
+#' Rows with a non-finite value in any of the given columns
+#'
+#' The counterpart of `.rows_with_na()` for values that are not missing but
+#' not finite either (`Inf`, `-Inf`), at the rows still in use. Each column is
+#' read in place first, its smallest and largest values without its missing
+#' ones; only a column that holds an infinite value is scanned with
+#' `is.finite()`, so data without such values cost no copy, missing values or
+#' not. The scan flags missing values too, but the preparations drop those
+#' rows first. integer64 columns need bit64's methods loaded
+#' (`.load_bit64_for()`).
+#'
+#' @param x A data frame or data.table.
+#' @param cols Column positions to scan.
+#' @param rows Row indices of `x` still in use.
+#' @returns A list: `rows`, a logical vector along `rows`, `TRUE` where one of
+#'   the columns is not finite; `cols`, the names of the columns that are not
+#'   finite at some of `rows`, in the order of `cols`.
+#' @noRd
+.rows_not_finite <- function(x, cols, rows) {
+  bad <- logical(length(rows))
+  bad_cols <- character(0)
+  for (j in cols) {
+    col <- .subset2(x, j)
+    # min() and max() of an empty or all-missing column warn and are infinite,
+    # which leaves it to the scan
+    lim <- suppressWarnings(c(min(col, na.rm = TRUE), max(col, na.rm = TRUE)))
+    if (all(is.finite(lim))) next
+    not_finite <- !is.finite(col)[rows]
+    if (any(not_finite)) {
+      bad <- bad | not_finite
+      bad_cols <- c(bad_cols, names(x)[j])
+    }
+  }
+  list(rows = bad, cols = bad_cols)
+}
+
+#' Warn that choice situations with non-finite covariate values were dropped
+#'
+#' The preparations' one warning about them, naming the first ten columns,
+#' with the caller's call, as their warning about missing values has.
+#'
+#' @param n Number of choice situations dropped.
+#' @param cols Names of the columns that held the values
+#'   (`.rows_not_finite()`).
+#' @returns Invisibly, the warning message.
+#' @noRd
+.warn_not_finite <- function(n, cols) {
+  shown <- paste(utils::head(cols, 10L), collapse = ", ")
+  if (length(cols) > 10L) {
+    shown <- paste0(shown, " and ", length(cols) - 10L, " more")
+  }
+  warning(warningCondition(
+    paste0("Removed ", n, " choice situations containing non-finite ",
+           "covariate values (in ", shown, ")."),
+    call = sys.call(-1L)))
+}
+
 #' Design matrix gathered from the source columns
 #'
 #' `X[i, ] = src[rows[i], cols]` in double storage: the values and layout of
@@ -1295,8 +1362,9 @@ label_matrix <- function(mat, alt_mapping) {
 #'
 #' `all(is.finite(x))` without `is.finite()`'s logical copy of `x`: `min()`
 #' and `max()` read `x` in place, and one of them is `NA`, `NaN` or infinite
-#' whenever `x` holds such a value. On a 763 MB design matrix this took 0.11 s
-#' and no memory, where `any(!is.finite(x))` took 0.23 s and another 763 MB.
+#' whenever `x` holds such a value. On a design matrix of 10^8 values (800 MB)
+#' this took 0.11 s and no memory, where `any(!is.finite(x))` took 0.23 s and
+#' another 800 MB.
 #'
 #' @param x A numeric or logical vector, matrix or array, or `NULL`.
 #' @returns `TRUE` or `FALSE`; `TRUE` for an empty `x`.

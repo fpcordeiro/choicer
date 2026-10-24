@@ -877,6 +877,7 @@
 #'   \code{vignette("mxl")} (many alternatives: constants, convergence and
 #'   standard errors)
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1843,6 +1844,7 @@ run_mxlogit <- function(
 #'     \item `data_spec`: List with column-name metadata (incl. `person_col`).
 #'   }
 #' @inheritSection prepare_mnl_data Column names
+#' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
 #' library(data.table)
 #' set.seed(42)
@@ -1950,6 +1952,26 @@ prepare_mxl_data <- function(
     }
   }
 
+  ## Drop ids with non-finite covariate values (Inf, -Inf) too, which would
+  ## otherwise stop the collinearity check's qr() or the final checks with an
+  ## error that does not name the column. After the panel check: the drop is
+  ## by id, which must name one choice situation.
+  not_finite <- .rows_not_finite(
+    src, unique(match(c(covariate_cols, random_var_cols), names(src))),
+    dt$.choicer_row)
+  ids_not_finite <- unique(dt[[id_col]][not_finite$rows])
+  if (length(ids_not_finite) > 0) {
+    # computed outside dt[...], where a column named ids_not_finite would
+    # mask it
+    keep <- !(dt[[id_col]] %in% ids_not_finite)
+    dt <- dt[keep]
+    .warn_not_finite(length(ids_not_finite), not_finite$cols)
+  }
+  rm(not_finite)
+  if (nrow(dt) == 0) {
+    stop("All choice situations removed due to non-finite covariate values.")
+  }
+
   ## Exactly one '1' per choice situation
   n_chosen <- .n_chosen_by(dt, choice_col, id_col)
   if (include_outside_option == FALSE && any(n_chosen != 1)) {
@@ -1973,7 +1995,7 @@ prepare_mxl_data <- function(
   dt <- .code_alternatives(dt, alt_col, levels)
   if (base_label) {
     .check_base_codes(dt$.choicer_alt_int, outside_opt_label, dt[[alt_col]],
-                      alt_col, length(ids_to_drop))
+                      alt_col, length(ids_to_drop), length(ids_not_finite))
   }
 
   ## Order rows ----------------------------------------------------------------

@@ -424,6 +424,170 @@ test_that("a missing value in a used column drops its whole choice situation", {
   expect_true(3 %in% q$situation_ids)
 })
 
+test_that("an infinite covariate value drops its choice situation, naming the column", {
+  df <- as.data.frame(create_small_nl_data())
+  df$person <- (df$id - 1L) %/% 3L + 1L
+  df$x2[df$id == 3][2] <- Inf
+  df$x1[df$id == 7][1] <- -Inf
+  kept <- df[!df$id %in% c(3, 7), ]
+  msg <- function(n, cols) {
+    paste0("Removed ", n, " choice situations containing non-finite ",
+           "covariate values (in ", cols, ").")
+  }
+  # Each preparation drops them, naming the covariates that hold the values,
+  # and returns what the data without those situations give
+  expect_warning(p <- prepare_mnl_data(df, "id", "alt", "choice", c("x1", "x2")),
+                 msg(2, "x1, x2"), fixed = TRUE)
+  expect_identical(p, prepare_mnl_data(kept, "id", "alt", "choice", c("x1", "x2")))
+  expect_warning(p <- prepare_nl_data(df, "id", "alt", "choice", c("x1", "x2"),
+                                      "nest"),
+                 msg(2, "x1, x2"), fixed = TRUE)
+  expect_identical(p, prepare_nl_data(kept, "id", "alt", "choice", c("x1", "x2"),
+                                      "nest"))
+  # Fixed and random coefficients, in the cross-section and in a panel
+  expect_warning(p <- prepare_mxl_data(df, "id", "alt", "choice", "x1", "x2"),
+                 msg(2, "x1, x2"), fixed = TRUE)
+  expect_identical(p, prepare_mxl_data(kept, "id", "alt", "choice", "x1", "x2"))
+  expect_warning(p <- prepare_mxl_data(df, "id", "alt", "choice", "x1", "x2",
+                                       person_col = "person"),
+                 msg(2, "x1, x2"), fixed = TRUE)
+  expect_identical(p, prepare_mxl_data(kept, "id", "alt", "choice", "x1", "x2",
+                                       person_col = "person"))
+  # Only the covariates the model uses count
+  expect_warning(p <- prepare_mnl_data(df, "id", "alt", "choice", "x1"),
+                 msg(1, "x1"), fixed = TRUE)
+  expect_true(3 %in% p$situation_ids)
+  # A NaN is a missing value, dropped as before
+  df$x1[df$id == 9][1] <- NaN
+  expect_warning(
+    expect_warning(prepare_mnl_data(df, "id", "alt", "choice", "x1"),
+                   "Removed 1 choice situations containing missing values",
+                   fixed = TRUE),
+    msg(1, "x1"), fixed = TRUE)
+})
+
+test_that("an infinite value in a row the preparation removes does not count", {
+  df <- as.data.frame(create_small_nl_data())
+  # The outside option's own rows are removed before the covariates are read
+  df$x1[df$alt == 6][1:2] <- Inf
+  expect_no_warning(p <- prepare_mnl_data(
+    df, "id", "alt", "choice", "x1", include_outside_option = TRUE,
+    outside_opt_label = 6L))
+  expect_equal(p$N, 30)
+})
+
+test_that("a preparation that would drop every choice situation stops", {
+  dt <- create_small_mnl_data()
+  dt[alt == 1, x1 := Inf]
+  expect_error(
+    suppressWarnings(prepare_mnl_data(dt, "id", "alt", "choice", c("x1", "x2"))),
+    "All choice situations removed due to non-finite covariate values.",
+    fixed = TRUE)
+  expect_error(
+    suppressWarnings(prepare_mxl_data(dt, "id", "alt", "choice", "x2", "x1")),
+    "All choice situations removed due to non-finite covariate values.",
+    fixed = TRUE)
+  # A base label whose alternative only a dropped situation offered
+  d <- data.frame(id = rep(1:4, each = 2L), alt = c(1, 2, 1, 2, 1, 2, 1, 3),
+                  choice = rep(c(1L, 0L), 4L), x1 = c(1:7, Inf))
+  expect_error(
+    suppressWarnings(prepare_mnl_data(d, "id", "alt", "choice", "x1",
+                                      outside_opt_label = 3)),
+    paste("that remain after removing the 1 choice situation with non-finite",
+          "covariate values"), fixed = TRUE)
+})
+
+test_that(".rows_not_finite() flags the rows in use and names their columns", {
+  x <- data.frame(a = c(1, Inf, 3), b = c(-Inf, 2, 3), c = c(1, 2, 3))
+  # b's -Inf is in a row no longer in use
+  expect_identical(.rows_not_finite(x, 1:3, 2:3),
+                   list(rows = c(TRUE, FALSE), cols = "a"))
+  expect_identical(.rows_not_finite(x, 2:3, 2:3),
+                   list(rows = c(FALSE, FALSE), cols = character(0)))
+  expect_identical(.rows_not_finite(x, 1:3, 1:3),
+                   list(rows = c(TRUE, TRUE, FALSE), cols = c("a", "b")))
+  # A column whose other values are finite is not scanned for its NAs
+  x$d <- c(1, NA, 3)
+  expect_identical(.rows_not_finite(x, 3:4, 1:3),
+                   list(rows = c(FALSE, FALSE, FALSE), cols = character(0)))
+})
+
+test_that("situations dropped for missing values, then infinite ones, keep the rows aligned", {
+  df <- as.data.frame(create_small_nl_data())
+  df$x1[df$id == 4][2] <- NA
+  df$x2[df$id == 11][1] <- Inf
+  df$x1[df$id == 20][3] <- -Inf
+  kept <- df[!df$id %in% c(4, 11, 20), ]
+  expect_identical(
+    suppressWarnings(prepare_mnl_data(df, "id", "alt", "choice", c("x1", "x2"))),
+    prepare_mnl_data(kept, "id", "alt", "choice", c("x1", "x2")))
+  expect_identical(
+    suppressWarnings(prepare_mxl_data(df, "id", "alt", "choice", "x1", "x2")),
+    prepare_mxl_data(kept, "id", "alt", "choice", "x1", "x2"))
+  dt <- create_small_mnl_data()
+  dt[id == 2 & alt == 3, x1 := NA]
+  dt[id == 6 & alt == 1, x2 := Inf]   # the base alternative's row
+  expect_identical(
+    suppressWarnings(prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2"))),
+    prepare_mnp_data(dt[!id %in% c(2, 6)], "id", "alt", "choice", c("x1", "x2")))
+})
+
+test_that("a covariate that is both fixed and random is named once", {
+  df <- as.data.frame(create_small_nl_data())
+  df$x1[df$id == 3][1] <- Inf
+  expect_warning(
+    p <- prepare_mxl_data(df, "id", "alt", "choice", c("x1", "x2"), "x1"),
+    "Removed 1 choice situations containing non-finite covariate values (in x1).",
+    fixed = TRUE)
+  expect_false(3 %in% p$situation_ids)
+})
+
+test_that("the warning names the first ten covariates", {
+  expect_warning(
+    .warn_not_finite(4L, paste0("x", 1:12)),
+    paste("Removed 4 choice situations containing non-finite covariate values",
+          "(in x1, x2, x3, x4, x5, x6, x7, x8, x9, x10 and 2 more)."),
+    fixed = TRUE)
+})
+
+test_that("a panel's situation ids are checked before infinite values drop them", {
+  # Ids that restart within decision makers: dropping id 1 would also drop
+  # the second decision maker's first situation
+  p <- data.frame(person = rep(1:2, each = 4L), id = c(1, 1, 2, 2, 1, 1, 3, 3),
+                  alt = rep(1:2, 4L), choice = rep(c(1L, 0L), 4L),
+                  x1 = c(Inf, 2:8), w1 = c(0.3, -1, 0.2, 1, 2, -0.5, 0.1, 0.7))
+  expect_error(prepare_mxl_data(p, "id", "alt", "choice", "x1", "w1",
+                                person_col = "person"),
+               "Each 'id' must belong to exactly one 'person'", fixed = TRUE)
+})
+
+test_that("the base label's error counts the situations dropped for each reason", {
+  # Alternative 3 is offered only in situations 4 and 5, both dropped
+  d <- data.frame(id = rep(1:5, each = 2L),
+                  alt = c(1, 2, 1, 2, 1, 2, 1, 3, 1, 3),
+                  choice = rep(c(1L, 0L), 5L), x1 = as.numeric(1:10),
+                  w1 = as.numeric(1:10))
+  prep <- function(d) {
+    suppressWarnings(prepare_mxl_data(d, "id", "alt", "choice", "x1", "w1",
+                                      outside_opt_label = 3))
+  }
+  removed <- function(why) {
+    paste("that remain after removing the 2 choice situations with", why)
+  }
+  both <- d
+  both$x1[8] <- Inf
+  both$w1[10] <- NA
+  expect_error(prep(both),
+               removed("missing values or non-finite covariate values"),
+               fixed = TRUE)
+  inf <- d
+  inf$x1[c(8, 10)] <- Inf
+  expect_error(prep(inf), removed("non-finite covariate values"), fixed = TRUE)
+  na <- d
+  na$w1[c(8, 10)] <- NA
+  expect_error(prep(na), removed("missing values:"), fixed = TRUE)
+})
+
 test_that("design matrices are double, with the covariate names as column names", {
   df <- as.data.frame(create_small_nl_data())
   df$k1 <- rep_len(0:3, nrow(df))      # integer covariates
