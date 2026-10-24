@@ -23,7 +23,11 @@
 #' @param nest_col Name of the column mapping each alternative to its nest
 #'   (convenience workflow).
 #' @param input_data List containing prepared input data for estimation
-#'   (advanced workflow). Mutually exclusive with \code{data}.
+#'   (advanced workflow). Mutually exclusive with \code{data}. Its weights
+#'   must be finite and strictly positive and its \code{X} finite, which
+#'   \code{prepare_nl_data()} ensures; the fit checks them again, in case the
+#'   list was edited or built by hand, before it first evaluates the
+#'   likelihood (integer64 weights are converted to double).
 #' @param use_asc Logical indicating whether to include alternative specific
 #'   constants (ASCs). An alternative's constant has no finite
 #'   maximum-likelihood estimate when the alternative is chosen in every
@@ -241,6 +245,10 @@ run_nestlogit <- function(
       include_outside_option = include_outside_option,
       cluster_col = cluster_col
     )
+  } else {
+    # Advanced workflow: input_data's weights (finite and strictly positive)
+    # and X (finite) checked before any evaluation of the likelihood
+    input_data <- .check_input_data(input_data)
   }
 
   if (se_method == "cluster" && is.null(input_data$cluster)) {

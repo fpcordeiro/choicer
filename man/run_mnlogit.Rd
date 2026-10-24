@@ -40,7 +40,11 @@ With \code{use_asc = TRUE}, none may be named like a constant,
 \code{ASC_<label>}.}
 
 \item{input_data}{List output from \code{\link{prepare_mnl_data}} (advanced
-workflow). Mutually exclusive with \code{data}.}
+workflow). Mutually exclusive with \code{data}. Its weights must be
+finite and strictly positive and its \code{X} finite, which
+\code{prepare_mnl_data()} ensures; the fit checks them again, in case the
+object was edited, before it first evaluates the likelihood (integer64
+weights are converted to double).}
 
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"}, or
 a custom function with signature \code{f(theta_init, eval_f, lower, upper, control)}

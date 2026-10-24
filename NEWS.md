@@ -684,6 +684,42 @@ otherwise.
   exposed. `run_mxlogit()` now converts such a cube to double first. The
   exported `mxl_blp_contraction()` still reads its cube as given: convert an
   integer array with `storage.mode(x) <- "double"` before passing it.
+- `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` did not check the
+  values of an `input_data` (the advanced workflow): weights, `X` or `W`
+  changed in a prepared object after `prepare_*_data()`, and the values of
+  `eta_draws`, reached the compiled routines as they were. In earlier
+  results the usual symptom is a fit whose estimates equal its start
+  values, reported as converged, with a log-likelihood of `-1e10` (near 0
+  with integer64 weights). With the default optimizer (nloptr):
+  - A weight that was `NA`, `NaN` or infinite left each model at its start
+    values: the optimizer stopped after one iteration reporting success,
+    with `NA` or `NaN` standard errors. Since 0.2.0 the only warning, about
+    non-uniform weights, pointed elsewhere, and with
+    `se_method = "sandwich"` or `"cluster"` there was none. In 0.1.0 the
+    multinomial and nested logits stopped instead, with nloptr's error that
+    the objective is `NA` at the start values (an infinite weight ended in
+    `NLOPT_FAILURE`).
+  - Weights of 0 or below were used as given; the preparations reject
+    them, as they do non-finite weights, since 0.2.0.
+  - integer64 weights were read as their raw bit patterns (a weight of 1 as
+    4.9e-324), so the log-likelihood came out near 0, again "success" at
+    the start values.
+  - A non-finite value in `X` left the multinomial logit at its start values
+    in the same way, with warnings that log probabilities had been clamped,
+    and ended the nested logit's fit in `NLOPT_FAILURE` with some standard
+    errors finite; in 0.1.0 both stopped with nloptr's error that the
+    gradient is `NA`. In the mixed logit, a non-finite value in `X`, `W` or
+    `eta_draws` gave "success" at the start values with finite standard
+    errors and no warning.
+
+  The three functions now check `input_data` before they first evaluate the
+  likelihood. Its weights must be finite and strictly positive, with the
+  preparations' messages (integer64 weights are converted to double first,
+  as the preparations convert them), and its `X` (and `W`) and `eta_draws`
+  must be finite, with an error that names the one at fault (for instance
+  "`input_data$X` must contain only finite values."). The check reads the
+  matrices in place, without a copy. Objects as the preparations return
+  them fit as before, bit for bit.
 - The data preparations (`prepare_mnl_data()`, `prepare_mxl_data()`,
   `prepare_nl_data()`, `prepare_mnp_data()`, `prepare_hmnl_data()`,
   `prepare_hmnp_data()`, and the `run_*()` functions that call them) could

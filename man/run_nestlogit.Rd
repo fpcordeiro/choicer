@@ -46,7 +46,11 @@ named like a generated parameter: \code{Lambda_<k>}, or
 (convenience workflow).}
 
 \item{input_data}{List containing prepared input data for estimation
-(advanced workflow). Mutually exclusive with \code{data}.}
+(advanced workflow). Mutually exclusive with \code{data}. Its weights
+must be finite and strictly positive and its \code{X} finite, which
+\code{prepare_nl_data()} ensures; the fit checks them again, in case the
+list was edited or built by hand, before it first evaluates the
+likelihood (integer64 weights are converted to double).}
 
 \item{use_asc}{Logical indicating whether to include alternative specific
 constants (ASCs). An alternative's constant has no finite
