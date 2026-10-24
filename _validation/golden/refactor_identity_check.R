@@ -34,8 +34,9 @@
 # start_batteries.R (start_unit), optim_batteries.R (optim_ro, optim_fit),
 # uasc_batteries.R (uasc), shares_batteries.R (pred_shares),
 # p5a_batteries.R (ucon, polish), p5b_batteries.R (pdelta, profile),
-# p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit) and p8b_batteries.R
-# (p8b_mnl, p8b_nl, p8b_edge, p8b_mxl, p8b_cl).
+# p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit), p8b_batteries.R
+# (p8b_mnl, p8b_nl, p8b_edge, p8b_mxl, p8b_cl) and p8c_batteries.R
+# (p8c_grad, p8c_polish, p8c_mxl).
 # `check --bitwise` compares every leaf with identical(num.eq = FALSE,
 # single.NA = FALSE), which also tells +0 from -0 and NaN payloads apart
 # (identical()'s defaults do not); the tolerance group is unchanged.
@@ -1160,6 +1161,10 @@ cat("Running NL kernels battery (P8B)...\n");         res_p8b_nl <- run_p8b_nl()
 cat("Running MNL/NL edge battery (P8B)...\n");        res_p8b_edge <- run_p8b_edge()
 cat("Running MXL elasticity battery (P8B)...\n");     res_p8b_mxl <- run_p8b_mxl()
 cat("Running cluster-label battery (P8B)...\n");      res_p8b_cl <- run_p8b_cl()
+source(file.path(.script_dir, "p8c_batteries.R"))
+cat("Running gradient overflow battery (P8C)...\n");  res_p8c_grad <- run_p8c_grad()
+cat("Running MNL/NL polish battery (P8C)...\n");      res_p8c_polish <- run_p8c_polish()
+cat("Running MXL polish battery (P8C)...\n");         res_p8c_mxl <- run_p8c_mxl()
 oc_save_calls()
 
 results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
@@ -1189,7 +1194,9 @@ results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
                 p8_edge = res_p8_edge, p8_fit = res_p8_fit,
                 p8b_mnl = res_p8b_mnl, p8b_nl = res_p8b_nl,
                 p8b_edge = res_p8b_edge, p8b_mxl = res_p8b_mxl,
-                p8b_cl = res_p8b_cl)
+                p8b_cl = res_p8b_cl,
+                p8c_grad = res_p8c_grad, p8c_polish = res_p8c_polish,
+                p8c_mxl = res_p8c_mxl)
 
 flatten <- function(x, prefix = "") {
   if (is.list(x) && !isTRUE(attr(x, "golden_leaf"))) {
