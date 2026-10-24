@@ -346,9 +346,14 @@ nest decision makers). Supplying \code{cluster_col} without an explicit
 decision makers (respondents). When supplied, all choice situations of a
 decision maker share one draw of the random coefficients (panel
 likelihood); \code{id_col} must still identify choice situations uniquely
-across the data set. \code{NULL} (default) makes each choice situation its
-own decision maker (cross-sectional likelihood). Convenience workflow
-only; in the advanced workflow pass \code{person_col} to
+across the data set: an id under two decision makers is an error, even
+where a missing or infinite value would drop it, and a choice situation
+whose decision maker is missing is dropped like one with any other
+missing value. That drop goes by id, so a shared id one of whose copies
+has no decision maker in any row is dropped whole rather than reported.
+\code{NULL} (default) makes each choice situation its own
+decision maker (cross-sectional likelihood). Convenience workflow only;
+in the advanced workflow pass \code{person_col} to
 \code{\link{prepare_mxl_data}}.}
 
 \item{polish}{A Newton phase after the optimizer (see the section

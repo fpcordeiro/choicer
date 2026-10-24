@@ -550,15 +550,76 @@ test_that("the warning names the first ten covariates", {
     fixed = TRUE)
 })
 
-test_that("a panel's situation ids are checked before infinite values drop them", {
-  # Ids that restart within decision makers: dropping id 1 would also drop
-  # the second decision maker's first situation
-  p <- data.frame(person = rep(1:2, each = 4L), id = c(1, 1, 2, 2, 1, 1, 3, 3),
-                  alt = rep(1:2, 4L), choice = rep(c(1L, 0L), 4L),
-                  x1 = c(Inf, 2:8), w1 = c(0.3, -1, 0.2, 1, 2, -0.5, 0.1, 0.7))
-  expect_error(prepare_mxl_data(p, "id", "alt", "choice", "x1", "w1",
-                                person_col = "person"),
-               "Each 'id' must belong to exactly one 'person'", fixed = TRUE)
+test_that("a panel's situation ids are checked before missing or infinite values drop them", {
+  # Decision makers 1 and 2 share id 1: dropping it, by id, would also drop
+  # the other's situation and leave the check nothing to find
+  p <- data.frame(person = rep(1:3, each = 4L),
+                  id = rep(c(1, 2, 1, 3, 4, 5), each = 2L),
+                  alt = rep(1:2, 6L), choice = rep(c(1L, 0L), 6L),
+                  x1 = c(0.1, -0.4, 0.8, 0.3, -1.2, 0.5, 0.7, -0.2, 0.4, 1.1,
+                         -0.6, 0.9),
+                  w1 = c(1.3, -0.7, 0.2, 0.6, -0.1, 0.8, -1.0, 0.4, 0.9, -0.3,
+                         0.5, 0.2))
+  prep <- function(d) {
+    prepare_mxl_data(d, "id", "alt", "choice", "x1", "w1",
+                     person_col = "person")
+  }
+  shared <- "Each 'id' must belong to exactly one 'person'"
+  expect_error(prep(p), shared, fixed = TRUE)
+  d <- p
+  d$x1[1] <- NA
+  expect_no_warning(expect_error(prep(d), shared, fixed = TRUE))
+  d <- p
+  d$x1[1] <- Inf
+  expect_error(prep(d), shared, fixed = TRUE)
+  # The rows whose person is known show the shared id
+  d <- p
+  d$person[1] <- NA
+  expect_no_warning(expect_error(prep(d), shared, fixed = TRUE))
+  # A copy of the id whose person is missing in all its rows cannot be told
+  # from a missing value, and the id is dropped as one
+  d <- p
+  d$person[1:2] <- NA
+  expect_warning(q <- prep(d),
+                 "Removed 1 choice situations containing missing values")
+  expect_equal(q$N, 4L)
+  # With ids that identify the situations, a missing person drops its
+  # situation, as any other missing value does
+  v <- p
+  v$id <- rep(1:6, each = 2L)
+  v$person[1] <- NA
+  expect_warning(q <- prep(v),
+                 "Removed 1 choice situations containing missing values")
+  expect_identical(q, prep(v[-(1:2), ]))
+  expect_equal(q$Ti, c(1L, 2L, 2L))
+  # Missing ids under two decision makers are missing values too, not a
+  # shared id (the warning counts the missing id once)
+  w <- p
+  w$id <- rep(1:6, each = 2L)
+  w$id[c(1:2, 5:6)] <- NA
+  expect_warning(q <- prep(w), "choice situations containing missing values")
+  expect_equal(q$N, 4L)
+})
+
+test_that("a situation dropped for an infinite value is not checked further", {
+  # As one dropped for a missing value: its choice of 2 is never read
+  df <- as.data.frame(create_small_nl_data())
+  df$choice[df$id == 5][2] <- 2L
+  df$x1[df$id == 5][1] <- Inf
+  msg <- paste("Removed 1 choice situations containing non-finite covariate",
+               "values (in x1).")
+  expect_warning(p <- prepare_mnl_data(df, "id", "alt", "choice", "x1"), msg,
+                 fixed = TRUE)
+  expect_false(5 %in% p$situation_ids)
+  expect_warning(p <- prepare_mxl_data(df, "id", "alt", "choice", "x2", "x1"),
+                 msg, fixed = TRUE)
+  expect_false(5 %in% p$situation_ids)
+  dt <- create_small_mnl_data()
+  dt[id == 4 & alt == 2, choice := 2L]
+  dt[id == 4 & alt == 3, x1 := Inf]
+  expect_warning(p <- prepare_mnp_data(dt, "id", "alt", "choice", c("x1", "x2")),
+                 msg, fixed = TRUE)
+  expect_equal(p$N, 19L)
 })
 
 test_that("the base label's error counts the situations dropped for each reason", {

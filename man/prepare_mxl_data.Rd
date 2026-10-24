@@ -68,8 +68,13 @@ choice situation and returned as \code{cluster}.}
 (respondents). When supplied, all choice situations of a decision maker
 share one draw of the random coefficients (panel likelihood);
 \code{id_col} must still identify choice situations uniquely across the
-data set. \code{NULL} (default) makes each choice situation its own
-decision maker (cross-sectional likelihood). Choice-based (WESML) samples
+data set: an id under two decision makers is an error, even where a
+missing or infinite value would drop it, and a choice situation whose
+decision maker is missing is dropped like one with any other missing
+value. That drop goes by id, so a shared id one of whose copies has no
+decision maker in any row is dropped whole rather than reported.
+\code{NULL} (default) makes each choice situation its own decision maker
+(cross-sectional likelihood). Choice-based (WESML) samples
 are not supported with \code{person_col}: their weights vary with the
 chosen alternative, not by decision maker.}
 }
