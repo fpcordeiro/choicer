@@ -857,6 +857,36 @@ inline void nl_individual_probs_offered(const double* V, const int* nest, const 
 }
 
 // ----------------------------------------------------------------------------
+// The MNL and NL likelihood kernels' objective and gradient as they return
+// them, the sums negated: a total that is not finite becomes the 1e10
+// sentinel with a zero gradient, a gradient entry that is not finite 0.
+// Returns their `overflow` flag: whether the objective or the gradient
+// returned is not the negated log-likelihood's at theta, because `clamped`
+// (a situation's log-probability was not finite and was replaced by -1e10
+// in the pass), the total, or a gradient entry was not finite. run_polish()
+// reads it to fail a trial point. (mxl_loglik_gradient_parallel()'s flag
+// marks the sentinel only, which .lift_sentinel() relies on.) The clamp is
+// decided per situation, so it does not depend on the threads; whether a
+// total or an entry overflows can, at the edge of the double range (terms
+// near 1e308), follow the summation order.
+// ----------------------------------------------------------------------------
+inline bool logit_sanitize(double& obj, arma::vec& grad, const bool clamped) {
+  bool overflow = clamped;
+  if (!std::isfinite(obj)) {
+    overflow = true;
+    obj = 1e10;
+    grad.zeros();
+  } else {
+    const arma::uvec bad = arma::find_nonfinite(grad);
+    if (bad.n_elem > 0) {
+      overflow = true;
+      grad.elem(bad).zeros();
+    }
+  }
+  return overflow;
+}
+
+// ----------------------------------------------------------------------------
 // Delta-block (ASC) gradient scatter, in inside-alternative space:
 // diff_inside has one entry per inside alternative (callers with an outside
 // option pass diff_vec.subvec(1, m_i), a zero-copy subview). When there is no

@@ -319,7 +319,8 @@ run_nestlogit <- function(
   # wherever offered), warned before the fit
   if (n_asc > 0) .warn_unbounded_constants(input_data$alt_mapping)
 
-  # The model's objective and gradient at theta; `...` takes opg_diag
+  # The model's objective, gradient and overflow flag at theta; `...` takes
+  # opg_diag
   model_f <- function(theta, ...) {
     nl_loglik_gradient_parallel(
       theta = theta,
@@ -353,11 +354,16 @@ run_nestlogit <- function(
   map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
                          opg_diag = opg0)
 
-  # Run the optimizer in the map's coordinates
+  # Run the optimizer in the map's coordinates, on the objective and gradient
+  # alone (the list it saw before the kernel returned its overflow flag)
   elapsed <- system.time({
     opt <- .optimize_in_coordinates(
       map = if (scale_vars != "none") map, optimizer = optimizer,
-      theta_init = theta_init, eval_f = function(theta) model_f(theta),
+      theta_init = theta_init, eval_f = function(theta) {
+        res <- model_f(theta)
+        res$overflow <- NULL
+        res
+      },
       lower = theta_lb, control = control
     )
   })

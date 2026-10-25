@@ -397,8 +397,13 @@ static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
 //'   BHHH (outer product of gradients) matrix with the same weights,
 //'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
 //' @returns List with loglikelihood and gradient evaluated at input
-//'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
-//'   (not sanitized)
+//'   arguments, and \code{overflow}: whether the objective or the gradient
+//'   is not the negated log-likelihood's at \code{theta}, because a
+//'   situation's log-probability, the total or a gradient entry was not
+//'   finite and was replaced (the log-probability by -1e10, the total by
+//'   1e10 with a zero gradient, the entry by 0; the mixed logit kernel's flag
+//'   marks the 1e10 sentinel only); with \code{opg_diag}, also
+//'   \code{opg_diag}, as computed (not sanitized)
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -481,26 +486,25 @@ Rcpp::List mnl_loglik_gradient_parallel(
     Rcpp::warning("Non-finite log-probability encountered; clamped to -1e10. Check for extreme utility values.");
   }
 
-  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel); the
+  // H3: Sanitize NaN/Inf (logit_sanitize(): the sentinel, zeroed entries,
+  // and the `overflow` flag by which run_polish() fails a trial point; the
+  // optimizers' path drops the flag, so they see the list as before); the
   // diagonal is returned as computed
   double obj = -global_loglik;
   arma::vec grad = -global_grad;
-  if (!std::isfinite(obj)) {
-    obj = 1e10;
-    grad.zeros();
-  } else {
-    grad.elem(arma::find_nonfinite(grad)).zeros();
-  }
+  const bool overflow = logit_sanitize(obj, grad, nonfinite_seen);
   if (opg_diag) {
     return Rcpp::List::create(
       Rcpp::Named("objective") = obj,
       Rcpp::Named("gradient")  = grad,
+      Rcpp::Named("overflow")  = overflow,
       Rcpp::Named("opg_diag")  = global_diag
     );
   }
   return Rcpp::List::create(
     Rcpp::Named("objective") = obj,
-    Rcpp::Named("gradient")  = grad
+    Rcpp::Named("gradient")  = grad,
+    Rcpp::Named("overflow")  = overflow
   );
 }
 
