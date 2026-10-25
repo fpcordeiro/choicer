@@ -737,8 +737,10 @@
 #' certificate concerns the other parameters given them. Where the base
 #' alternative or the outside option is the one without, the other constants
 #' diverge together, and the polish does not report convergence, unless the
-#' reference is never chosen and the constant of an alternative that is
-#' chosen is held or bounded above, which stops them. A random coefficient
+#' reference is never chosen and the constants held or bounded above anchor
+#' all the others, which stops their rise: each other constant's alternative
+#' is offered in a choice situation that chooses an alternative whose
+#' constant is held or bounded above, or one anchored so. A random coefficient
 #' whose variance's maximum is at zero drives its log-Cholesky diagonal
 #' toward \eqn{-\infty} by Newton steps of \eqn{\frac{1}{2}}{1/2} to 1, each
 #' shrinking the decrement by a factor of about \eqn{e}: \code{"newton"} may
@@ -1214,6 +1216,13 @@ run_mxlogit <- function(
                        units = if (is.null(input_data$Ti)) "choice situations"
                                else "decision makers",
                        lower = lower, upper = upper)
+  # Where the reference is never chosen, the alternatives that anchor the
+  # constants against a common rise (.polish_anchors()), before the draws
+  anchors <- .polish_anchors(polish, unbounded, held, upper, param_map$asc,
+                             input_data$alt_mapping,
+                             list(alt_idx = input_data$alt_idx,
+                                  choice_idx = input_data$choice_idx,
+                                  M = input_data$M))
 
   # Store-mode draws: their checks and the size warning before the column
   # scales below, the cube itself after them
@@ -1565,6 +1574,7 @@ run_mxlogit <- function(
                       keep_curvature = reuse, unbounded = unbounded,
                       asc_idx = param_map$asc,
                       alt_mapping = input_data$alt_mapping,
+                      anchors = anchors,
                       weights = input_data$weights, optimizer = optimizer)
     opt <- pf$opt
     polish_record <- pf$record
@@ -2233,7 +2243,10 @@ get_halton_normals <- function(S, N, K_w) {
 #' `mxl_loglik_gradient_parallel()` returns `objective = 1e10` with a zero
 #' gradient and `overflow = TRUE` where the utilities overflow, so that a
 #' line search backtracks. A finite objective can also equal 1e10, so only
-#' the explicit flag identifies the sentinel.
+#' the explicit flag identifies the sentinel. That flag marks the sentinel
+#' alone; the multinomial and nested logit kernels' flag also marks a clamped
+#' log-probability, whose objective is finite, and gradient entries set to
+#' 0, so their objectives must not be wrapped here.
 #' Its objective is otherwise finite however poor the fit, and unbounded, so
 #' after a start above 1e10 (a badly scaled warm start at population scale)
 #' the fixed sentinel would look like an improvement. Wraps `eval_f` to report

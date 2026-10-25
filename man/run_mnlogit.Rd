@@ -22,7 +22,9 @@ run_mnlogit(
   scale_vars = c("bhhh", "none", "sd", "mad", "iqr"),
   se_method = c("hessian", "bhhh", "sandwich", "cluster"),
   cluster_col = NULL,
-  nloptr_opts = NULL
+  nloptr_opts = NULL,
+  polish = c("none", "newton", "bhhh"),
+  polish_control = list()
 )
 }
 \arguments{
@@ -139,6 +141,20 @@ within each \code{id_col}. Supplying \code{cluster_col} without an explicit
 \code{se_method} selects \code{se_method = "cluster"}.}
 
 \item{nloptr_opts}{Deprecated. Use \code{optimizer} and \code{control} instead.}
+
+\item{polish}{A Newton phase after the optimizer (see the section
+below): \code{"none"} (default) has none; \code{"newton"} steps on the
+analytic Hessian of the log-likelihood, \code{"bhhh"} on the BHHH (outer
+product of the gradients) matrix, both with the fit's weights.}
+
+\item{polish_control}{List of settings of the Newton phase, any of
+\code{max_iter} (20; 0 evaluates the decrement at the optimizer's
+solution without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8},
+in log-likelihood units of weights with mean one: the decrement is taken
+over the mean weight, so that the rule does not depend on the weights'
+scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step shorter than
+this, relative to the parameters' magnitudes plus their scales, stops
+the polish unconverged).}
 }
 \value{
 A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
@@ -154,6 +170,22 @@ Hessian, BHHH and cluster-meat routines check their memory before
 allocating (see \code{\link{set_num_threads}}); only small
 per-situation buffers are allocated inside their parallel loops, where
 an allocation that fails still terminates R.
+With \code{polish}, \code{fit$optimizer$polish} records the Newton
+phase, as \code{\link{run_mxlogit}}'s does: \code{method},
+\code{converged}, \code{iterations} and \code{damped}, \code{decrement}
+(over the mean weight; \code{NA} where the curvature on the parameters
+moved was not positive definite, or none was evaluated) and
+\code{lambda}, \code{message},
+\code{evaluations}, \code{active}, \code{held}, \code{flat},
+\code{improvement}, \code{error}, \code{elapsed_time} (which
+\code{fit$optimizer$elapsed_time} includes) and \code{optimizer}, the
+optimizer's own \code{convergence}, \code{message}, \code{iterations} and
+\code{elapsed_time}. A converged polish sets \code{convergence} to the
+optimizer's success code (1 for nloptr, 0 for optim and a custom
+optimizer) and leads \code{message} with its verdict; otherwise both keep
+the optimizer's, the polish's reason appended to the message. A polish
+that stops with an error (the Hessian's memory check, say) keeps its
+last accepted point and warns (class \code{choicer_polish_failed}).
 }
 \description{
 Estimates a multinomial logit model via maximum likelihood.
@@ -167,6 +199,55 @@ preparation (\code{\link{prepare_mnl_data}}) is handled automatically.}
 result via \code{input_data}.}
 }
 }
+\section{Newton phase (polish)}{
+
+The polish does not change the estimator. From wherever the optimizer
+stopped, it takes Newton steps on the curvature of the log-likelihood and
+certifies the maximum: it converges when the Newton decrement
+\eqn{\nu = \frac{1}{2} g^\top C^{-1} g}{nu = g' C^-1 g / 2}, with \eqn{g}
+the gradient and \eqn{C} the curvature on the parameters it moves, over
+the mean weight, falls below \code{tol_decrement}. On a positive definite
+Hessian (of the weights scaled to mean one) every linear combination of
+the estimates then lies within
+\eqn{\sqrt{2\nu}}{sqrt(2 nu)} of its standard error of the maximum of the
+log-likelihood's quadratic model (\eqn{1.4 \times 10^{-4}}{1.4e-4} at the
+default). \code{"bhhh"} is cheaper per step but converges linearly, its
+decrement on its own shows only a stationary point, and it needs at least
+as many choice situations as the parameters it moves. A trial point at
+which the likelihood kernel replaces a value (a log probability clamped
+to \eqn{-10^{10}}{-1e10}, which it warns of, a total or gradient entry
+that is not finite) is rejected.
+
+The multinomial logit's log-likelihood is concave, so the maximum the
+polish certifies is the global one wherever the model is identified (a
+positive definite Hessian). In a study on census- and claims-style
+designs (about 2,500 and 500 alternatives, 17,000 to 245,000 choice
+situations) the default fit stopped at the maximum and
+\code{polish = "newton"} certified it at once, its Hessian then serving
+the variance; with \code{scale_vars = "none"} the optimizer stopped up to
+9 log-likelihood units short (at its 1,000-evaluation limit on three of
+the four designs), a gap the polish closed in 1 to 5 steps.
+
+The constants of inside alternatives without a finite estimate (see
+\code{use_asc}) are held at the optimizer's values, and the certificate
+concerns the other parameters given them. Where the base alternative or
+the outside option is the one without, the other constants diverge
+together and the polish does not report convergence, unless the reference
+is never chosen and the held constants (of alternatives chosen wherever
+offered) anchor all the others, which stops their rise: each other
+constant's alternative is offered in a choice situation that chooses a
+held alternative, or one anchored so. Under \code{scale_vars = "none"},
+whose coordinates are the parameters' own units, the steps' scales come
+from one BHHH pass at the optimizer's solution (one gradient evaluation).
+The polish's last curvature serves the variance where \code{se_method}
+needs it, unless the polish fell back to the optimizer's solution, its
+curvature failed, or its start could not be evaluated: after
+\code{"newton"}, the Hessian of \code{"hessian"} and the bread of
+\code{"sandwich"} and \code{"cluster"}; after \code{"bhhh"}, the BHHH
+matrix of \code{"bhhh"}. \code{\link{run_mxlogit}} describes the steps,
+the damping, the bounds and the line search.
+}
+
 \section{Column names}{
 
 No column the model uses (the id, alternative, choice, covariate, weight,

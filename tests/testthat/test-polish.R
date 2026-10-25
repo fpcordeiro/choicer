@@ -770,24 +770,32 @@ test_that(".polish_held() holds the constants without an estimate and checks BHH
                fixed = TRUE)
 })
 
-test_that(".polish_fit() certifies a rise only where a held or bounded constant stops it", {
-  # three constants, the quadratic's minimum at (1, 2, 3); the outside option
-  # (row 1) never chosen, the alternative of row 2 chosen wherever offered
+test_that(".polish_fit() certifies a rise only where held or bounded constants anchor the rest", {
+  # three constants, the quadratic's minimum at (1, 2, 3), for alternatives
+  # 1 to 3; the outside option (row 1) never chosen. Situations: {1, 2, 3}
+  # choosing 1, {1, 2, 3} choosing 2, {2, 3} choosing 3
   q <- pol_quad(diag(3), c(1, 2, 3))
-  am <- data.frame(alt_int = 0:3, N_CHOICES = c(0, 5, 3, 2))
-  ub <- list(never = integer(), always = 2L, ref = 1L, ref_never = TRUE,
+  am <- data.frame(alt_int = 0:3, N_CHOICES = c(0, 1, 1, 1))
+  ub <- list(never = integer(), always = integer(), ref = 1L, ref_never = TRUE,
              ref_always = FALSE, outside = TRUE)
+  linked <- list(alt_idx = c(1L, 2L, 3L, 1L, 2L, 3L, 2L, 3L),
+                 choice_idx = c(1L, 2L, 2L), M = c(3L, 3L, 2L))
   opt <- list(par = c(0, 0, 0), value = 0, convergence = 4L, message = "xtol",
               iterations = 7L)
   t_opt <- system.time(NULL)
-  pf <- function(held, upper = NULL, unbounded = ub, polish = "newton") {
+  pf <- function(held, upper = NULL, unbounded = ub, situations = linked,
+                 polish = "newton", ref_open = NULL) {
     suppressMessages(.polish_fit(
       polish, opt, t_opt, c("a", "b", "c"), q$f, q$C, lower = NULL,
       upper = upper, scale = rep(1, 3), control = .polish_control(NULL),
       held = held, keep_curvature = FALSE, unbounded = unbounded,
-      asc_idx = 1:3, alt_mapping = am, weights = rep(2, 4), optimizer = NULL))
+      asc_idx = 1:3, alt_mapping = am,
+      anchors = .polish_anchors("newton", unbounded, held, upper, 1:3, am,
+                                situations),
+      weights = rep(2, 4), optimizer = NULL, ref_open = ref_open))
   }
-  # its constant held: the rise stops, and the rest is certified given it
+  # a held constant whose alternative is chosen where the others are
+  # offered: the rise stops, and the rest is certified given it
   r <- pf(1L)
   expect_true(r$record$converged)
   expect_identical(r$opt$convergence, 1L)
@@ -805,17 +813,55 @@ test_that(".polish_fit() certifies a rise only where a held or bounded constant 
       "the constants diverge together (the outside option is never chosen),",
       "so there is no maximum to certify"), fixed = TRUE)
   }
-  # a chosen alternative's constant bounded above stops it too
-  r <- pf(integer(), c(Inf, 5, Inf))
-  expect_true(r$record$converged)
+  # a constant bounded above stops it too
+  expect_true(pf(integer(), c(Inf, 5, Inf))$record$converged)
+  # the held alternative chosen only where it is offered alone stops nothing
+  apart <- list(alt_idx = c(1L, 2L, 3L, 2L, 3L), choice_idx = c(1L, 1L, 2L),
+                M = c(1L, 2L, 2L))
+  r <- pf(1L, situations = apart)
+  expect_false(r$record$converged)
+  expect_match(r$record$message, "the constants diverge together", fixed = TRUE)
+  # a caller's ref_open (the nested logit's never-chosen base in a nest whose
+  # dissimilarity exceeds 1) sets the rule aside
+  expect_true(pf(1L, situations = apart, ref_open = function(par) TRUE)$record$converged)
   # a base alternative chosen wherever offered: the constants fall together,
   # never certified
   ub_fall <- utils::modifyList(ub, list(ref_never = FALSE, ref_always = TRUE,
                                         outside = FALSE))
-  r <- pf(1L, unbounded = ub_fall)
+  r <- pf(1L, unbounded = ub_fall, ref_open = function(par) TRUE)
   expect_false(r$record$converged)
   expect_match(r$record$message, paste(
     "the constants diverge together (the base alternative is chosen",
     "wherever it is offered)"), fixed = TRUE)
   expect_error(pf(1L, polish = "none"))
+})
+
+test_that(".polish_anchors() anchors through the situations' choices", {
+  am <- data.frame(alt_int = 0:4)
+  ub <- list(never = integer(), always = integer(), ref = 1L, ref_never = TRUE,
+             ref_always = FALSE, outside = TRUE)
+  anc <- function(held, sit, upper = NULL, polish = "newton", unbounded = ub,
+                  map = am) {
+    .polish_anchors(polish, unbounded, held, upper, seq_len(nrow(map) - 1L), map, sit)
+  }
+  # {1, 2} choosing 1, {2, 3} choosing 2, {3, 4} choosing 3: anchored from 1
+  # in three steps
+  chain <- list(alt_idx = c(1L, 2L, 2L, 3L, 3L, 4L), choice_idx = c(1L, 1L, 1L),
+                M = c(2L, 2L, 2L))
+  expect_identical(anc(1L, chain), rep(TRUE, 4))
+  # from 4, which no situation chooses, nothing else
+  expect_identical(anc(4L, chain), c(FALSE, FALSE, FALSE, TRUE))
+  # from 3: alternative 1 stays free
+  expect_identical(anc(3L, chain), c(FALSE, FALSE, TRUE, TRUE))
+  # a constant bounded above anchors as a held one does
+  expect_identical(anc(integer(), chain, upper = c(2, Inf, Inf, Inf)), rep(TRUE, 4))
+  # a situation that chooses the outside option (choice 0; never, where the
+  # rule applies) is skipped
+  out <- list(alt_idx = c(1L, 2L, 2L, 3L), choice_idx = c(1L, 0L), M = c(2L, 2L))
+  expect_identical(anc(1L, out, map = data.frame(alt_int = 0:3)), c(TRUE, TRUE, FALSE))
+  # needed only for a polish whose reference is never chosen
+  expect_null(anc(1L, chain, polish = "none"))
+  expect_null(anc(1L, chain, unbounded = NULL))
+  expect_null(anc(1L, chain, unbounded = utils::modifyList(ub, list(ref_never = FALSE,
+                                                                    ref_always = TRUE))))
 })

@@ -527,8 +527,10 @@ estimate (see \code{use_asc}) are held at the optimizer's values, and the
 certificate concerns the other parameters given them. Where the base
 alternative or the outside option is the one without, the other constants
 diverge together, and the polish does not report convergence, unless the
-reference is never chosen and the constant of an alternative that is
-chosen is held or bounded above, which stops them. A random coefficient
+reference is never chosen and the constants held or bounded above anchor
+all the others, which stops their rise: each other constant's alternative
+is offered in a choice situation that chooses an alternative whose
+constant is held or bounded above, or one anchored so. A random coefficient
 whose variance's maximum is at zero drives its log-Cholesky diagonal
 toward \eqn{-\infty} by Newton steps of \eqn{\frac{1}{2}}{1/2} to 1, each
 shrinking the decrement by a factor of about \eqn{e}: \code{"newton"} may
