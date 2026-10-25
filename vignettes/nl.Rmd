@@ -146,6 +146,18 @@ no within-nest variation to learn from; and flag estimates outside the
 conventional random-utility range `0 < lambda <= 1`. Refit plausible alternative trees and compare
 fit, diversion, elasticities, WTP, and welfare—not just the coefficient table.
 
+With many alternatives, certify the optimizer's stop with `polish = "newton"`
+before reading the standard errors. In the default coordinates
+(`scale_vars = "none"`) the optimizer can reach its evaluation limit short of
+the maximum: on simulated census-style designs with 2,500 and 2,600
+alternatives in 50 nests it stopped 0.35 and 15.8 log-likelihood units short,
+and the polish found and certified the maximum in 3 and 5 Newton steps, for
+about a tenth of the fit's time. `fit$optimizer$polish` says whether it
+converged, and why not. The nested logit's log-likelihood is not concave, so a
+certified maximum is local: where the polish drives a dissimilarity to its
+bound, refit from other starts, and where they all end there, the
+dissimilarity has no interior estimate and the nest is to be revised.
+
 When using `blp()`, verify that shares reconstructed from the returned mean
 utilities match the target within the stated tolerance, and report sensitivity
 to damping. (The current return value is the utility vector, not a convergence

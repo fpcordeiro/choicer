@@ -119,6 +119,9 @@ Before reporting an MNL result:
 - compare inverse-Hessian and robust covariance estimates, cluster repeated
   decision makers or markets, and use WESML plus the robust sandwich when the
   sample was drawn by the chosen alternative;
+- with many alternatives, certify the optimizer's stop with
+  `polish = "newton"`, whose Hessian then serves the default standard errors
+  (`fit$optimizer$polish` records the verdict);
 - distinguish sample shares from population shares and document the source of
   any external population totals;
 - inspect elasticities and diversion—not fit alone—and compare them with at least

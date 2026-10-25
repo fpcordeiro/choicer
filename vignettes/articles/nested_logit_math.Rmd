@@ -780,9 +780,14 @@ isolated non-finite gradient entries are zeroed. The analytical Hessian skips a 
 whose chosen log probability is non-finite, adds the mean of each pair of transposed terms
 (§4.8), and replaces any remaining non-finite entries by zero. These rules are optimizer failure guards, not part
 of the regular finite-parameter nested-logit criterion; encountering them calls for
-rescaling or revising the specification.
+rescaling or revising the specification. The likelihood kernel's list also holds
+`overflow`, `TRUE` where it replaced anything (a clamped log probability, the sentinel,
+a gradient entry set to zero, as where an unchosen nest's inclusive value overflows and
+the nest drops out of the denominator, leaving the chosen probability finite and too
+high): the optimizers do not see it, and the polish (§5.9) rejects a trial point that
+sets it.
 
-*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
+*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp); the flag, `logit_sanitize()` in [src/choicer_internal.h](https://github.com/fpcordeiro/choicer/blob/main/src/choicer_internal.h)*
 
 ### 5.8 Inverting the Information
 
@@ -854,6 +859,123 @@ variance is zero, as at some degenerate test fits, the computed one is rounding 
 either sign, and a negative one gets an `NA` standard error like any negative variance.
 
 *Code reference: `invert_hessian()`, `.sandwich_combine()` and `.jacobi_scale()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_inverse()` and `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp).*
+
+### 5.9 Polishing the Optimizer's Solution
+
+`run_nestlogit(polish = )` follows the optimizer with the Newton phase of the
+[mixed logit](mixed_logit_math.html) (§5.7 there), which finishes the climb to the maximum
+the optimizer approached and certifies it; the estimator does not change. With $g$ the
+gradient of $-\ell$ and $C$ the curvature, the analytic information
+$\mathcal{I} = -\nabla^2 \ell$ of §4 (`polish = "newton"`) or the BHHH matrix
+$\sum_i w_i\, s_i s_i^{\top}$ of §5.6 (`"bhhh"`, its weights unsquared), the polish
+converges when the Newton decrement $\nu = \tfrac{1}{2}\, g^{\top} C^{-1} g$, over the
+mean weight, falls below `tol_decrement` ($10^{-8}$). On a positive definite $\mathcal{I}$
+the remaining Newton step then moves every linear combination of the estimates by at most
+$\sqrt{2\nu}$ of its Hessian standard error; with `"bhhh"` the bound is in robust standard
+errors (for an unweighted fit; with weights, in the metric of $\mathcal{I}^{-1}
+\mathcal{B} \mathcal{I}^{-1}$ with $\mathcal{B}$'s weights unsquared), and a small BHHH
+decrement on its own shows only a stationary point. The steps,
+their damping and maximum length, the line search and the projection onto the
+dissimilarities' bound are those of the mixed logit's §5.7.
+
+**Curvature.** For given dissimilarities all at most 1 the log-likelihood is concave in
+$(\beta, \delta)$: each $\log P_{ij} = V_{ij}/\lambda_k + (\lambda_k - 1) \log I_k - \log
+\sum_l \exp(\lambda_l \log I_l)$ (the sum also holding the outside option's 1, where there
+is one) adds to a linear term a nonpositive multiple of a log-sum-exp, which is convex in
+the utilities, and subtracts a log-sum-exp, convex and nondecreasing in each argument, of
+the convex functions $\lambda_l \log I_l$. It need not be concave jointly with $\lambda$,
+nor in $(\beta, \delta)$ where some $\lambda_k > 1$: the information can be indefinite away
+from the maximum, where the steps are damped (Levenberg–Marquardt), and a maximum the
+polish certifies can be local. The dissimilarities keep their lower bound of $10^{-16}$.
+Where the steps drive one to that bound, they are damped at nearly every iteration and the
+polish does not report convergence. In one of the package's test designs (200 choice
+situations) a fit from a poor start went there, 24 log-likelihood units below the interior
+maximum that a polish from another stop certified in six steps; in two others every start
+ended at the bound. Refit from other starts: where they all end there, the likelihood's
+supremum is at the bound, the dissimilarity has no interior estimate and no polish
+certifies the fit, and the nest is to be revised.
+
+**What is held.** The constants of inside alternatives without a finite estimate are held
+at the optimizer's values, and the certificate concerns the other parameters given them,
+with one exception. An alternative chosen wherever it is offered has a positive score for
+its constant at every $\theta$, and is held, as in the multinomial logit. A never-chosen
+alternative $j$ in nest $k$ is held only where $k$ is a singleton or $\lambda_k \le 1$ at
+the optimizer's solution. Where $j$ is offered and the alternative chosen, $j_i$, belongs
+to another nest, its constant's score is $-P_{ij} < 0$; where $j_i$ is a nest-mate, it is
+
+$$
+\frac{\partial \log P_{ij_i}}{\partial \delta_j} = P(j \mid k) \left(1 - \frac{1}{\lambda_k} - P_k\right),
+$$
+
+negative for $\lambda_k \le 1$ but positive for $\lambda_k > 1$ where the nest's
+probability $P_k$ is below $1 - 1/\lambda_k$. Above 1 the constant can then have a finite
+estimate, which the polish seeks, so it is moved. Both terms vanish in proportion to
+$P(j \mid k)$ as $\delta_j \to -\infty$: where they are negative on balance there, the
+constant still has no finite estimate, and the polish moves it down until its share of the
+decrement is below the tolerance. It may then certify a point where the constant, and its
+standard error, are set by `tol_decrement`: in `mode_choice` with a never-chosen copy of
+bus (its generalized cost raised by 5), whose public nest has $\lambda \approx 1.95$, about
+$-47$, its standard error about $2 \times 10^4$. A polish that held such a constant at
+$\lambda_k \le 1$ and ends with $\lambda_k > 1$ does not report convergence, nor does one
+that moved it and ends with $\lambda_k \le 1$, where it has no finite estimate. The
+reference's divergence is treated as in the
+[multinomial logit](multinomial_logit_math.html) (§12.7 there): the held constants must
+anchor every other constant that can rise (a never-chosen one cannot rise without bound,
+since wherever it is offered the chosen alternative lies outside any set of never-chosen
+ones). A never-chosen base
+alternative, the reference, is treated as a moved constant (the others move against it),
+so that rule applies only where its nest is a singleton or ends with $\lambda_k \le 1$.
+
+**Other limits.** A nest that no situation offers two of has a dissimilarity on which the
+likelihood does not depend. Its score, its BHHH column and its Hessian entries are zero in
+exact arithmetic. The score and the BHHH column are exactly zero at the default start of
+0.5, where the optimizer then leaves it (1/λ is exact there), and of rounding size
+elsewhere; the Hessian's diagonal holds a rounding residue everywhere, 0.5 included (of
+either sign, about $10^{-16}$ to $6 \times 10^{-14}$ in a test design). The BHHH polish
+leaves such a dissimilarity out of its steps, as without information or as stalled, and
+does not report convergence. Where the Hessian's residue is positive, the Newton polish
+certifies the other parameters, leaving the dissimilarity at 0.5 or moving it on the
+score's rounding elsewhere; where it is negative, the steps are damped and the polish does
+not certify. Its standard error is huge (about $10^{7}$ in a test design) or `NA`. A trial point fails where the likelihood kernel reports
+that its objective or gradient is not the log-likelihood's (§5.7 above): a log probability
+clamped to $-10^{10}$, a total that is not finite, or a gradient entry set to zero, as
+where an unchosen nest's inclusive value overflows and the nest drops out of the
+denominator, which leaves the chosen probability finite and too high. The optimizers do not
+see that report.
+
+**Scales and the variance.** The maximum step and the stall rule are measured in the
+optimizer's coordinates $m$ (§1.5 of the mixed logit article). Under the nested logit's
+default `scale_vars = "none"` those would be the parameters' own units, so the scales come
+instead from the BHHH diagonal at the optimizer's solution projected onto the bound, as
+`"bhhh"` takes them at the start values: one pass of the gradient kernel. With half of the
+covariates rescaled by $10^3$ and the other half by $10^{-3}$, 20 steps at unit scales left
+a decrement of 1,054 to 1,786, where 8 or 9 at these scales certified the maximum. The
+variance is computed at the polished estimates, by `se_method`, and the polish's last
+curvature, evaluated at the point it returns, is not evaluated again where it is the
+variance's own matrix: after `"newton"`, the analytic Hessian of `"hessian"` and the bread
+of `"sandwich"` and `"cluster"`; after `"bhhh"`, the BHHH matrix of `"bhhh"`.
+`se_method = "numeric"` takes its own numerical Hessian.
+
+**On census- and claims-style designs** (2,504 and 2,602 alternatives in 50 nests, with
+24,560 and 245,031 choice situations; 499 and 500 alternatives with 17,339 and 153,721;
+ten covariates; constants without a finite estimate removed; single runs at eleven
+threads, times modeled from the kernels' calls), the default fit reached its limit of
+1,000 evaluations on three of the four designs: 0.35 and 15.8 log-likelihood units short of
+the maximum on the census-style ones (up to 6.7 standard errors), $8 \times 10^{-5}$ on the
+smaller claims-style one; the larger stopped by its tolerance, $2 \times 10^{-7}$ short.
+The Newton polish certified the maximum in 3 and 5 steps on the census-style designs, for
+about a tenth of the fit's time, and in one step on the claims-style ones. Stopping the
+optimizer after 100 evaluations and polishing took about a fifth of the time of the default
+fit and its polish, and `scale_vars = "bhhh"` stopped at the maximum in 50 to 66
+evaluations on three of the four designs.
+
+*Code reference: `run_polish()`, `.polish_held()`, `.polish_anchors()`, `.polish_fit()`
+and `.polish_scales()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R);
+`newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp);
+the curvature, the hold rule (`.nl_nest_lambda()`) and the reuse in `run_nestlogit()`,
+[R/nestlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/nestlogit_utils.R);
+the kernels' report, `logit_sanitize()` in
+[src/choicer_internal.h](https://github.com/fpcordeiro/choicer/blob/main/src/choicer_internal.h).*
 
 ---
 

@@ -226,7 +226,7 @@ situations) the default fit stopped at the maximum and
 \code{polish = "newton"} certified it at once, its Hessian then serving
 the variance; with \code{scale_vars = "none"} the optimizer stopped up to
 9 log-likelihood units short (at its 1,000-evaluation limit on three of
-the four designs), a gap the polish closed in 1 to 5 steps.
+the four designs), a gap the polish closed in 1 to 6 steps.
 
 The constants of inside alternatives without a finite estimate (see
 \code{use_asc}) are held at the optimizer's values, and the certificate
