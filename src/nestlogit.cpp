@@ -481,6 +481,8 @@ static inline void nl_situation_score(const arma::mat& X,
 // X_i' grad_vec, the constants scattered at scale 1.0 and squared once each,
 // lambda's weight-free terms) and rounded before they are added
 // (OpgDiagTerms). Without OpgDiag it is the kernel's loop as it was.
+// nonfinite_seen is set when a situation's log-probability was not finite
+// (and was clamped to -1e10).
 template <bool OpgDiag>
 static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
                              const int* nest, const arma::vec& base_util,
@@ -492,7 +494,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
                              const bool include_outside_option,
                              const bool use_asc, double& global_loglik,
                              arma::vec& global_grad, arma::vec& global_diag,
-                             const int n_threads) {
+                             bool& nonfinite_seen, const int n_threads) {
   const choicer_off N = lay.N;
   const choicer_off max_m = lay.max_m;
   const bool has_delta = use_asc && delta_length > 0;
@@ -529,6 +531,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
     arma::vec local_diag(diags[tid].data(), OpgDiag ? n_params : 0, false, true);
     arma::vec s_d(sds[tid].data(), OpgDiag && has_delta ? n_params : 0, false, true);
     OpgDiagTerms& terms = terms_t[tid];
+    bool local_nonfinite = false;
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic, chunk)
@@ -578,6 +581,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       }
 
       if (!std::isfinite(log_P_choice)) {
+        local_nonfinite = true;
         log_P_choice = -1e10; // H1: clamp without in-loop R-API call
       }
       local_loglik += w_i * log_P_choice;
@@ -680,6 +684,7 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
       global_loglik += local_loglik;
       global_grad += local_grad;
       if (OpgDiag) global_diag += local_diag;
+      if (local_nonfinite) nonfinite_seen = true;
     }
   } // end parallel region
 }
@@ -704,8 +709,13 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
 //'   BHHH (outer product of gradients) matrix with the same weights,
 //'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
 //' @returns List with loglikelihood and gradient evaluated at input
-//'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
-//'   (not sanitized)
+//'   arguments, and \code{overflow}: whether the objective or the gradient
+//'   is not the negated log-likelihood's at \code{theta}, because a
+//'   situation's log-probability, the total or a gradient entry was not
+//'   finite and was replaced (the log-probability by -1e10, the total by
+//'   1e10 with a zero gradient, the entry by 0; the mixed logit kernel's flag
+//'   marks the 1e10 sentinel only); with \code{opg_diag}, also
+//'   \code{opg_diag}, as computed (not sanitized)
 //' @examples
 //' \donttest{
 //' library(data.table)
@@ -784,41 +794,44 @@ Rcpp::List nl_loglik_gradient_parallel(
   double global_loglik = 0.0;
   arma::vec global_grad = arma::zeros(n_params);
   arma::vec global_diag;
+  bool nonfinite_seen = false;  // a log-probability clamped in the pass
   if (opg_diag) {
     global_diag.zeros(n_params);
     nl_gradient_pass<true>(X, lay, nest, base_util, lambda, n_nests,
                            nest_k_to_theta_idx, weights, K, n_params,
                            delta_start_idx, delta_length,
                            include_outside_option, use_asc, global_loglik,
-                           global_grad, global_diag, n_threads);
+                           global_grad, global_diag, nonfinite_seen, n_threads);
   } else {
     nl_gradient_pass<false>(X, lay, nest, base_util, lambda, n_nests,
                             nest_k_to_theta_idx, weights, K, n_params,
                             delta_start_idx, delta_length,
                             include_outside_option, use_asc, global_loglik,
-                            global_grad, global_diag, n_threads);
+                            global_grad, global_diag, nonfinite_seen, n_threads);
   }
 
-  // H3: Sanitize NaN/Inf (matching mxl_loglik_gradient_parallel); the
-  // diagonal is returned as computed
+  // H3: Sanitize NaN/Inf (logit_sanitize(): the sentinel, zeroed entries,
+  // and the `overflow` flag by which run_polish() fails a trial point; the
+  // optimizers' path drops the flag, so they see the list as before); the
+  // diagonal is returned as computed. A nest whose utilities over lambda
+  // overflow leaves the denominator (its log I_k is -Inf), so the chosen
+  // log-probability can stay finite: its probabilities' NaNs reach the
+  // gradient, which sets the flag.
   double obj = -global_loglik;
   arma::vec grad = -global_grad;
-  if (!std::isfinite(obj)) {
-    obj = 1e10;
-    grad.zeros();
-  } else {
-    grad.elem(arma::find_nonfinite(grad)).zeros();
-  }
+  const bool overflow = logit_sanitize(obj, grad, nonfinite_seen);
   if (opg_diag) {
     return Rcpp::List::create(
       Rcpp::Named("objective") = obj,
       Rcpp::Named("gradient")  = grad,
+      Rcpp::Named("overflow")  = overflow,
       Rcpp::Named("opg_diag")  = global_diag
     );
   }
   return Rcpp::List::create(
     Rcpp::Named("objective") = obj,
-    Rcpp::Named("gradient")  = grad
+    Rcpp::Named("gradient")  = grad,
+    Rcpp::Named("overflow")  = overflow
   );
 }
 

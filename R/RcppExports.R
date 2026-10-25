@@ -462,8 +462,13 @@ test_physical_memory <- function() {
 #'   BHHH (outer product of gradients) matrix with the same weights,
 #'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
 #' @returns List with loglikelihood and gradient evaluated at input
-#'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
-#'   (not sanitized)
+#'   arguments, and \code{overflow}: whether the objective or the gradient
+#'   is not the negated log-likelihood's at \code{theta}, because a
+#'   situation's log-probability, the total or a gradient entry was not
+#'   finite and was replaced (the log-probability by -1e10, the total by
+#'   1e10 with a zero gradient, the entry by 0; the mixed logit kernel's flag
+#'   marks the 1e10 sentinel only); with \code{opg_diag}, also
+#'   \code{opg_diag}, as computed (not sanitized)
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1474,8 +1479,13 @@ mxl_elasticities_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
 #'   BHHH (outer product of gradients) matrix with the same weights,
 #'   \eqn{\sum_i w_i s_i \circ s_i}, accumulated in the same pass.
 #' @returns List with loglikelihood and gradient evaluated at input
-#'   arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
-#'   (not sanitized)
+#'   arguments, and \code{overflow}: whether the objective or the gradient
+#'   is not the negated log-likelihood's at \code{theta}, because a
+#'   situation's log-probability, the total or a gradient entry was not
+#'   finite and was replaced (the log-probability by -1e10, the total by
+#'   1e10 with a zero gradient, the entry by 0; the mixed logit kernel's flag
+#'   marks the 1e10 sentinel only); with \code{opg_diag}, also
+#'   \code{opg_diag}, as computed (not sanitized)
 #' @examples
 #' \donttest{
 #' library(data.table)

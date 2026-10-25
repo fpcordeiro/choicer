@@ -302,8 +302,8 @@ run_mnlogit <- function(
     .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
   }
 
-  # The model's objective and gradient at theta (captures data in
-  # environment); `...` takes opg_diag
+  # The model's objective, gradient and overflow flag at theta (captures data
+  # in environment); `...` takes opg_diag
   model_f <- function(theta, ...) {
     mnl_loglik_gradient_parallel(
       theta = theta,
@@ -328,11 +328,16 @@ run_mnlogit <- function(
   map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
                          opg_diag = opg0)
 
-  # Run the optimizer in the map's coordinates
+  # Run the optimizer in the map's coordinates, on the objective and gradient
+  # alone (the list it saw before the kernel returned its overflow flag)
   elapsed <- system.time({
     opt <- .optimize_in_coordinates(
       map = if (scale_vars != "none") map, optimizer = optimizer,
-      theta_init = theta_init, eval_f = function(theta) model_f(theta),
+      theta_init = theta_init, eval_f = function(theta) {
+        res <- model_f(theta)
+        res$overflow <- NULL
+        res
+      },
       control = control
     )
   })

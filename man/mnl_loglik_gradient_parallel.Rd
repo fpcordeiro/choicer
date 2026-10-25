@@ -39,8 +39,13 @@ BHHH (outer product of gradients) matrix with the same weights,
 }
 \value{
 List with loglikelihood and gradient evaluated at input
-arguments; with \code{opg_diag}, also \code{opg_diag}, as computed
-(not sanitized)
+arguments, and \code{overflow}: whether the objective or the gradient
+is not the negated log-likelihood's at \code{theta}, because a
+situation's log-probability, the total or a gradient entry was not
+finite and was replaced (the log-probability by -1e10, the total by
+1e10 with a zero gradient, the entry by 0; the mixed logit kernel's flag
+marks the 1e10 sentinel only); with \code{opg_diag}, also
+\code{opg_diag}, as computed (not sanitized)
 }
 \description{
 Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.

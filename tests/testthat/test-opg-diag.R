@@ -135,7 +135,7 @@ test_that("the multinomial logit's OPG diagonal is the BHHH diagonal", {
         g0 <- do.call(mnl_loglik_gradient_parallel, a)
         g1 <- opg_split(do.call(mnl_loglik_gradient_parallel,
                                 c(a, list(opg_diag = TRUE))))
-        expect_identical(names(g0), c("objective", "gradient"))
+        expect_identical(names(g0), c("objective", "gradient", "overflow"))
         expect_identical(g1$g, g0, label = paste("objective and gradient", what))
         B <- do.call(choicer:::mnl_bhhh_parallel, a)
         expect_lt(opg_dev(g1$d, B), 1e-13, label = paste("diagonal", what))

@@ -464,6 +464,7 @@ test_that("nested logit \"bhhh\" maps the start values and the nest parameters' 
   expect_identical(seen$lower, c(-Inf, -Inf, 1e-16 / m[3:4], rep(-Inf, 5)))
   expect_identical(seen$r$objective, g$objective)
   expect_identical(seen$r$gradient, g$gradient * m)
+  expect_named(seen$r, c("objective", "gradient"))  # the overflow flag dropped
 })
 
 test_that("a scaled fit's start values must have one value per parameter", {

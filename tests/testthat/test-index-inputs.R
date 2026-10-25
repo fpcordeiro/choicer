@@ -250,7 +250,8 @@ test_that("MNL kernels on empty input keep Armadillo's errors", {
   expect_error(mnl_call("diversion", en), "max(): object has no elements",
                fixed = TRUE, class = "std::logic_error")
   expect_identical(mnl_call("gradient", e),
-                   list(objective = -0, gradient = matrix(0, length(f$theta), 1L)))
+                   list(objective = -0, gradient = matrix(0, length(f$theta), 1L),
+                        overflow = FALSE))
   # BLP stops at the weights before it reads delta, so an empty delta block
   # is never indexed (main read past it, or failed an Armadillo bounds check
   # with an outside option)
