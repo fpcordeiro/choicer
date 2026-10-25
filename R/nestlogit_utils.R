@@ -118,6 +118,18 @@
 #'   choice, so, where the likelihood is well identified and every choice
 #'   reaches its maximum, reported quantities do not depend on this choice
 #'   beyond the optimizer's tolerance.
+#' @param polish A Newton phase after the optimizer (see the section
+#'   below): \code{"none"} (default) has none; \code{"newton"} steps on the
+#'   analytic Hessian of the log-likelihood, \code{"bhhh"} on the BHHH (outer
+#'   product of the gradients) matrix, both with the fit's weights.
+#' @param polish_control List of settings of the Newton phase, any of
+#'   \code{max_iter} (20; 0 evaluates the decrement at the optimizer's
+#'   solution without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8},
+#'   in log-likelihood units of weights with mean one: the decrement is taken
+#'   over the mean weight, so that the rule does not depend on the weights'
+#'   scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step shorter than
+#'   this, relative to the parameters' magnitudes plus their scales, stops
+#'   the polish unconverged).
 #' @returns A \code{choicer_nl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()},
 #'   \code{vcov()}, \code{logLik()}, \code{AIC()}, \code{BIC()},
@@ -131,6 +143,91 @@
 #'   before allocating (see \code{\link{set_num_threads}}); only small
 #'   per-situation buffers are allocated inside their parallel loops, where
 #'   an allocation that fails still terminates R.
+#'   With \code{polish}, \code{fit$optimizer$polish} records the Newton
+#'   phase, as \code{\link{run_mxlogit}}'s does: \code{method},
+#'   \code{converged}, \code{iterations} and \code{damped}, \code{decrement}
+#'   (over the mean weight; \code{NA} where the curvature on the parameters
+#'   moved was not positive definite, or none was evaluated) and
+#'   \code{lambda}, \code{message},
+#'   \code{evaluations}, \code{active}, \code{held}, \code{flat},
+#'   \code{improvement}, \code{error}, \code{elapsed_time} (which
+#'   \code{fit$optimizer$elapsed_time} includes) and \code{optimizer}, the
+#'   optimizer's own \code{convergence}, \code{message}, \code{iterations} and
+#'   \code{elapsed_time}. A converged polish sets \code{convergence} to the
+#'   optimizer's success code (1 for nloptr, 0 for optim and a custom
+#'   optimizer) and leads \code{message} with its verdict; otherwise both keep
+#'   the optimizer's, the polish's reason appended to the message. A polish
+#'   that stops with an error (the Hessian's memory check, say) keeps its
+#'   last accepted point and warns (class \code{choicer_polish_failed}).
+#' @section Newton phase (polish):
+#' The polish does not change the estimator. From wherever the optimizer
+#' stopped, it takes Newton steps on the curvature of the log-likelihood and
+#' certifies the maximum: it converges when the Newton decrement
+#' \eqn{\nu = \frac{1}{2} g^\top C^{-1} g}{nu = g' C^-1 g / 2}, with \eqn{g}
+#' the gradient and \eqn{C} the curvature on the parameters it moves, over
+#' the mean weight, falls below \code{tol_decrement}. On a positive definite
+#' Hessian (of the weights scaled to mean one) every linear combination of
+#' the estimates then lies within
+#' \eqn{\sqrt{2\nu}}{sqrt(2 nu)} of its standard error of the maximum of the
+#' log-likelihood's quadratic model (\eqn{1.4 \times 10^{-4}}{1.4e-4} at the
+#' default). \code{"bhhh"} is cheaper per step but converges linearly, its
+#' decrement on its own shows only a stationary point, and it needs at least
+#' as many choice situations as the parameters it moves. A trial point at
+#' which the likelihood kernel replaces a value (a log probability clamped
+#' to \eqn{-10^{10}}{-1e10}, a total or gradient entry that is not finite,
+#' as where an unchosen nest drops out of the denominator) is rejected.
+#'
+#' The nested logit's log-likelihood is concave in the coefficients and
+#' constants for given dissimilarities of at most 1, but not jointly with the
+#' dissimilarities, so its curvature can be indefinite away from the
+#' maximum; the steps are then damped, and they keep the dissimilarities at
+#' or above their bound of \eqn{10^{-16}}{1e-16}. A dissimilarity that no
+#' choice situation identifies (a nest never offered with two of its
+#' alternatives) has a gradient and a curvature of rounding size: the Newton
+#' polish can move it and certify the other parameters, its standard error
+#' then huge or \code{NA}. In the default coordinates
+#' (\code{scale_vars = "none"}) the optimizer can stop far from the maximum
+#' of a model with many constants: in a study on census-style designs
+#' (2,500 alternatives in 50 nests, 25,000 and 245,000 choice situations) it
+#' reached its 1,000-evaluation limit 0.35 and 15.8 log-likelihood units
+#' short (up to 6.7 standard errors), and \code{polish = "newton"} certified
+#' the maximum in 3 and 6 steps, for a tenth of the fit's time; on
+#' claims-style designs (500 alternatives) it stopped closer, and one step
+#' certified it. For a reportable fit with many constants,
+#' \code{polish = "newton"} after the optimizer's own stop is the
+#' recommended check. Stopping the optimizer sooner
+#' (\code{control = list(maxeval = 100)}) and polishing took 18 to 24\% of
+#' the time on those designs, and with \code{scale_vars = "bhhh"} the
+#' optimizer stopped at the maximum in 50 to 66 evaluations on three of the
+#' four. In the default coordinates, which are the parameters' own units,
+#' the steps' scales come from one BHHH pass at the optimizer's solution
+#' projected onto the bound (one gradient evaluation).
+#'
+#' The constants of inside alternatives without a finite estimate (see
+#' \code{use_asc}) are held at the optimizer's values, and the certificate
+#' concerns the other parameters given them: a never-chosen alternative's
+#' only where its nest is a singleton or its dissimilarity is at most 1 at
+#' the optimizer's solution, since above 1 that constant can have a finite
+#' estimate, which the polish then seeks. A polish whose held constant's
+#' nest ends above 1, or whose moved constant's nest ends at or below 1,
+#' does not report convergence. A moved constant that has no finite estimate
+#' even so falls until its share of the decrement is below the tolerance:
+#' its value, and its standard error, are then set by \code{tol_decrement}.
+#' Where the base alternative or the outside option is the one without, the
+#' other constants diverge together and the polish does not report
+#' convergence (for a never-chosen base alternative, where its nest's
+#' dissimilarity ends at or below 1), unless the reference is never chosen
+#' and the held constants (of alternatives chosen wherever offered) anchor
+#' all the others, which stops their rise: each other constant's alternative
+#' is offered in a choice situation that chooses a held alternative, or one
+#' anchored so. The polish's last curvature serves the variance where
+#' \code{se_method} needs it, unless the polish fell back to the optimizer's
+#' solution, its curvature failed, or its start could not be evaluated:
+#' after \code{"newton"}, the analytic Hessian of \code{"hessian"} and the
+#' bread of \code{"sandwich"} and \code{"cluster"} (not of
+#' \code{"numeric"}, whose Hessian is numerical); after \code{"bhhh"}, the
+#' BHHH matrix of \code{"bhhh"}. \code{\link{run_mxlogit}} describes the
+#' steps, the damping, the bounds and the line search.
 #' @inheritSection prepare_mnl_data Column names
 #' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
@@ -173,11 +270,15 @@ run_nestlogit <- function(
     se_method = c("hessian", "numeric", "bhhh", "sandwich", "cluster"),
     cluster_col = NULL,
     nloptr_opts = NULL,
-    scale_vars = c("none", "sd", "mad", "iqr", "bhhh")
+    scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
+    polish = c("none", "newton", "bhhh"),
+    polish_control = list()
 ) {
   se_method_default <- missing(se_method)
   se_method <- match.arg(se_method)
   scale_vars <- match.arg(scale_vars)
+  polish <- match.arg(polish)
+  polish_control <- .polish_control(polish_control)
   if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
   cl <- match.call()
 
@@ -316,8 +417,33 @@ run_nestlogit <- function(
   }
 
   # Constants without a finite estimate (alternatives never chosen, or chosen
-  # wherever offered), warned before the fit
-  if (n_asc > 0) .warn_unbounded_constants(input_data$alt_mapping)
+  # wherever offered), warned before the fit. A polish holds those of the
+  # inside alternatives (a never-chosen one's only while its nest's
+  # dissimilarity is at most 1, below); with "bhhh", the BHHH matrix of the
+  # choice situations must have the rank of the parameters it moves, those
+  # it may release among them.
+  unbounded <- if (n_asc > 0) .warn_unbounded_constants(input_data$alt_mapping)
+  nest_of_row <- function(rows) {
+    input_data$nest_idx[input_data$alt_mapping[["alt_int"]][rows]]
+  }
+  never <- if (polish != "none" && !is.null(unbounded)) {
+    unbounded$never[unbounded$never >= 2L]
+  } else integer()
+  moves <- if (length(never)) {
+    multi <- tabulate(input_data$nest_idx) > 1L
+    param_map$asc[never[multi[nest_of_row(never)]] - 1L]
+  } else integer()
+  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                       n_units = length(input_data$M), lower = theta_lb,
+                       moves = moves)
+  # Where the reference is never chosen, the alternatives that anchor the
+  # constants against a common rise (.polish_anchors(); the release below
+  # frees only never-chosen constants, which anchor nothing)
+  anchors <- .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
+                             input_data$alt_mapping,
+                             list(alt_idx = input_data$alt_idx,
+                                  choice_idx = input_data$choice_idx,
+                                  M = input_data$M))
 
   # The model's objective, gradient and overflow flag at theta; `...` takes
   # opg_diag
@@ -371,9 +497,112 @@ run_nestlogit <- function(
   elapsed <- elapsed + t_bpass  # "bhhh"'s gradient pass counts
   message("Optimization run time ", convertTime(elapsed))
 
+  # --- The Newton phase (polish) ----------------------------------------------
+  # From the optimizer's solution, damped Newton steps on the analytic Hessian
+  # ("newton") or the BHHH matrix ("bhhh", its weights unsquared), in natural
+  # units (.polish_fit()), on the raw objective, whose overflow flag fails a
+  # trial point, the dissimilarities kept above their bound; under scale_vars
+  # = "none" (the default) the steps' scales come from one BHHH pass at the
+  # optimizer's solution. The estimator is unchanged.
+  polish_record <- NULL
+  curv <- NULL
+  if (polish != "none") {
+    curv_kernel <- if (polish == "newton") nl_loglik_hessian_parallel else nl_bhhh_parallel
+    curv_f <- function(theta) {
+      curv_kernel(
+        theta = theta, X = input_data$X, alt_idx = input_data$alt_idx,
+        choice_idx = input_data$choice_idx, nest_idx = input_data$nest_idx,
+        M = input_data$M, weights = input_data$weights, use_asc = use_asc,
+        include_outside_option = input_data$include_outside_option
+      )
+    }
+    # A never-chosen alternative's constant has no finite estimate only while
+    # its nest's dissimilarity is at most 1: where one of its nest-mates is
+    # chosen, its score is P(j|k) (1 - 1/lambda_k - P_k), positive for
+    # lambda_k > 1 and P_k small. So it is held where its nest is a singleton
+    # or has lambda_k <= 1 at the optimizer's solution and moved otherwise, and
+    # a polish that ends with a held constant's nest above 1, or a moved one's
+    # at or below 1, certifies nothing. A never-chosen base alternative, the
+    # reference, is moved in effect (the others' constants move against it):
+    # the rule for constants that diverge together applies only where its
+    # nest ends at or below 1 (ref_open). A constant chosen wherever offered
+    # rises for any lambda: held.
+    nest_lam <- function(par) {
+      .nl_nest_lambda(par, input_data$nest_idx, param_map$lambda)
+    }
+    certify_f <- NULL
+    if (length(never)) {
+      nest_of <- nest_of_row(never)
+      up <- nest_lam(opt$par)[nest_of] > 1
+      held <- setdiff(held, param_map$asc[never[up] - 1L])
+      say <- function(rows, verb, where) {
+        nm <- param_names[param_map$asc[rows - 1L]]
+        one <- length(nm) == 1L
+        one_nest <- length(unique(nest_of_row(rows))) == 1L
+        paste0("the dissimilarit", if (one_nest) "y" else "ies", " of the nest",
+               if (!one_nest) "s", " of the never-chosen alternative",
+               if (!one) "s", " whose constant", if (!one) "s", " (",
+               paste(nm, collapse = ", "), ") ", if (one) "was" else "were", " ",
+               verb, " ended ", where)
+      }
+      certify_f <- function(par) {
+        end_up <- nest_lam(par)[nest_of] > 1
+        why <- c(
+          if (any(!up & end_up)) {
+            say(never[!up & end_up], "held",
+                "above 1, where such a constant can have a finite estimate")
+          },
+          if (any(up & !end_up)) {
+            say(never[up & !end_up], "moved",
+                "at or below 1, where such a constant has no finite estimate")
+          })
+        if (length(why)) paste(why, collapse = "; and ")
+      }
+    }
+    ref_open <- NULL
+    if (!is.null(unbounded) && unbounded$ref_never && !unbounded$outside) {
+      ref_nest <- nest_of_row(unbounded$ref)
+      ref_open <- function(par) nest_lam(par)[ref_nest] > 1
+    }
+    # The polish's last curvature, when evaluated at the point it returns, is
+    # the variance's own matrix there where se_method needs that one: the
+    # analytic Hessian, as the bread of "hessian", "sandwich" and "cluster"
+    # (not of "numeric", whose bread is the numeric Hessian); the BHHH matrix
+    # with the weights unsquared, for "bhhh" (the robust meat squares them)
+    reuse <- switch(polish,
+                    newton = se_method %in% c("hessian", "sandwich", "cluster"),
+                    bhhh = se_method == "bhhh")
+    pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
+                      lower = theta_lb, upper = NULL,
+                      scale = if (scale_vars != "none") map$scale,
+                      control = polish_control, held = held,
+                      keep_curvature = reuse, unbounded = unbounded,
+                      asc_idx = param_map$asc,
+                      alt_mapping = input_data$alt_mapping,
+                      anchors = anchors,
+                      weights = input_data$weights, optimizer = optimizer,
+                      certify_f = certify_f, ref_open = ref_open)
+    opt <- pf$opt
+    polish_record <- pf$record
+    curv <- pf$curvature
+    elapsed <- elapsed + pf$time
+    # the list's reference to a kept curvature, dropped so that curv <- NULL
+    # after the variance frees it
+    pf <- NULL
+  }
+
   # Estimates in natural units
   theta_hat <- opt$par
   names(theta_hat) <- param_names
+
+  # The optimizer's record, with the polish's only when there is one
+  opt_info <- list(
+    name = if (is.function(optimizer)) "custom" else (optimizer %||% "nloptr"),
+    control = control,
+    elapsed_time = elapsed[["elapsed"]],
+    iterations = opt$iterations
+  )
+  if (!is.null(polish_record)) opt_info$polish <- polish_record
 
   # Extract lambda values
   lambda <- theta_hat[param_map$lambda]
@@ -392,12 +621,7 @@ run_nestlogit <- function(
     param_map = param_map,
     use_asc = use_asc,
     include_outside_option = input_data$include_outside_option,
-    optimizer = list(
-      name = if (is.function(optimizer)) "custom" else (optimizer %||% "nloptr"),
-      control = control,
-      elapsed_time = elapsed[["elapsed"]],
-      iterations = opt$iterations
-    ),
+    optimizer = opt_info,
     data = list(
       X = input_data$X,
       alt_idx = input_data$alt_idx,
@@ -424,16 +648,20 @@ run_nestlogit <- function(
   # weight-squared OPG (the BHHH kernel with weights^2, its per-situation
   # score being weight-free). For "cluster", the meat is the outer product of
   # within-cluster sums of weighted scores, summed in C++ without the N x p
-  # score matrix. An error here (an allocation that fails, a kernel's memory
-  # check) returns the estimates without a variance, with a warning
-  # (.vcov_failed()).
+  # score matrix. After a polish, its last curvature stands in for the matrix
+  # the variance would otherwise evaluate at the same point (curv, above). An
+  # error here (an allocation that fails, a kernel's memory check) returns
+  # the estimates without a variance, with a warning (.vcov_failed()).
   vcov_result <- tryCatch(
     .assemble_score_vcov(fit, type = .vcov_type(se_method),
-                         what = "`cluster_col`"),
+                         what = "`cluster_col`",
+                         bread = if (polish == "newton") curv,
+                         bhhh = if (polish == "bhhh") curv),
     error = function(e) {
       .vcov_failed(e, se_method, param_names, keep_data)
     }
   )
+  curv <- NULL
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
@@ -450,6 +678,25 @@ run_nestlogit <- function(
   fit
 }
 
+
+#' The dissimilarity of every nest
+#'
+#' One per nest code: the parameters of the nests of two or more
+#' alternatives, in nest order (as the kernels read them), and 1 for a
+#' singleton nest.
+#'
+#' @param theta The parameters.
+#' @param nest_idx The nest of each alternative.
+#' @param lambda_idx The dissimilarities' positions (`param_map$lambda`).
+#' @returns Numeric vector, one per nest.
+#' @noRd
+.nl_nest_lambda <- function(theta, nest_idx, lambda_idx) {
+  n_nests <- max(nest_idx)
+  lam <- rep(1, n_nests)
+  multi <- which(tabulate(nest_idx, n_nests) > 1L)
+  if (length(multi)) lam[multi] <- theta[lambda_idx]
+  lam
+}
 
 #' Prepare inputs for nested logit estimation
 #'

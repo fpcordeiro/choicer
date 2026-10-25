@@ -596,10 +596,11 @@ normalize_optim_result <- function(result) {
 
 #' Settings of the Newton phase
 #'
-#' `polish_control` of `run_mxlogit()`: a named list whose entries replace
-#' the defaults, `max_iter` (20; a whole number, 0 certifies the start
-#' without stepping), `tol_decrement` (1e-8, in log-likelihood units) and
-#' `tol_step` (1e-12, relative). A NULL entry keeps the default.
+#' `polish_control` of `run_mnlogit()`, `run_mxlogit()` and
+#' `run_nestlogit()`: a named list whose entries replace the defaults,
+#' `max_iter` (20; a whole number, 0 certifies the start without stepping),
+#' `tol_decrement` (1e-8, in log-likelihood units) and `tol_step` (1e-12,
+#' relative). A NULL entry keeps the default.
 #'
 #' @param control A named list, or NULL.
 #' @returns The complete settings.
@@ -641,8 +642,9 @@ normalize_optim_result <- function(result) {
 
 #' Polish an optimizer's solution by damped Newton steps
 #'
-#' The Newton phase of `run_mxlogit(polish = )`. From the optimizer's
-#' solution it takes damped Newton steps on the curvature `curv_f` returns,
+#' The Newton phase of the `run_*logit()` wrappers' `polish`
+#' (`.polish_fit()`). From the optimizer's solution it takes damped Newton
+#' steps on the curvature `curv_f` returns,
 #' the information (the Hessian of the negated log-likelihood) or the BHHH
 #' matrix, until the Newton decrement, half of g' C^-1 g with g the gradient
 #' and C the curvature, falls below `tol_decrement`. On a positive definite
@@ -729,7 +731,10 @@ normalize_optim_result <- function(result) {
 #' @param theta Start, the optimizer's solution, in natural units.
 #' @param eval_f Function of theta returning `list(objective, gradient,
 #'   overflow)`: the negated log-likelihood, its gradient, and whether the
-#'   objective overflowed.
+#'   objective overflowed (the mixed logit kernel's flag), or whether the
+#'   objective or the gradient is not the likelihood's (the multinomial and
+#'   nested logit kernels' flag, which also marks a clamped log-probability
+#'   and a gradient entry set to 0).
 #' @param curv_f Function of theta returning the curvature matrix.
 #' @param lower,upper Bounds, or NULL.
 #' @param scale The fit's coordinate scales m (`param_scale`), or NULL (1s).
@@ -999,11 +1004,15 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #' @param n_units Number of likelihood units (evaluated for `"bhhh"` only).
 #' @param units What the units are, for the message.
 #' @param lower,upper Bounds, or NULL.
+#' @param moves Positions held here that the caller may still release (the
+#'   nested logit's never-chosen constants in nests of two or more, moved
+#'   where their nest's dissimilarity exceeds 1): counted as moving in the
+#'   rank check, which comes before the optimizer.
 #' @returns Positions of the parameters held.
 #' @noRd
 .polish_held <- function(polish, unbounded, asc_idx, n_params, n_units,
                          units = "choice situations", lower = NULL,
-                         upper = NULL) {
+                         upper = NULL, moves = integer()) {
   held <- integer()
   if (polish != "none" && !is.null(unbounded)) {
     rows <- sort(c(unbounded$never, unbounded$always))
@@ -1012,15 +1021,104 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
   if (polish == "bhhh") {
     lower <- lower %||% rep(-Inf, n_params)
     upper <- upper %||% rep(Inf, n_params)
-    n_moved <- sum(!seq_len(n_params) %in% held & lower < upper)
+    n_moved <- sum(!seq_len(n_params) %in% setdiff(held, moves) & lower < upper)
     if (n_units < n_moved) {
       stop("polish = \"bhhh\" needs at least as many likelihood units as the ",
            "parameters it moves: the BHHH matrix of ", n_units, " ", units,
            " has rank at most ", n_units, ", below the ", n_moved,
-           " parameters. Use polish = \"newton\".", call. = FALSE)
+           " parameters",
+           if (any(moves %in% held)) {
+             paste0(" (counting the constants of never-chosen alternatives in ",
+                    "nests of two or more, which it moves where their nest's ",
+                    "dissimilarity exceeds 1)")
+           },
+           ". Use polish = \"newton\".", call. = FALSE)
     }
   }
   held
+}
+
+#' The Newton phase's scales for a fit whose coordinates have none
+#'
+#' Under `scale_vars = "none"` the fit's coordinates are the parameters' own
+#' units, which would make the polish's step cap (10 units), its stall rule
+#' and `tol_step` depend on the covariates' units: in the study's designs
+#' with half of the covariates rescaled by 10^3 and the other half by 10^-3,
+#' 20 Newton steps capped at 10
+#' natural units left a decrement of 1,054 to 2,060, where 8 or 9 steps at
+#' these scales certified the maximum. The scales are the BHHH diagonal's
+#' where the polish starts (`.bhhh_scales()`, powers of two), from one
+#' gradient pass with `opg_diag`; ones where that pass overflows or its
+#' diagonal has no finite, positive entry.
+#'
+#' @param model_f Function of theta (and `opg_diag`) returning the model's
+#'   `list(objective, gradient, overflow, opg_diag)`.
+#' @param theta Where the polish starts: the optimizer's solution, clipped
+#'   to the bounds.
+#' @returns The scales.
+#' @noRd
+.polish_scales <- function(model_f, theta) {
+  g <- model_f(theta, opg_diag = TRUE)
+  B <- as.numeric(g$opg_diag)
+  if (isTRUE(g$overflow) || !any(is.finite(B) & B > 0)) return(rep(1, length(theta)))
+  .bhhh_scales(B)
+}
+
+#' The alternatives that anchor the constants against a common rise
+#'
+#' Where the reference is never chosen, the constants that move rise together
+#' unless something stops them. An alternative is anchored if its constant is
+#' held or bounded above, or if it is offered in a choice situation whose
+#' chosen alternative is anchored. If every alternative whose constant moves
+#' is anchored, no rise is free: along any direction that raises a set S of
+#' constants, take the member of S anchored first; the situation that
+#' anchored it chooses an alternative outside S whose probability falls to 0
+#' (as the probability of an alternative chosen where one that rises is
+#' offered does, in the multinomial, nested and mixed logits), so the
+#' log-likelihood falls without bound. A held constant chosen only where no
+#' moving constant is offered stops nothing. The closure depends on the data
+#' and on the constants held or bounded, not on the parameters, and the
+#' nested logit's later release moves only never-chosen constants, which
+#' anchor nothing, so it is formed before the optimizer, only where a polish
+#' may need it (a never-chosen reference): one pass over the rows per step of
+#' the closure.
+#'
+#' @param polish "none", "newton" or "bhhh".
+#' @param unbounded `.unbounded_constants()`'s result, or NULL.
+#' @param held Positions held (`.polish_held()`).
+#' @param upper Upper bounds, or NULL.
+#' @param asc_idx The constants' positions (`param_map$asc`).
+#' @param alt_mapping The fit's `alt_mapping` (row r >= 2: constant r - 1).
+#' @param situations `alt_idx`, `choice_idx` (0 for the outside option) and
+#'   `M` of the fit's choice situations.
+#' @returns NULL where no polish needs it, else a logical vector over the
+#'   alternatives' codes: anchored or not.
+#' @noRd
+.polish_anchors <- function(polish, unbounded, held, upper, asc_idx,
+                            alt_mapping, situations) {
+  if (polish == "none" || is.null(unbounded) || !isTRUE(unbounded$ref_never)) {
+    return(NULL)
+  }
+  upper <- upper %||% rep(Inf, max(asc_idx))
+  stops <- asc_idx %in% held | is.finite(upper[asc_idx])
+  code <- alt_mapping[["alt_int"]][-1L]
+  alt <- situations$alt_idx
+  M <- situations$M
+  ch <- situations$choice_idx
+  J <- max(alt, code)
+  first <- c(0, cumsum(as.numeric(M)))[seq_along(M)]
+  inside <- which(ch >= 1L)
+  chosen <- alt[first[inside] + ch[inside]]
+  anchored <- logical(J)
+  anchored[code[stops]] <- TRUE
+  repeat {
+    hot <- logical(length(M))
+    hot[inside] <- anchored[chosen]
+    now <- anchored | tabulate(alt[rep.int(hot, M)], J) > 0L
+    if (identical(now, anchored)) break
+    anchored <- now
+  }
+  anchored
 }
 
 #' A fit's Newton phase, from the optimizer's solution
@@ -1036,12 +1134,13 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #' Where the reference (the outside option, or the base alternative) is never
 #' chosen, or chosen wherever offered, the other constants diverge together
 #' (up, or down): there is no maximum to certify. A rise stops where the
-#' constant of an alternative that is chosen (row r >= 2 of `alt_mapping`,
-#' constant `asc[r - 1]`) is held or bounded above; a fall is not examined,
-#' and is never certified. A converged polish reports the optimizer's success
-#' code (nloptr 1, optim and custom 0) and leads the message with its verdict;
-#' the optimizer's own status is kept in the record. An error ends the polish
-#' at its last accepted point, with a warning (class `choicer_polish_failed`).
+#' constants held or bounded above (row r >= 2 of `alt_mapping`, constant
+#' `asc[r - 1]`) anchor every constant that moves (`.polish_anchors()`);
+#' a fall is not examined, and is never certified. A converged polish
+#' reports the optimizer's success code (nloptr 1, optim and custom 0) and
+#' leads the message with its verdict; the optimizer's own status is kept in
+#' the record. An error ends the polish at its last accepted point, with a
+#' warning (class `choicer_polish_failed`).
 #'
 #' @param polish "newton" or "bhhh".
 #' @param opt The optimizer's result (`par` natural, `value`, `convergence`,
@@ -1054,7 +1153,14 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #' @param curv_f Function of theta returning the curvature: the information
 #'   (the Hessian of the negated log-likelihood), or the BHHH matrix.
 #' @param lower,upper Bounds, or NULL.
-#' @param scale The fit's coordinate scales (`map$scale`).
+#' @param scale The fit's coordinate scales (`map$scale`), or NULL for a fit
+#'   whose coordinates have none (`scale_vars = "none"`): the scales then come
+#'   from one pass of `model_f(theta, opg_diag = TRUE)` where the polish
+#'   starts, the BHHH diagonal's (`.polish_scales()`), as `scale_vars =
+#'   "bhhh"` takes them at the start values, so that the step cap, the stall
+#'   rule and `tol_step` are not measured in the columns' units (ones where
+#'   the diagonal is unusable or the pass fails). The pass counts in the
+#'   polish's time.
 #' @param control From `.polish_control()`.
 #' @param held Positions held (`.polish_held()`).
 #' @param keep_curvature Whether the caller's variance takes the last
@@ -1062,8 +1168,18 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #' @param unbounded `.unbounded_constants()`'s result, or NULL.
 #' @param asc_idx The constants' positions (`param_map$asc`).
 #' @param alt_mapping The fit's `alt_mapping`.
+#' @param anchors `.polish_anchors()`'s result: the alternatives anchored
+#'   against a common rise of the constants, or NULL.
 #' @param weights The fit's weights.
 #' @param optimizer The `optimizer` argument.
+#' @param certify_f NULL, or a function of the polished parameters returning
+#'   NULL, or why a converged polish does not certify a maximum (the nested
+#'   logit's rule for the constants it held or moved), appended to its
+#'   message.
+#' @param ref_open NULL, or a function of the polished parameters returning
+#'   whether a never-chosen reference can have a finite estimate there (the
+#'   nested logit's base alternative in a nest whose dissimilarity exceeds
+#'   1), where the rule for constants that diverge together does not apply.
 #' @returns List: `opt`, the result updated (the polish's point and value
 #'   where it has one, its code and message); `record`, the
 #'   `fit$optimizer$polish` record; `curvature`, the last curvature where
@@ -1072,27 +1188,36 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #' @noRd
 .polish_fit <- function(polish, opt, elapsed, param_names, model_f, curv_f,
                         lower, upper, scale, control, held, keep_curvature,
-                        unbounded, asc_idx, alt_mapping, weights, optimizer) {
+                        unbounded, asc_idx, alt_mapping, anchors, weights,
+                        optimizer, certify_f = NULL, ref_open = NULL) {
   stopifnot(polish %in% c("newton", "bhhh"))
   w_bar <- mean(weights)
   pc <- control
   pc$tol_decrement <- pc$tol_decrement * w_bar
-  t_pol <- system.time(
+  t_pol <- system.time({
+    # (no scales: one BHHH pass where the polish starts, the optimizer's
+    # solution clipped to the bounds; a pass that fails leaves them at 1, and
+    # the polish's first evaluation, at that point, reports the error)
+    if (is.null(scale)) {
+      start <- pmin(pmax(opt$par, lower %||% -Inf), upper %||% Inf)
+      scale <- tryCatch(.polish_scales(model_f, start), error = function(e) NULL)
+    }
     pol <- run_polish(stats::setNames(opt$par, param_names), model_f, curv_f,
                       lower = lower, upper = upper, scale = scale,
                       control = pc, method = polish,
-                      fixed = held, keep_curvature = keep_curvature),
-    gcFirst = FALSE)
+                      fixed = held, keep_curvature = keep_curvature)
+  }, gcFirst = FALSE)
   # (an NA, from a curvature that is not positive definite, stays as it is)
   if (!is.na(pol$decrement)) pol$decrement <- pol$decrement / w_bar
   curv <- pol$curvature_at_par
   pol$curvature_at_par <- NULL
   if (pol$converged && !is.null(unbounded) &&
-      (unbounded$ref_never || unbounded$ref_always)) {
+      (unbounded$ref_never || unbounded$ref_always) &&
+      !(unbounded$ref_never && !is.null(ref_open) && isTRUE(ref_open(pol$par)))) {
     upper <- upper %||% rep(Inf, length(param_names))
-    chosen <- alt_mapping[["N_CHOICES"]][-1L] > 0
     stops <- asc_idx %in% held | is.finite(upper[asc_idx])
-    if (!(unbounded$ref_never && any(chosen & stops))) {
+    moving <- alt_mapping[["alt_int"]][-1L][!stops]
+    if (!(unbounded$ref_never && !is.null(anchors) && all(anchors[moving]))) {
       pol$converged <- FALSE
       pol$message <- paste0(
         pol$message, ", but the constants diverge together (the ",
@@ -1100,6 +1225,13 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
         if (unbounded$ref_never) " is never chosen" else
           " is chosen wherever it is offered",
         "), so there is no maximum to certify")
+    }
+  }
+  if (pol$converged && !is.null(certify_f)) {
+    why <- certify_f(pol$par)
+    if (!is.null(why)) {
+      pol$converged <- FALSE
+      pol$message <- paste0(pol$message, ", but ", why)
     }
   }
   label <- if (polish == "newton") "Newton polish" else "BHHH polish"

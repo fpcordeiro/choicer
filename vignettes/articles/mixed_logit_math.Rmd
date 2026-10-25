@@ -1385,12 +1385,17 @@ only as the held constants approach their limits, so an optimizer stopped early 
 further from it. When the reference itself, the outside option or the base alternative,
 is never chosen or chosen wherever offered, the other constants diverge together, and the
 polish does not report convergence, whatever its decrement, unless the reference is never
-chosen and the constant of an alternative that is chosen is held or bounded above, which
-stops their rise. A parameter whose curvature column and gradient are exactly zero
-carries no information at the current point (as where a log-Cholesky diagonal has gone so
-far toward $-\infty$ that its derivatives underflow), and one held by the step rule above
-has all but none: either is left out of the steps, and the polish does not report
-convergence.
+chosen and the constants held or bounded above anchor all the others, which stops their
+rise. An alternative is anchored if its constant is held or bounded above, or if it is
+offered in a choice situation whose chosen alternative is anchored. With every constant
+that moves anchored, any direction that raises a set of them meets the situation that
+anchored the first of them; there the chosen alternative, outside the set, has a
+probability that falls to zero, and with it the log-likelihood. A held alternative chosen
+only where it is offered alone anchors nothing. A parameter whose curvature column and
+gradient are exactly zero carries no information at the current point (as where a
+log-Cholesky diagonal has gone so far toward $-\infty$ that its derivatives underflow), and
+one held by the step rule above has all but none: either is left out of the steps, and
+the polish does not report convergence.
 
 **Limits.** A random coefficient whose variance's maximum is at zero drives its
 log-Cholesky diagonal $\ell_{pp}$ (§1.4) toward $-\infty$. There $f$ moves with

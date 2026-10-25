@@ -107,6 +107,18 @@
 #'   within each \code{id_col}. Supplying \code{cluster_col} without an explicit
 #'   \code{se_method} selects \code{se_method = "cluster"}.
 #' @param nloptr_opts Deprecated. Use \code{optimizer} and \code{control} instead.
+#' @param polish A Newton phase after the optimizer (see the section
+#'   below): \code{"none"} (default) has none; \code{"newton"} steps on the
+#'   analytic Hessian of the log-likelihood, \code{"bhhh"} on the BHHH (outer
+#'   product of the gradients) matrix, both with the fit's weights.
+#' @param polish_control List of settings of the Newton phase, any of
+#'   \code{max_iter} (20; 0 evaluates the decrement at the optimizer's
+#'   solution without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8},
+#'   in log-likelihood units of weights with mean one: the decrement is taken
+#'   over the mean weight, so that the rule does not depend on the weights'
+#'   scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step shorter than
+#'   this, relative to the parameters' magnitudes plus their scales, stops
+#'   the polish unconverged).
 #' @returns A \code{choicer_mnl} object (inherits from \code{choicer_fit}).
 #'   Standard S3 methods available: \code{summary()}, \code{coef()}, \code{vcov()},
 #'   \code{logLik()}, \code{AIC()}, \code{BIC()}, \code{nobs()}, \code{predict()}.
@@ -120,6 +132,68 @@
 #'   allocating (see \code{\link{set_num_threads}}); only small
 #'   per-situation buffers are allocated inside their parallel loops, where
 #'   an allocation that fails still terminates R.
+#'   With \code{polish}, \code{fit$optimizer$polish} records the Newton
+#'   phase, as \code{\link{run_mxlogit}}'s does: \code{method},
+#'   \code{converged}, \code{iterations} and \code{damped}, \code{decrement}
+#'   (over the mean weight; \code{NA} where the curvature on the parameters
+#'   moved was not positive definite, or none was evaluated) and
+#'   \code{lambda}, \code{message},
+#'   \code{evaluations}, \code{active}, \code{held}, \code{flat},
+#'   \code{improvement}, \code{error}, \code{elapsed_time} (which
+#'   \code{fit$optimizer$elapsed_time} includes) and \code{optimizer}, the
+#'   optimizer's own \code{convergence}, \code{message}, \code{iterations} and
+#'   \code{elapsed_time}. A converged polish sets \code{convergence} to the
+#'   optimizer's success code (1 for nloptr, 0 for optim and a custom
+#'   optimizer) and leads \code{message} with its verdict; otherwise both keep
+#'   the optimizer's, the polish's reason appended to the message. A polish
+#'   that stops with an error (the Hessian's memory check, say) keeps its
+#'   last accepted point and warns (class \code{choicer_polish_failed}).
+#' @section Newton phase (polish):
+#' The polish does not change the estimator. From wherever the optimizer
+#' stopped, it takes Newton steps on the curvature of the log-likelihood and
+#' certifies the maximum: it converges when the Newton decrement
+#' \eqn{\nu = \frac{1}{2} g^\top C^{-1} g}{nu = g' C^-1 g / 2}, with \eqn{g}
+#' the gradient and \eqn{C} the curvature on the parameters it moves, over
+#' the mean weight, falls below \code{tol_decrement}. On a positive definite
+#' Hessian (of the weights scaled to mean one) every linear combination of
+#' the estimates then lies within
+#' \eqn{\sqrt{2\nu}}{sqrt(2 nu)} of its standard error of the maximum of the
+#' log-likelihood's quadratic model (\eqn{1.4 \times 10^{-4}}{1.4e-4} at the
+#' default). \code{"bhhh"} is cheaper per step but converges linearly, its
+#' decrement on its own shows only a stationary point, and it needs at least
+#' as many choice situations as the parameters it moves. A trial point at
+#' which the likelihood kernel replaces a value (a log probability clamped
+#' to \eqn{-10^{10}}{-1e10}, which it warns of, a total or gradient entry
+#' that is not finite) is rejected.
+#'
+#' The multinomial logit's log-likelihood is concave, so the maximum the
+#' polish certifies is the global one wherever the model is identified (a
+#' positive definite Hessian). In a study on census- and claims-style
+#' designs (about 2,500 and 500 alternatives, 17,000 to 245,000 choice
+#' situations) the default fit stopped at the maximum and
+#' \code{polish = "newton"} certified it at once, its Hessian then serving
+#' the variance; with \code{scale_vars = "none"} the optimizer stopped up to
+#' 9 log-likelihood units short (at its 1,000-evaluation limit on three of
+#' the four designs), a gap the polish closed in 1 to 5 steps.
+#'
+#' The constants of inside alternatives without a finite estimate (see
+#' \code{use_asc}) are held at the optimizer's values, and the certificate
+#' concerns the other parameters given them. Where the base alternative or
+#' the outside option is the one without, the other constants diverge
+#' together and the polish does not report convergence, unless the reference
+#' is never chosen and the held constants (of alternatives chosen wherever
+#' offered) anchor all the others, which stops their rise: each other
+#' constant's alternative is offered in a choice situation that chooses a
+#' held alternative, or one anchored so. Under \code{scale_vars = "none"},
+#' whose coordinates are the parameters' own units, the steps' scales come
+#' from one BHHH pass at the optimizer's solution (one gradient evaluation).
+#' The polish's last curvature serves the variance where \code{se_method}
+#' needs it, unless the polish fell back to the optimizer's solution, its
+#' curvature failed, or its start could not be evaluated: after
+#' \code{"newton"}, the Hessian of \code{"hessian"} and the bread of
+#' \code{"sandwich"} and \code{"cluster"}; after \code{"bhhh"}, the BHHH
+#' matrix of \code{"bhhh"}. \code{\link{run_mxlogit}} describes the steps,
+#' the damping, the bounds and the line search.
 #' @inheritSection prepare_mnl_data Column names
 #' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
@@ -159,7 +233,9 @@ run_mnlogit <- function(
     scale_vars = c("bhhh", "none", "sd", "mad", "iqr"),
     se_method = c("hessian", "bhhh", "sandwich", "cluster"),
     cluster_col = NULL,
-    nloptr_opts = NULL
+    nloptr_opts = NULL,
+    polish = c("none", "newton", "bhhh"),
+    polish_control = list()
 ) {
   cl <- match.call()
   se_method_default <- missing(se_method)
@@ -173,6 +249,8 @@ run_mnlogit <- function(
 
   scale_vars <- match.arg(scale_vars)
   se_method <- match.arg(se_method)
+  polish <- match.arg(polish)
+  polish_control <- .polish_control(polish_control)
   if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
 
   # --- Resolve input pathway --------------------------------------------------
@@ -284,8 +362,19 @@ run_mnlogit <- function(
   }
 
   # Constants without a finite estimate (alternatives never chosen, or chosen
-  # wherever offered), warned before the fit
-  if (n_asc > 0) .warn_unbounded_constants(input_list$alt_mapping)
+  # wherever offered), warned before the fit. A polish holds those of the
+  # inside alternatives; with "bhhh", the BHHH matrix of the choice situations
+  # must have the rank of the parameters it moves.
+  unbounded <- if (n_asc > 0) .warn_unbounded_constants(input_list$alt_mapping)
+  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                       n_units = length(input_list$M))
+  # Where the reference is never chosen, the alternatives that anchor the
+  # constants against a common rise (.polish_anchors())
+  anchors <- .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
+                             input_list$alt_mapping,
+                             list(alt_idx = input_list$alt_idx,
+                                  choice_idx = input_list$choice_idx,
+                                  M = input_list$M))
 
   # --- The optimizer's coordinates: column scales (scale_vars) ----------------
   # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
@@ -345,8 +434,59 @@ run_mnlogit <- function(
   elapsed <- elapsed + t_bpass  # "bhhh"'s gradient pass counts
   message("Optimization run time ", convertTime(elapsed))
 
+  # --- The Newton phase (polish) ----------------------------------------------
+  # From the optimizer's solution, damped Newton steps on the analytic Hessian
+  # ("newton") or the BHHH matrix ("bhhh", its weights unsquared), in natural
+  # units (.polish_fit()), on the raw objective, whose overflow flag fails a
+  # trial point; under scale_vars = "none" the steps' scales come from one
+  # BHHH pass at the optimizer's solution. The estimator is unchanged.
+  polish_record <- NULL
+  curv <- NULL
+  if (polish != "none") {
+    curv_kernel <- if (polish == "newton") mnl_loglik_hessian_parallel else mnl_bhhh_parallel
+    curv_f <- function(theta) {
+      curv_kernel(
+        theta = theta, X = input_list$X, alt_idx = input_list$alt_idx,
+        choice_idx = input_list$choice_idx, M = input_list$M,
+        weights = input_list$weights, use_asc = use_asc,
+        include_outside_option = input_list$include_outside_option
+      )
+    }
+    # The polish's last curvature, when evaluated at the point it returns, is
+    # the variance's own matrix there where se_method needs that one: the
+    # Hessian, as the bread of "hessian", "sandwich" and "cluster"; the BHHH
+    # matrix with the weights unsquared, for "bhhh" (the robust meat squares
+    # them)
+    reuse <- switch(polish, newton = se_method != "bhhh", bhhh = se_method == "bhhh")
+    pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
+                      lower = NULL, upper = NULL,
+                      scale = if (scale_vars != "none") map$scale,
+                      control = polish_control, held = held,
+                      keep_curvature = reuse, unbounded = unbounded,
+                      asc_idx = param_map$asc,
+                      alt_mapping = input_list$alt_mapping,
+                      anchors = anchors,
+                      weights = input_list$weights, optimizer = optimizer)
+    opt <- pf$opt
+    polish_record <- pf$record
+    curv <- pf$curvature
+    elapsed <- elapsed + pf$time
+    # the list's reference to a kept curvature, dropped so that curv <- NULL
+    # after the variance frees it
+    pf <- NULL
+  }
+
   theta_hat <- opt$par
   names(theta_hat) <- param_names
+
+  # The optimizer's record, with the polish's only when there is one
+  opt_info <- list(
+    name = if (is.function(optimizer)) "custom" else (optimizer %||% "nloptr"),
+    control = control,
+    elapsed_time = elapsed[["elapsed"]],
+    iterations = opt$iterations
+  )
+  if (!is.null(polish_record)) opt_info$polish <- polish_record
 
   # Build S3 object
   fit <- new_choicer_mnl(
@@ -368,12 +508,7 @@ run_mnlogit <- function(
     param_map = param_map,
     use_asc = use_asc,
     include_outside_option = input_list$include_outside_option,
-    optimizer = list(
-      name = if (is.function(optimizer)) "custom" else (optimizer %||% "nloptr"),
-      control = control,
-      elapsed_time = elapsed[["elapsed"]],
-      iterations = opt$iterations
-    ),
+    optimizer = opt_info,
     data = list(
       X = input_list$X,
       alt_idx = input_list$alt_idx,
@@ -397,16 +532,20 @@ run_mnlogit <- function(
   # weight-squared OPG (the BHHH kernel with weights^2, its per-situation
   # score being weight-free). For "cluster", the meat is the outer product of
   # within-cluster sums of weighted scores, summed in C++ without the N x p
-  # score matrix. An error here (an allocation that fails, a kernel's memory
-  # check) returns the estimates without a variance, with a warning
-  # (.vcov_failed()).
+  # score matrix. After a polish, its last curvature stands in for the matrix
+  # the variance would otherwise evaluate at the same point (curv, above). An
+  # error here (an allocation that fails, a kernel's memory check) returns
+  # the estimates without a variance, with a warning (.vcov_failed()).
   vcov_result <- tryCatch(
     .assemble_score_vcov(fit, type = .vcov_type(se_method),
-                         what = "`cluster_col`"),
+                         what = "`cluster_col`",
+                         bread = if (polish == "newton") curv,
+                         bhhh = if (polish == "bhhh") curv),
     error = function(e) {
       .vcov_failed(e, se_method, param_names, keep_data)
     }
   )
+  curv <- NULL
   if (!is.null(vcov_result$vcov)) {
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
