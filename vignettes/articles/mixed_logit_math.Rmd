@@ -1346,10 +1346,14 @@ a curvature that has all but vanished ($|C_{kk}|\, m_k^2$ below $10^{-4}$ times 
 parameters' median; see the limits below) is instead held for that iteration and the step
 solved again without it: shortening its step to the maximum would shorten every other
 parameter's by more than ten. A step that is long because the start is far from the
-maximum is shortened. Under `scale_vars = "none"` the scales $m_k$ are the parameters'
-natural units, so a badly scaled column far from its maximum can be held as if its
-curvature had vanished; the default `"bhhh"` map, from the BHHH diagonal at the start
-values, avoids this.
+maximum is shortened. Under `scale_vars = "none"`, whose coordinates are the parameters'
+natural units, the scales $m_k$ are instead the BHHH map's of §1.5 taken where the polish
+starts: one gradient pass at the optimizer's solution (clipped to the bounds), powers of
+two, ones where the pass overflows. In natural units a badly scaled column far from its
+maximum would be held as if its curvature had vanished: in the multinomial and nested
+logits' census- and claims-style designs with half of the covariates rescaled by $10^3$
+and the other half by $10^{-3}$, 20 steps at unit scales left a decrement of 1,054 to
+2,060, where 8 or 9 at these scales certified the maximum.
 
 **Bounds.** With `lower`/`upper` the polish projects (Bertsekas 1982). A parameter within
 $\epsilon_k$ of a bound across which its descent direction $-g_k$ points is

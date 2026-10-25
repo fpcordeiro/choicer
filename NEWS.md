@@ -114,7 +114,10 @@ designs of their own, described where they appear.
   on its own shows only a stationary point; `"bhhh"` needs at least as many
   likelihood units as the parameters it moves. Where the curvature is not
   positive definite the steps are damped (Levenberg-Marquardt, on the
-  equilibrated information); they respect `lower` and `upper` (projected
+  equilibrated information); their length is capped in the optimizer's
+  coordinates, which under `scale_vars = "none"` (the parameters' own units,
+  in which a badly scaled column would stall them) come from one BHHH pass at
+  the optimizer's solution; they respect `lower` and `upper` (projected
   Newton, Bertsekas 1982), and near the maximum of a likelihood summed over
   millions of units a line search that reads the gradient (Hager and Zhang
   2005) accepts steps whose gain is below the objective's rounding. A
