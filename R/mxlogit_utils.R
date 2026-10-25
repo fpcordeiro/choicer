@@ -1207,24 +1207,13 @@ run_mxlogit <- function(
                                            asc_lower = lower[param_map$asc],
                                            asc_upper = upper[param_map$asc])
   }
-  held <- integer()
-  if (polish != "none" && !is.null(unbounded)) {
-    rows <- sort(c(unbounded$never, unbounded$always))
-    held <- param_map$asc[rows[rows >= 2L] - 1L]
-  }
-  # The BHHH matrix of U likelihood units has rank at most U; the parameters
-  # it moves exclude the held and the pinned (lower == upper)
-  if (polish == "bhhh") {
-    n_units <- length(.unit_first(input_data))
-    n_moved <- sum(!seq_len(n_params) %in% held & lower < upper)
-    if (n_units < n_moved) {
-      stop("polish = \"bhhh\" needs at least as many likelihood units as the ",
-           "parameters it moves: the BHHH matrix of ", n_units, " ",
-           if (is.null(input_data$Ti)) "choice situations" else "decision makers",
-           " has rank at most ", n_units, ", below the ", n_moved,
-           " parameters. Use polish = \"newton\".", call. = FALSE)
-    }
-  }
+  # The constants a polish holds, and, for "bhhh", the rank of the BHHH
+  # matrix of the likelihood units against the parameters it moves
+  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                       n_units = length(.unit_first(input_data)),
+                       units = if (is.null(input_data$Ti)) "choice situations"
+                               else "decision makers",
+                       lower = lower, upper = upper)
 
   # Store-mode draws: their checks and the size warning before the column
   # scales below, the cube itself after them
@@ -1540,9 +1529,7 @@ run_mxlogit <- function(
   # From the optimizer's solution, damped Newton steps on the analytic Hessian
   # ("newton") or the BHHH matrix ("bhhh", its weights unsquared, the
   # objective's curvature) of the same draws, in natural units
-  # (run_polish()), on the raw objective, whose overflow flag fails a trial
-  # point. The estimator is unchanged. A converged polish reports the
-  # optimizer's success code; the optimizer's own status is kept in the record.
+  # (.polish_fit()). The estimator is unchanged.
   polish_record <- NULL
   curv <- NULL
   if (polish != "none") {
@@ -1572,84 +1559,20 @@ run_mxlogit <- function(
     # buffers (the squared weights; the cluster kernel's 8 (U + 2G) bytes and
     # labels) outweigh the Hessian kernel's.
     reuse <- switch(polish, newton = se_method != "bhhh", bhhh = se_method == "bhhh")
-    # The decrement is compared, and reported, over the mean weight, so that
-    # the rule does not depend on the weights' scale (weights summing to one
-    # would otherwise loosen it by the sample size); exact for unit weights
-    w_bar <- mean(input_data$weights)
-    pc <- polish_control
-    pc$tol_decrement <- pc$tol_decrement * w_bar
-    t_pol <- system.time(
-      pol <- run_polish(stats::setNames(opt$par, param_names), model_f, curv_f,
-                        lower = lower, upper = upper, scale = map$scale,
-                        control = pc, method = polish,
-                        fixed = held, keep_curvature = reuse),
-      gcFirst = FALSE)
-    # (an NA, from a curvature that is not positive definite, stays as it is)
-    if (!is.na(pol$decrement)) pol$decrement <- pol$decrement / w_bar
-    curv <- pol$curvature_at_par
-    pol$curvature_at_par <- NULL
-    # Where the reference (the outside option, or the base alternative) is
-    # never chosen, or chosen wherever offered, the other constants diverge
-    # together (up, or down): there is no maximum to certify. A rise stops
-    # where the constant of an alternative that is chosen (row r >= 2 of
-    # alt_mapping, constant asc[r - 1]) is held or bounded above; a fall is
-    # not examined, and is never certified.
-    if (pol$converged && !is.null(unbounded) &&
-        (unbounded$ref_never || unbounded$ref_always)) {
-      chosen <- input_data$alt_mapping[["N_CHOICES"]][-1L] > 0
-      stops <- param_map$asc %in% held | is.finite(upper[param_map$asc])
-      if (!(unbounded$ref_never && any(chosen & stops))) {
-        pol$converged <- FALSE
-        pol$message <- paste0(
-          pol$message, ", but the constants diverge together (the ",
-          if (unbounded$outside) "outside option" else "base alternative",
-          if (unbounded$ref_never) " is never chosen" else
-            " is chosen wherever it is offered",
-          "), so there is no maximum to certify")
-      }
-    }
-    label <- if (polish == "newton") "Newton polish" else "BHHH polish"
-    its <- paste(pol$iterations,
-                 if (pol$iterations == 1L) "iteration" else "iterations")
-    dec <- paste0(if (polish == "newton") "Newton" else "BHHH", " decrement ",
-                  format(signif(pol$decrement, 3)))
-    polish_record <- c(
-      pol[c("method", "converged", "iterations", "damped", "decrement",
-            "lambda", "message", "evaluations", "active", "held", "flat",
-            "improvement")],
-      list(error = pol$error, elapsed_time = t_pol[["elapsed"]],
-           optimizer = list(convergence = opt$convergence,
-                            message = opt$message,
-                            iterations = opt$iterations,
-                            elapsed_time = elapsed[["elapsed"]])))
-    if (is.finite(pol$value)) {
-      opt$par <- unname(pol$par)
-      opt$value <- pol$value
-    }
-    opt_message <- paste(as.character(opt$message), collapse = "; ")
-    if (!nzchar(opt_message)) opt_message <- NULL
-    if (pol$converged) {
-      opt$convergence <- if (identical(optimizer %||% "nloptr", "nloptr")) 1L else 0L
-      opt$message <- paste0(label, " converged after ", its, " (", dec, ")",
-                            if (!is.null(opt_message)) {
-                              paste0("; the optimizer: ", opt_message)
-                            })
-    } else {
-      opt$message <- paste0(if (!is.null(opt_message)) paste0(opt_message, "; "),
-                            label, " not converged after ", its, ": ",
-                            pol$message, " (", dec, ")")
-    }
-    message(label, ": ", if (pol$converged) "converged" else "not converged",
-            " after ", its, " (", dec, ")",
-            if (!pol$converged) paste0(": ", pol$message), ", ",
-            convertTime(t_pol))
-    if (!is.null(pol$error)) {
-      warning(warningCondition(paste0(
-        "The ", label, " stopped with an error, so the estimates are its ",
-        "last accepted point (the optimizer's solution when it took no ",
-        "step): ", pol$error), class = "choicer_polish_failed"))
-    }
-    elapsed <- elapsed + t_pol
+    pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
+                      lower = lower, upper = upper, scale = map$scale,
+                      control = polish_control, held = held,
+                      keep_curvature = reuse, unbounded = unbounded,
+                      asc_idx = param_map$asc,
+                      alt_mapping = input_data$alt_mapping,
+                      weights = input_data$weights, optimizer = optimizer)
+    opt <- pf$opt
+    polish_record <- pf$record
+    curv <- pf$curvature
+    elapsed <- elapsed + pf$time
+    # the list's reference to a kept curvature, dropped so that curv <- NULL
+    # after the variance frees it
+    pf <- NULL
   }
 
   # Estimate at the optimum (natural units)

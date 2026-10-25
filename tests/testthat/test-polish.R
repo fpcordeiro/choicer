@@ -1,6 +1,7 @@
-# The Newton phase (run_mxlogit(polish = )): newton_step(), the damped
-# Cholesky step on the free parameters, and run_polish(), the projected,
-# damped Newton iteration, here on synthetic objectives with known optima.
+# The Newton phase (the run_*logit() wrappers' polish): newton_step(), the
+# damped Cholesky step on the free parameters, run_polish(), the projected,
+# damped Newton iteration, and the wiring the wrappers share (.polish_held(),
+# .polish_fit()), here on synthetic objectives with known optima.
 
 # An objective in run_polish()'s form: f, its gradient, an overflow flag
 pol_obj <- function(f, g, overflow = FALSE) {
@@ -742,4 +743,79 @@ test_that("the last curvature comes back when it was evaluated at the point retu
   r <- rp(c(0, 0), function(x) pol_obj(Inf, c(0, 0)), Cq)
   expect_match(r$message, "objective is not finite at the start")
   expect_null(r$curvature_at_par)
+})
+
+test_that(".polish_held() holds the constants without an estimate and checks BHHH's rank", {
+  # rows 2 to 4 of alt_mapping have the constants at positions 3 to 5: row 3
+  # is never chosen, row 4 chosen wherever offered
+  ub <- list(never = 3L, always = 4L)
+  expect_identical(.polish_held("newton", ub, 3:5, 5L, 3L), c(4L, 5L))
+  expect_identical(.polish_held("none", ub, 3:5, 5L, 3L), integer())
+  expect_identical(.polish_held("newton", NULL, 3:5, 5L, 3L), integer())
+  # the units are counted only for "bhhh"
+  expect_identical(.polish_held("newton", ub, 3:5, 5L, stop("counted")), c(4L, 5L))
+  # without bounds (NULL) every parameter not held moves
+  expect_error(.polish_held("bhhh", NULL, integer(), 5L, 3L),
+               "the BHHH matrix of 3 choice situations has rank at most 3, below the 5 parameters",
+               fixed = TRUE)
+  expect_identical(.polish_held("bhhh", NULL, integer(), 5L, 5L), integer())
+  # held and pinned parameters do not move
+  expect_identical(.polish_held("bhhh", ub, 3:5, 5L, 3L), c(4L, 5L))
+  expect_identical(.polish_held("bhhh", NULL, integer(), 5L, 4L,
+                                lower = c(0, rep(-Inf, 4)),
+                                upper = c(0, rep(Inf, 4))), integer())
+  expect_error(.polish_held("bhhh", NULL, integer(), 5L, 2L, units = "decision makers",
+                            lower = c(0, rep(-Inf, 4))),
+               "the BHHH matrix of 2 decision makers has rank at most 2, below the 5 parameters",
+               fixed = TRUE)
+})
+
+test_that(".polish_fit() certifies a rise only where a held or bounded constant stops it", {
+  # three constants, the quadratic's minimum at (1, 2, 3); the outside option
+  # (row 1) never chosen, the alternative of row 2 chosen wherever offered
+  q <- pol_quad(diag(3), c(1, 2, 3))
+  am <- data.frame(alt_int = 0:3, N_CHOICES = c(0, 5, 3, 2))
+  ub <- list(never = integer(), always = 2L, ref = 1L, ref_never = TRUE,
+             ref_always = FALSE, outside = TRUE)
+  opt <- list(par = c(0, 0, 0), value = 0, convergence = 4L, message = "xtol",
+              iterations = 7L)
+  t_opt <- system.time(NULL)
+  pf <- function(held, upper = NULL, unbounded = ub, polish = "newton") {
+    suppressMessages(.polish_fit(
+      polish, opt, t_opt, c("a", "b", "c"), q$f, q$C, lower = NULL,
+      upper = upper, scale = rep(1, 3), control = .polish_control(NULL),
+      held = held, keep_curvature = FALSE, unbounded = unbounded,
+      asc_idx = 1:3, alt_mapping = am, weights = rep(2, 4), optimizer = NULL))
+  }
+  # its constant held: the rise stops, and the rest is certified given it
+  r <- pf(1L)
+  expect_true(r$record$converged)
+  expect_identical(r$opt$convergence, 1L)
+  expect_identical(r$opt$par, c(0, 2, 3))
+  expect_identical(r$record$held, "a")
+  expect_identical(r$record$elapsed_time, r$time[["elapsed"]])
+  expect_identical(r$record$optimizer$elapsed_time, t_opt[["elapsed"]])
+  # neither held nor bounded, without bounds or with infinite ones: no
+  # maximum to certify
+  for (up in list(NULL, rep(Inf, 3))) {
+    r <- pf(integer(), up)
+    expect_false(r$record$converged)
+    expect_identical(r$opt$convergence, 4L)
+    expect_match(r$record$message, paste(
+      "the constants diverge together (the outside option is never chosen),",
+      "so there is no maximum to certify"), fixed = TRUE)
+  }
+  # a chosen alternative's constant bounded above stops it too
+  r <- pf(integer(), c(Inf, 5, Inf))
+  expect_true(r$record$converged)
+  # a base alternative chosen wherever offered: the constants fall together,
+  # never certified
+  ub_fall <- utils::modifyList(ub, list(ref_never = FALSE, ref_always = TRUE,
+                                        outside = FALSE))
+  r <- pf(1L, unbounded = ub_fall)
+  expect_false(r$record$converged)
+  expect_match(r$record$message, paste(
+    "the constants diverge together (the base alternative is chosen",
+    "wherever it is offered)"), fixed = TRUE)
+  expect_error(pf(1L, polish = "none"))
 })

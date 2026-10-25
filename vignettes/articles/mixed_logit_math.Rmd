@@ -1427,7 +1427,7 @@ and one Cholesky factorization of the curvature beyond the fit without it.
 `fit$optimizer$polish` records the phase. A profile fit (§5.8) takes its variance the same
 way, from the full matrices at its estimates.
 
-*Code reference: `run_polish()` and `.polish_control()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp); the wiring in `run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R).*
+*Code reference: `run_polish()`, `.polish_control()`, and the wiring the wrappers share (the held constants and the BHHH rank check, `.polish_held()`; the decrement over the mean weight, the divergence rule and the record, `.polish_fit()`) in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp); the curvature and its reuse in `run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R).*
 
 ### 5.8 Concentrating Out the Constants
 
