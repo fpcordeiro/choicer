@@ -361,6 +361,36 @@ test_that("the polish gets the fit's coordinates, bounds and settings", {
   expect_identical(seen$fixed, integer())
 })
 
+test_that("under scale_vars = \"none\" the steps' scales come from a BHHH pass", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  dt <- mxp_data()
+  polish_fn <- run_polish
+  seen <- NULL
+  local_mocked_bindings(run_polish = function(theta, eval_f, curv_f, ...) {
+    seen <<- c(list(theta = theta), list(...))
+    polish_fn(theta, eval_f, curv_f, ...)
+  })
+  fit <- mxp_fit(dt, control = MXP_LOOSE, scale_vars = "none", polish = "newton",
+                 polish_control = list(max_iter = 0L))
+  # the fit's coordinates are the parameters' own units; the polish's scales
+  # are the BHHH diagonal's at the optimizer's solution, from the fit's own
+  # data and draws
+  expect_identical(unname(fit$param_scale), rep(1, length(coef(fit))))
+  d <- fit$data
+  gp <- .mxl_gen_params(fit$draws_info, N = length(.unit_first(d)))
+  g <- mxl_loglik_gradient_parallel(
+    theta = unname(seen$theta), X = d$X, W = d$W, alt_idx = d$alt_idx,
+    choice_idx = d$choice_idx, M = d$M, weights = d$weights,
+    rc_dist = fit$rc_dist, rc_correlation = fit$rc_correlation,
+    rc_mean = fit$rc_mean, eta_draws = gp$eta_draws, use_asc = fit$use_asc,
+    include_outside_option = fit$include_outside_option,
+    gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+    Ti = d$Ti, opg_diag = TRUE)
+  expect_identical(unname(seen$scale), .bhhh_scales(g$opg_diag))
+  expect_false(all(seen$scale == 1))
+})
+
 test_that("correlated, shifted and log-normal random coefficients are polished", {
   skip_on_cran()
   sim <- simulate_mxl_data(N = 600L, J = 10L, beta = c(0.8, -0.6),

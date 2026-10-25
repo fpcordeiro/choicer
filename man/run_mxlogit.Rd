@@ -541,9 +541,10 @@ and stops unconverged. A parameter without usable curvature (no
 information at the point, or a curvature that has all but vanished, giving
 a step more than 100 times its scale in the optimizer's coordinates) is
 held for the step and stops the polish unconverged. Under
-\code{scale_vars = "none"} those scales are the parameters' natural units,
-so a badly scaled column far from its maximum can be held as if its
-curvature had vanished; the default \code{"bhhh"} scaling avoids this. The
+\code{scale_vars = "none"}, whose coordinates are the parameters' natural
+units, those scales come from one BHHH pass at the optimizer's solution
+(one gradient evaluation), so that a badly scaled column far from its
+maximum is not held as if its curvature had vanished. The
 standard errors are computed at the polished estimates, by
 \code{se_method}. The polish evaluates its curvature at the point it
 returns before it stops (unless it falls back to the optimizer's solution
