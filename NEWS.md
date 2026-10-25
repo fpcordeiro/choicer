@@ -355,6 +355,55 @@ designs of their own, described where they appear.
   reported convergence 0.44 log-likelihood units short with `"bhhh"` and 0.52
   short with `"none"`; tighten them through `control`, where `maxit` (100 by
   default) caps the iterations.
+- **`polish` in the multinomial and nested logits.** `run_mnlogit()` and
+  `run_nestlogit()` gain `polish` and `polish_control` (their last arguments),
+  the Newton phase of `run_mxlogit()` (above): from wherever the optimizer
+  stopped, `polish = "newton"` takes Newton steps on the analytic Hessian and
+  `"bhhh"` on the BHHH matrix, with the fit's weights, until the Newton
+  decrement over the mean weight falls below `tol_decrement` (1e-8), which
+  certifies a maximum (a local one in the nested logit, whose log-likelihood
+  is not concave; with `"bhhh"`, on its own, a stationary point). The
+  estimator does not change, and the default `"none"` leaves every fit as it
+  was, bit for bit. The record (`fit$optimizer$polish`), the convergence code
+  and message, the variance's reuse of the last curvature (never for the
+  nested logit's `se_method = "numeric"`, whose Hessian is numerical) and the
+  constants held at the optimizer's values are the mixed logit's. In the
+  nested logit a never-chosen alternative's constant is held only where its
+  nest is a singleton or its dissimilarity is at most 1 at the optimizer's
+  solution: where a nest-mate is chosen its score is P(j|k)(1 - 1/lambda_k -
+  P_k), which can be positive above 1, so the constant can then have a finite
+  estimate, and a polish whose held constant's nest ends above 1, or whose
+  moved one's ends at or below 1, does not report convergence. Under
+  `scale_vars = "none"`, the nested logit's default, the steps' scales come
+  from one BHHH pass at the optimizer's solution, as for the mixed logit
+  (with half of the covariates rescaled by 10^3 and the other half by 10^-3,
+  20 steps at unit scales left a decrement of 1,054 to 2,060, where 8 or 9 at
+  these certified the maximum). A trial point fails where the likelihood
+  kernel reports that its objective or gradient is not the log-likelihood's
+  (a log probability clamped to -1e10, a total that is not finite, a gradient
+  entry set to zero), which the optimizers do not see. In a study on census-
+  and claims-style designs (2,504 and 2,602 alternatives, in 50 nests for the
+  nested logit, and 24,560 and 245,031 choice situations; 499 and 500
+  alternatives, and 17,339 and 153,721 situations; constants without a finite
+  estimate removed; single runs at eleven threads), the multinomial logit's
+  default fit stopped at the maximum and a Newton polish certified it at
+  once: with its Hessian then serving the variance, it added one gradient
+  pass and one Cholesky factorization, 3 to 13% of the fit and its variance;
+  with `scale_vars = "none"` the optimizer stopped up to 9.2 log-likelihood
+  units short, a gap the polish closed in 1 to 6 steps (up to a tenth of the
+  fit). The nested logit's default fit reached its 1,000-evaluation limit on
+  three of the four designs, 0.35 and 15.8 units short on the census-style
+  ones (up to 6.7 standard errors); a Newton polish certified the maximum
+  there in 3 and 5 steps, for about a tenth of the fit's time, and in one
+  step on the claims-style ones. Stopping the optimizer sooner
+  (`control = list(maxeval = 100)`) and polishing took about a fifth of the
+  time of the default fit and its polish, and with `scale_vars = "bhhh"` the
+  optimizer stopped at the maximum in 50 to 66 evaluations on three of the
+  four designs. (Times are modeled from the kernels' calls and per-pass
+  costs, the machine being loaded by other work.) So `polish = "newton"`
+  after the optimizer's own stop is the recommended check for a reportable
+  fit with many constants (`?run_mnlogit`, `?run_nestlogit`; §12.7 of the
+  multinomial logit's math article, §5.9 of the nested logit's).
 - **The multinomial and nested logit kernels** read the alternative codes, the
   choices and the nests in place, where they copied them into index vectors on
   every call, and the nested logit computes each situation's probabilities in

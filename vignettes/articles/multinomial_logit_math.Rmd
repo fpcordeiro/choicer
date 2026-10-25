@@ -847,9 +847,12 @@ $-10^{10}$ for that contribution and emits one warning after leaving the OpenMP 
 If the assembled negated objective is still non-finite, it returns $10^{10}$ and a zero
 gradient; isolated non-finite gradient entries are set to zero. These sentinels let a line
 search backtrack from pathological trial parameters and are not part of the regular
-finite-utility likelihood.
+finite-utility likelihood. The kernel's list also holds `overflow`, `TRUE` where it
+replaced anything (a clamped log probability, the sentinel, a gradient entry set to
+zero): the optimizers do not see it, and the polish (§12.7) rejects a trial point that
+sets it.
 
-*Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
+*Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); the flag, `logit_sanitize()` in [src/choicer_internal.h](https://github.com/fpcordeiro/choicer/blob/main/src/choicer_internal.h)*
 
 ### 12.6 Inverting the Information
 
@@ -916,6 +919,81 @@ removes) keeps only the digits its condition number allows, by any inversion, an
 singular to working precision is refused either way.
 
 *Code reference: `invert_hessian()`, `.sandwich_combine()` and `.jacobi_scale()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R); `equilibrated_inverse()` and `equilibrated_sandwich()` in [src/vcov.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/vcov.cpp).*
+
+### 12.7 Polishing the Optimizer's Solution
+
+`run_mnlogit(polish = )` follows the optimizer with the Newton phase of the
+[mixed logit](mixed_logit_math.html) (§5.7 there), which finishes the climb to the maximum
+of the same log-likelihood and certifies it; the estimator does not change. With $g$ the
+gradient of $-\ell$ and $C$ the curvature, the information $\mathcal{I} = -\nabla^2 \ell$
+of §4 (`polish = "newton"`) or the BHHH matrix $\sum_i w_i\, s_i s_i^{\top}$ of §11.3
+(`"bhhh"`, its weights unsquared), the polish converges when the Newton decrement
+
+$$
+\nu = \tfrac{1}{2}\, g^{\top} C^{-1} g,
+$$
+
+over the mean weight $\bar w$, falls below `tol_decrement` ($10^{-8}$). On a positive
+definite $\mathcal{I}$ the remaining Newton step then moves every linear combination of the
+estimates by at most $\sqrt{2\nu}$ of its Hessian standard error; with `"bhhh"` the bound
+is in robust standard errors (for an unweighted fit; with weights, in the metric of
+$\mathcal{I}^{-1} \mathcal{B} \mathcal{I}^{-1}$ with $\mathcal{B}$'s weights unsquared),
+and a small BHHH decrement on its own shows only a stationary point. The steps, their damping and maximum length, and the line search are
+those of the mixed logit's §5.7 (the multinomial logit has no bounds).
+
+The multinomial logit's log-likelihood is concave: with $X_i$ the rows of situation $i$'s
+design, the constants' indicators included, and $p_i$ its probabilities,
+$\mathcal{I} = \sum_i w_i\, X_i^{\top} \big(\mathrm{diag}(p_i) - p_i p_i^{\top}\big) X_i$
+is positive semidefinite everywhere. Wherever it is positive definite (the model
+identified at the current point) and not singular to working precision, the Newton step
+needs no damping, and the maximum the polish certifies is the global one.
+
+A trial point fails where the likelihood kernel reports that its objective or gradient is
+not the log-likelihood's (§12.5): a chosen log probability clamped to $-10^{10}$, a total
+that is not finite, or a gradient entry set to zero. The constant of an alternative never
+chosen has a negative score at every $\theta$, and that of one chosen wherever it is
+offered a positive one, so neither has a finite estimate (`run_mnlogit()` warns of them);
+the polish holds the constants of such inside alternatives at the optimizer's values, and
+the certificate concerns the other parameters given them. Where the reference itself (the
+base alternative, or the outside option) is the one without, the other constants diverge
+together, and the polish does not report convergence unless the reference is never chosen
+and the held constants anchor all the others, which stops their rise. An alternative is
+anchored if its constant is held, or if it is offered in a choice situation whose chosen
+alternative is anchored. With every constant that can rise anchored, any direction of the
+constants that raises a set of them meets the situation that anchored the member of the
+set anchored first; there the chosen alternative, outside the set, has a probability that
+falls to zero, and with it the log-likelihood. A held alternative chosen only where it is
+offered alone anchors nothing.
+
+The polish's maximum step and its stall rule are measured in the optimizer's coordinates
+$m$ (§1.5 of the mixed logit article). Under `scale_vars = "none"` those would be the
+parameters' own units, in which a column measured in thousandths needs coefficient steps
+of hundreds, so the scales come instead from the BHHH diagonal at the optimizer's solution,
+as `"bhhh"` takes them at the start values: one pass of the gradient kernel. The variance
+is computed at the polished estimates, by `se_method`, and the polish's last curvature,
+evaluated at the point it returns, is not evaluated again where it is the variance's own
+matrix: after `"newton"` the Hessian of `"hessian"` and the bread of `"sandwich"` and
+`"cluster"`, after `"bhhh"` the BHHH matrix of `"bhhh"`.
+
+On census- and claims-style designs (2,504 and 2,602 alternatives with 24,560 and 245,031
+choice situations; 499 and 500 alternatives with 17,339 and 153,721 situations; ten
+covariates; constants without a finite estimate removed; single runs at eleven threads,
+times modeled from the kernels' calls) the default fit (`scale_vars = "bhhh"`) stopped at
+the maximum in 29 to 42 evaluations, and the Newton polish certified it at once: with its
+Hessian serving the variance, it added one gradient pass and one Cholesky factorization, 3
+to 13% of the modeled time of the fit and its variance. With `scale_vars = "none"` the
+optimizer stopped up to 9.2 log-likelihood units short, at its limit of 1,000 evaluations
+on three of the designs, and the polish closed the gap in 1 to 6 steps. With half of the
+covariates rescaled by $10^3$ and the other half by $10^{-3}$, 20 steps at unit scales left
+a decrement of 1,130 to 2,060, where 8 or 9 at the BHHH scales certified the maximum.
+
+*Code reference: `run_polish()`, `.polish_held()`, `.polish_anchors()`, `.polish_fit()`
+and `.polish_scales()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R);
+`newton_step()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp);
+the curvature and its reuse in `run_mnlogit()`,
+[R/mnlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mnlogit_utils.R);
+the kernel's report, `logit_sanitize()` in
+[src/choicer_internal.h](https://github.com/fpcordeiro/choicer/blob/main/src/choicer_internal.h).*
 
 ---
 

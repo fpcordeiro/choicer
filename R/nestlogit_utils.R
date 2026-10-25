@@ -180,8 +180,13 @@
 #' The nested logit's log-likelihood is concave in the coefficients and
 #' constants for given dissimilarities of at most 1, but not jointly with the
 #' dissimilarities, so its curvature can be indefinite away from the
-#' maximum; the steps are then damped, and they keep the dissimilarities at
-#' or above their bound of \eqn{10^{-16}}{1e-16}. A dissimilarity that no
+#' maximum, where the steps are damped, and a maximum the polish certifies
+#' can be local; the steps keep the dissimilarities at or above their bound
+#' of \eqn{10^{-16}}{1e-16}. Where they drive one to it, they are damped at
+#' nearly every iteration and the polish does not report convergence: refit
+#' from other starts, and where they all end there the likelihood's supremum
+#' is at the bound, the dissimilarity has no interior estimate, and the nest
+#' is to be revised. A dissimilarity that no
 #' choice situation identifies (a nest never offered with two of its
 #' alternatives) has a gradient and a curvature of rounding size: the Newton
 #' polish can move it and certify the other parameters, its standard error
@@ -191,13 +196,13 @@
 #' (2,500 alternatives in 50 nests, 25,000 and 245,000 choice situations) it
 #' reached its 1,000-evaluation limit 0.35 and 15.8 log-likelihood units
 #' short (up to 6.7 standard errors), and \code{polish = "newton"} certified
-#' the maximum in 3 and 6 steps, for a tenth of the fit's time; on
+#' the maximum in 3 and 5 steps, for about a tenth of the fit's time; on
 #' claims-style designs (500 alternatives) it stopped closer, and one step
 #' certified it. For a reportable fit with many constants,
 #' \code{polish = "newton"} after the optimizer's own stop is the
 #' recommended check. Stopping the optimizer sooner
-#' (\code{control = list(maxeval = 100)}) and polishing took 18 to 24\% of
-#' the time on those designs, and with \code{scale_vars = "bhhh"} the
+#' (\code{control = list(maxeval = 100)}) and polishing took about a fifth
+#' of the time on those designs, and with \code{scale_vars = "bhhh"} the
 #' optimizer stopped at the maximum in 50 to 66 evaluations on three of the
 #' four. In the default coordinates, which are the parameters' own units,
 #' the steps' scales come from one BHHH pass at the optimizer's solution
