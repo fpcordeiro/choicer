@@ -21,6 +21,12 @@ uasc_rec <- function(expr) {
   r
 }
 
+# A fit's predicted shares, symmetrized: the targets of the BLP leaves.
+uasc_sym_shares <- function(fit) {
+  tg <- predict(fit, type = "shares")
+  (tg + rev(tg)) / 2
+}
+
 uasc_sim <- function(seed, oo = FALSE, T = 1L, N = 150L, ...) {
   data.table::as.data.table(simulate_mxl_data(
     N = N, J = 3L, T = T, beta = c(0.8, -0.6), delta = c(0.4, -0.3, 0.2),
@@ -124,10 +130,9 @@ run_uasc <- function() {
           v_bhhh = f(vcov(fit, type = "bhhh")),
           v_robust = f(vcov(fit, type = "robust")),
           wesml = f(wesml_vcov(fit, type = "se")),
-          blp = f({
-            tg <- predict(fit, type = "shares")
-            blp(fit, target_shares = (tg + rev(tg)) / 2)
-          })
+          # (the targets formed inside the recorder, which records their
+          # errors and warnings as the call's)
+          blp = golden_blp("blp", list(fit, target_shares = uasc_sym_shares(fit)))
         )
         for (p in names(post)) out[[paste0("post|", tag, "|", p)]] <- post[[p]]
       }
@@ -158,13 +163,11 @@ run_uasc <- function() {
         oo_args)))
       for (m in c("mnl", "nl")) {
         fit <- if (m == "mnl") mnl else nl
-        tg <- predict(fit, type = "shares")
-        tg <- (tg + rev(tg)) / 2
         out[[paste("blp", m, o, a, sep = "|")]] <-
-          uasc_rec(blp(fit, target_shares = tg))
+          golden_blp("blp", list(fit, target_shares = uasc_sym_shares(fit)))
         out[[paste("blp", m, o, a, "init", sep = "|")]] <-
-          uasc_rec(blp(fit, target_shares = tg,
-                       delta_init = rep(0, length(tg) - (o == "oo"))))
+          golden_blp("blp", list(fit, target_shares = uasc_sym_shares(fit),
+                                 delta_init = rep(0, nrow(fit$alt_mapping) - (o == "oo"))))
       }
     }
   }

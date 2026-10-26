@@ -120,13 +120,14 @@ p2_mnl_outputs <- function(theta, dat, use_asc, ioo, with_blp) {
     theta, dat$X, dat$alt_idx, dat$M, dat$weights, use_asc, ioo)
   if (with_blp) {
     beta <- theta[seq_len(dat$K)]
-    res$blp <- blp_contraction(rep(0, dat$J), res$shares, dat$X, beta,
-                               dat$alt_idx, dat$M, dat$weights, ioo)
-    res$blp_short <- suppressWarnings(utils::capture.output(
-      v <- blp_contraction(rep(0.2, dat$J), res$shares, dat$X, beta,
-                           dat$alt_idx, dat$M, dat$weights, ioo,
-                           tol = 1e-14, max_iter = 3L)))
-    res$blp_short_val <- v
+    ref <- gb_delta_star(theta, dat$K, dat$J, TRUE, ioo)
+    res$blp <- golden_blp("blp_contraction", list(
+      rep(0, dat$J), res$shares, dat$X, beta, dat$alt_idx, dat$M, dat$weights,
+      ioo), ref = ref)
+    # stopped by max_iter (it printed a warning before 0.3.0)
+    res$blp_short <- golden_blp("blp_contraction", list(
+      rep(0.2, dat$J), res$shares, dat$X, beta, dat$alt_idx, dat$M,
+      dat$weights, ioo, tol = 1e-14, max_iter = 3L), ref = FALSE, expect = "capped")
   }
   res
 }
@@ -198,11 +199,14 @@ p2_nl_outputs <- function(theta, dat, nest_idx, use_asc, ioo, with_blp) {
   if (with_blp) {
     beta <- theta[seq_len(dat$K)]
     lam <- p2_lambda_full(theta, dat$K, nest_idx)
-    res$blp <- nl_blp_contraction(rep(0, dat$J), res$shares, dat$X, beta, lam,
-                                  dat$alt_idx, nest_idx, dat$M, dat$weights, ioo)
-    res$blp_damped <- nl_blp_contraction(rep(0, dat$J), res$shares, dat$X, beta,
-                                         lam, dat$alt_idx, nest_idx, dat$M,
-                                         dat$weights, ioo, damping = 0.6)
+    ref <- gb_delta_star(theta, dat$K + sum(tabulate(nest_idx) > 1L), dat$J,
+                         TRUE, ioo)
+    res$blp <- golden_blp("nl_blp_contraction", list(
+      rep(0, dat$J), res$shares, dat$X, beta, lam, dat$alt_idx, nest_idx, dat$M,
+      dat$weights, ioo), ref = ref)
+    res$blp_damped <- golden_blp("nl_blp_contraction", list(
+      rep(0, dat$J), res$shares, dat$X, beta, lam, dat$alt_idx, nest_idx, dat$M,
+      dat$weights, ioo, damping = 0.6), ref = ref)
   }
   res
 }
@@ -296,9 +300,12 @@ p2_mnl_call <- function(k, f) {
                                      f$ioo),
     dr = mnl_diversion_ratios_parallel(f$theta, f$X, f$alt_idx, f$M, f$weights,
                                        f$use_asc, f$ioo),
-    blp = blp_contraction(f$delta %||% rep(0, f$J), f$target %||% rep(1 / (f$J + f$ioo), f$J + f$ioo),
-                          f$X, f$theta[seq_len(ncol(f$X))], f$alt_idx, f$M,
-                          f$weights, f$ioo, max_iter = 5L))
+    # the solver tier's leaf (blp_batteries.R): max_iter binds; a case that
+    # leaves an alternative unoffered (alt_lgl) stops in the engine's check
+    blp = golden_blp("blp_contraction", list(
+      f$delta %||% rep(0, f$J), f$target %||% rep(1 / (f$J + f$ioo), f$J + f$ioo),
+      f$X, f$theta[seq_len(ncol(f$X))], f$alt_idx, f$M, f$weights, f$ioo,
+      max_iter = 5L), ref = FALSE, expect = "capped"))
 }
 
 p2_nl_call <- function(k, f) {
@@ -325,11 +332,11 @@ p2_nl_call <- function(k, f) {
                                     f$use_asc, f$ioo),
     dr = nl_diversion_ratios_parallel(f$theta, f$X, f$alt_idx, f$nest_idx, f$M,
                                       f$weights, f$use_asc, f$ioo),
-    blp = nl_blp_contraction(f$delta %||% rep(0, f$J),
-                             f$target %||% rep(1 / (f$J + f$ioo), f$J + f$ioo),
-                             f$X, f$theta[seq_len(ncol(f$X))],
-                             f$lambda %||% c(0.7, 0.8, 1), f$alt_idx, f$nest_idx,
-                             f$M, f$weights, f$ioo, max_iter = 5L))
+    blp = golden_blp("nl_blp_contraction", list(
+      f$delta %||% rep(0, f$J), f$target %||% rep(1 / (f$J + f$ioo), f$J + f$ioo),
+      f$X, f$theta[seq_len(ncol(f$X))], f$lambda %||% c(0.7, 0.8, 1), f$alt_idx,
+      f$nest_idx, f$M, f$weights, f$ioo, max_iter = 5L), ref = FALSE,
+      expect = "capped"))
 }
 
 P2_MNL_K <- c("grad", "bhhh", "scores", "pred", "shares", "hess", "elas", "dr", "blp")
@@ -400,7 +407,11 @@ run_err_p2 <- function() {
     blp_target_zero = p2_with(f0, target = c(0.5, 0.5, 0, 0)))
   for (cn in names(cases)) {
     for (k in P2_MNL_K) {
-      out[[sprintf("err|mnl|%s|%s", cn, k)]] <- p2_cond(p2_mnl_call(k, cases[[cn]]))
+      out[[sprintf("err|mnl|%s|%s", cn, k)]] <- if (k == "blp") {
+        p2_mnl_call(k, cases[[cn]])
+      } else {
+        p2_cond(p2_mnl_call(k, cases[[cn]]))
+      }
     }
   }
   # NL: J = 4 with nests {1, 2}, {3, 4} unless a case says otherwise.
@@ -458,7 +469,11 @@ run_err_p2 <- function() {
                                   "nest_short", "nest_empty", "nest_all_single")) {
         next # terminating or Armadillo-internal on main: see p2_blp_abort.R
       }
-      out[[sprintf("err|nl|%s|%s", cn, k)]] <- p2_cond(p2_nl_call(k, nl_cases[[cn]]))
+      out[[sprintf("err|nl|%s|%s", cn, k)]] <- if (k == "blp") {
+        p2_nl_call(k, nl_cases[[cn]])
+      } else {
+        p2_cond(p2_nl_call(k, nl_cases[[cn]]))
+      }
     }
   }
   out
@@ -567,7 +582,8 @@ run_fits <- function() {
         res$pred_new <- p2_val(predict(fit, type = "probabilities", newdata = d_use))
         res$elas <- p2_val(elasticities(fit, "x1"))
         res$dr <- p2_val(diversion_ratios(fit))
-        res$blp <- p2_val(blp(fit, target_shares = predict(fit, type = "shares")))
+        res$blp <- golden_blp("blp", list(fit, target_shares = predict(fit, type = "shares")),
+                              ref = gb_fit_delta(fit))
         res$logsum <- p2_val(logsum(fit))
         res$cs <- p2_val(consumer_surplus(fit, price_var = "x1"))
         res$wtp <- p2_val(wtp(fit, price_var = "x1", attr_vars = "x2"))
@@ -592,7 +608,8 @@ run_fits <- function() {
       res$pred_s <- p2_val(predict(fit, type = "shares"))
       res$elas <- p2_val(elasticities(fit, "X"))
       res$dr <- p2_val(diversion_ratios(fit))
-      res$blp <- p2_val(blp(fit, target_shares = predict(fit, type = "shares")))
+      res$blp <- golden_blp("blp", list(fit, target_shares = predict(fit, type = "shares")),
+                              ref = gb_fit_delta(fit))
       res$logsum <- p2_val(logsum(fit))
       res$wtp <- p2_val(wtp(fit, price_var = "X", attr_vars = "W"))
       res$gof <- p2_val(gof(fit))

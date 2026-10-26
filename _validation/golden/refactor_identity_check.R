@@ -37,6 +37,16 @@
 # p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit), p8b_batteries.R
 # (p8b_mnl, p8b_nl, p8b_edge, p8b_mxl, p8b_cl) and p8c_batteries.R
 # (p8c_grad, p8c_polish, p8c_mxl).
+# blp_batteries.R (blp), sourced first: every BLP call of the batteries goes
+# through its golden_blp(), whose leaves (class "golden_blp") form the solver
+# tier: the share inversion may move within its tolerance (BLP engine plan,
+# user decision U1), so such a leaf passes if it is identical to the
+# baseline's or meets the tier's rules (gb_tier(): the residual recomputed
+# through the untouched predict kernels within tol, delta within the
+# conditioning-scaled bound of a reference solution, each component's
+# reference held, no regression where the baseline met its tol, an error
+# exactly where the call's inputs fail one of the engine's checks or the call
+# site expects one), and the run prints the tier's report.
 # `check --bitwise` compares every leaf with identical(num.eq = FALSE,
 # single.NA = FALSE), which also tells +0 from -0 and NaN payloads apart
 # (identical()'s defaults do not); the tolerance group is unchanged.
@@ -236,9 +246,9 @@ run_mnl <- function() {
           theta, dat$X, dat$alt_idx, dat$M, dat$weights, use_asc, ioo)
         if (use_asc && rep == 1) {
           beta <- theta[seq_len(dat$K)]
-          res$blp <- blp_contraction(
+          res$blp <- golden_blp("blp_contraction", list(
             rep(0, dat$J), res$shares, dat$X, beta, dat$alt_idx, dat$M,
-            dat$weights, ioo)
+            dat$weights, ioo), ref = gb_delta_star(theta, dat$K, dat$J, TRUE, ioo))
         }
         out[[key]] <- res
       }
@@ -329,10 +339,12 @@ run_mxl <- function() {
                 mu <- if (rc_mean) theta[K_x + seq_len(K_w)] else rep(0, K_w)
                 L_params <- theta[K_x + (if (rc_mean) K_w else 0L) +
                                     seq_len(L_size)]
-                res$blp <- mxl_blp_contraction(
+                res$blp <- golden_blp("mxl_blp_contraction", list(
                   rep(0, J), res$shares, dat$X, W, beta, mu, L_params,
                   dat$alt_idx, dat$M, dat$weights, eta, rc_dist,
-                  rc_corr, rc_mean, ioo)
+                  rc_corr, rc_mean, ioo), ref = gb_delta_star(
+                    theta, K_x + (if (rc_mean) K_w else 0L) + L_size, J,
+                    use_asc, ioo))
               }
               out[[key]] <- res
             }
@@ -539,9 +551,10 @@ run_nl <- function() {
           beta <- theta[seq_len(K)]
           lambda_full <- rep(1, 3)
           lambda_full[1:2] <- theta[K + 1:2]
-          res$blp <- nl_blp_contraction(
+          res$blp <- golden_blp("nl_blp_contraction", list(
             rep(0, J), res$shares, dat$X, beta, lambda_full, dat$alt_idx,
-            nest_idx, dat$M, dat$weights, ioo)
+            nest_idx, dat$M, dat$weights, ioo),
+            ref = gb_delta_star(theta, K + 2L, J, TRUE, ioo))
         }
         out[[key]] <- res
       }
@@ -948,9 +961,11 @@ gen_pred_outputs <- function(theta, dat, W, rc_dist, rc_corr, rc_mean, use_asc,
     beta <- theta[seq_len(K_x)]
     mu <- if (rc_mean) theta[K_x + seq_len(K_w)] else rep(0, K_w)
     L_params <- theta[K_x + (if (rc_mean) K_w else 0L) + seq_len(L_size)]
-    res$blp <- do.call(mxl_blp_contraction, c(list(
+    res$blp <- golden_blp("mxl_blp_contraction", c(list(
       rep(0, J), res$shares, dat$X, W, beta, mu, L_params, dat$alt_idx,
-      dat$M, dat$weights, eta_empty, rc_dist, rc_corr, rc_mean, ioo), g))
+      dat$M, dat$weights, eta_empty, rc_dist, rc_corr, rc_mean, ioo), g),
+      ref = gb_delta_star(theta, K_x + (if (rc_mean) K_w else 0L) + L_size, J,
+                          use_asc, ioo))
   }
   res
 }
@@ -1092,6 +1107,9 @@ run_mxl_gen_long <- function() {
 # Run, save or compare
 # ---------------------------------------------------------------------------
 
+# The solver tier's recorder (golden_blp()), used by the batteries below.
+source(file.path(.script_dir, "blp_batteries.R"))
+
 # Original batteries first, in their original order; S0 batteries last.
 cat("Running MNL battery...\n");   res_mnl <- run_mnl()
 cat("Running MXL battery...\n");   res_mxl <- run_mxl()
@@ -1165,6 +1183,7 @@ source(file.path(.script_dir, "p8c_batteries.R"))
 cat("Running gradient overflow battery (P8C)...\n");  res_p8c_grad <- run_p8c_grad()
 cat("Running MNL/NL polish battery (P8C)...\n");      res_p8c_polish <- run_p8c_polish()
 cat("Running MXL polish battery (P8C)...\n");         res_p8c_mxl <- run_p8c_mxl()
+cat("Running share-inversion battery (BLP A1)...\n");  res_blp <- run_blp()
 oc_save_calls()
 
 results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
@@ -1196,7 +1215,7 @@ results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
                 p8b_edge = res_p8b_edge, p8b_mxl = res_p8b_mxl,
                 p8b_cl = res_p8b_cl,
                 p8c_grad = res_p8c_grad, p8c_polish = res_p8c_polish,
-                p8c_mxl = res_p8c_mxl)
+                p8c_mxl = res_p8c_mxl, blp = res_blp)
 
 flatten <- function(x, prefix = "") {
   if (is.list(x) && !isTRUE(attr(x, "golden_leaf"))) {
@@ -1296,8 +1315,20 @@ if (mode == "baseline") {
               length(res_mnl), length(res_mxl),
               sum(startsWith(names(res_mxl), "mxl_chol")), length(res_mxl_gen),
               length(res_mxl_wt), length(res_nl), length(res_err)))
-  cat(sprintf("  leaf entries: %d = %d identical-group + %d tolerance-group\n",
-              nrow(new_info), sum(!new_info$tol), sum(new_info$tol)))
+  n_solver <- sum(vapply(new_flat, inherits, TRUE, what = "golden_blp"))
+  cat(sprintf(paste0("  leaf entries: %d = %d identical-group + %d tolerance-group ",
+                     "+ %d solver-tier (BLP)\n"),
+              nrow(new_info), sum(!new_info$tol) - n_solver, sum(new_info$tol),
+              n_solver))
+  # a reference a call site gives must reproduce its targets
+  noted <- names(new_flat)[vapply(new_flat, function(x) {
+    inherits(x, "golden_blp") && !is.na(x$ref_note)
+  }, TRUE)]
+  if (length(noted)) {
+    cat(sprintf("  WARNING: %d solver-tier leaves whose given reference misses its targets:\n",
+                length(noted)))
+    cat(sprintf("    %s\n", head(noted, 20)), sep = "")
+  }
   tab <- table(factor(new_info$group, levels = GROUP_ORDER))
   print(tab[tab > 0])
   cat("  md5:", unname(tools::md5sum(baseline_path)), "\n")
@@ -1339,22 +1370,48 @@ if (length(only_base) || length(only_new)) {
 
 keys <- intersect(names(base_flat), names(new_flat))
 rep_df <- entry_info(keys)
-rep_df$criterion <- ifelse(rep_df$tol, sprintf("rel<=%.0e", TOL_REL),
-                           if (bitwise) "bitwise" else "identical")
+# The solver tier: BLP leaves (golden_blp), each battery's in a group of its own
+rep_df$solver <- vapply(keys, function(k) {
+  inherits(base_flat[[k]], "golden_blp") || inherits(new_flat[[k]], "golden_blp")
+}, TRUE, USE.NAMES = FALSE)
+rep_df$tol[rep_df$solver] <- FALSE
+rep_df$group[rep_df$solver] <- paste0(rep_df$battery[rep_df$solver], ":blp")
+rep_df$criterion <- ifelse(rep_df$solver, "solver",
+                           ifelse(rep_df$tol, sprintf("rel<=%.0e", TOL_REL),
+                                  if (bitwise) "bitwise" else "identical"))
 rep_df$identical <- NA
 rep_df$rel_dev <- NA_real_
 rep_df$abs_dev <- NA_real_
 rep_df$pass <- NA
+rep_df$note <- NA_character_
+solver_res <- list()
 for (i in seq_along(keys)) {
   b <- base_flat[[keys[i]]]
   n <- new_flat[[keys[i]]]
   ident <- if (bitwise) {
-    identical(b, n, num.eq = FALSE, single.NA = FALSE)
+    identical(gb_core(b), gb_core(n), num.eq = FALSE, single.NA = FALSE)
   } else {
-    identical(b, n)
+    identical(gb_core(b), gb_core(n))
+  }
+  rep_df$identical[i] <- ident
+  if (rep_df$solver[i]) {
+    tr <- if (ident) {
+      list(pass = TRUE, why = "identical", res_ratio = NA_real_,
+           bound_ratio = NA_real_, vs_main = NA_real_, vs_main_res = NA_real_)
+    } else {
+      tryCatch(gb_tier(b, n), error = function(e) {
+        list(pass = FALSE, why = paste("the tier failed:", conditionMessage(e)),
+             res_ratio = NA_real_, bound_ratio = NA_real_, vs_main = NA_real_,
+             vs_main_res = NA_real_)
+      })
+    }
+    tr$identical <- ident
+    solver_res[[keys[i]]] <- tr
+    rep_df$pass[i] <- tr$pass
+    rep_df$note[i] <- paste(tr$why, collapse = "; ")
+    next
   }
   rd <- if (is.numeric(b)) (if (ident) 0 else rel_dev(n, b)) else NA_real_
-  rep_df$identical[i] <- ident
   rep_df$rel_dev[i] <- rd
   rep_df$abs_dev[i] <- if (is.numeric(b)) (if (ident) 0 else abs_dev(n, b)) else NA_real_
   rep_df$pass[i] <- if (rep_df$tol[i]) ident || (is.finite(rd) && rd <= TOL_REL) else ident
@@ -1393,7 +1450,11 @@ if (nrow(bad)) {
                 fmt(bad$rel_dev[i]), fmt(bad$abs_dev[i])))
     b <- base_flat[[bad$entry[i]]]
     n <- new_flat[[bad$entry[i]]]
-    if (is.character(b) || is.character(n)) {
+    if (isTRUE(bad$solver[i])) {
+      cat("      solver tier:", bad$note[i], "\n")
+      ne <- gb_field(n, "error")
+      if (length(ne) == 1L && !is.na(ne)) cat("      new error:", ne, "\n")
+    } else if (is.character(b) || is.character(n)) {
       cat("      base: ", paste(format(b), collapse = " | "), "\n",
           "      new:  ", paste(format(n), collapse = " | "), "\n", sep = "")
     } else if (!(is.numeric(b) && is.numeric(n) && length(b) == length(n))) {
@@ -1419,22 +1480,79 @@ if (nrow(nz)) {
   cat(sprintf("    rel=%s  %s\n", fmt(nz$rel_dev), nz$entry), sep = "")
 }
 
-n_idg <- sum(!rep_df$tol)
+sv <- rep_df[rep_df$solver, , drop = FALSE]
+if (nrow(sv)) {
+  cat(sprintf(paste0("\nSolver tier (BLP leaves): %d entries, %d identical to the ",
+                     "baseline, %d failing\n"),
+              nrow(sv), sum(sv$identical), sum(!sv$pass)))
+  rpt <- gb_tier_summary(sv$entry, base_flat, new_flat, solver_res[sv$entry])
+  cat(sprintf(paste0("  converged: baseline %d, new %d; errors: baseline %d, new %d; ",
+                     "no reference: %d; ill-conditioned (2 kappa tol > 1e-4): %d; ",
+                     "changed and unverified (no residual recomputable): %d\n"),
+              sum(rpt$main_conv), sum(rpt$new_conv), sum(rpt$main_error),
+              sum(rpt$new_error), sum(!rpt$has_ref), sum(rpt$illcond),
+              sum(rpt$unverified)))
+  worst <- function(x) if (any(is.finite(x))) fmt(max(x[is.finite(x)])) else "NA"
+  cat(sprintf(paste0("  worst residual / tol: %s; worst error / bound: %s ",
+                     "(changed leaves that converged)\n"),
+              worst(rpt$res_ratio), worst(rpt$bound_ratio)))
+  less <- rpt[is.finite(rpt$vs_main) & rpt$vs_main > 1, , drop = FALSE]
+  cat(sprintf(paste0("  less accurate than the baseline (reported, not gated): %d ",
+                     "entries%s\n"),
+              nrow(less), if (nrow(less)) sprintf(", worst x%s", fmt(max(less$vs_main))) else ""))
+  if (nrow(less)) {
+    less <- head(less[order(-less$vs_main), ], 10)
+    cat(sprintf("    x%s  %s\n", fmt(less$vs_main), less$entry), sep = "")
+  }
+  worse <- rpt[is.finite(rpt$vs_main_res) & rpt$vs_main_res > 1, , drop = FALSE]
+  cat(sprintf(paste0("  unconverged on both sides with a larger residual than the ",
+                     "baseline's (reported): %d entries%s\n"),
+              nrow(worse), if (nrow(worse)) sprintf(", worst x%s", fmt(max(worse$vs_main_res))) else ""))
+  if (nrow(worse)) {
+    worse <- head(worse[order(-worse$vs_main_res), ], 10)
+    cat(sprintf("    x%s  %s\n", fmt(worse$vs_main_res), worse$entry), sep = "")
+  }
+  base_miss <- vapply(sv$entry, function(k) {
+    b <- base_flat[[k]]
+    isTRUE(gb_field(b, "converged")) && is.finite(b$residual) && is.finite(b$tol) &&
+      b$residual > b$tol
+  }, TRUE)
+  cat(sprintf(paste0("  baseline leaves that reported convergence with a residual ",
+                     "above their tol: %d\n"), sum(base_miss)))
+  if (any(rpt$ref_note)) {
+    cat(sprintf("  WARNING: %d leaves whose given reference misses its targets\n",
+                sum(rpt$ref_note)))
+  }
+  mo <- rpt$entry[rpt$main_only]
+  cat(sprintf(paste0("  converged by the baseline's own flag, not by the new build's ",
+                     "(reported): %d entries\n"), length(mo)))
+  if (length(mo)) cat(sprintf("    %s\n", utils::head(mo, 10)), sep = "")
+  uv <- rpt$entry[rpt$unverified]
+  if (length(uv)) {
+    cat(sprintf("  WARNING: %d changed leaves whose residual cannot be recomputed:\n",
+                length(uv)))
+    cat(sprintf("    %s\n", utils::head(uv, 10)), sep = "")
+  }
+  if (verbose) print(rpt, row.names = FALSE)
+}
+
+n_idg <- sum(!rep_df$tol & !rep_df$solver)
 if (fail) {
   if (nrow(bad) && all(bad$battery == "mxl_edge") && !length(only_base) && !length(only_new)) {
     cat("\nAll failing entries are in the mxl_edge (extreme-utility) battery.\n")
   }
   cat(sprintf(paste0("\nFAIL: %d of %d compared entries failed%s ",
-                     "(identical-group failures: %d; tolerance-group failures: %d). ",
-                     "Worst tolerance-group rel dev: %s\n"),
+                     "(identical-group failures: %d; tolerance-group failures: %d; ",
+                     "solver-tier failures: %d). Worst tolerance-group rel dev: %s\n"),
               nrow(bad), nrow(rep_df),
               if (length(only_base) || length(only_new)) " + output-structure mismatch" else "",
-              sum(!bad$tol), sum(bad$tol), worst_txt))
+              sum(!bad$tol & !bad$solver), sum(bad$tol), sum(bad$solver), worst_txt))
   quit(status = 1)
 }
 cat(sprintf(paste0("\nPASS: all %d entries OK — %d identical-group entries ",
                    "bit-identical; %d tolerance-group entries within rel %.0e ",
-                   "(%d bit-identical). Worst tolerance-group rel dev: %s\n"),
+                   "(%d bit-identical); %d solver-tier entries (%d identical). ",
+                   "Worst tolerance-group rel dev: %s\n"),
             nrow(rep_df), n_idg, nrow(tl), TOL_REL, sum(tl$identical),
-            worst_txt))
+            sum(rep_df$solver), sum(rep_df$solver & rep_df$identical), worst_txt))
 quit(status = 0)
