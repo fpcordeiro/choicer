@@ -365,3 +365,146 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   warning(cond)
   invisible(NULL)
 }
+
+#' The target shares of blp(), checked
+#'
+#' Numeric, a vector or a one-column matrix, one share per alternative (the
+#' outside option's first), finite, positive and summing to 1 within the
+#' engine's tolerance: checked in R, before any draw or evaluation of the
+#' shares.
+#'
+#' @param target_shares The user's targets.
+#' @param J Inside alternatives.
+#' @param outside Whether the fit has an outside option.
+#' @returns The targets as a plain numeric vector.
+#' @noRd
+.blp_targets <- function(target_shares, J, outside) {
+  ts <- .int64_to_double(target_shares, "`target_shares`")
+  n <- J + outside
+  what <- if (outside) {
+    sprintf("%d: the outside option's share, then one per inside alternative", n)
+  } else {
+    sprintf("%d, one per alternative", n)
+  }
+  if (!is.numeric(ts) || (!is.null(dim(ts)) && (length(dim(ts)) != 2L || ncol(ts) != 1L))) {
+    stop("`target_shares` must be a numeric vector (or a one-column matrix) of ",
+         what, ".", call. = FALSE)
+  }
+  ts <- as.numeric(ts)
+  if (length(ts) != n) {
+    stop(sprintf("`target_shares` has %d entries; it must have %s.", length(ts), what),
+         call. = FALSE)
+  }
+  bad <- which(!is.finite(ts) | !(ts > 0))
+  if (length(bad)) {
+    stop(sprintf(paste0("`target_shares` must be finite and positive (entry %d is %s): ",
+                        "the inversion matches log shares."), bad[1L], format(ts[bad[1L]])),
+         call. = FALSE)
+  }
+  if (!(abs(sum(ts) - 1) <= sqrt(.Machine$double.eps))) {
+    stop(sprintf("`target_shares` must sum to 1%s; they sum to %.15g.",
+                 if (outside) ", the outside option's share included" else "", sum(ts)),
+         call. = FALSE)
+  }
+  ts
+}
+
+#' The start of blp(): the fit's constants, or delta_init, checked
+#'
+#' @param object The fit.
+#' @param delta_init NULL (the fitted constants; zeros for a fit without
+#'   them) or the user's start.
+#' @param J Inside alternatives.
+#' @param outside Whether the fit has an outside option.
+#' @param free_ok Whether, without an outside option, a start of J - 1 free
+#'   constants is accepted (the mixed logit's solver prepends the zero).
+#' @returns The start, a numeric vector.
+#' @noRd
+.blp_delta_init <- function(object, delta_init, J, outside, free_ok = FALSE) {
+  if (is.null(delta_init)) {
+    asc <- object$param_map$asc
+    if (is.null(asc)) return(rep(0, J))
+    co <- as.numeric(object$coefficients[asc])
+    return(if (outside) co else c(0, co))
+  }
+  di <- .int64_to_double(delta_init, "`delta_init`")
+  lens <- if (free_ok && !outside) c(J, J - 1L) else J
+  if (!is.numeric(di) || !is.null(dim(di)) && NCOL(di) != 1L ||
+      !(length(di) %in% lens)) {
+    stop(sprintf(paste0("`delta_init` must be a numeric vector of %d constants, one ",
+                        "per inside alternative%s."), J,
+                 if (length(lens) > 1L) sprintf(" (or %d, without the first's zero)", J - 1L) else ""),
+         call. = FALSE)
+  }
+  di <- as.numeric(di)
+  if (!all(is.finite(di))) {
+    stop("`delta_init` must be finite.", call. = FALSE)
+  }
+  di
+}
+
+#' The solver blp() runs, and its settings
+#'
+#' Phase A's one method, "simple" (the scaled step), takes no settings in
+#' `control`.
+#'
+#' @param method The method's name.
+#' @param control A list of the method's settings.
+#' @returns The method's name.
+#' @noRd
+.blp_method <- function(method, control) {
+  if (!is.character(method) || length(method) != 1L || is.na(method) ||
+      !method %in% "simple") {
+    stop("`method` must be \"simple\": the scaled step of ?blp_contraction.",
+         call. = FALSE)
+  }
+  if (!is.list(control) || is.object(control)) {
+    stop("`control` must be a list of the method's settings.", call. = FALSE)
+  }
+  if (length(control)) {
+    nm <- names(control)
+    shown <- if (is.null(nm)) "unnamed entries" else paste0("`", nm, "`", collapse = ", ")
+    stop(sprintf("`control` takes no settings with method \"%s\" (it has %s).",
+                 method, shown), call. = FALSE)
+  }
+  method
+}
+
+#' The share inversion of blp(), common to its methods
+#'
+#' Checks, in order, the stored data, the targets, the start and the
+#' settings, all before the model's solver (and so before a mixed logit's
+#' draws or any evaluation of the shares); then solves, warns when the
+#' iteration did not converge, and labels the result.
+#'
+#' @param object The fit.
+#' @param target_shares,delta_init,tol,max_iter,damping,method,control As in
+#'   blp().
+#' @param free_ok See .blp_delta_init().
+#' @param solve function(start, target, ctl) running the model's internal
+#'   solver.
+#' @returns The constants: an n x 1 matrix with the inside alternatives as
+#'   row names and the attribute "convergence" (.blp_convergence()).
+#' @noRd
+.blp_common <- function(object, target_shares, delta_init, tol, max_iter,
+                        damping = 1, method = "simple", control = list(),
+                        free_ok = FALSE, solve) {
+  if (is.null(object[["data"]])) {
+    stop("blp() requires stored data. Refit with keep_data = TRUE.")
+  }
+  outside <- isTRUE(object$include_outside_option)
+  J <- nrow(object$alt_mapping) - outside
+  target <- .blp_targets(target_shares, J, outside)
+  start <- .blp_delta_init(object, delta_init, J, outside, free_ok)
+  method <- .blp_method(method, control)
+  ctl <- .blp_control(tol, max_iter, damping, method = method)
+  res <- solve(start, target, ctl)
+  .blp_unconverged(res, ctl, "blp()")
+  out <- res$delta
+  am <- object$alt_mapping
+  inside <- am[["alt_int"]] > 0L
+  lab <- as.character(am[[2L]][inside])[order(am[["alt_int"]][inside])]
+  if (length(lab) == nrow(out)) rownames(out) <- lab
+  attr(out, "convergence") <- .blp_convergence(res, ctl)
+  out
+}

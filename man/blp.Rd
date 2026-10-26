@@ -14,9 +14,16 @@ blp(object, target_shares, ...)
 \item{...}{Additional arguments passed to methods.}
 }
 \value{
-The constants, an n x 1 matrix. When the iteration does not
-converge, the evaluated point of smallest residual, with a warning of
-class \code{choicer_blp_unconverged}.
+The constants: an n x 1 matrix with one row per inside
+alternative, named by the alternatives' labels, and the attribute
+\code{"convergence"}, a list with \code{converged}, \code{status}
+(\code{"converged"}, \code{"max_iter"}, \code{"non_finite"} or
+\code{"non_finite_start"}), \code{iterations}, \code{evaluations} (of
+the shares), \code{residual} (the largest absolute log-share residual
+at the point returned), \code{tol} and \code{method}. When the
+iteration does not converge, the evaluated point of smallest residual,
+with a warning of class \code{choicer_blp_unconverged} whose
+\code{convergence} element is the same list.
 }
 \description{
 Finds the constants (ASCs, delta) at which a fitted model's predicted
@@ -25,6 +32,17 @@ used by Berry, Levinsohn, and Pakes (1995) \doi{10.2307/2171802}, with the
 other parameters held at their estimates. The iteration, its stopping rule
 and its checks of the targets are described in
 \code{\link{blp_contraction}()}.
+}
+\details{
+The methods check the targets in R before the model's solver
+runs (and so before a mixed logit forms its draws): a numeric vector or
+one-column matrix of one share per alternative (the outside option's
+first, when the model has one), finite, positive, and summing to 1
+within \code{sqrt(.Machine$double.eps)}. They start from the fitted
+constants (zeros for a model fitted without them) unless
+\code{delta_init} is given. \code{method = "simple"} is the scaled step
+of \code{\link{blp_contraction}()}, which takes no settings in
+\code{control}.
 }
 \examples{
 \donttest{

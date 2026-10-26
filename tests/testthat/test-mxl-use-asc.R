@@ -190,9 +190,10 @@ test_that("a fit without constants is the model with its constants at 0", {
                  conditional_tastes(fitA)[c("mean", "sd")],
                  tolerance = 1e-12, label = nm)
     # The constants that would give a counterfactual's shares, from zeros
+    # (two fits, two iterations: their convergence records differ)
     expect_equal(blp(fit0, target_shares = cf0),
                  blp(fitA, target_shares = cf0), tolerance = 1e-10,
-                 label = nm)
+                 ignore_attr = "convergence", label = nm)
   }
 })
 

@@ -80,6 +80,15 @@ have no solution are new, so results move within the tolerance.
   evaluation of the shares. Such inputs gave NaN, constants that drifted
   without converging, or, with lambda of 0 or below, shares without
   meaning.
+- **`blp()`** checks its targets in R before the model's solver runs (and
+  so before a mixed logit forms its draws): one share per alternative, the
+  outside option's first, finite, positive and summing to 1. It checks
+  `delta_init` the same way, and gains `method` (`"simple"`, the step above)
+  and `control` (none of its settings yet). Its result keeps its n x 1 shape
+  and gains the inside alternatives' labels as row names and a
+  `"convergence"` attribute: the warning's record (converged, status,
+  iterations, evaluations, residual, `tol` and method), there whether or not
+  it converged.
 - **Cost per evaluation.** Each evaluation of the shares also forms the
   step's derivatives. On simulated claims- and census-style designs (8.7 and
   9.8 million rows; the mixed logit's 1.4 and 1.5 million, with 20 draws), an
