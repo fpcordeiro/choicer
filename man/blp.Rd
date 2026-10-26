@@ -2,7 +2,7 @@
 % Please edit documentation in R/methods.R
 \name{blp}
 \alias{blp}
-\title{BLP contraction mapping}
+\title{BLP share inversion}
 \usage{
 blp(object, target_shares, ...)
 }
@@ -14,12 +14,17 @@ blp(object, target_shares, ...)
 \item{...}{Additional arguments passed to methods.}
 }
 \value{
-Converged delta (ASC) vector.
+The constants, an n x 1 matrix. When the iteration does not
+converge, the evaluated point of smallest residual, with a warning of
+class \code{choicer_blp_unconverged}.
 }
 \description{
-Finds the ASC (delta) parameters such that predicted market shares match
-target shares, using the contraction mapping of Berry, Levinsohn, and
-Pakes (1995) \doi{10.2307/2171802}.
+Finds the constants (ASCs, delta) at which a fitted model's predicted
+market shares equal target shares, the share inversion of Berry (1994)
+used by Berry, Levinsohn, and Pakes (1995) \doi{10.2307/2171802}, with the
+other parameters held at their estimates. The iteration, its stopping rule
+and its checks of the targets are described in
+\code{\link{blp_contraction}()}.
 }
 \examples{
 \donttest{

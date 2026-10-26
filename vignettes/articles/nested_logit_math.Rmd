@@ -217,8 +217,8 @@ $\lambda_k$ is positive and the nests outnumber an individual's alternatives on 
 kernels therefore form the inclusive values, the maximum and $D_i$ over the nests the
 individual faces, in increasing order and in the same two partial sums (by each nest's index
 parity) as the loops over every nest, which changes no bit of the result. With a $\lambda_k$
-that is NaN, or zero or negative (which only `nl_blp_contraction()` accepts), they loop over
-every nest.
+that is NaN, zero or negative (which no exported function accepts), they loop over every
+nest.
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
@@ -1138,60 +1138,83 @@ which is the MNL diversion ratio (§6.3 of the MNL document).
 
 #### 6.4.1 Problem statement
 
-Given observed market shares $s_j^*$, find the ASC vector $\delta$ such that the NL model reproduces those shares:
+Given observed market shares $s_j^*$, find the ASC vector $\delta$ such that the NL model reproduces those shares, with $\beta$ and $\lambda$ held at their values:
 
 $$
-\hat{s}_j(\delta) = s_j^* \quad \forall j
+\hat{s}_j(\delta) = \frac{\sum_{i=1}^{N} w_i \, P_{ij}(\delta)}{\sum_{i=1}^{N} w_i} = s_j^* \quad \forall j
 $$
 
-#### 6.4.2 Damped contraction mapping
+where $P_{ij}(\delta) = P(j \mid k(j)) \cdot P_{k(j)}$. The identification of $\delta$, the
+checks of the targets, the stopping rule and the result are the multinomial logit's (§7 of
+the [multinomial logit article](multinomial_logit_math.html)); this section gives the
+nested logit's step.
 
-Under the usual feasibility, connected-substitutes, and normalization conditions, the
-BLP fixed-point iteration is
+#### 6.4.2 The step
 
-$$
-\delta^{(t+1)} = \delta^{(t)} + \kappa \bigl(\log s^* - \log \hat{s}(\delta^{(t)})\bigr)
-$$
-
-with $\kappa=1$ giving the undamped update. Existence, uniqueness, and global convergence
-are properties of the share mapping and target—not an unconditional guarantee for every
-numerical input. Predicted shares $\hat{s}(\delta^{(t)})$ are computed via the NL formula:
+With $r = \log s^* - \log \hat{s}(\delta)$ and $b$ the outside option (or, without one, the
+reference of $j$'s component), each iteration takes
 
 $$
-\hat{s}_j(\delta^{(t)}) = \frac{\sum_{i=1}^{N} w_i \, P_{ij}(\delta^{(t)})}{\sum_{i=1}^{N} w_i}
+\delta_j \leftarrow \delta_j + \kappa\, \frac{r_j - r_b}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b}
 $$
 
-where $P_{ij}(\delta^{(t)}) = P(j \mid k(j)) \cdot P_{k(j)}$ is evaluated at the current $\delta^{(t)}$ with $\beta$ and $\lambda$ held fixed.
-
-#### 6.4.3 Damping for nested models
-
-For strongly nested data (small $\lambda_k$) the plain update can overshoot numerically.
-Choosing $0<\kappa<1$ may stabilize iteration. A possible empirical starting heuristic is
+for alternative $j$ in nest $g$, where $\kappa \in (0, 1]$ is `damping` (default 1),
 
 $$
-\kappa \approx \min_k \lambda_k
+A_{jj} = \frac{\partial \hat{s}_j}{\partial \delta_j}
+= \frac{\sum_i w_i P_{ij}\left(\frac{1 - P_i(j \mid g)}{\lambda_g} + P_i(j \mid g) - P_{ij}\right)}{\sum_i w_i},
 $$
 
-but this is not a theorem or an automatic rule in the package. The kernel accepts the
-numeric `damping` value as supplied and does not constrain it to $(0,1]$; the analyst must
-inspect convergence and resulting share residuals.
+and $C_{jb} = -\partial \hat{s}_b / \partial \delta_j$: $\sum_i w_i P_{ij} P_{i0}$ over $\sum_i
+w_i$ with an outside option, and without one
 
-#### 6.4.4 Baseline re-normalization
+$$
+C_{jb} = \frac{\sum_i w_i P_{ib}\left(\frac{1 - \lambda_g}{\lambda_g} P_i(j \mid g)\, 1\{b \in g\} + P_{ij}\right)}{\sum_i w_i}.
+$$
 
-Without an outside option, `delta` is a full length-$J$ vector and is centered initially
-and on return by subtracting its first inside entry, so the returned baseline is zero.
-With an outside option, supplied and returned `delta` contain the $J$ inside ASCs only.
-The kernel works internally with a prepended outside entry, pins that entry at zero after
-each update, and returns the inside subvector without subtracting the first inside ASC.
+The denominator is the exact diagonal of the derivative of $r_j - r_b$. Berry's
+contraction takes 1 in its place, and so overshoots within a nest: its step's derivative
+there is about $1/\lambda_g$, and its iteration diverges where $\lambda_g$ is small
+($\lambda_g \le 0.4$ on the simulated designs we tried) unless damped by about $\lambda_g$.
+The exact diagonal carries the $1/\lambda_g$, so no damping is needed. For a nest's
+dominant alternative, $1 - P_i(j \mid g)$ is formed as the sum of its nest-mates'
+conditional probabilities, since $\lambda_g$ can be as small as $10^{-16}$, where the
+difference loses every digit.
 
-All target shares must be strictly positive and have length $J$ (no outside) or $J+1$
-(outside first). The kernel does not check that they sum to one. Convergence uses the
-largest absolute change in the full working vector; reaching `max_iter` prints a warning
-and returns the last iterate without a separate convergence flag.
+#### 6.4.3 Nests with $\lambda_g > 1$
 
-**Note on the `lambda` argument.** `nl_blp_contraction` expects a *full* length-$n_{\text{nests}}$ vector where singleton nests have their entry set to 1. This differs from the estimated parameter block $\lambda$ in $\theta$, which contains only non-singleton entries. The caller is responsible for expanding the estimated lambdas into the full vector before invoking the contraction.
+Where $\lambda_g > 1$ nest-mates are complements: raising $\delta_j$ raises the nest's
+inclusive value, and with it the shares of $j$'s nest-mates where the nest is small. Two
+safeguards apply.
 
-*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
+- An alternative whose co-choice with the base is negative ($b$ in its nest, without an
+  outside option) takes at most the unscaled step (denominator at least 1): its exact
+  diagonal nets out the complementarity and can be near zero or negative.
+- The denominator is at least $(1 + \lambda_g)/(2\lambda_g)$ times the one the same
+  probabilities give with $\lambda_g = 1$ ($\sum_i w_i P_{ij}(1 - P_{ij})/\sum_i w_i$ over
+  $\hat{s}_j$, plus $\sum_i w_i P_{ij}P_{ib}/\sum_i w_i$ over $\hat{s}_b$). A common shift
+  of a nest's constants moves its shares as in a logit, with derivative about 1, while a
+  shift within the nest moves them with derivative about $1/\lambda_g$; the exact diagonal
+  is close to the latter, so its step would overshoot the common shift by up to
+  $\lambda_g$ and diverge for $\lambda_g$ above 2. The factor relaxes the two directions
+  equally: the step's error then contracts by about $(\lambda_g - 1)/(\lambda_g + 1)$ in
+  each.
+
+On simulated designs with $\lambda$ from 1.05 to 5, nests of 2 to 10 alternatives and
+heterogeneous choice sets, the step converged wherever Berry's contraction did, in at most
+1.04 times its evaluations, and also where it did not (with an outside option, Berry's
+contraction needed 500 to 3,000 evaluations or more, the step 10 to 100).
+
+#### 6.4.4 The layout of `delta`
+
+Without an outside option, `delta` is a full length-$J$ vector, normalized by subtracting
+its first entry, so the returned baseline is zero. With an outside option, supplied and
+returned `delta` contain the $J$ inside ASCs only, and `target_shares` has $J+1$ entries,
+the outside option's first.
+
+**Note on the `lambda` argument.** `nl_blp_contraction` expects a *full* length-$n_{\text{nests}}$ vector where singleton nests have their entry set to 1, every entry positive and finite. This differs from the estimated parameter block $\lambda$ in $\theta$, which contains only non-singleton entries. The caller is responsible for expanding the estimated lambdas into the full vector before invoking the inversion.
+
+*Code reference: `NlBlpModel` and `nl_blp_solve()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp), over [src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h).*
 
 ### 6.5 Willingness to Pay
 

@@ -202,7 +202,7 @@ inline ChoiceLayout choice_layout_build(
 // The layout of the NL kernels: choice_layout_build(), then one nest code per
 // alternative the rows reference. The nest codes are read in place too
 // (nest_idx.begin()), and nothing here checks their values: a kernel reads
-// nest[a] only after nl_parse_theta() (or nl_blp_contraction()'s own check)
+// nest[a] only after nl_parse_theta() (or nl_blp_solve()'s own check)
 // has found every code at least 1, and the codes are at most n_nests by
 // construction (nl_n_nests()).
 inline ChoiceLayout nl_layout_build(

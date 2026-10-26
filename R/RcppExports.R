@@ -607,37 +607,23 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
     .Call(`_choicer_mnl_predict_shares`, theta, X, alt_idx, M, weights, use_asc, include_outside_option)
 }
 
-#' BLP95 contraction mapping to find delta given target shares
+#' The share inversion of the multinomial logit
 #'
-#' @param delta J x 1 vector with initial guess for deltas (ASCs)
-#' @param target_shares J x 1 vector with target shares for each alternative
-#' @param X sum(M) x K design matrix with covariates. M\[i] x K matrix for individual i
-#' @param beta K x 1 vector with model parameters
-#' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-#' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-#' @param tol convergence tolerance
-#' @param max_iter maximum number of iterations
-#' @returns vector with contraction's delta (ASCs) output
-#' @examples
-#' \donttest{
-#' library(data.table)
-#' set.seed(42)
-#' N <- 50; J <- 3
-#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-#' dt[, choice := 0L]
-#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-#' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' beta <- coef(fit)[fit$param_map$beta]
-#' delta <- blp_contraction(rep(0, J), rep(1/J, J), fit$data$X,
-#'   beta, fit$data$alt_idx, fit$data$M, fit$data$weights)
-#' delta
-#' }
-#' @export
-blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L) {
-    .Call(`_choicer_blp_contraction`, delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, tol, max_iter)
+#' The engine behind blp_contraction() and blp() (blp_engine.h): the input
+#' checks of blp_contraction(), in their order, then the share inversion's own
+#' (a finite start, finite and non-negative weights, the targets' sums and
+#' bounds), then the solver.
+#'
+#' @inheritParams blp_contraction
+#' @param control List from .blp_control(): method, map, max_evals, tol,
+#'   damping and keep_pass.
+#' @return List: delta (n x 1, as blp_contraction() returns it), code (0
+#'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
+#'   start), iterations, evaluations, backtracks, residual, fallbacks; with
+#'   keep_pass, pass (s, A, C, s0 of the last evaluation).
+#' @noRd
+mnl_blp_solve <- function(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control) {
+    .Call(`_choicer_mnl_blp_solve`, delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control)
 }
 
 #' Hessian matrix for multinomial logit model
@@ -1314,88 +1300,27 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
     .Call(`_choicer_mxl_diversion_ratios_parallel`, theta, X, W, alt_idx, M, weights, eta_draws, rc_dist, elast_var_idx, is_random_coef, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, acc_bytes)
 }
 
-#' BLP contraction mapping for mixed logit
+#' The share inversion of the mixed logit
 #'
-#' Finds the ASC (delta) parameters such that predicted market shares
-#' match target shares, using the contraction mapping of Berry, Levinsohn,
-#' and Pakes (1995).
-#'
-#' @param delta J-1 or J vector with initial guess for deltas (ASCs)
-#' @param target_shares J vector with target market shares
-#' @param X design matrix for fixed coefficients; sum(M_i) x K_x
-#' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
-#' @param beta K_x vector with fixed coefficients
-#' @param mu K_w vector with mean parameters (raw, will be transformed if log-normal)
-#' @param L_params Cholesky parameters vector
-#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
-#' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
-#' @param eta_draws Array with draws; K_w x S x N, stored as double: an
-#'   integer array is read from a temporary copy that R may free during
-#'   the call (convert it with \code{storage.mode(x) <- "double"})
-#' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
-#' @param rc_correlation whether random coefficients are correlated
-#' @param rc_mean whether mu parameters represent means (TRUE) or are zero (FALSE)
-#' @param include_outside_option whether outside option is included
-#' @param tol convergence tolerance (default 1e-8)
-#' @param max_iter maximum iterations (default 1000)
-#' @param gen_seed Integer. \code{< 0} (default) uses the materialized
-#'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
-#'   \code{gen_scramble}), with this master seed for the digit permutations of
-#'   \code{gen_scramble = 1}.
-#' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
-#'   identity permutations (plain Halton) through the generator's inverse normal
-#'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
-#'   permutations through R's \code{qnorm()}, the store-mode draws of
-#'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
-#'   randtoolbox and choicer are compiled with the same floating-point
-#'   contraction). Other values are an error.
-#' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-#' @details With \code{gen_seed >= 0} the draws are formed again at every
-#'   evaluation of the shares. \code{\link{blp}()} on a fitted model runs the
-#'   same contraction but keeps them across iterations within its
-#'   \code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}).
-#' @returns vector with converged delta (ASC) values
-#' @examples
-#' \donttest{
-#' library(data.table)
-#' set.seed(42)
-#' N <- 50; J <- 3
-#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-#' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
-#' dt[, choice := 0L]
-#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-#' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
-#' eta <- get_halton_normals(50, d$N, ncol(d$W))
-#' fit <- run_mxlogit(input_data = d, eta_draws = eta)
-#' pm <- fit$param_map
-#' delta <- mxl_blp_contraction(rep(0, J), rep(1/J, J), d$X, d$W,
-#'   coef(fit)[pm$beta], rep(0, ncol(d$W)), coef(fit)[pm$sigma],
-#'   d$alt_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
-#'   rc_correlation = FALSE, rc_mean = FALSE)
-#' delta
-#' }
-#' @export
-mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, include_outside_option = FALSE, tol = 1e-8, max_iter = 1000L, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L) {
-    .Call(`_choicer_mxl_blp_contraction`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S)
-}
-
-#' BLP contraction for blp(): mxl_blp_contraction(), keeping the draws
-#'
-#' The contraction of mxl_blp_contraction(), which, when the draws are formed
-#' on the fly (gen_seed >= 0) and all situations' Gamma = L eta together take
-#' at most cache_bytes bytes (8 K_w S N), keeps them from the first
-#' evaluation of the shares on, instead of forming them at every evaluation.
-#' The result is the same.
+#' The engine behind mxl_blp_contraction() and blp() (blp_engine.h): the
+#' input checks of mxl_blp_contraction(), in their order, the target's
+#' positivity (every entry, before any pass), then the share inversion's own
+#' (a finite start, finite and non-negative weights, the targets' sums and
+#' bounds), then the solver. When the draws are formed on the fly
+#' (gen_seed >= 0), all situations' Gamma = L eta take at most cache_bytes
+#' bytes (8 K_w S N) and the solver may evaluate the shares twice or more,
+#' they are kept from the first evaluation on instead of formed at every
+#' one; the result is the same.
 #'
 #' @inheritParams mxl_blp_contraction
+#' @param control List from .blp_control().
 #' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
-#' @return List: delta (as mxl_blp_contraction() returns it); kept, whether
-#'   the cache was allocated; passes, the evaluations of the shares; and
-#'   reads, the situations those evaluations read from the cache.
+#' @return As mnl_blp_solve(), plus kept (whether the cache was allocated),
+#'   passes (the evaluations of the shares) and reads (the situations those
+#'   evaluations read from the cache).
 #' @noRd
-mxl_blp_contraction_cached <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S, cache_bytes) {
-    .Call(`_choicer_mxl_blp_contraction_cached`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S, cache_bytes)
+mxl_blp_solve <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes) {
+    .Call(`_choicer_mxl_blp_solve`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes)
 }
 
 #' Compute aggregate elasticities for mixed logit model
@@ -1811,47 +1736,20 @@ nl_diversion_ratios_parallel <- function(theta, X, alt_idx, nest_idx, M, weights
     .Call(`_choicer_nl_diversion_ratios_parallel`, theta, X, alt_idx, nest_idx, M, weights, use_asc, include_outside_option, acc_bytes)
 }
 
-#' BLP95 contraction mapping for the Nested Logit model
+#' The share inversion of the nested logit
 #'
-#' Damped iterative fixed point recovering delta given target shares, using the
-#' NL probability structure. `damping = 1` reproduces the plain BLP update.
+#' The engine behind nl_blp_contraction() and blp() (blp_engine.h): the
+#' input checks of nl_blp_contraction(), in their order, every dissimilarity
+#' positive and finite right after lambda's length, then the share
+#' inversion's own (a finite start, finite and non-negative weights, the
+#' targets' sums and bounds), then the solver. damping comes in control.
 #'
-#' @param delta J x 1 vector with initial guess for deltas (ASCs).
-#' @param target_shares vector with target shares (outside-option share first when present).
-#' @param X sum(M) x K design matrix with covariates.
-#' @param beta K x 1 vector with fixed coefficients.
-#' @param lambda full nest dissimilarity vector of length n_nests (singletons = 1).
-#' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
-#' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
-#' @param M N x 1 vector with number of alternatives for each individual.
-#' @param weights N x 1 vector with weights for each observation.
-#' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-#' @param damping damping factor for the update (default 1.0 = plain BLP).
-#' @param tol convergence tolerance.
-#' @param max_iter maximum number of iterations.
-#' @returns vector with contraction's delta (ASCs) output.
-#' @examples
-#' \donttest{
-#' library(data.table)
-#' set.seed(42)
-#' N <- 50; J <- 4
-#' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-#' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-#' dt[, nest := ifelse(alt <= 2, "A", "B")]
-#' dt[, choice := 0L]
-#' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-#' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-#' beta <- coef(fit)[fit$param_map$beta]
-#' lambda <- rep(1, length(unique(fit$data$nest_idx)))
-#' lambda[as.integer(names(which(table(fit$data$nest_idx) > 1)))] <-
-#'   coef(fit)[fit$param_map$lambda]
-#' delta <- nl_blp_contraction(rep(0, J), rep(1/J, J), fit$data$X, beta, lambda,
-#'   fit$data$alt_idx, fit$data$nest_idx, fit$data$M, fit$data$weights)
-#' delta
-#' }
-#' @export
-nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option = FALSE, damping = 1.0, tol = 1e-8, max_iter = 1000L) {
-    .Call(`_choicer_nl_blp_contraction`, delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, damping, tol, max_iter)
+#' @inheritParams nl_blp_contraction
+#' @param control List from .blp_control().
+#' @return As mnl_blp_solve().
+#' @noRd
+nl_blp_solve <- function(delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, control) {
+    .Call(`_choicer_nl_blp_solve`, delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, control)
 }
 
 #' One damped Newton step on the free parameters (internal)

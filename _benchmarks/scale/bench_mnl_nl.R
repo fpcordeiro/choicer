@@ -39,8 +39,10 @@
 #                 rowsum() by cluster);
 #   elas, dr      elasticities (of the first covariate) and diversion ratios;
 #   predict, shares  probabilities and utilities, and predicted shares;
-#   blp           blp_contraction() / nl_blp_contraction() at tol = 0: blp_iter
-#                 iterations, so blp_iter + 1 passes of the shares.
+#   blp           blp_contraction() / nl_blp_contraction() at tol = 0, from
+#                 zeros to the shares at theta: blp_iter evaluations of the
+#                 shares (0.3.0's engine; before it, blp_iter iterations, so
+#                 blp_iter + 1 passes).
 source(file.path(dirname(normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE),
   value = TRUE)))), "scale_common.R"))
 lib <- load_choicer()
@@ -135,15 +137,18 @@ p_args <- function(w = NULL) {
 acc_arg <- function(f) {
   if (nzchar(acc) && "acc_bytes" %in% names(formals(f))) list(acc_bytes = as.numeric(acc)) else list()
 }
+# The inversion's target: the shares at theta (attainable, unlike uniform
+# shares on regional choice sets, which the engine's checks stop)
+blp_target <- if ("blp" %in% what) as.numeric(do.call(kern("predict_shares"), p_args(d$weights)))
 call_blp <- function() {
-  target <- rep(1 / (J + ioo), J + ioo)
-  utils::capture.output(r <- if (model == "nl") {
-    ns$nl_blp_contraction(rep(0, J), target, d$X, beta, lambda_full, d$alt_idx, nest_idx, d$M,
-                          d$weights, ioo, tol = 0, max_iter = blp_iter)
+  # (it stops at max_iter: the engine warns, builds before 0.3.0 printed)
+  utils::capture.output(r <- suppressWarnings(if (model == "nl") {
+    ns$nl_blp_contraction(rep(0, J), blp_target, d$X, beta, lambda_full, d$alt_idx, nest_idx,
+                          d$M, d$weights, ioo, tol = 0, max_iter = blp_iter)
   } else {
-    ns$blp_contraction(rep(0, J), target, d$X, beta, d$alt_idx, d$M, d$weights, ioo,
+    ns$blp_contraction(rep(0, J), blp_target, d$X, beta, d$alt_idx, d$M, d$weights, ioo,
                        tol = 0, max_iter = blp_iter)
-  })
+  }))
   r
 }
 call_kernel <- function(k) {

@@ -533,8 +533,16 @@ test_that("post-estimation generics dispatch on a fitted choicer_nl", {
   expect_true(is.matrix(dr))
   expect_equal(dim(dr), c(J, J))
 
-  delta <- blp(fit, target_shares = rep(1 / J, J))
+  # A fit on random choices can stop anywhere, a dissimilarity near its
+  # 1e-16 bound included, where uniform targets may be out of reach: the
+  # inversion then stops with the classed warning, and the point it returns
+  # is still finite.
+  delta <- withCallingHandlers(
+    blp(fit, target_shares = rep(1 / J, J)),
+    choicer_blp_unconverged = function(w) invokeRestart("muffleWarning")
+  )
   expect_true(is.numeric(delta))
+  expect_true(all(is.finite(delta)))
 })
 
 # --- keep_data = FALSE guards ------------------------------------------------

@@ -2,7 +2,7 @@
 % Please edit documentation in R/methods.R
 \name{blp.choicer_mxl}
 \alias{blp.choicer_mxl}
-\title{BLP contraction mapping for mixed logit model}
+\title{BLP share inversion for the mixed logit}
 \usage{
 \method{blp}{choicer_mxl}(
   object,
@@ -26,11 +26,12 @@ Length \code{J_inside} when no outside option, or \code{J_inside + 1}
 uses the estimated ASCs from the fitted model (zeros for a model fitted
 without them, \code{use_asc = FALSE}).}
 
-\item{tol}{Convergence tolerance (default 1e-8).}
+\item{tol}{Convergence tolerance on the largest absolute log-share
+residual (default 1e-8; see \code{\link{blp_contraction}()}).}
 
-\item{max_iter}{Maximum iterations (default 1000).}
+\item{max_iter}{The most evaluations of the shares (default 1000).}
 
-\item{keep_draws_bytes}{Most memory, in bytes, that the contraction may use
+\item{keep_draws_bytes}{Most memory, in bytes, that the inversion may use
 to keep the draws across its iterations; it does not change the returned
 delta. When the draws are formed on the fly and those of all \eqn{N}
 choice situations take at most this much (\eqn{8 K_w S N} bytes for
@@ -50,13 +51,13 @@ free can end the R session rather than fall back: lower it, or use
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-Converged delta (ASC) vector.
+The constants, an n x 1 matrix (see \code{\link{blp}()}).
 }
 \description{
-BLP contraction mapping for mixed logit model
+BLP share inversion for the mixed logit
 }
 \details{
-The contraction integrates each choice situation over the same
+The inversion integrates each choice situation over the same
 draws as \code{predict()} (for a cross-sectional fit, the estimation
 draws; a panel fit's estimation draws are per decision maker), formed on
 the fly, in parallel, and kept across iterations within

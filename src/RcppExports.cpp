@@ -445,9 +445,9 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// blp_contraction
-arma::vec blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const double tol, const int max_iter);
-RcppExport SEXP _choicer_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP betaSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP include_outside_optionSEXP, SEXP tolSEXP, SEXP max_iterSEXP) {
+// mnl_blp_solve
+Rcpp::List mnl_blp_solve(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const Rcpp::List& control);
+RcppExport SEXP _choicer_mnl_blp_solve(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP betaSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP include_outside_optionSEXP, SEXP controlSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -459,9 +459,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    Rcpp::traits::input_parameter< const double >::type tol(tolSEXP);
-    Rcpp::traits::input_parameter< const int >::type max_iter(max_iterSEXP);
-    rcpp_result_gen = Rcpp::wrap(blp_contraction(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, tol, max_iter));
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type control(controlSEXP);
+    rcpp_result_gen = Rcpp::wrap(mnl_blp_solve(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -959,9 +958,9 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// mxl_blp_contraction
-arma::vec mxl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::mat& W, const arma::vec& beta, const arma::vec& mu, const arma::vec& L_params, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool include_outside_option, const double tol, const int max_iter, const int gen_seed, const int gen_scramble, const int gen_S);
-RcppExport SEXP _choicer_mxl_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP WSEXP, SEXP betaSEXP, SEXP muSEXP, SEXP L_paramsSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP include_outside_optionSEXP, SEXP tolSEXP, SEXP max_iterSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP) {
+// mxl_blp_solve
+Rcpp::List mxl_blp_solve(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::mat& W, const arma::vec& beta, const arma::vec& mu, const arma::vec& L_params, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool include_outside_option, const Rcpp::List& control, const int gen_seed, const int gen_scramble, const int gen_S, const double cache_bytes);
+RcppExport SEXP _choicer_mxl_blp_solve(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP WSEXP, SEXP betaSEXP, SEXP muSEXP, SEXP L_paramsSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP include_outside_optionSEXP, SEXP controlSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP cache_bytesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -980,43 +979,12 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const bool >::type rc_correlation(rc_correlationSEXP);
     Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    Rcpp::traits::input_parameter< const double >::type tol(tolSEXP);
-    Rcpp::traits::input_parameter< const int >::type max_iter(max_iterSEXP);
-    Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
-    Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
-    Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_blp_contraction(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S));
-    return rcpp_result_gen;
-END_RCPP
-}
-// mxl_blp_contraction_cached
-Rcpp::List mxl_blp_contraction_cached(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::mat& W, const arma::vec& beta, const arma::vec& mu, const arma::vec& L_params, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const bool rc_correlation, const bool rc_mean, const bool include_outside_option, const double tol, const int max_iter, const int gen_seed, const int gen_scramble, const int gen_S, const double cache_bytes);
-RcppExport SEXP _choicer_mxl_blp_contraction_cached(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP WSEXP, SEXP betaSEXP, SEXP muSEXP, SEXP L_paramsSEXP, SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP include_outside_optionSEXP, SEXP tolSEXP, SEXP max_iterSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP cache_bytesSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const arma::vec& >::type delta(deltaSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type target_shares(target_sharesSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type X(XSEXP);
-    Rcpp::traits::input_parameter< const arma::mat& >::type W(WSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type beta(betaSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type mu(muSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type L_params(L_paramsSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
-    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
-    Rcpp::traits::input_parameter< const arma::cube& >::type eta_draws(eta_drawsSEXP);
-    Rcpp::traits::input_parameter< const arma::uvec& >::type rc_dist(rc_distSEXP);
-    Rcpp::traits::input_parameter< const bool >::type rc_correlation(rc_correlationSEXP);
-    Rcpp::traits::input_parameter< const bool >::type rc_mean(rc_meanSEXP);
-    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    Rcpp::traits::input_parameter< const double >::type tol(tolSEXP);
-    Rcpp::traits::input_parameter< const int >::type max_iter(max_iterSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type control(controlSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_seed(gen_seedSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_scramble(gen_scrambleSEXP);
     Rcpp::traits::input_parameter< const int >::type gen_S(gen_SSEXP);
     Rcpp::traits::input_parameter< const double >::type cache_bytes(cache_bytesSEXP);
-    rcpp_result_gen = Rcpp::wrap(mxl_blp_contraction_cached(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, tol, max_iter, gen_seed, gen_scramble, gen_S, cache_bytes));
+    rcpp_result_gen = Rcpp::wrap(mxl_blp_solve(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1244,9 +1212,9 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// nl_blp_contraction
-arma::vec nl_blp_contraction(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const arma::vec& lambda, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const double damping, const double tol, const int max_iter);
-RcppExport SEXP _choicer_nl_blp_contraction(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP betaSEXP, SEXP lambdaSEXP, SEXP alt_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP include_outside_optionSEXP, SEXP dampingSEXP, SEXP tolSEXP, SEXP max_iterSEXP) {
+// nl_blp_solve
+Rcpp::List nl_blp_solve(const arma::vec& delta, const arma::vec& target_shares, const arma::mat& X, const arma::vec& beta, const arma::vec& lambda, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& nest_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool include_outside_option, const Rcpp::List& control);
+RcppExport SEXP _choicer_nl_blp_solve(SEXP deltaSEXP, SEXP target_sharesSEXP, SEXP XSEXP, SEXP betaSEXP, SEXP lambdaSEXP, SEXP alt_idxSEXP, SEXP nest_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP include_outside_optionSEXP, SEXP controlSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -1260,10 +1228,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
     Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
     Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
-    Rcpp::traits::input_parameter< const double >::type damping(dampingSEXP);
-    Rcpp::traits::input_parameter< const double >::type tol(tolSEXP);
-    Rcpp::traits::input_parameter< const int >::type max_iter(max_iterSEXP);
-    rcpp_result_gen = Rcpp::wrap(nl_blp_contraction(delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, damping, tol, max_iter));
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type control(controlSEXP);
+    rcpp_result_gen = Rcpp::wrap(nl_blp_solve(delta, target_shares, X, beta, lambda, alt_idx, nest_idx, M, weights, include_outside_option, control));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -1386,7 +1352,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mnl_scores_parallel", (DL_FUNC) &_choicer_mnl_scores_parallel, 8},
     {"_choicer_mnl_predict", (DL_FUNC) &_choicer_mnl_predict, 6},
     {"_choicer_mnl_predict_shares", (DL_FUNC) &_choicer_mnl_predict_shares, 7},
-    {"_choicer_blp_contraction", (DL_FUNC) &_choicer_blp_contraction, 10},
+    {"_choicer_mnl_blp_solve", (DL_FUNC) &_choicer_mnl_blp_solve, 9},
     {"_choicer_mnl_loglik_hessian_parallel", (DL_FUNC) &_choicer_mnl_loglik_hessian_parallel, 9},
     {"_choicer_mnl_elasticities_parallel", (DL_FUNC) &_choicer_mnl_elasticities_parallel, 10},
     {"_choicer_mnl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mnl_diversion_ratios_parallel, 8},
@@ -1411,8 +1377,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_logsum", (DL_FUNC) &_choicer_mxl_logsum, 14},
     {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 15},
     {"_choicer_mxl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mxl_diversion_ratios_parallel, 18},
-    {"_choicer_mxl_blp_contraction", (DL_FUNC) &_choicer_mxl_blp_contraction, 20},
-    {"_choicer_mxl_blp_contraction_cached", (DL_FUNC) &_choicer_mxl_blp_contraction_cached, 21},
+    {"_choicer_mxl_blp_solve", (DL_FUNC) &_choicer_mxl_blp_solve, 20},
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 19},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 10},
     {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 10},
@@ -1424,7 +1389,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_nl_predict_shares", (DL_FUNC) &_choicer_nl_predict_shares, 8},
     {"_choicer_nl_elasticities_parallel", (DL_FUNC) &_choicer_nl_elasticities_parallel, 11},
     {"_choicer_nl_diversion_ratios_parallel", (DL_FUNC) &_choicer_nl_diversion_ratios_parallel, 9},
-    {"_choicer_nl_blp_contraction", (DL_FUNC) &_choicer_nl_blp_contraction, 13},
+    {"_choicer_nl_blp_solve", (DL_FUNC) &_choicer_nl_blp_solve, 11},
     {"_choicer_newton_step", (DL_FUNC) &_choicer_newton_step, 5},
     {"_choicer_prep_gather_design", (DL_FUNC) &_choicer_prep_gather_design, 3},
     {"_choicer_design_column_step", (DL_FUNC) &_choicer_design_column_step, 1},

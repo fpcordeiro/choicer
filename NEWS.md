@@ -1,5 +1,101 @@
 # choicer (development version)
 
+## Share inversion
+
+`blp()` and the exported `blp_contraction()`, `nl_blp_contraction()` and
+`mxl_blp_contraction()` solve the share inversion, the constants at which a
+model's market shares equal target shares (Berry 1994), with one engine in
+place of three copies of Berry's contraction. The solution is the same; the
+iteration that reaches it, its stopping rule and its handling of inputs that
+have no solution are new, so results move within the tolerance.
+
+- **The step.** Each iteration evaluates the shares once and moves every free
+  constant by its log-share residual against a base, r_j - r_b (r = log S -
+  log s), divided by that residual's exact derivative in its own constant,
+  A_jj / s_j + C_jb / s_b, where A_jj is the share Jacobian's diagonal and
+  C_jb the co-choice of j with the base: the outside option (the correction
+  of Fukasawa 2024) or, without one, the reference of the alternative's
+  group. Berry's contraction divides by 1. On the 121 simulated designs of the
+  plan's test bed (multinomial, nested and mixed logits; 2 to 5,000
+  alternatives; full, regional and chained choice sets; outside shares from
+  0.02 to 0.5; far starts), solved to 1e-12, the step converged on every one
+  and needed a median 0.37 of the contraction's evaluations of the shares
+  (10th to 90th percentiles 0.06 and 0.81; medians 32 against 161 for the
+  multinomial logit, 16.5 against 184 for the nested and 173 against 593 for
+  the mixed logit, over the designs where both converged). The contraction
+  did not converge within 3,000 evaluations on 8 nested logits with lambda of
+  0.4 or less, where its step overshoots by about 1 / lambda; the step needed
+  24 to 115. It was slower on one design, binary choice sets chained over ten
+  alternatives without an outside option: 2,196 evaluations against 1,299,
+  both past the default `max_iter`.
+- **Safeguards.** A step is at most 5 log units long, or as long as the
+  contraction's where that is longer. An evaluation whose shares are not
+  finite halves the step.
+  Two more apply in nests with lambda above 1, whose nest-mates are
+  complements. An alternative whose co-choice with the reference is negative
+  takes at most the contraction's step. The step's denominator is at least
+  (1 + lambda) / (2 lambda) times the one the same probabilities give with
+  lambda = 1, where the exact one would overshoot a common shift of the
+  nest's constants and, for lambda above 2, diverge. On 84 nested logits with
+  lambda from 1.05 to 5 the step converged on all, in at most 1.04 times the
+  contraction's evaluations, while the contraction failed on 7 (with an
+  outside option it needed 500 to more than 3,000 evaluations, the step 10 to
+  101). `damping`, for the nested logit, now multiplies the step and must lie
+  in (0, 1]; small lambda no longer needs it.
+- **Stopping rule.** The iteration stops at the first evaluation whose
+  largest absolute log-share residual is at most `tol` (relative to the
+  reference of each group without an outside option; with one, each group's
+  outside share included), and returns that point. The contraction stopped
+  when the largest change in the constants fell below `tol`, which left the
+  outside share unchecked, and returned one more step, never evaluated.
+  `max_iter` counts evaluations of the shares (0 returns the start).
+- **Not converging warns.** A call that stops without meeting `tol` returns
+  the evaluated point of smallest residual and warns with class
+  `choicer_blp_unconverged`; the condition's `convergence` element holds the
+  status (`"max_iter"`, `"non_finite"` or `"non_finite_start"`), the
+  iterations, the evaluations and the residual. The contraction printed
+  "Warning: Maximum iterations reached without convergence." to the console
+  and returned its last step. A mixed logit start at which a predicted share
+  is zero, an error before, is now such a stop.
+- **Groups of alternatives.** Without an outside option, alternatives that
+  share no choice situation with another group's (regional markets, say)
+  have constants identified only up to the group's level, and the shares of
+  each group add up to the weight of its situations. Each group's reference,
+  its smallest code, is held at its start (after the start's first constant
+  is subtracted, as before), where the contraction moved every level with
+  the iteration.
+- **Targets that cannot be attained are errors, before any evaluation.** An
+  alternative offered in no choice situation of positive weight; targets
+  that do not sum to 1, the outside share included, or, without an outside
+  option, a group's targets that do not add up to its situations' weight,
+  within a relative 1.5e-8 (within it they are rescaled); targets that leave
+  no share to the outside option in a group; and a target not below the
+  weight of the situations that offer its alternative, or, without an
+  outside option, not above the weight of those that offer it alone. These
+  conditions are necessary, not sufficient. Also errors now: a start or
+  weights that are not finite, negative weights, a nested logit's lambda that
+  is not positive and finite, a negative or missing `tol`, a `max_iter` that
+  is not a whole number, and a mixed logit's target share that is not
+  positive (the outside option's included), which stopped it only after an
+  evaluation of the shares. Such inputs gave NaN, constants that drifted
+  without converging, or, with lambda of 0 or below, shares without
+  meaning.
+- **Cost per evaluation.** Each evaluation of the shares also forms the
+  step's derivatives. On simulated claims- and census-style designs (8.7 and
+  9.8 million rows; the mixed logit's 1.4 and 1.5 million, with 20 draws), an
+  evaluation took about 4% longer than an iteration of the contraction at one
+  thread and 20-28% less at eleven for the multinomial logit, about 30% and
+  20% longer for the nested logit, and 3-7% longer for the mixed logit
+  (minima of three runs alternated with the previous code). Setting a call
+  up (the groups of alternatives, the checks) takes about half an evaluation
+  at one thread and two to three at eleven (0.3 s at 10^8 rows). Fewer
+  evaluations more than make up for it.
+- **The exported functions** keep their arguments, defaults, layouts of
+  `delta` and n x 1 results; they are now R functions over the engine.
+  `mxl_blp_contraction()` converts an integer or logical cube of draws to
+  double, where it read such a cube from a temporary copy that R could free
+  while it was read.
+
 ## Population-scale mixed logit
 
 This release reworks the mixed logit for the data it is most needed on:
@@ -409,12 +505,9 @@ designs of their own, described where they appear.
   every call, and the nested logit computes each situation's probabilities in
   buffers allocated once per thread. On 17.5 million rows a multinomial logit
   gradient evaluation took 23% less time at one thread and 39% less at eleven,
-  and peaked at 0.14 instead of 0.57 GB of working memory; twenty iterations
-  of `blp_contraction()` 42% and 70% less. On 7 million rows a nested logit
-  gradient evaluation took 37% and 46% less, and twenty iterations of
-  `nl_blp_contraction()` 47% and 65% less, moving 0.1 GB through the heap
-  instead of 10.9 GB. This change by itself leaves results unchanged, bit for
-  bit. Malformed index vectors, which only a hand-built `input_data` or a
+  and peaked at 0.14 instead of 0.57 GB of working memory. On 7 million rows a
+  nested logit gradient evaluation took 37% and 46% less. This change by
+  itself leaves results unchanged, bit for bit. Malformed index vectors, which only a hand-built `input_data` or a
   direct call can supply, are now reported in a defined way (a missing or
   negative code as such, an index beyond the integer range as `NA`).
 - **The multinomial and nested logits' variances at population scale.** The
@@ -468,14 +561,14 @@ designs of their own, described where they appear.
   tiny number, or back.
 - **The multinomial and nested logits' work per choice situation.** Their
   compiled routines (the log-likelihood and gradient, the Hessian, BHHH
-  matrix, scores and clustered meat, predictions and shares, the BLP
-  contraction, elasticities and diversion ratios) no longer allocate memory
+  matrix, scores and clustered meat, predictions and shares, elasticities and
+  diversion ratios) no longer allocate memory
   for each choice situation: every thread's working arrays are allocated once
   per call, before the parallel loop (on 250,000 four-alternative situations
   a multinomial logit BHHH call made 250,023 heap allocations and moved 90 MB
   through the heap, against 26 allocations and 10 MB now; the nested logit's
-  predictions, shares, contraction and diversion ratios already allocated
-  nothing per situation). A thread keeps a situation's bookkeeping while the
+  predictions, shares and diversion ratios already allocated nothing per
+  situation). A thread keeps a situation's bookkeeping while the
   next situations offer the same alternatives, and the loops hand a thread
   about 256 stacked rows at a time instead of a single situation. The nested
   logit's loops over nests cover only the nests a situation offers; so do its
@@ -484,15 +577,16 @@ designs of their own, described where they appear.
   million four-alternative situations and on census- and claims-style designs
   (24,560 situations of 40 alternatives on average, and 153,721 of 56.5), the
   multinomial logit's gradient took 44%, 46% and 34% less time than before
-  this change, its BHHH matrix 53%, 23% and 20% less, predictions 34%, 26%
-  and 26% less, and contraction iterations 33%, 33% and 32% less; the nested
+  this change, its BHHH matrix 53%, 23% and 20% less, and predictions 34%,
+  26% and 26% less; the nested
   logit's gradient 22%, 18% and 3% less and its BHHH matrix 39%, 25% and 23%
   less (two nests on the four-alternative design, 50 on the others). At five
   threads the gains are smaller: on the census- and claims-style designs the
   multinomial logit's gradient took 27% and 20% less time and its BHHH matrix
   12% and 16% less. On the census-style design with 500 nests, the nested
-  logit's gradient, predictions, shares and contraction iterations took 41-48%
-  of the time they took with the probabilities computed over every nest.
+  logit's gradient, predictions, shares and contraction iterations (the
+  contraction since replaced: "Share inversion", above) took 41-48% of the
+  time they took with the probabilities computed over every nest.
   Results are unchanged, bit for bit at one thread.
 - **Elasticities and diversion ratios with many alternatives.**
   `elasticities()` and `diversion_ratios()` of multinomial, nested and mixed
@@ -800,9 +894,8 @@ otherwise.
   a temporary copy that R may free while the routines read it: such a fit
   could be computed from freed memory, or crash. `get_halton_normals()`
   returns doubles, so only a cube built otherwise (an integer array) was
-  exposed. `run_mxlogit()` now converts such a cube to double first. The
-  exported `mxl_blp_contraction()` still reads its cube as given: convert an
-  integer array with `storage.mode(x) <- "double"` before passing it.
+  exposed. `run_mxlogit()` now converts such a cube to double first, and so
+  does `mxl_blp_contraction()` ("Share inversion", above).
 - `run_mnlogit()`, `run_mxlogit()` and `run_nestlogit()` did not check the
   values of an `input_data` (the advanced workflow): weights, `X` or `W`
   changed in a prepared object after `prepare_*_data()`, and the values of

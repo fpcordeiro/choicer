@@ -2,7 +2,7 @@
 % Please edit documentation in R/methods.R
 \name{blp.choicer_nl}
 \alias{blp.choicer_nl}
-\title{BLP contraction mapping for nested logit model}
+\title{BLP share inversion for the nested logit}
 \usage{
 \method{blp}{choicer_nl}(
   object,
@@ -26,19 +26,21 @@ Length \code{J_inside} when no outside option, or \code{J_inside + 1}
 uses the estimated ASCs from the fitted model (zeros for a model fitted
 without them, \code{use_asc = FALSE}).}
 
-\item{damping}{Contraction damping factor in (0, 1] (default 1).}
+\item{damping}{Multiplies each step, in (0, 1] (default 1); seldom needed
+(see \code{\link{nl_blp_contraction}()}).}
 
-\item{tol}{Convergence tolerance (default 1e-8).}
+\item{tol}{Convergence tolerance on the largest absolute log-share
+residual (default 1e-8; see \code{\link{blp_contraction}()}).}
 
-\item{max_iter}{Maximum iterations (default 1000).}
+\item{max_iter}{The most evaluations of the shares (default 1000).}
 
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-Converged delta (ASC) vector.
+The constants, an n x 1 matrix (see \code{\link{blp}()}).
 }
 \description{
-BLP contraction mapping for nested logit model
+BLP share inversion for the nested logit
 }
 \examples{
 \donttest{

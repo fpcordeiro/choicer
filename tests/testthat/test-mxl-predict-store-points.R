@@ -236,8 +236,8 @@ test_that("store-mode methods form their draws on the fly, as the cube's", {
         delta <- blp(fx$fit, target_shares = target)
       },
       .mxl_pred_draws = cube_draws)
-    expect_output(start <- blp(fx$fit, target_shares = target, max_iter = 0L),
-                  "Maximum iterations reached", fixed = TRUE)
+    expect_warning(start <- blp(fx$fit, target_shares = target, max_iter = 0L),
+                   class = "choicer_blp_unconverged")
     expect_false(identical(delta, start))
     # On the fly: no site may build the cube
     with_mocked_bindings(
@@ -322,8 +322,9 @@ test_that("draw codes and draw metadata are checked", {
 
 # --- Draws kept across blp()'s iterations ----------------------------------------
 
-# mxl_blp_contraction_cached() on `d`, the draws formed on the fly by `gen`,
-# kept within `budget` bytes, and mxl_blp_contraction(), which keeps nothing
+# The share inversion's solver (mxl_blp_solve()) on `d`, the draws formed on
+# the fly by `gen`, kept within `budget` bytes, and mxl_blp_contraction(),
+# which keeps nothing
 mxc_blp_kept <- function(d, gen, budget, max_iter = 1000L) {
   K_w <- d$K_w
   target <- as.numeric(mxc_call("shares", d))
@@ -332,10 +333,12 @@ mxc_blp_kept <- function(d, gen, budget, max_iter = 1000L) {
                d$theta[2L + K_w + seq_len(K_w * (K_w + 1L) / 2L)],
                d$alt_idx, d$M, d$weights, array(0, dim = c(K_w, 0L, 0L)),
                d$rc_dist, rc_correlation = TRUE, rc_mean = TRUE,
-               include_outside_option = d$ioo, tol = 1e-8, max_iter = max_iter)
-  list(formed = do.call(mxl_blp_contraction, c(args, gen)),
-       kept = do.call(choicer:::mxl_blp_contraction_cached,
-                      c(args, gen, cache_bytes = budget)))
+               include_outside_option = d$ioo)
+  list(formed = do.call(mxl_blp_contraction,
+                        c(args, list(tol = 1e-8, max_iter = max_iter), gen)),
+       kept = do.call(choicer:::mxl_blp_solve,
+                      c(args, list(control = choicer:::.blp_control(1e-8, max_iter)),
+                        gen, cache_bytes = budget)))
 }
 
 test_that("draws kept across blp()'s iterations give the same deltas", {
@@ -368,12 +371,19 @@ test_that("draws kept across blp()'s iterations give the same deltas", {
     read_all(r$kept, d)
     expect_identical(r$kept$delta, r$formed)
   }
-  # max_iter = 0 leaves no later evaluation, so nothing is kept
+  # max_iter = 0 makes no evaluation, and max_iter = 1 one: nothing to keep
   d <- mxc_data(164, 9L)
-  expect_output(
+  expect_warning(
     r <- mxc_blp_kept(d, list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S),
                       Inf, max_iter = 0L),
-    "Maximum iterations reached without convergence", fixed = TRUE)
+    class = "choicer_blp_unconverged")
+  expect_false(r$kept$kept)
+  expect_identical(c(r$kept$passes, r$kept$reads), c(0, 0))
+  expect_identical(r$kept$delta, r$formed)
+  expect_warning(
+    r <- mxc_blp_kept(d, list(gen_seed = 0L, gen_scramble = 2L, gen_S = d$S),
+                      Inf, max_iter = 1L),
+    class = "choicer_blp_unconverged")
   expect_false(r$kept$kept)
   expect_identical(c(r$kept$passes, r$kept$reads), c(1, 0))
   expect_identical(r$kept$delta, r$formed)
@@ -403,18 +413,18 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
   # A cube is read at every pass, not copied
   K_w <- d$K_w
   target <- as.numeric(mxc_call("shares", d))
-  r <- choicer:::mxl_blp_contraction_cached(
+  r <- choicer:::mxl_blp_solve(
     rep(0, d$J), target, d$X, d$W, d$theta[1:2], d$theta[2L + seq_len(K_w)],
     d$theta[2L + K_w + seq_len(K_w * (K_w + 1L) / 2L)], d$alt_idx, d$M,
-    d$weights, d$eta, d$rc_dist, TRUE, TRUE, d$ioo, 1e-8, 1000L, -1L, 1L, 0L,
-    Inf)
+    d$weights, d$eta, d$rc_dist, TRUE, TRUE, d$ioo,
+    choicer:::.blp_control(1e-8, 1000L), -1L, 1L, 0L, Inf)
   expect_false(r$kept)
   expect_identical(r$reads, 0)
   expect_identical(r$delta, mxc_call("blp", d))
 
   # blp() passes keep_draws_bytes, by default 4 GiB; a counterfactual target
   # makes it iterate
-  real <- choicer:::mxl_blp_contraction_cached
+  real <- choicer:::mxl_blp_solve
   seen <- NULL
   spy <- function(...) {
     r <- real(...)
@@ -435,7 +445,7 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
         expect_identical(blp(fit, target_shares = target, keep_draws_bytes = 0),
                          delta)
       },
-      mxl_blp_contraction_cached = spy)
+      mxl_blp_solve = spy)
     expect_identical(seen$budget, c(2^32, 0), label = draws)
     expect_identical(seen$kept, c(TRUE, FALSE), label = draws)
     expect_identical(seen$passes[1], seen$passes[2])
@@ -447,7 +457,7 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
   seen <- NULL
   with_mocked_bindings(
     blp(fit, target_shares = target, keep_draws_bytes = bit64::as.integer64(2^33)),
-    mxl_blp_contraction_cached = spy)
+    mxl_blp_solve = spy)
   expect_identical(seen$budget, 2^33)
   expect_true(seen$kept)
   for (bad in list(-1, NA_real_, c(1, 2), "1", NULL)) {

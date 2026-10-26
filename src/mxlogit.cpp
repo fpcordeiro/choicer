@@ -2,6 +2,7 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "choicer_derivs.h"
+#include "blp_engine.h"
 #include "halton.h"
 #include <algorithm>
 #include <cstdio>
@@ -3529,19 +3530,196 @@ inline void mxl_pred_keep_gamma(MxlPredData& pd, const double cache_bytes) {
   }
 }
 
-// What blp()'s contraction did with its draws: whether it allocated the
-// cache, how many evaluations of the shares it made, and how many situations
-// those evaluations read from the cache (all N in each after the first).
-struct MxlBlpKeep {
-  bool kept = false;
-  double passes = 0, reads = 0;
+// ============================================================================
+// The share inversion's model (blp_engine.h)
+//
+// One pass per evaluation of the shares, on the prediction family's machinery:
+// each situation loaded by mxl_pred_load() (the constants added to its base
+// utilities there; Gamma from blp()'s cache once the first pass has filled
+// it), each draw's probabilities, then, as mxl_pred_shares() forms them, the
+// mean probabilities and the shares, so that they are its shares at the same
+// delta; and per draw A = P_j (1 - P_j) and the co-choice P_j P_b with the
+// base, averaged over the draws and weighted once per situation. passes
+// counts the evaluations, and the scratch sets count the situations each one
+// read from the cache, so that reads == N (passes - 1) while it is kept.
+// ============================================================================
+struct MxlBlpModel {
+  MxlPredData& pd;
+  const arma::vec& weights;
+  const double W;
+  const int J;
+  const BlpComponents& comp;
+  std::vector<MxlPredScratch> scratch;
+  MxlPredAcc acc_s;   // J shares, then each component's outside share
+  MxlPredAcc acc_ac;  // A and C of each alternative, interleaved
+  std::vector<std::vector<int>> rows_ref;  // the reference's rows of the situation
+  std::vector<std::vector<int>> slot, code;  // repeated codes (as MnlBlpModel's)
+  double passes = 0;
+
+  // The scratch's aux: the mean probabilities (m + 1), A's and C's per-draw
+  // sums (m each), and, where codes repeat, a draw's totals (m).
+  static std::size_t aux_len(const ChoiceLayout& lay) {
+    return 4 * static_cast<std::size_t>(lay.max_m) + 1;
+  }
+
+  MxlBlpModel(MxlPredData& pd_, const arma::vec& w_, const double W_, const int J_,
+              const BlpComponents& comp_)
+      : pd(pd_), weights(w_), W(W_), J(J_), comp(comp_),
+        scratch(mxl_pred_scratch(pd_, kernel_team_threads(pd_.lay.N), aux_len(pd_.lay))) {
+    acc_s = mxl_pred_accumulators(scratch, static_cast<std::size_t>(J + comp.n),
+                                  "share inversion");
+    acc_ac = mxl_pred_accumulators(scratch, 2 * static_cast<std::size_t>(J),
+                                   "share inversion");
+    const int T = static_cast<int>(scratch.size());
+    const std::size_t m = static_cast<std::size_t>(pd.lay.max_m);
+    rows_ref = thread_vectors<int>(m, T);
+    if (comp.repeated) {
+      slot = thread_vectors<int>(static_cast<std::size_t>(J), T, -1);
+      code = thread_vectors<int>(m, T);
+    }
+  }
+
+  void pass(const arma::vec& delta, BlpPass& out) {
+    pd.delta = delta;
+    const std::size_t n_s = static_cast<std::size_t>(J + comp.n);
+    mxl_pred_zero(acc_s, n_s);
+    mxl_pred_zero(acc_ac, 2 * static_cast<std::size_t>(J));
+    const int S = pd.S;
+    const bool outside = pd.include_outside_option;
+    const int o = outside ? 1 : 0;
+    const bool repeated = comp.repeated;
+    const std::size_t m_max = static_cast<std::size_t>(pd.lay.max_m);
+
+    mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
+      arma::vec local_shares(acc_s[sc.tid].get(), n_s, false, true);
+      double* ac = acc_ac[sc.tid].get();
+      const int m_i = mxl_pred_load(pd, t, sc);
+      const int num_choices = m_i + o;
+      const double w_i = weights[t];
+      const int* alt = pd.lay.alt + pd.lay.row_off[t];
+      const double* bu = sc.bu.get();
+      double* v = sc.v.get();
+      double* p = sc.p.get();
+      arma::vec P_bar_i(sc.aux.get(), num_choices, false, true);
+      double* A_bar = sc.aux.get() + (m_max + 1);
+      double* C_bar = A_bar + m_max;
+      double* tot = C_bar + m_max;
+      P_bar_i.zeros();
+      const int c = comp.of[alt[0] - 1];
+      int* rr = rows_ref[sc.tid].data();
+      int n_ref = 0;
+      if (!outside) {
+        const int b = comp.ref[c] + 1;
+        for (int a = 0; a < m_i; ++a) {
+          if (alt[a] == b) rr[n_ref++] = a;
+        }
+      }
+      // the items A and C are summed over: the rows, or each code's rows
+      int n_d = m_i;
+      int* slot_t = repeated ? slot[sc.tid].data() : nullptr;
+      int* code_t = repeated ? code[sc.tid].data() : nullptr;
+      int* row_item = sc.map.get();
+      if (repeated) {
+        n_d = 0;
+        for (int a = 0; a < m_i; ++a) {
+          const int j = alt[a] - 1;
+          if (slot_t[j] < 0) {
+            slot_t[j] = n_d;
+            code_t[n_d++] = j;
+          }
+          row_item[a] = slot_t[j];
+        }
+        for (int k = 0; k < n_d; ++k) slot_t[code_t[k]] = -1;
+      }
+      std::fill(A_bar, A_bar + n_d, 0.0);
+      std::fill(C_bar, C_bar + n_d, 0.0);
+
+      // Accumulate probabilities over draws
+      for (int s = 0; s < S; ++s) {
+        const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m_i;
+        if (o) v[0] = 0.0;
+        for (int a = 0; a < m_i; ++a) v[o + a] = bu[a] + wg[a];
+        stable_softmax_n(v, p, num_choices);
+        for (int j = 0; j < num_choices; ++j) P_bar_i[j] += p[j];
+        double pb = 0.0;
+        if (outside) {
+          pb = p[0];
+        } else {
+          for (int q = 0; q < n_ref; ++q) pb += p[rr[q]];
+        }
+        if (!repeated) {
+          for (int a = 0; a < m_i; ++a) {
+            const double pa = p[o + a];
+            A_bar[a] += pa * (1.0 - pa);
+            C_bar[a] += pa * pb;
+          }
+        } else {
+          std::fill(tot, tot + n_d, 0.0);
+          for (int a = 0; a < m_i; ++a) tot[row_item[a]] += p[o + a];
+          for (int k = 0; k < n_d; ++k) {
+            A_bar[k] += tot[k] * (1.0 - tot[k]);
+            C_bar[k] += tot[k] * pb;
+          }
+        }
+      }
+      P_bar_i /= static_cast<double>(S);
+
+      // Accumulate shares by alternative
+      if (outside) {
+        local_shares(J + c) += w_i * P_bar_i(0);
+      }
+      for (int a = 0; a < m_i; ++a) {
+        local_shares(alt[a] - 1) += w_i * P_bar_i(a + o);
+      }
+      for (int k = 0; k < n_d; ++k) {
+        const int j = repeated ? code_t[k] : alt[k] - 1;
+        ac[2 * j] += w_i * (A_bar[k] / S);
+        ac[2 * j + 1] += w_i * (C_bar[k] / S);
+      }
+    });
+
+    for (int j = 0; j < J; ++j) {
+      double s = 0.0, A = 0.0, C = 0.0;
+      for (std::size_t q = 0; q < acc_s.size(); ++q) {
+        s += acc_s[q][j];
+        A += acc_ac[q][2 * j];
+        C += acc_ac[q][2 * j + 1];
+      }
+      out.s[j] = s / W;
+      out.A[j] = A / W;
+      out.C[j] = C / W;
+    }
+    for (int k = 0; k < comp.n; ++k) {
+      double s0 = 0.0;
+      for (std::size_t q = 0; q < acc_s.size(); ++q) s0 += acc_s[q][J + k];
+      out.s0[k] = s0 / W;
+    }
+    pd.gamma_filled = pd.gamma_cache != nullptr;  // filled by the first pass
+    ++passes;
+  }
 };
 
-// The BLP contraction behind mxl_blp_contraction() and
-// mxl_blp_contraction_cached(), which keeps the draws across passes within
-// cache_bytes (0: never; nor with max_iter <= 0, which leaves no later pass);
-// *keep, when given, reports what it did.
-static arma::vec mxl_blp_run(
+//' The share inversion of the mixed logit
+//'
+//' The engine behind mxl_blp_contraction() and blp() (blp_engine.h): the
+//' input checks of mxl_blp_contraction(), in their order, the target's
+//' positivity (every entry, before any pass), then the share inversion's own
+//' (a finite start, finite and non-negative weights, the targets' sums and
+//' bounds), then the solver. When the draws are formed on the fly
+//' (gen_seed >= 0), all situations' Gamma = L eta take at most cache_bytes
+//' bytes (8 K_w S N) and the solver may evaluate the shares twice or more,
+//' they are kept from the first evaluation on instead of formed at every
+//' one; the result is the same.
+//'
+//' @inheritParams mxl_blp_contraction
+//' @param control List from .blp_control().
+//' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
+//' @return As mnl_blp_solve(), plus kept (whether the cache was allocated),
+//'   passes (the evaluations of the shares) and reads (the situations those
+//'   evaluations read from the cache).
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List mxl_blp_solve(
     const arma::vec& delta,
     const arma::vec& target_shares,
     const arma::mat& X,
@@ -3557,14 +3735,13 @@ static arma::vec mxl_blp_run(
     const bool rc_correlation,
     const bool rc_mean,
     const bool include_outside_option,
-    const double tol,
-    const int max_iter,
+    const Rcpp::List& control,
     const int gen_seed,
     const int gen_scramble,
     const int gen_S,
-    const double cache_bytes,
-    MxlBlpKeep* keep
+    const double cache_bytes
 ) {
+  const BlpControl ctl = blp_control(control);
   const int K_w = W.n_cols;
 
   // delta is harmonized to cover every referenced alternative below, so the
@@ -3622,244 +3799,44 @@ static arma::vec mxl_blp_run(
       Rcpp::stop("Error: delta must have length %d (full) or %d (free, with baseline omitted).",
                  J_inside, J_inside - 1);
     }
-    // Anchor baseline at zero for identification
-    delta_current -= delta_current(0);
   }
 
-  // The shares at a delta. X beta (+ W mu_final) is formed once, after the
-  // check of the weights, where the shares function formed it at every call
-  // (so a beta or mu of the wrong length stops at the same point); each pass
-  // adds the current ASCs row by row.
+  // X beta (+ W mu_final) is formed once, after the check of the weights
+  // (so a beta or mu of the wrong length stops at the same point as before);
+  // each pass adds the current constants row by row.
   mxl_pred_setup(pd, mu_final, L, delta_current, /*use_asc=*/true,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
                  gen_S);
   const double weight_sum = shares_denominator(weights);
-  const int n_threads = kernel_team_threads(pd.lay.N);
-  std::vector<MxlPredScratch> scratch = mxl_pred_scratch(
-      pd, n_threads, static_cast<std::size_t>(pd.lay.max_m) + 1);
-  MxlPredAcc acc = mxl_pred_accumulators(scratch, num_alts, "shares");
+  const BlpComponents comp = blp_components(pd.lay, weights.memptr(), weight_sum,
+                                            J_inside, include_outside_option);
+  MxlBlpModel model(pd, weights, weight_sum, J_inside, comp);
   arma::vec base(pd.lay.n_rows, arma::fill::none);
   mxl_pred_base(pd, base, beta);
-  if (max_iter > 0) mxl_pred_keep_gamma(pd, cache_bytes);
-  double passes = 0;
-  auto shares_at = [&](const arma::vec& d) {
-    pd.delta = d;
-    arma::vec shares = mxl_pred_shares(pd, weights, weight_sum, num_alts,
-                                       scratch, acc);
-    pd.gamma_filled = pd.gamma_cache != nullptr;  // filled by the first pass
-    ++passes;
-    return shares;
-  };
 
-  // Compute initial predicted shares
-  arma::vec shares_pred = shares_at(delta_current);
-
-  // Work with inside shares only for the contraction step
-  arma::vec shares_pred_inside = include_outside_option
-                                 ? shares_pred.subvec(1, num_alts - 1)
-                                 : shares_pred;
-  arma::vec target_shares_inside = include_outside_option
-                                   ? target_shares.subvec(1, num_alts - 1)
-                                   : target_shares;
-
-  // Guard against zeros before taking logs
-  auto validate_positive = [](const arma::vec& v, const char* name) {
-    if (v.min() <= 0.0) {
-      Rcpp::stop("%s contains non-positive entries; cannot take logarithm.", name);
-    }
-  };
-  validate_positive(shares_pred_inside, "Predicted shares");
-  validate_positive(target_shares_inside, "Target shares");
-
-  arma::vec log_shares_old = arma::log(shares_pred_inside);
-  arma::vec log_shares_target = arma::log(target_shares_inside);
-
-  // Iteration
-  int iter = 0;
-  double residual = 10.0;
-
-  while (iter < max_iter) {
-    Rcpp::checkUserInterrupt(); // H4: allow user to interrupt long-running contraction
-    arma::vec delta_new = delta_current + (log_shares_target - log_shares_old);
-
-    // Re-anchor baseline each iteration when there is no outside option
-    if (!include_outside_option) {
-      delta_new -= delta_new(0);
-    }
-
-    residual = arma::max(arma::abs(delta_new - delta_current));
-
-    if (residual < tol) {
-      break;
-    }
-
-    delta_current = delta_new;
-    shares_pred = shares_at(delta_current);
-
-    shares_pred_inside = include_outside_option
-                         ? shares_pred.subvec(1, num_alts - 1)
-                         : shares_pred;
-    validate_positive(shares_pred_inside, "Predicted shares");
-    log_shares_old = arma::log(shares_pred_inside);
-    ++iter;
-  }
-
-  if (iter >= max_iter) {
-    Rcpp::Rcout << "Warning: Maximum iterations reached without convergence. Residual: "
-                << residual << std::endl;
-  }
-
-  if (keep) {
-    keep->kept = pd.gamma_cache != nullptr;
-    keep->passes = passes;
-    keep->reads = 0;
-    for (const MxlPredScratch& sc : scratch) {
-      keep->reads += static_cast<double>(sc.gamma_reads);
+  // The targets, before any pass (every entry, the outside option's too)
+  for (arma::uword k = 0; k < target_shares.n_elem; ++k) {
+    if (!(target_shares[k] > 0)) {
+      Rcpp::stop("Target shares contains non-positive entries; cannot take logarithm.");
     }
   }
-  return delta_current;
-}
+  blp_check_start(delta_current, weights);
+  const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option,
+                                    J_inside);
+  if (!include_outside_option) delta_current -= delta_current(0);
+  if (ctl.max_evals > 1 && !pb.free.empty()) mxl_pred_keep_gamma(pd, cache_bytes);
+  BlpPass last(J_inside, comp.n);
+  const BlpResult res = blp_solve(model, comp, pb, delta_current, ctl, &last);
 
-//' BLP contraction mapping for mixed logit
-//'
-//' Finds the ASC (delta) parameters such that predicted market shares
-//' match target shares, using the contraction mapping of Berry, Levinsohn,
-//' and Pakes (1995).
-//'
-//' @param delta J-1 or J vector with initial guess for deltas (ASCs)
-//' @param target_shares J vector with target market shares
-//' @param X design matrix for fixed coefficients; sum(M_i) x K_x
-//' @param W design matrix for random coefficients; sum(M_i) x K_w or J x K_w
-//' @param beta K_x vector with fixed coefficients
-//' @param mu K_w vector with mean parameters (raw, will be transformed if log-normal)
-//' @param L_params Cholesky parameters vector
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing
-//' @param M N x 1 vector with number of alternatives for each individual
-//' @param weights N x 1 vector with weights for each observation
-//' @param eta_draws Array with draws; K_w x S x N, stored as double: an
-//'   integer array is read from a temporary copy that R may free during
-//'   the call (convert it with \code{storage.mode(x) <- "double"})
-//' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)
-//' @param rc_correlation whether random coefficients are correlated
-//' @param rc_mean whether mu parameters represent means (TRUE) or are zero (FALSE)
-//' @param include_outside_option whether outside option is included
-//' @param tol convergence tolerance (default 1e-8)
-//' @param max_iter maximum iterations (default 1000)
-//' @param gen_seed Integer. \code{< 0} (default) uses the materialized
-//'   \code{eta_draws} cube; \code{>= 0} forms the draws on the fly (see
-//'   \code{gen_scramble}), with this master seed for the digit permutations of
-//'   \code{gen_scramble = 1}.
-//' @param gen_scramble Integer mode of the draws formed on the fly: \code{0} =
-//'   identity permutations (plain Halton) through the generator's inverse normal
-//'   CDF, \code{1} = seeded position-wise digit permutations, \code{2} = identity
-//'   permutations through R's \code{qnorm()}, the store-mode draws of
-//'   \code{\link{get_halton_normals}} formed without its cube (bit for bit where
-//'   randtoolbox and choicer are compiled with the same floating-point
-//'   contraction). Other values are an error.
-//' @param gen_S Integer number of draws per individual, used only when \code{gen_seed >= 0}.
-//' @details With \code{gen_seed >= 0} the draws are formed again at every
-//'   evaluation of the shares. \code{\link{blp}()} on a fitted model runs the
-//'   same contraction but keeps them across iterations within its
-//'   \code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}).
-//' @returns vector with converged delta (ASC) values
-//' @examples
-//' \donttest{
-//' library(data.table)
-//' set.seed(42)
-//' N <- 50; J <- 3
-//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-//' dt[, `:=`(x1 = rnorm(.N), w1 = rnorm(.N))]
-//' dt[, choice := 0L]
-//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-//' d <- prepare_mxl_data(dt, "id", "alt", "choice", "x1", "w1")
-//' eta <- get_halton_normals(50, d$N, ncol(d$W))
-//' fit <- run_mxlogit(input_data = d, eta_draws = eta)
-//' pm <- fit$param_map
-//' delta <- mxl_blp_contraction(rep(0, J), rep(1/J, J), d$X, d$W,
-//'   coef(fit)[pm$beta], rep(0, ncol(d$W)), coef(fit)[pm$sigma],
-//'   d$alt_idx, d$M, d$weights, eta, rc_dist = rep(0L, ncol(d$W)),
-//'   rc_correlation = FALSE, rc_mean = FALSE)
-//' delta
-//' }
-//' @export
-// [[Rcpp::export]]
-arma::vec mxl_blp_contraction(
-    const arma::vec& delta,
-    const arma::vec& target_shares,
-    const arma::mat& X,
-    const arma::mat& W,
-    const arma::vec& beta,
-    const arma::vec& mu,
-    const arma::vec& L_params,
-    const Rcpp::IntegerVector& alt_idx,
-    const Rcpp::IntegerVector& M,
-    const arma::vec& weights,
-    const arma::cube& eta_draws,
-    const arma::uvec& rc_dist,
-    const bool rc_correlation = true,
-    const bool rc_mean = false,
-    const bool include_outside_option = false,
-    const double tol = 1e-8,
-    const int max_iter = 1000,
-    const int gen_seed = -1,
-    const int gen_scramble = 1,
-    const int gen_S = 0
-) {
-  return mxl_blp_run(delta, target_shares, X, W, beta, mu, L_params, alt_idx,
-                     M, weights, eta_draws, rc_dist, rc_correlation, rc_mean,
-                     include_outside_option, tol, max_iter, gen_seed,
-                     gen_scramble, gen_S, 0.0, nullptr);
-}
-
-//' BLP contraction for blp(): mxl_blp_contraction(), keeping the draws
-//'
-//' The contraction of mxl_blp_contraction(), which, when the draws are formed
-//' on the fly (gen_seed >= 0) and all situations' Gamma = L eta together take
-//' at most cache_bytes bytes (8 K_w S N), keeps them from the first
-//' evaluation of the shares on, instead of forming them at every evaluation.
-//' The result is the same.
-//'
-//' @inheritParams mxl_blp_contraction
-//' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
-//' @return List: delta (as mxl_blp_contraction() returns it); kept, whether
-//'   the cache was allocated; passes, the evaluations of the shares; and
-//'   reads, the situations those evaluations read from the cache.
-//' @noRd
-// [[Rcpp::export]]
-Rcpp::List mxl_blp_contraction_cached(
-    const arma::vec& delta,
-    const arma::vec& target_shares,
-    const arma::mat& X,
-    const arma::mat& W,
-    const arma::vec& beta,
-    const arma::vec& mu,
-    const arma::vec& L_params,
-    const Rcpp::IntegerVector& alt_idx,
-    const Rcpp::IntegerVector& M,
-    const arma::vec& weights,
-    const arma::cube& eta_draws,
-    const arma::uvec& rc_dist,
-    const bool rc_correlation,
-    const bool rc_mean,
-    const bool include_outside_option,
-    const double tol,
-    const int max_iter,
-    const int gen_seed,
-    const int gen_scramble,
-    const int gen_S,
-    const double cache_bytes
-) {
-  MxlBlpKeep keep;
-  const arma::vec d = mxl_blp_run(delta, target_shares, X, W, beta, mu,
-                                  L_params, alt_idx, M, weights, eta_draws,
-                                  rc_dist, rc_correlation, rc_mean,
-                                  include_outside_option, tol, max_iter,
-                                  gen_seed, gen_scramble, gen_S, cache_bytes,
-                                  &keep);
-  return Rcpp::List::create(Rcpp::Named("delta") = d,
-                            Rcpp::Named("kept") = keep.kept,
-                            Rcpp::Named("passes") = keep.passes,
-                            Rcpp::Named("reads") = keep.reads);
+  double reads = 0;
+  for (const MxlPredScratch& sc : model.scratch) {
+    reads += static_cast<double>(sc.gamma_reads);
+  }
+  Rcpp::List out = blp_result(delta_current, res, ctl, last);
+  out["kept"] = pd.gamma_cache != nullptr;
+  out["passes"] = model.passes;
+  out["reads"] = reads;
+  return out;
 }
 
 // The elasticity kernel's pass over the choice situations, the statements

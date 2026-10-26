@@ -124,14 +124,16 @@ than a nuisance to hide.
 
 ## Share inversion with BLP
 
-`blp()` runs the Berry-Levinsohn-Pakes contraction to recover the mean utilities
-that reproduce a set of target shares — useful for calibration and demand
-estimation from aggregate data. For strongly-nested models a damping factor
-below 1 stabilizes the iteration.
+`blp()` inverts target shares for the mean utilities that reproduce them (the share
+inversion of Berry, Levinsohn and Pakes), with the other parameters held at their
+estimates: useful for calibration, counterfactual market shares, and demand estimation
+from aggregate data. Each step is scaled by the nested logit's own share derivative, which
+carries the within-nest $1/\lambda$, so the iteration converges for strongly nested models
+without damping.
 
 ```{r blp}
 target_shares <- predict(fit, type = "shares")
-head(blp(fit, target_shares, damping = 0.5))
+head(blp(fit, target_shares))
 ```
 
 As always, `predict()`, `wtp()` and `consumer_surplus()` are available on the
@@ -158,14 +160,13 @@ certified maximum is local: where the polish drives a dissimilarity to its
 bound, refit from other starts, and where they all end there, the
 dissimilarity has no interior estimate and the nest is to be revised.
 
-When using `blp()`, verify that shares reconstructed from the returned mean
-utilities match the target within the stated tolerance, and report sensitivity
-to damping. (The current return value is the utility vector, not a convergence
-diagnostics object.) Damping is a numerical aid, not evidence for the tree or
-the economic validity of lambda. NL
-does not search over trees or estimate cross-nested substitution, so uncertainty
-about the grouping remains specification uncertainty outside the reported
-standard errors.
+When using `blp()`, check that it converged: when it stops without meeting `tol` it
+warns, with class `choicer_blp_unconverged`, and returns its best point. A target the data
+cannot attain (above the weight of the choice situations that offer an alternative, say)
+stops it with an error before any iteration. The inversion is a numerical step, not
+evidence for the tree or the economic validity of lambda. NL does not search over trees or
+estimate cross-nested substitution, so uncertainty about the grouping remains
+specification uncertainty outside the reported standard errors.
 
 The full derivations — the GEV likelihood, analytical gradient and Hessian,
 nest-consistent elasticities and diversion, and how choicer's
