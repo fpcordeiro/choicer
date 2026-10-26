@@ -295,3 +295,33 @@ The batteries are the `*_batteries.R` files beside it (the header lists them);
 a new one defines `run_<name>()` and is added to `results` there. `check` exits
 with status 0 on a pass and 1 on a failure, and prints a summary per group, the
 failing leaves and the worst tolerance-group deviations.
+
+The share inversion (`blp()` and the three exported contractions) is checked by
+a solver tier instead of identity, because its results may move within its
+tolerance (BLP engine plan, user decision U1). Every BLP call of the batteries
+goes through `golden_blp()` (`golden/blp_batteries.R`, sourced first), which
+records one leaf per call: the value, warnings, messages, error and printed
+output; the residual at the returned delta recomputed through the untouched
+`*_predict_shares()` kernel (the largest absolute log-share residual,
+re-anchored on each component's reference without an outside option, and each
+component's outside share's with one); a reference solution with its residual
+floor and conditioning kappa (the delta the targets were computed at, where the
+call site knows it, or else Newton's on the same kernel); and the engine's
+input checks that main did not make, read off the call's arguments by the
+harness itself (`gb_expect_error()`). A leaf passes if it is identical to the
+baseline's, or if: it converged within `tol` with every constant within
+2 kappa (tol + floor) of the reference and each component's reference held at
+its start; or it did not converge, warns with class `choicer_blp_unconverged`
+and reports the residual it stopped at after `max_iter` evaluations, where the
+baseline did not meet its `tol` either (or `max_iter` binds by design); or it
+stops with the baseline's error; or it stops exactly where its inputs fail one
+of those checks, with that check's message (or one its call site expects).
+`check` prints the tier's report: counts, the worst residual and bound ratios,
+and the entries less accurate than the baseline (reported, not gated: the
+baseline's contraction returned one unverified step past its last check).
+`golden/blp_batteries.R`'s own battery, `blp`, makes the inversion iterate:
+counterfactual, symmetrized, uniform and tiny targets, regional choice sets,
+two components with and without an outside option, repeated codes, nested
+logits at lambda 0.3 to 3 with damping, mixed logits with stored, generated and
+on-the-fly draws, `blp()` on fits, `max_iter` 0 and 3, and the inputs the
+engine's checks stop.

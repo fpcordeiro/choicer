@@ -105,14 +105,6 @@ p3_draws <- function(f) {
        extra = list(draw_block = p3_block_fun(f$K_w), chunk_size = f$chunk))
 }
 
-p3_blp_fun <- function(chunked) {
-  if (chunked && exists("mxl_blp_contraction_chunked",
-                        envir = asNamespace("choicer"), inherits = FALSE)) {
-    return(get("mxl_blp_contraction_chunked", envir = asNamespace("choicer")))
-  }
-  choicer::mxl_blp_contraction
-}
-
 p3_call <- function(k, f) {
   d <- p3_draws(f)
   head <- list(f$theta, f$X, f$W, f$alt_idx, f$M)
@@ -152,29 +144,49 @@ p3_call <- function(k, f) {
                         c(head, list(weights = f$weights, eta_draws = d$eta,
                                      rc_dist = f$rc_dist, elast_var_idx = var_r,
                                      is_random_coef = TRUE), flags, d$extra)),
-    blp = {
-      K_x <- ncol(f$X); K_w <- ncol(f$W)
-      th <- f$theta
-      beta <- f$beta %||% th[seq_len(K_x)]
-      mu <- f$mu %||% (if (f$rc_mean) th[K_x + seq_len(K_w)] else rep(0, K_w))
-      L_params <- f$L_params %||%
-        th[K_x + (if (f$rc_mean) K_w else 0L) + seq_len(f$L_size)]
-      # BLP's alternatives are 1..max(alt_idx): start from zeros and target
-      # the case's own shares over them.
-      J_in <- if (length(f$alt_idx)) max(as.integer(f$alt_idx)) else f$J
-      target <- f$target %||%
-        as.numeric(p3_call("shares", f))[seq_len(J_in + f$ioo)]
-      do.call(p3_blp_fun(length(d$extra) > 0L),
-              c(list(delta = f$delta %||% rep(0, J_in), target_shares = target,
-                     X = f$X, W = f$W, beta = beta, mu = mu,
-                     L_params = L_params, alt_idx = f$alt_idx, M = f$M,
-                     weights = f$weights, eta_draws = d$eta,
-                     rc_dist = f$rc_dist, rc_correlation = f$rc_corr,
-                     rc_mean = f$rc_mean, include_outside_option = f$ioo,
-                     tol = 1e-10, max_iter = f$max_iter %||% 200L,
-                     gen_seed = flags$gen_seed, gen_scramble = flags$gen_scramble,
-                     gen_S = flags$gen_S), d$extra))
-    })
+    # the solver tier's leaf (blp_batteries.R), its arguments formed inside
+    # the recorder, which records their errors and warnings as the call's
+    blp = golden_blp("mxl_blp_contraction", p3_blp_args(f, d, flags),
+                     ref = if (is.null(f$target) && is.null(f$delta) &&
+                               is.null(f$max_iter)) p3_blp_ref(f) else FALSE,
+                     expect = if (is.null(f$max_iter)) "any" else "capped"))
+}
+
+# The BLP call of a case: BLP's alternatives are 1..max(alt_idx), from zeros,
+# with the case's own shares over them as the target (or the case's own
+# delta and target).
+p3_blp_args <- function(f, d, flags) {
+  K_x <- ncol(f$X); K_w <- ncol(f$W)
+  th <- f$theta
+  beta <- f$beta %||% th[seq_len(K_x)]
+  mu <- f$mu %||% (if (f$rc_mean) th[K_x + seq_len(K_w)] else rep(0, K_w))
+  L_params <- f$L_params %||%
+    th[K_x + (if (f$rc_mean) K_w else 0L) + seq_len(f$L_size)]
+  J_in <- if (length(f$alt_idx)) max(as.integer(f$alt_idx)) else f$J
+  target <- f$target %||%
+    as.numeric(p3_call("shares", f))[seq_len(J_in + f$ioo)]
+  c(list(delta = f$delta %||% rep(0, J_in), target_shares = target,
+         X = f$X, W = f$W, beta = beta, mu = mu,
+         L_params = L_params, alt_idx = f$alt_idx, M = f$M,
+         weights = f$weights, eta_draws = d$eta,
+         rc_dist = f$rc_dist, rc_correlation = f$rc_corr,
+         rc_mean = f$rc_mean, include_outside_option = f$ioo,
+         tol = 1e-10, max_iter = f$max_iter %||% 200L,
+         gen_seed = flags$gen_seed, gen_scramble = flags$gen_scramble,
+         gen_S = flags$gen_S), d$extra)
+}
+
+# The exact reference of a case's BLP call on its own shares: theta's
+# constants (zeros without them), where theta covers BLP's alternatives;
+# otherwise NULL (a Newton reference).
+p3_blp_ref <- function(f) {
+  tryCatch({
+    J_in <- max(as.integer(f$alt_idx))
+    n_head <- ncol(f$X) + (if (f$rc_mean) ncol(f$W) else 0L) + f$L_size
+    n_delta <- length(f$theta) - n_head
+    if (f$use_asc && n_delta != J_in - !f$ioo) NULL else
+      gb_delta_star(f$theta, n_head, J_in, f$use_asc, f$ioo)
+  }, warning = function(w) NULL, error = function(e) NULL)
 }
 
 # Each kernel's value, warnings and error, plus anything it printed (the BLP
@@ -182,6 +194,10 @@ p3_call <- function(k, f) {
 p3_outputs <- function(f, kernels = P3_K) {
   res <- list()
   for (k in kernels) {
+    if (k == "blp") {
+      res$blp <- p3_call(k, f)
+      next
+    }
     printed <- character()
     res[[k]] <- p2_val({
       printed <- utils::capture.output(v <- p3_call(k, f))
@@ -362,7 +378,8 @@ run_pred_panel <- function() {
     res$dr_fixed <- p2_val(diversion_ratios(fit, "x1"))
     res$dr_random <- p2_val(diversion_ratios(fit, "w2", is_random_coef = TRUE))
     shares <- predict(fit, type = "shares")
-    res$blp <- p2_val(blp(fit, target_shares = as.numeric(shares)))
+    res$blp <- golden_blp("blp", list(fit, target_shares = as.numeric(shares)),
+                          ref = gb_fit_delta(fit))
     res$gof <- p2_val(gof(fit))
     out[[sprintf("panel|%s", mode)]] <- res
   }
@@ -487,7 +504,11 @@ run_err_p3 <- function() {
     blp_maxiter = w(f0, max_iter = 1L))
   for (cn in names(cases)) {
     for (k in P3_K) {
-      out[[sprintf("err|%s|%s", cn, k)]] <- p2_cond(p3_call(k, cases[[cn]]))
+      out[[sprintf("err|%s|%s", cn, k)]] <- if (k == "blp") {
+        p3_call(k, cases[[cn]])
+      } else {
+        p2_cond(p3_call(k, cases[[cn]]))
+      }
     }
   }
   out

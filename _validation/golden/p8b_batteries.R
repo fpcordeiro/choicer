@@ -89,8 +89,11 @@ p8b_mnl_cells <- function(theta, d, asc, ioo, labels, K) {
   if (asc) {
     J <- d$J
     target <- rep(1 / (J + ioo), J + ioo)
-    res$blp <- p2_val(blp_contraction(rep(0, J), target, d$X, beta, d$alt_idx,
-                                      d$M, d$weights, ioo, max_iter = 25L))
+    # (uniform targets some designs cannot attain: the engine's check stops
+    # them, as the leaf expects from its inputs)
+    res$blp <- golden_blp("blp_contraction", list(
+      rep(0, J), target, d$X, beta, d$alt_idx, d$M, d$weights, ioo,
+      max_iter = 25L))
   }
   for (lb in names(labels)) {
     res[[paste0("meat_", lb)]] <-
@@ -133,10 +136,13 @@ p8b_nl_cells <- function(theta, d, nest_idx, asc, ioo, labels, K) {
     J <- d$J
     target <- rep(1 / (J + ioo), J + ioo)
     beta <- theta[seq_len(K)]
-    res$blp <- p2_val(nl_blp_contraction(rep(0, J), target, d$X, beta, lam,
-                                         d$alt_idx, nest_idx, d$M, d$weights,
-                                         ioo, max_iter = 25L))
-    res$blp_damped <- p2_val(nl_blp_contraction(
+    # a dissimilarity that is NaN or infinite (the lambda cells), or a
+    # uniform target a design cannot attain, stops in the engine's checks, as
+    # the leaf expects from its inputs
+    res$blp <- golden_blp("nl_blp_contraction", list(
+      rep(0, J), target, d$X, beta, lam, d$alt_idx, nest_idx, d$M, d$weights,
+      ioo, max_iter = 25L))
+    res$blp_damped <- golden_blp("nl_blp_contraction", list(
       rep(0, J), target, d$X, beta, lam, d$alt_idx, nest_idx, d$M, d$weights,
       ioo, damping = 0.5, max_iter = 25L))
   }
@@ -312,10 +318,9 @@ run_p8b_edge <- function() {
   for (nm in names(lam_vals)) {
     lam <- rep(0.7, 6L)
     lam[c(2L, 5L)] <- lam_vals[[nm]]
-    out[[sprintf("blp_lambda|%s", nm)]] <-
-      p2_val(nl_blp_contraction(rep(0, 12L), rep(1 / 12, 12L), d$X, c(0.3, -0.2),
-                                lam, d$alt_idx, nest_idx, d$M, d$weights,
-                                FALSE, max_iter = 10L))
+    out[[sprintf("blp_lambda|%s", nm)]] <- golden_blp("nl_blp_contraction", list(
+      rep(0, 12L), rep(1 / 12, 12L), d$X, c(0.3, -0.2), lam, d$alt_idx,
+      nest_idx, d$M, d$weights, FALSE, max_iter = 10L), ref = FALSE)
   }
   out
 }
