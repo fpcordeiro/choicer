@@ -11,6 +11,8 @@
   tol = 1e-08,
   max_iter = 1000,
   keep_draws_bytes = 2^32,
+  method = "simple",
+  control = list(),
   ...
 )
 }
@@ -47,6 +49,11 @@ Where memory is committed only when used (Linux, macOS, and containers
 or batch jobs with memory limits), a budget above the memory actually
 free can end the R session rather than fall back: lower it, or use
 \code{0}, when memory is tight.}
+
+\item{method}{The solver: \code{"simple"} (see \code{\link{blp}()}).}
+
+\item{control}{A list of the method's settings (none for
+\code{"simple"}).}
 
 \item{...}{Additional arguments (ignored).}
 }

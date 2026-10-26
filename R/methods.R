@@ -1342,9 +1342,25 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #' @param object A fitted model object.
 #' @param target_shares Numeric vector of target market shares (length J).
 #' @param ... Additional arguments passed to methods.
-#' @returns The constants, an n x 1 matrix. When the iteration does not
-#'   converge, the evaluated point of smallest residual, with a warning of
-#'   class \code{choicer_blp_unconverged}.
+#' @details The methods check the targets in R before the model's solver
+#'   runs (and so before a mixed logit forms its draws): a numeric vector or
+#'   one-column matrix of one share per alternative (the outside option's
+#'   first, when the model has one), finite, positive, and summing to 1
+#'   within \code{sqrt(.Machine$double.eps)}. They start from the fitted
+#'   constants (zeros for a model fitted without them) unless
+#'   \code{delta_init} is given. \code{method = "simple"} is the scaled step
+#'   of \code{\link{blp_contraction}()}, which takes no settings in
+#'   \code{control}.
+#' @returns The constants: an n x 1 matrix with one row per inside
+#'   alternative, named by the alternatives' labels, and the attribute
+#'   \code{"convergence"}, a list with \code{converged}, \code{status}
+#'   (\code{"converged"}, \code{"max_iter"}, \code{"non_finite"} or
+#'   \code{"non_finite_start"}), \code{iterations}, \code{evaluations} (of
+#'   the shares), \code{residual} (the largest absolute log-share residual
+#'   at the point returned), \code{tol} and \code{method}. When the
+#'   iteration does not converge, the evaluated point of smallest residual,
+#'   with a warning of class \code{choicer_blp_unconverged} whose
+#'   \code{convergence} element is the same list.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1458,6 +1474,9 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
+#' @param method The solver: \code{"simple"} (see \code{\link{blp}()}).
+#' @param control A list of the method's settings (none for
+#'   \code{"simple"}).
 #' @param ... Additional arguments (ignored).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
@@ -1474,43 +1493,17 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' }
 #' @export
 blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
-                            tol = 1e-8, max_iter = 1000, ...) {
-  if (is.null(object[["data"]])) {
-    stop("blp() requires stored data. Refit with keep_data = TRUE.")
-  }
-  d <- object[["data"]]
-  pm <- object$param_map
-  beta <- object$coefficients[pm$beta]
-
-  # One constant per inside alternative; alt_mapping also has a row for the
-  # outside option, when there is one
-  J_inside <- nrow(object$alt_mapping) - isTRUE(object$include_outside_option)
-  if (is.null(delta_init)) {
-    if (!is.null(pm$asc)) {
-      delta_init <- if (object$include_outside_option) {
-        object$coefficients[pm$asc]            # length J_inside (all ASCs free)
-      } else {
-        c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
-      }
-    } else {
-      delta_init <- rep(0, J_inside)
-    }
-  }
-
-  ctl <- .blp_control(tol, max_iter)
-  res <- mnl_blp_solve(
-    delta = delta_init,
-    target_shares = target_shares,
-    X = d$X,
-    beta = beta,
-    alt_idx = d$alt_idx,
-    M = d$M,
-    weights = d$weights,
-    include_outside_option = object$include_outside_option,
-    control = ctl
-  )
-  .blp_unconverged(res, ctl, "blp()")
-  res$delta
+                            tol = 1e-8, max_iter = 1000, method = "simple",
+                            control = list(), ...) {
+  .blp_common(object, target_shares, delta_init, tol, max_iter, method = method,
+              control = control, solve = function(start, target, ctl) {
+    d <- object[["data"]]
+    mnl_blp_solve(delta = start, target_shares = target, X = d$X,
+                  beta = object$coefficients[object$param_map$beta],
+                  alt_idx = d$alt_idx, M = d$M, weights = d$weights,
+                  include_outside_option = isTRUE(object$include_outside_option),
+                  control = ctl)
+  })
 }
 
 # --- elasticities: MXL -------------------------------------------------------
@@ -1687,6 +1680,9 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   or batch jobs with memory limits), a budget above the memory actually
 #'   free can end the R session rather than fall back: lower it, or use
 #'   \code{0}, when memory is tight.
+#' @param method The solver: \code{"simple"} (see \code{\link{blp}()}).
+#' @param control A list of the method's settings (none for
+#'   \code{"simple"}).
 #' @param ... Additional arguments (ignored).
 #' @details The inversion integrates each choice situation over the same
 #'   draws as \code{predict()} (for a cross-sectional fit, the estimation
@@ -1715,65 +1711,33 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' @export
 blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
                             tol = 1e-8, max_iter = 1000,
-                            keep_draws_bytes = 2^32, ...) {
+                            keep_draws_bytes = 2^32, method = "simple",
+                            control = list(), ...) {
   keep_draws_bytes <- .int64_to_double(keep_draws_bytes, "keep_draws_bytes")
   if (!is.numeric(keep_draws_bytes) || length(keep_draws_bytes) != 1L ||
       is.na(keep_draws_bytes) || keep_draws_bytes < 0) {
     stop("`keep_draws_bytes` must be a single non-negative number of bytes ",
          "(0 never keeps the draws).", call. = FALSE)
   }
-  if (is.null(object[["data"]])) {
-    stop("blp() requires stored data. Refit with keep_data = TRUE.")
-  }
-  d <- object[["data"]]
-  pm <- object$param_map
-  N <- length(d$M)
-  gp_blp <- .mxl_pred_draws(object$draws_info, N, "blp()")
-
-  beta <- object$coefficients[pm$beta]
-  mu <- if (!is.null(pm$mu)) object$coefficients[pm$mu] else rep(0, object$draws_info$K_w)
-  L_params <- object$coefficients[pm$sigma]
-
-  # One constant per inside alternative; alt_mapping also has a row for the
-  # outside option, when there is one
-  J_inside <- nrow(object$alt_mapping) - isTRUE(object$include_outside_option)
-  if (is.null(delta_init)) {
-    if (!is.null(pm$asc)) {
-      delta_init <- if (object$include_outside_option) {
-        object$coefficients[pm$asc]            # length J_inside (all ASCs free)
-      } else {
-        c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
-      }
-    } else {
-      delta_init <- rep(0, J_inside)
-    }
-  }
-
-  ctl <- .blp_control(tol, max_iter)
-  res <- mxl_blp_solve(
-    delta = delta_init,
-    target_shares = target_shares,
-    X = d$X,
-    W = d$W,
-    beta = beta,
-    mu = mu,
-    L_params = L_params,
-    alt_idx = d$alt_idx,
-    M = d$M,
-    weights = d$weights,
-    eta_draws = gp_blp$eta_draws,
-    rc_dist = object$rc_dist,
-    rc_correlation = object$rc_correlation,
-    rc_mean = object$rc_mean,
-    include_outside_option = object$include_outside_option,
-    control = ctl,
-    gen_seed = gp_blp$gen_seed,
-    gen_scramble = gp_blp$gen_scramble,
-    gen_S = gp_blp$gen_S,
-    cache_bytes = keep_draws_bytes
-  )
-  .blp_unconverged(res, ctl, "blp()")
-  res$delta
+  .blp_common(object, target_shares, delta_init, tol, max_iter, method = method,
+              control = control, free_ok = TRUE,
+              solve = function(start, target, ctl) {
+    d <- object[["data"]]
+    pm <- object$param_map
+    co <- object$coefficients
+    # the draws only now, after every check
+    gp <- .mxl_pred_draws(object$draws_info, length(d$M), "blp()")
+    mu <- if (!is.null(pm$mu)) co[pm$mu] else rep(0, object$draws_info$K_w)
+    mxl_blp_solve(delta = start, target_shares = target, X = d$X, W = d$W,
+                  beta = co[pm$beta], mu = mu, L_params = co[pm$sigma],
+                  alt_idx = d$alt_idx, M = d$M, weights = d$weights,
+                  eta_draws = gp$eta_draws, rc_dist = object$rc_dist,
+                  rc_correlation = object$rc_correlation, rc_mean = object$rc_mean,
+                  include_outside_option = isTRUE(object$include_outside_option),
+                  control = ctl, gen_seed = gp$gen_seed,
+                  gen_scramble = gp$gen_scramble, gen_S = gp$gen_S,
+                  cache_bytes = keep_draws_bytes)
+  })
 }
 
 # --- predict: NL -------------------------------------------------------------
@@ -1982,6 +1946,9 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
+#' @param method The solver: \code{"simple"} (see \code{\link{blp}()}).
+#' @param control A list of the method's settings (none for
+#'   \code{"simple"}).
 #' @param ... Additional arguments (ignored).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
@@ -1999,54 +1966,26 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' }
 #' @export
 blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
-                           damping = 1, tol = 1e-8, max_iter = 1000, ...) {
-  if (is.null(object[["data"]])) {
-    stop("blp() requires stored data. Refit with keep_data = TRUE.")
-  }
-  d <- object[["data"]]
-  pm <- object$param_map
-  beta <- object$coefficients[pm$beta]
-
-  # Build the full length-n_nests lambda vector expected by the kernel.
-  # Singleton nests have lambda fixed to 1; non-singleton nests receive the
-  # estimated lambdas, scattered by ascending nest index (matching the C++).
-  n_nests <- max(d$nest_idx)
-  lambda_full <- rep(1, n_nests)
-  nest_counts <- tabulate(d$nest_idx, n_nests)
-  non_singleton <- which(nest_counts > 1)
-  lambda_full[non_singleton] <- object$coefficients[pm$lambda]
-
-  # One constant per inside alternative; alt_mapping also has a row for the
-  # outside option, when there is one
-  J_inside <- nrow(object$alt_mapping) - isTRUE(object$include_outside_option)
-  if (is.null(delta_init)) {
-    if (!is.null(pm$asc)) {
-      delta_init <- if (object$include_outside_option) {
-        object$coefficients[pm$asc]            # length J_inside (all ASCs free)
-      } else {
-        c(0, object$coefficients[pm$asc])      # length J_inside, baseline = 0
-      }
-    } else {
-      delta_init <- rep(0, J_inside)
-    }
-  }
-
-  ctl <- .blp_control(tol, max_iter, damping)
-  res <- nl_blp_solve(
-    delta = delta_init,
-    target_shares = target_shares,
-    X = d$X,
-    beta = beta,
-    lambda = lambda_full,
-    alt_idx = d$alt_idx,
-    nest_idx = d$nest_idx,
-    M = d$M,
-    weights = d$weights,
-    include_outside_option = object$include_outside_option,
-    control = ctl
-  )
-  .blp_unconverged(res, ctl, "blp()")
-  res$delta
+                           damping = 1, tol = 1e-8, max_iter = 1000,
+                           method = "simple", control = list(), ...) {
+  .blp_common(object, target_shares, delta_init, tol, max_iter, damping = damping,
+              method = method, control = control,
+              solve = function(start, target, ctl) {
+    d <- object[["data"]]
+    pm <- object$param_map
+    # The full length-n_nests lambda vector the solver takes: singleton
+    # nests' fixed at 1, the others' estimates scattered by ascending nest
+    # index (as the kernels read them)
+    n_nests <- max(d$nest_idx)
+    lambda_full <- rep(1, n_nests)
+    lambda_full[which(tabulate(d$nest_idx, n_nests) > 1L)] <- object$coefficients[pm$lambda]
+    nl_blp_solve(delta = start, target_shares = target, X = d$X,
+                 beta = object$coefficients[pm$beta], lambda = lambda_full,
+                 alt_idx = d$alt_idx, nest_idx = d$nest_idx, M = d$M,
+                 weights = d$weights,
+                 include_outside_option = isTRUE(object$include_outside_option),
+                 control = ctl)
+  })
 }
 
 # --- choicer_hb (hierarchical Bayes) methods ---------------------------------

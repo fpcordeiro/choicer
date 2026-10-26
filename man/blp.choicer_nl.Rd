@@ -11,6 +11,8 @@
   damping = 1,
   tol = 1e-08,
   max_iter = 1000,
+  method = "simple",
+  control = list(),
   ...
 )
 }
@@ -33,6 +35,11 @@ without them, \code{use_asc = FALSE}).}
 residual (default 1e-8; see \code{\link{blp_contraction}()}).}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
+
+\item{method}{The solver: \code{"simple"} (see \code{\link{blp}()}).}
+
+\item{control}{A list of the method's settings (none for
+\code{"simple"}).}
 
 \item{...}{Additional arguments (ignored).}
 }

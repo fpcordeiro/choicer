@@ -551,6 +551,12 @@ iterations, the evaluations and the residual.
 2. **Outside option.** The supplied and returned `delta` have length $J$ and contain the
    inside alternatives only; `target_shares` has $J + 1$ entries, the outside option's
    first.
+3. **`blp()`.** The method checks the targets in R first (one share per alternative,
+   finite, positive, summing to one), starts from the fitted constants (or `delta_init`),
+   and returns the $J \times 1$ matrix with the inside alternatives' labels as row names
+   and the attribute `"convergence"`: the record of §7.4 (converged, status, iterations,
+   evaluations, residual, `tol` and method), there whether or not the iteration
+   converged. The exported functions return the bare matrix.
 
 *Code reference: [src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h)
 (the components, the checks, the step and the stopping rule),

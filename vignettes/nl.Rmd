@@ -160,8 +160,10 @@ certified maximum is local: where the polish drives a dissimilarity to its
 bound, refit from other starts, and where they all end there, the
 dissimilarity has no interior estimate and the nest is to be revised.
 
-When using `blp()`, check that it converged: when it stops without meeting `tol` it
-warns, with class `choicer_blp_unconverged`, and returns its best point. A target the data
+When using `blp()`, check that it converged: its result's `"convergence"` attribute
+records the status, the evaluations of the shares and the residual, and when it stops
+without meeting `tol` it also warns, with class `choicer_blp_unconverged`, and returns its
+best point. A target the data
 cannot attain (above the weight of the choice situations that offer an alternative, say)
 stops it with an error before any iteration. The inversion is a numerical step, not
 evidence for the tree or the economic validity of lambda. NL does not search over trees or
