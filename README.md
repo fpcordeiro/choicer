@@ -83,9 +83,9 @@ cs1$mean_cs - cs0$mean_cs
 
 The same post-estimation toolkit is available for nested logit. Elasticities
 respect the nest structure — within-nest and cross-nest cross-elasticities
-differ, so IIA does not hold across nests. The `blp()` contraction for NL
-accepts a `damping` argument (default 1) which can be reduced for models with
-strong nesting:
+differ, so IIA does not hold across nests. The `blp()` share inversion scales
+each step by the nested logit's own derivative, so it converges for strongly
+nested models without damping:
 
 ``` r
 # Nested logit — simulate data and fit
@@ -110,7 +110,7 @@ elasticities(fit_nl, elast_var = "X")   # J×J elasticity matrix (nest-consisten
 diversion_ratios(fit_nl)                # J×J diversion matrix
 # BLP share inversion: recover mean utilities matching target shares
 target_shares <- predict(fit_nl, type = "shares")
-blp(fit_nl, target_shares, damping = 0.5)  # use damping < 1 for strongly-nested models
+blp(fit_nl, target_shares)
 ```
 
 `choicer` also fits hierarchical Bayesian models with a BLP-style random-effect

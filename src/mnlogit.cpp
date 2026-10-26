@@ -2,6 +2,7 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "choicer_derivs.h"
+#include "blp_engine.h"
 
 // ============================================================================
 // The MNL kernels' working arrays
@@ -1065,8 +1066,7 @@ Rcpp::List mnl_predict(
 }
 
 // The working arrays of mnl_predict_shares_internal(): every thread's
-// situation arrays and shares, allocated on the primary thread once per call
-// (a BLP contraction keeps them across its iterations).
+// situation arrays and shares, allocated on the primary thread once per call.
 struct MnlSharesWork {
   std::vector<MnlWork> work;
   std::vector<std::vector<double>> local;  // each thread's shares
@@ -1207,37 +1207,172 @@ arma::vec mnl_predict_shares(
   return global_shares;
 }
 
-//' BLP95 contraction mapping to find delta given target shares
+// ============================================================================
+// The share inversion's model (blp_engine.h)
+//
+// One pass per evaluation of the shares: each situation's utilities, X beta
+// plus the constants, gathered into the thread's MnlWork (the gather and the
+// softmax's maximum in separate loops; interleaved they ran slower), its
+// probabilities by stable_softmax_n(), then the shares in the statements of
+// mnl_predict_shares_internal(), so that they are its shares at the same
+// delta (bit for bit at one thread where the compiler fuses both statements
+// alike), and A_jj = sum w P_j (1 - P_j) and C_jb = sum w P_j P_b, b the
+// outside option or the situation's component's reference, in statements of
+// their own (a product shared with the shares' would change how GCC fuses
+// theirs). X beta is formed once per call and the threads' sums are added in
+// thread order. Where a situation lists a code twice, A and C take the
+// situation's total probability of each code (the derivative's exact terms).
+// ============================================================================
+struct MnlBlpModel {
+  const ChoiceLayout& lay;
+  const arma::vec& Xb;
+  const arma::vec& weights;
+  const double W;
+  const bool outside;
+  const int J;
+  const BlpComponents& comp;
+  std::vector<MnlWork> work;
+  std::vector<std::vector<double>> acc_s;   // J shares, then each component's outside share
+  std::vector<std::vector<double>> acc_ac;  // A and C of each alternative, interleaved
+  std::vector<std::vector<int>> slot;       // repeated codes: alternative -> slot, or -1
+  std::vector<std::vector<int>> code;       // and each slot's alternative
+  std::vector<std::vector<double>> tot;     // and its probability
+
+  MnlBlpModel(const ChoiceLayout& lay_, const arma::vec& Xb_, const arma::vec& w_,
+              const double W_, const bool outside_, const int J_,
+              const BlpComponents& comp_)
+      : lay(lay_), Xb(Xb_), weights(w_), W(W_), outside(outside_), J(J_), comp(comp_),
+        work(mnl_work(lay_, 0, situation_team(lay_))) {
+    const int T = static_cast<int>(work.size());
+    acc_s = thread_vectors<double>(static_cast<std::size_t>(J + comp.n), T);
+    acc_ac = thread_vectors<double>(2 * static_cast<std::size_t>(J), T);
+    if (comp.repeated) {
+      const std::size_t m = static_cast<std::size_t>(lay.max_m);
+      slot = thread_vectors<int>(static_cast<std::size_t>(J), T, -1);
+      code = thread_vectors<int>(m, T);
+      tot = thread_vectors<double>(m, T);
+    }
+  }
+
+  void pass(const arma::vec& delta, BlpPass& out) {
+    const choicer_off N = lay.N;
+    const int T = static_cast<int>(work.size());
+    const int o = outside ? 1 : 0;
+    const arma::uword n_s = static_cast<arma::uword>(J + comp.n);
+    const double* d = delta.memptr();
+    const double* xb = Xb.memptr();
+    const bool repeated = comp.repeated;
+    // the threads that ran: a smaller team than planned (OMP_DYNAMIC) leaves
+    // the other buffers holding an earlier pass's sums
+    int T_used = 1;
+#ifdef _OPENMP
+    const int chunk = situation_chunk(lay);  // situations per dispatch
+#pragma omp parallel num_threads(T)
+#endif
+    {
+      const int tid = kernel_thread_num();
+#ifdef _OPENMP
+      if (tid == 0) T_used = omp_get_num_threads();
+#endif
+      MnlWork& wk = work[tid];
+      arma::vec local_shares(acc_s[tid].data(), n_s, false, true);
+      local_shares.zeros();
+      double* ac = acc_ac[tid].data();
+      std::fill(ac, ac + 2 * static_cast<std::size_t>(J), 0.0);
+      int* slot_t = repeated ? slot[tid].data() : nullptr;
+      int* code_t = repeated ? code[tid].data() : nullptr;
+      double* tot_t = repeated ? tot[tid].data() : nullptr;
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic, chunk)
+#endif
+      for (choicer_off i = 0; i < N; ++i) {
+        const int m = lay.m(i);
+        const choicer_off r0 = lay.row_off[i];
+        const int* alt = lay.alt + r0;
+        double* v = wk.v;
+        if (outside) v[0] = 0.0;
+        for (int a = 0; a < m; ++a) v[o + a] = xb[r0 + a] + d[alt[a] - 1];
+        stable_softmax_n(v, wk.p, m + o);
+        const double* P_i = wk.p;
+        const double w_i = weights[i];
+        const int c = comp.of[alt[0] - 1];
+        double pb = 0.0;  // the base's probability
+        if (outside) {
+          local_shares(J + c) += w_i * P_i[0];
+          pb = P_i[0];
+        } else {
+          const int b = comp.ref[c] + 1;
+          for (int a = 0; a < m; ++a) {
+            if (alt[a] == b) pb += P_i[a];
+          }
+        }
+        for (int a = 0; a < m; ++a) {
+          local_shares(alt[a] - 1) += w_i * P_i[o + a];
+        }
+        if (!repeated) {
+          for (int a = 0; a < m; ++a) {
+            const int j = alt[a] - 1;
+            const double p = P_i[o + a];
+            ac[2 * j] += w_i * (p * (1.0 - p));
+            ac[2 * j + 1] += w_i * (p * pb);
+          }
+        } else {
+          int n_d = 0;
+          for (int a = 0; a < m; ++a) {
+            const int j = alt[a] - 1;
+            if (slot_t[j] < 0) {
+              slot_t[j] = n_d;
+              code_t[n_d] = j;
+              tot_t[n_d++] = 0.0;
+            }
+            tot_t[slot_t[j]] += P_i[o + a];
+          }
+          for (int k = 0; k < n_d; ++k) {
+            const int j = code_t[k];
+            const double p = tot_t[k];
+            ac[2 * j] += w_i * (p * (1.0 - p));
+            ac[2 * j + 1] += w_i * (p * pb);
+            slot_t[j] = -1;
+          }
+        }
+      }
+    }
+    for (int j = 0; j < J; ++j) {
+      double s = 0.0, A = 0.0, C = 0.0;
+      for (int t = 0; t < T_used; ++t) {
+        s += acc_s[t][j];
+        A += acc_ac[t][2 * j];
+        C += acc_ac[t][2 * j + 1];
+      }
+      out.s[j] = s / W;
+      out.A[j] = A / W;
+      out.C[j] = C / W;
+    }
+    for (int k = 0; k < comp.n; ++k) {
+      double s0 = 0.0;
+      for (int t = 0; t < T_used; ++t) s0 += acc_s[t][J + k];
+      out.s0[k] = s0 / W;
+    }
+  }
+};
+
+//' The share inversion of the multinomial logit
 //'
-//' @param delta J x 1 vector with initial guess for deltas (ASCs)
-//' @param target_shares J x 1 vector with target shares for each alternative
-//' @param X sum(M) x K design matrix with covariates. M\[i] x K matrix for individual i
-//' @param beta K x 1 vector with model parameters
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives within each choice set; 1-based indexing
-//' @param M N x 1 vector with number of alternatives for each individual
-//' @param weights N x 1 vector with weights for each observation
-//' @param include_outside_option whether to include outside option normalized to 0 (if so, the outside option is not included in the data)
-//' @param tol convergence tolerance
-//' @param max_iter maximum number of iterations
-//' @returns vector with contraction's delta (ASCs) output
-//' @examples
-//' \donttest{
-//' library(data.table)
-//' set.seed(42)
-//' N <- 50; J <- 3
-//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-//' dt[, choice := 0L]
-//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-//' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-//' beta <- coef(fit)[fit$param_map$beta]
-//' delta <- blp_contraction(rep(0, J), rep(1/J, J), fit$data$X,
-//'   beta, fit$data$alt_idx, fit$data$M, fit$data$weights)
-//' delta
-//' }
-//' @export
+//' The engine behind blp_contraction() and blp() (blp_engine.h): the input
+//' checks of blp_contraction(), in their order, then the share inversion's own
+//' (a finite start, finite and non-negative weights, the targets' sums and
+//' bounds), then the solver.
+//'
+//' @inheritParams blp_contraction
+//' @param control List from .blp_control(): method, map, max_evals, tol,
+//'   damping and keep_pass.
+//' @return List: delta (n x 1, as blp_contraction() returns it), code (0
+//'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
+//'   start), iterations, evaluations, backtracks, residual, fallbacks; with
+//'   keep_pass, pass (s, A, C, s0 of the last evaluation).
+//' @noRd
 // [[Rcpp::export]]
-arma::vec blp_contraction(
+Rcpp::List mnl_blp_solve(
   const arma::vec& delta,
   const arma::vec& target_shares,
   const arma::mat& X,
@@ -1245,113 +1380,38 @@ arma::vec blp_contraction(
   const Rcpp::IntegerVector& alt_idx,
   const Rcpp::IntegerVector& M,
   const arma::vec& weights,
-  const bool include_outside_option = false,
-  const double tol      = 1e-8,
-  const int    max_iter = 1000
+  const bool include_outside_option,
+  const Rcpp::List& control
 ) {
-  // Extract beta and delta from theta
+  const BlpControl ctl = blp_control(control);
   const bool use_asc = true;
 
   // total number of distinct alternatives
-  int num_alts = include_outside_option ? (delta.n_elem + 1) :  delta.n_elem;
+  const int J = static_cast<int>(delta.n_elem);
+  const int num_alts = include_outside_option ? J + 1 : J;
   if (target_shares.n_elem != static_cast<arma::uword>(num_alts)) {
     Rcpp::stop("Error: target_shares must have the same length as the total number of alternatives.");
   }
-  if (arma::any(target_shares <= 0)) {
-    Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
+  for (arma::uword k = 0; k < target_shares.n_elem; ++k) {
+    if (!(target_shares[k] > 0)) {
+      Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
+    }
   }
   const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, delta,
                                                &weights);
+  const double W = shares_denominator(weights);
+  const arma::vec Xb = X * beta;  // once: only delta changes across passes
 
-  // X * beta, once: only delta changes across the iterations. Each one adds
-  // its ASCs to a copy of it, in one buffer kept across them, and predicts the
-  // shares with working arrays allocated once, here.
-  const double denominator = shares_denominator(weights);
-  const arma::vec Xb = X * beta;
-  arma::vec base_util;
-  MnlSharesWork ws(lay, num_alts);
-  arma::vec shares(num_alts);
-  auto predict_shares = [&](const arma::vec& inside_delta) {
-    base_util = Xb;
-    add_row_asc(base_util, lay, inside_delta);
-    mnl_predict_shares_internal(base_util, lay, weights, denominator, num_alts,
-                                include_outside_option, ws, shares);
-  };
-
-  // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
-  // residual) lives in the outside-inclusive share space of length num_alts:
-  //   index 0 = outside option (when present), indices 1..J = inside alts.
-  // But predict_shares() adds the ASCs by inside alternative (add_row_asc()
-  // reads delta at each row's code minus 1, in 0..J-1), so it takes a length-J
-  // inside-delta vector (the outside option is handled separately via
-  // include_outside_option). We therefore feed it
-  // delta_old.subvec(1, num_alts - 1) when an outside option is present, and
-  // pin the outside slot delta_old[0] = 0 throughout (the outside option's
-  // utility is the fixed normalization).
-  arma::vec delta_old = arma::zeros(num_alts);
-  if (include_outside_option) {
-    delta_old.subvec(1, num_alts - 1) = delta; // outside option at index 0
-    delta_old[0] = 0.0;
-  } else {
-    delta_old = delta; // no outside option, delta already has J elements
-    delta_old -= delta_old[0];
-  }
-
-  // The inside deltas, refilled in place from delta_old at every iteration
-  arma::vec inside_delta_old(include_outside_option ? num_alts - 1 : num_alts);
-  auto set_inside_delta = [&]() {
-    if (include_outside_option) {
-      inside_delta_old = delta_old.subvec(1, num_alts - 1);
-    } else {
-      inside_delta_old = delta_old;
-    }
-  };
-  set_inside_delta();
-
-  // Initialize shares and delta_new
-  predict_shares(inside_delta_old);
-  arma::vec log_shares_old = arma::log(shares);
-  arma::vec log_shares_target = arma::log(target_shares);
-  arma::vec delta_new = delta_old;
-
-  // Initialize convergence criteria
-  arma::vec delta_diff(num_alts, arma::fill::ones);
-  double residual = 10.0;
-  int iter = 0;
-
-  // iterate until convergence or until max_iter reached
-  while (iter < max_iter) {
-      Rcpp::checkUserInterrupt(); // H4: allow user to interrupt long-running contraction
-      delta_new = delta_old + (log_shares_target - log_shares_old);
-      if (include_outside_option) {
-        // Outside option's delta is the fixed normalization; pin it at 0.
-        delta_new[0] = 0.0;
-      }
-      delta_diff = arma::abs(delta_new - delta_old);
-      residual = arma::max(delta_diff);
-      if (residual < tol) {
-          break;
-      }
-      delta_old = delta_new;
-      set_inside_delta();
-      predict_shares(inside_delta_old);
-      log_shares_old = arma::log(shares);
-      ++iter;
-  }
-
-  if (iter >= max_iter) {
-    Rcpp::Rcout << "Warning: Maximum iterations reached without convergence." << std::endl;
-  }
-
-  // Return the new delta vector, normalized by subtracting the first element
-  delta_new -= delta_new[0];
-
-  // Return appropriate delta vector based on include_outside_option
-  if (include_outside_option) {
-      return delta_new.subvec(1, num_alts - 1);
-  } else {
-      return delta_new;
-  }
+  blp_check_start(delta, weights);
+  const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
+                                            include_outside_option);
+  const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option, J);
+  arma::vec d = delta;
+  if (!include_outside_option && J > 0) d -= delta[0];
+  MnlBlpModel model(lay, Xb, weights, W, include_outside_option, J, comp);
+  BlpPass last(J, comp.n);
+  const BlpResult res = blp_solve(model, comp, pb, d, ctl, &last);
+  return blp_result(d, res, ctl, last);
 }
 
 // Add situation i's terms of the Hessian into the accumulator's upper

@@ -2,7 +2,7 @@
 % Please edit documentation in R/methods.R
 \name{blp.choicer_mnl}
 \alias{blp.choicer_mnl}
-\title{BLP contraction mapping for multinomial logit model}
+\title{BLP share inversion for the multinomial logit}
 \usage{
 \method{blp}{choicer_mnl}(
   object,
@@ -25,17 +25,18 @@ Length \code{J_inside} when no outside option, or \code{J_inside + 1}
 uses the estimated ASCs from the fitted model (zeros for a model fitted
 without them, \code{use_asc = FALSE}).}
 
-\item{tol}{Convergence tolerance (default 1e-8).}
+\item{tol}{Convergence tolerance on the largest absolute log-share
+residual (default 1e-8; see \code{\link{blp_contraction}()}).}
 
-\item{max_iter}{Maximum iterations (default 1000).}
+\item{max_iter}{The most evaluations of the shares (default 1000).}
 
 \item{...}{Additional arguments (ignored).}
 }
 \value{
-Converged delta (ASC) vector.
+The constants, an n x 1 matrix (see \code{\link{blp}()}).
 }
 \description{
-BLP contraction mapping for multinomial logit model
+BLP share inversion for the multinomial logit
 }
 \examples{
 \donttest{

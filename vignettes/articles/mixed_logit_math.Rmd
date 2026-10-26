@@ -20,7 +20,7 @@ This document provides a detailed mathematical description of the mixed logit (r
 5. [Implementation Details](#5-implementation-details)
 6. [Elasticity Computation](#6-elasticity-computation)
 7. [Diversion Ratios](#7-diversion-ratios)
-8. [BLP Contraction Mapping](#8-blp-contraction-mapping)
+8. [BLP Share Inversion](#8-blp-share-inversion)
 9. [Choice-Based Sampling and WESML Weighting](#9-choice-based-sampling-and-wesml-weighting)
 10. [Willingness to Pay](#10-willingness-to-pay)
 11. [Consumer Surplus and the Simulated Logsum](#11-consumer-surplus-and-the-simulated-logsum)
@@ -1743,7 +1743,7 @@ Because $\beta_{ik}^s$ varies across $(i, s)$, it cannot be pulled out of the su
 
 ---
 
-## 8. BLP Contraction Mapping
+## 8. BLP Share Inversion
 
 ### 8.1 Problem Statement
 
@@ -1771,53 +1771,66 @@ $$
 
 and $P_{ij}^s(\delta)$ is the probability for individual $i$, alternative $j$, and draw $s$, which depends on $\delta$ through the utility specification.
 
-### 8.3 Contraction Mapping Algorithm
+### 8.3 The Iteration
 
-The Berry--Levinsohn--Pakes fixed-point iteration is:
-
-$$
-\delta_j^{(t+1)} = \delta_j^{(t)} + \log(s_j) - \log(\hat{s}_j^{(t)})
-$$
-
-This can be written in vector form as:
+The inversion is the multinomial logit's (§7 of the [multinomial logit
+article](multinomial_logit_math.html)), with the simulated probabilities: its
+identification, its checks of the targets, its step and its stopping rule are the same.
+With $r = \log s - \log \hat{s}(\delta)$ ($s$ the targets) and $b$ the outside option or,
+without one, the reference of $j$'s component, each iteration takes
 
 $$
-\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
+\delta_j \leftarrow \delta_j + \frac{r_j - r_b}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b},
+\qquad
+A_{jj} = \frac{\sum_i w_i \frac{1}{S}\sum_{s} P_{ij}^s(1 - P_{ij}^s)}{\sum_i w_i},
+\qquad
+C_{jb} = \frac{\sum_i w_i \frac{1}{S}\sum_{s} P_{ij}^s P_{ib}^s}{\sum_i w_i},
 $$
 
-The target must be feasible and strictly positive. The kernel checks positivity of the
-inside target and predicted shares but does not verify that the full target sums to one.
+the exact diagonal of the derivative of $r_j - r_b$: the logit's terms, draw by draw, then
+averaged. Every alternative is a substitute for every other within a draw, so $C_{jb} \ge
+0$. Berry's contraction takes 1 for the denominator. A step is at most $\max(|r_j - r_b|,
+5)$ in magnitude, and where a component's outside share underflows to zero the step drops
+the outside correction for that iteration.
+
+The iteration stops at the first evaluation whose largest absolute residual (relative to
+each component's reference without an outside option; with one, each component's outside
+share's included) is at most `tol`, and returns that point; `max_iter` counts evaluations
+of the shares. When it stops otherwise it returns the evaluated point of smallest residual
+and warns with class `choicer_blp_unconverged`. A start at which some predicted share
+underflows to zero is such a stop (status `"non_finite_start"`), not an error.
 
 ### 8.4 Implementation Details
 
 1. **No outside option.** `delta` may be the full length-$J$ vector or the free
-   length-$(J-1)$ block; the latter is padded with a leading zero. The first element is
-   subtracted initially and after every update, and the returned vector has length $J$
-   with its baseline entry equal to zero.
-2. **Outside option.** `delta` has length $J$ and contains inside ASCs only. The outside
-   utility remains zero, the update uses only the inside components of target and
-   predicted shares, and no inside ASC is re-centered. A coherent target outside share
-   is matched only indirectly because all shares sum to one.
-3. **Stopping.** The residual is the largest absolute inside-delta change. On reaching
-   `max_iter`, the kernel prints a warning and returns the last completed iterate.
+   length-$(J-1)$ block; the latter is padded with a leading zero. The start is normalized
+   by subtracting its first element, each component's reference is held there, and the
+   returned vector has length $J$ with its first entry zero.
+2. **Outside option.** `delta` has length $J$ and contains inside ASCs only;
+   `target_shares` has $J + 1$ entries, the outside option's first. Every target share,
+   the outside option's included, must be positive, which is checked before any
+   evaluation.
+3. **The draws.** $J$ is the largest alternative code. An integer or logical cube of
+   draws is converted to double first.
 
 The public `blp.choicer_mxl()` method resolves the fitted draw metadata through
 `.mxl_pred_draws()`: store-mode fits have the kernel form the plain-Halton points on the
 fly (§5.5), while generate-mode fits pass the original seed, permutation mode, and $S$ to
-the contraction kernel. Share inversion therefore draws from the same deterministic
-Halton sequence as the fit, one block per choice situation (for a cross-sectional fit,
-the estimation draws themselves; a panel fit's estimation draws are per decision maker
-instead, §5.5). Neither the draws nor $L$ change across iterations, so `blp()` (through
-the internal `mxl_blp_contraction_cached()`) keeps each situation's $\Gamma_i = L\eta_i$,
-with its log-normal rows exponentiated, from the first evaluation of the shares on, when
-the draws are formed on the fly (stored draws with up to 128 random coefficients, or
-generated ones), the $N$ blocks take at most `keep_draws_bytes` ($8K_wSN$ bytes; 4 GiB by
-default) and the allocation succeeds; otherwise every evaluation forms them again. The
-kept blocks are the values each evaluation would compute, so the shares, and the
-returned $\delta$, are the same either way. The exported `mxl_blp_contraction()` keeps
-nothing.
+the inversion. Share inversion therefore draws from the same deterministic Halton sequence
+as the fit, one block per choice situation (for a cross-sectional fit, the estimation
+draws themselves; a panel fit's estimation draws are per decision maker instead, §5.5).
+Neither the draws nor $L$ change across iterations, so `blp()` keeps each situation's
+$\Gamma_i = L\eta_i$, with its log-normal rows exponentiated, from the first evaluation of
+the shares on, when the draws are formed on the fly (stored draws with up to 128 random
+coefficients, or generated ones), the $N$ blocks take at most `keep_draws_bytes`
+($8K_wSN$ bytes; 4 GiB by default) and the allocation succeeds; otherwise every evaluation
+forms them again. The kept blocks are the values each evaluation would compute, so the
+shares, and the returned $\delta$, are the same either way. The exported
+`mxl_blp_contraction()` keeps nothing.
 
-*Code reference: [mxlogit.cpp:mxl_blp_contraction](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp)*
+*Code reference: `MxlBlpModel` and `mxl_blp_solve()` in
+[src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp), over
+[src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h).*
 
 ---
 

@@ -19,7 +19,7 @@ This document provides a detailed mathematical description of the multinomial lo
 5. [Hessian Computation](#4-hessian-computation)
 6. [Elasticity Computation](#5-elasticity-computation)
 7. [Diversion Ratio Computation](#6-diversion-ratio-computation)
-8. [BLP Contraction Mapping](#7-blp-contraction-mapping)
+8. [BLP Share Inversion](#7-blp-share-inversion)
 9. [Willingness to Pay](#8-willingness-to-pay)
 10. [Consumer Surplus and the Logsum](#9-consumer-surplus-and-the-logsum)
 11. [Goodness of Fit](#10-goodness-of-fit)
@@ -455,62 +455,109 @@ $10^{-15}$ (an alternative no situation offers, say) is set to zero.
 
 ---
 
-## 7. BLP Contraction Mapping
+## 7. BLP Share Inversion
 
 ### 7.1 Problem Statement
 
-Given observed market shares $s_j$, find the ASC parameters $\delta_j$ such that the model-predicted shares match the observed shares:
+Given target market shares $S_j$ (with an outside option, $S_0$ too, all of them summing to
+one), find the alternative-specific constants $\delta$ at which the model's predicted
+shares equal them, with $\beta$ held at its value:
 
 $$
-\hat{s}_j(\delta) = s_j \quad \forall j
+\hat{s}_j(\delta) = \frac{\sum_i w_i P_{ij}(\delta)}{\sum_i w_i} = S_j \quad \forall j
 $$
 
-where $\hat{s}_j(\delta)$ is the predicted market share for alternative $j$.
+where $\hat{s}_j(\delta)$ is the predicted market share for alternative $j$. With every
+alternative available in every choice situation, any interior target is attained by a
+unique $\delta$, up to the normalization below (Berry 1994). Where choice sets differ,
+attainability restricts the targets (§7.2); a solution, where it exists, is still unique
+up to that normalization, the logit's shares being connected substitutes (Berry, Gandhi
+and Haile 2013).
 
-### 7.2 Contraction Mapping Algorithm
+### 7.2 Identification and Checks of the Targets
 
-The Berry--Levinsohn--Pakes fixed-point iteration is:
+With an outside option, whose utility is normalized to zero, every inside constant is
+identified. Without one, the shares depend only on differences of constants among
+alternatives that share choice situations, directly or through others: each such group (a
+connected component of the graph that links the alternatives through the choice
+situations of positive weight) identifies its constants up to a common level, and its
+shares add up to the weight of its situations. Each component's reference, its smallest
+alternative code, is held at its start, after the start is normalized by subtracting its
+first element, so that the first constant is zero.
+
+Targets that no constants attain stop the inversion before any evaluation of the shares,
+with an error: an alternative offered in no choice situation of positive weight; targets
+that do not sum to one (the outside share included), or, without an outside option, a
+component's targets that do not add up to its situations' weight, within a relative
+$1.5 \times 10^{-8}$ (within it they are rescaled); targets that leave no share to the
+outside option in a component; and a target not strictly below the weight of the choice
+situations that offer the alternative, or, without an outside option, not strictly above
+the weight of those that offer it alone (an alternative alone in its component is exempt:
+its share is its situations' weight). These are necessary conditions: a target that passes
+them may still be unattainable, and the iteration then does not converge.
+
+### 7.3 The Iteration
+
+Write $r = \log S - \log \hat{s}(\delta)$ for the log-share residuals and $b$ for the base:
+the outside option, or, without one, the reference of $j$'s component. Berry's contraction
+updates $\delta_j \leftarrow \delta_j + r_j$. choicer takes, for every free constant, the
+Newton step on that coordinate of the residual relative to the base, the other constants
+held:
 
 $$
-\delta_j^{(t+1)} = \delta_j^{(t)} + \log(s_j) - \log(\hat{s}_j^{(t)})
+\delta_j \leftarrow \delta_j + \frac{r_j - r_b}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b},
+\qquad
+A_{jj} = \frac{\sum_i w_i P_{ij}(1 - P_{ij})}{\sum_i w_i},
+\qquad
+C_{jb} = \frac{\sum_i w_i P_{ij} P_{ib}}{\sum_i w_i},
 $$
 
-This is equivalent to:
+where $A_{jj} = \partial \hat{s}_j / \partial \delta_j$ and $C_{jb} = -\partial
+\hat{s}_b / \partial \delta_j$, so the denominator is the exact diagonal of the derivative
+of $r_j - r_b$. Berry's contraction takes 1 in its place; with an outside option, the
+numerator $r_j - r_0$ is the outside-share correction of Fukasawa (2024). A choice
+situation that lists an alternative twice contributes its total probability. One
+evaluation of the shares gives $\hat{s}$, $A$ and $C$ together.
 
-$$
-\delta^{(t+1)} = \delta^{(t)} + \log(s) - \log(\hat{s}^{(t)})
-$$
+Two safeguards keep the step from failing where Berry's contraction converges: a step is
+at most $\max(|r_j - r_b|, 5)$ in magnitude (the scaling may lengthen Berry's step to at
+most 5 log units, never beyond Berry's own: an alternative chosen almost wherever it is
+offered has a denominator near zero), and in an iteration where a component's outside share underflows to zero the
+step drops the outside correction ($r_j$ over $A_{jj}/\hat{s}_j$). An evaluation whose
+shares are not finite halves the step, up to ten times.
 
-The standard convergence result presumes a feasible vector of strictly positive shares
-and the usual connected-substitutes conditions.  The low-level kernel checks positivity
-and length but does not check that target shares sum to one; a target outside the share
-simplex need not correspond to any utility vector.
+### 7.4 Stopping Rule and Result
 
-### 7.3 Full-Vector Normalization and Implementation Details
+The iteration stops at the first evaluation whose residual is at most `tol` (default
+$10^{-8}$), and returns that point. The residual is $\max_j |r_j - r_{b(j)}|$ without an
+outside option, $b(j)$ the reference of $j$'s component, and with one $\max_j |r_j|$
+together with each component's outside share's $|r_{0c}|$; every share, the outside
+option's included, then matches its target to a relative error of about `tol`. The error
+in $\delta$
+is of order `tol` times the conditioning of the share equations, which choice sets with
+few alternatives in common can raise to hundreds or more.
 
-The contraction operates on a *full* vector of mean utilities, which differs from the
-free ASC block stored in the fitted parameter vector:
+`max_iter` counts evaluations of the shares (default 1,000; 0 returns the normalized start).
+When the iteration stops otherwise, at `max_iter` or at shares that are not finite, it
+returns the evaluated point of smallest residual and warns with class
+`choicer_blp_unconverged`; the condition's `convergence` element holds the status, the
+iterations, the evaluations and the residual.
+
+### 7.5 The Layout of `delta`
 
 1. **No outside option.** `delta` has length $J$ (the `blp()` method prepends the
-   normalized zero to the fitted length-$(J-1)$ ASC block).  The initial vector and final
-   result are normalized by subtracting their first element.  The returned vector has
-   length $J$ and therefore includes the baseline zero; it is not the length-$(J-1)$
-   free-parameter block.
-2. **Outside option.** The supplied and returned `delta` vectors have length $J$ and
-   contain inside alternatives only.  Internally the kernel prepends the outside mean
-   utility $\delta_0=0$, applies the update in the length-$(J+1)$ share space, and pins
-   the outside entry to zero after every update.  It does **not** subtract the first
-   inside ASC.
-3. **Prediction and stopping.** Predicted shares are weighted by $w_i/\sum_iw_i$.
-   Iteration stops when the largest absolute change in the full working delta vector is
-   below `tol`, or after `max_iter`.  All target shares must be strictly positive.
+   normalized zero to the fitted length-$(J-1)$ ASC block), and the returned vector's first
+   element is zero; it is not the length-$(J-1)$ free-parameter block.
+2. **Outside option.** The supplied and returned `delta` have length $J$ and contain the
+   inside alternatives only; `target_shares` has $J + 1$ entries, the outside option's
+   first.
 
-When an outside option is present, its target share does not receive a free update; it is
-matched indirectly when the inside targets and outside target form a coherent share
-vector summing to one.  On exhaustion of `max_iter` the C++ kernel prints a warning and
-returns its last iterate rather than attaching a convergence flag.
-
-*Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
+*Code reference: [src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h)
+(the components, the checks, the step and the stopping rule),
+[src/fixed_point.h](https://github.com/fpcordeiro/choicer/blob/main/src/fixed_point.h)
+(the iteration), `MnlBlpModel` in
+[src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp) (the
+pass) and [R/blp.R](https://github.com/fpcordeiro/choicer/blob/main/R/blp.R).*
 
 ---
 
@@ -1001,7 +1048,10 @@ the kernel's report, `logit_sanitize()` in
 
 - McFadden, D. (1974). Conditional logit analysis of qualitative choice behavior. In P. Zarembka (Ed.), *Frontiers in Econometrics* (pp. 105-142). Academic Press.
 - Train, K. E. (2009). *Discrete Choice Methods with Simulation* (2nd ed.). Cambridge University Press.
+- Berry, S. T. (1994). Estimating discrete-choice models of product differentiation. *RAND Journal of Economics*, 25(2), 242-262.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
+- Berry, S., Gandhi, A., & Haile, P. (2013). Connected substitutes and invertibility of demand. *Econometrica*, 81(5), 2087-2111.
+- Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static / dynamic BLP estimations. arXiv:2404.04494.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
 - Manski, C. F., & McFadden, D. (1981). Alternative estimators and sample designs for discrete choice analysis. In C. F. Manski & D. McFadden (Eds.), *Structural Analysis of Discrete Data with Econometric Applications* (pp. 2-50). MIT Press.
 - Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based samples. *Econometrica*, 49(5), 1289-1316.

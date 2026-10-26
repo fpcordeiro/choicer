@@ -1330,16 +1330,21 @@ elasticities <- function(object, ...) UseMethod("elasticities")
 #' @export
 diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 
-#' BLP contraction mapping
+#' BLP share inversion
 #'
-#' Finds the ASC (delta) parameters such that predicted market shares match
-#' target shares, using the contraction mapping of Berry, Levinsohn, and
-#' Pakes (1995) \doi{10.2307/2171802}.
+#' Finds the constants (ASCs, delta) at which a fitted model's predicted
+#' market shares equal target shares, the share inversion of Berry (1994)
+#' used by Berry, Levinsohn, and Pakes (1995) \doi{10.2307/2171802}, with the
+#' other parameters held at their estimates. The iteration, its stopping rule
+#' and its checks of the targets are described in
+#' \code{\link{blp_contraction}()}.
 #'
 #' @param object A fitted model object.
 #' @param target_shares Numeric vector of target market shares (length J).
 #' @param ... Additional arguments passed to methods.
-#' @returns Converged delta (ASC) vector.
+#' @returns The constants, an n x 1 matrix. When the iteration does not
+#'   converge, the evaluated point of smallest residual, with a warning of
+#'   class \code{choicer_blp_unconverged}.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1440,7 +1445,7 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 
 # --- blp: MNL ----------------------------------------------------------------
 
-#' BLP contraction mapping for multinomial logit model
+#' BLP share inversion for the multinomial logit
 #'
 #' @param object A \code{choicer_mnl} object fitted with \code{keep_data = TRUE}.
 #' @param target_shares Numeric vector of target market shares.
@@ -1450,10 +1455,11 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
 #'   uses the estimated ASCs from the fitted model (zeros for a model fitted
 #'   without them, \code{use_asc = FALSE}).
-#' @param tol Convergence tolerance (default 1e-8).
-#' @param max_iter Maximum iterations (default 1000).
+#' @param tol Convergence tolerance on the largest absolute log-share
+#'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
+#' @param max_iter The most evaluations of the shares (default 1000).
 #' @param ... Additional arguments (ignored).
-#' @returns Converged delta (ASC) vector.
+#' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1491,7 +1497,8 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  blp_contraction(
+  ctl <- .blp_control(tol, max_iter)
+  res <- mnl_blp_solve(
     delta = delta_init,
     target_shares = target_shares,
     X = d$X,
@@ -1500,9 +1507,10 @@ blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
     M = d$M,
     weights = d$weights,
     include_outside_option = object$include_outside_option,
-    tol = tol,
-    max_iter = max_iter
+    control = ctl
   )
+  .blp_unconverged(res, ctl, "blp()")
+  res$delta
 }
 
 # --- elasticities: MXL -------------------------------------------------------
@@ -1650,7 +1658,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 
 # --- blp: MXL ----------------------------------------------------------------
 
-#' BLP contraction mapping for mixed logit model
+#' BLP share inversion for the mixed logit
 #'
 #' @param object A \code{choicer_mxl} object fitted with \code{keep_data = TRUE}.
 #' @param target_shares Numeric vector of target market shares.
@@ -1660,9 +1668,10 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
 #'   uses the estimated ASCs from the fitted model (zeros for a model fitted
 #'   without them, \code{use_asc = FALSE}).
-#' @param tol Convergence tolerance (default 1e-8).
-#' @param max_iter Maximum iterations (default 1000).
-#' @param keep_draws_bytes Most memory, in bytes, that the contraction may use
+#' @param tol Convergence tolerance on the largest absolute log-share
+#'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
+#' @param max_iter The most evaluations of the shares (default 1000).
+#' @param keep_draws_bytes Most memory, in bytes, that the inversion may use
 #'   to keep the draws across its iterations; it does not change the returned
 #'   delta. When the draws are formed on the fly and those of all \eqn{N}
 #'   choice situations take at most this much (\eqn{8 K_w S N} bytes for
@@ -1679,7 +1688,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   free can end the R session rather than fall back: lower it, or use
 #'   \code{0}, when memory is tight.
 #' @param ... Additional arguments (ignored).
-#' @details The contraction integrates each choice situation over the same
+#' @details The inversion integrates each choice situation over the same
 #'   draws as \code{predict()} (for a cross-sectional fit, the estimation
 #'   draws; a panel fit's estimation draws are per decision maker), formed on
 #'   the fly, in parallel, and kept across iterations within
@@ -1687,7 +1696,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   are the points of the cube \code{\link{get_halton_normals}} would build,
 #'   formed without it; with more than 128 random coefficients, the cube
 #'   itself, read at every iteration (and nothing more is kept).
-#' @returns Converged delta (ASC) vector.
+#' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -1740,7 +1749,8 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  mxl_blp_contraction_cached(
+  ctl <- .blp_control(tol, max_iter)
+  res <- mxl_blp_solve(
     delta = delta_init,
     target_shares = target_shares,
     X = d$X,
@@ -1756,13 +1766,14 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
     rc_correlation = object$rc_correlation,
     rc_mean = object$rc_mean,
     include_outside_option = object$include_outside_option,
-    tol = tol,
-    max_iter = max_iter,
+    control = ctl,
     gen_seed = gp_blp$gen_seed,
     gen_scramble = gp_blp$gen_scramble,
     gen_S = gp_blp$gen_S,
     cache_bytes = keep_draws_bytes
-  )$delta
+  )
+  .blp_unconverged(res, ctl, "blp()")
+  res$delta
 }
 
 # --- predict: NL -------------------------------------------------------------
@@ -1956,7 +1967,7 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 
 # --- blp: NL -----------------------------------------------------------------
 
-#' BLP contraction mapping for nested logit model
+#' BLP share inversion for the nested logit
 #'
 #' @param object A \code{choicer_nl} object fitted with \code{keep_data = TRUE}.
 #' @param target_shares Numeric vector of target market shares.
@@ -1966,11 +1977,13 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @param delta_init Initial guess for delta (ASC) values. If \code{NULL},
 #'   uses the estimated ASCs from the fitted model (zeros for a model fitted
 #'   without them, \code{use_asc = FALSE}).
-#' @param damping Contraction damping factor in (0, 1] (default 1).
-#' @param tol Convergence tolerance (default 1e-8).
-#' @param max_iter Maximum iterations (default 1000).
+#' @param damping Multiplies each step, in (0, 1] (default 1); seldom needed
+#'   (see \code{\link{nl_blp_contraction}()}).
+#' @param tol Convergence tolerance on the largest absolute log-share
+#'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
+#' @param max_iter The most evaluations of the shares (default 1000).
 #' @param ... Additional arguments (ignored).
-#' @returns Converged delta (ASC) vector.
+#' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -2018,7 +2031,8 @@ blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
     }
   }
 
-  nl_blp_contraction(
+  ctl <- .blp_control(tol, max_iter, damping)
+  res <- nl_blp_solve(
     delta = delta_init,
     target_shares = target_shares,
     X = d$X,
@@ -2029,10 +2043,10 @@ blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
     M = d$M,
     weights = d$weights,
     include_outside_option = object$include_outside_option,
-    damping = damping,
-    tol = tol,
-    max_iter = max_iter
+    control = ctl
   )
+  .blp_unconverged(res, ctl, "blp()")
+  res$delta
 }
 
 # --- choicer_hb (hierarchical Bayes) methods ---------------------------------

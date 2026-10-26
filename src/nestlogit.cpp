@@ -2,6 +2,7 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "choicer_derivs.h"
+#include "blp_engine.h"
 
 // Forward declaration: shared NL parameter parsing (defined further below,
 // after the likelihood kernel; see the full doc comment at the definition).
@@ -21,7 +22,7 @@ static void nl_parse_theta(
 // The number of nests: the largest nest code, as arma::max() gave it on the
 // arma::uvec argument this replaces, which threw std::logic_error on an empty
 // nest_idx (kept). Codes below 1 are reported by nl_parse_theta() and
-// nl_blp_contraction().
+// nl_blp_solve().
 static int nl_n_nests(const Rcpp::IntegerVector& nest_idx) {
   if (nest_idx.size() == 0) {
     throw std::logic_error("max(): object has no elements");
@@ -35,7 +36,7 @@ static int nl_n_nests(const Rcpp::IntegerVector& nest_idx) {
 // 1-based codes alt and the 1-based nest codes nest. The kernels index lambda
 // and their per-nest buffers with the result unchecked, so two checks must
 // come first: nl_layout_build() (every alternative code at most nest_idx's
-// length) and nl_parse_theta() or nl_blp_contraction()'s own check (every
+// length) and nl_parse_theta() or nl_blp_solve()'s own check (every
 // nest code at least 1).
 static inline void nl_gather_nests(int* nest0, const int* alt, const int* nest,
                                    const int m) {
@@ -2378,8 +2379,7 @@ Rcpp::List nl_predict(
 }
 
 // The working arrays of nl_predict_shares_internal(): every thread's
-// situation arrays and shares, allocated on the primary thread once per call
-// (a BLP contraction keeps them across its iterations).
+// situation arrays and shares, allocated on the primary thread once per call.
 struct NlSharesWork {
   std::vector<NlThreadBuffers> bufs;
   std::vector<std::vector<double>> local;  // each thread's shares
@@ -2981,47 +2981,225 @@ Rcpp::NumericMatrix nl_diversion_ratios_parallel(
   return acc.result;
 }
 
-//' BLP95 contraction mapping for the Nested Logit model
+// ============================================================================
+// The share inversion's model (blp_engine.h)
+//
+// As the multinomial logit's (mnlogit.cpp): each situation's utilities
+// gathered into a thread buffer, its probabilities by nl_situation_probs(),
+// the shares in the statements of nl_predict_shares_internal(), then
+// A_jj = sum w P_j ((1 - P(j|g)) / lambda_g + P(j|g) - P_j), the derivative's
+// diagonal, and the co-choice with the base: w P_j P_0 with the outside
+// option, w P_ref ((1 - lambda_g) / lambda_g P(j|g) 1{g = g_ref} + P_j), its
+// exact cross-derivative, with the component's reference. 1 - P(j|g) is
+// formed from the nest-mates' P(k|g) for a nest's dominant row (P(j|g) above
+// one half): the textbook 1/lambda - (1 - lambda)/lambda P(j|g) cancels when
+// lambda is small (fitted dissimilarities go down to 1e-16). Where a
+// situation lists a code twice, A and C take the code's totals.
+// ============================================================================
+struct NlBlpModel {
+  const ChoiceLayout& lay;
+  const arma::vec& Xb;
+  const int* nest;          // 1-based nest of each alternative
+  const arma::vec& lambda;  // every nest's
+  const int n_nests;
+  const arma::vec& weights;
+  const double W;
+  const bool outside;
+  const int J;
+  const BlpComponents& comp;
+  const bool offered;       // probabilities over each situation's own nests
+  const bool lam1;          // a nest with lambda > 1: also A1 and C1 (the floor)
+  const int stride;         // acc_ac entries per alternative
+  std::vector<NlThreadBuffers> bufs;
+  std::vector<std::vector<double>> vbuf;     // the situation's utilities
+  std::vector<std::vector<double>> small;    // per nest: P(k|g) of the rows not dominant
+  std::vector<std::vector<double>> acc_s;    // J shares, then each component's outside share
+  std::vector<std::vector<double>> acc_ac;   // A, C (and A1, C1) of each alternative, interleaved
+  std::vector<std::vector<int>> slot, code;  // repeated codes (as MnlBlpModel's)
+  std::vector<std::vector<double>> tot, totc;
+
+  NlBlpModel(const ChoiceLayout& lay_, const arma::vec& Xb_, const int* nest_,
+             const arma::vec& lambda_, const int n_nests_, const arma::vec& w_,
+             const double W_, const bool outside_, const int J_,
+             const BlpComponents& comp_)
+      : lay(lay_), Xb(Xb_), nest(nest_), lambda(lambda_), n_nests(n_nests_),
+        weights(w_), W(W_), outside(outside_), J(J_), comp(comp_),
+        offered(nl_offered_probs(lambda_, lay_)),
+        lam1(lambda_.max() > 1.0), stride(lam1 ? 4 : 2),
+        bufs(nl_thread_buffers(lay_.max_m, n_nests_, 0, situation_team(lay_))) {
+    const int T = static_cast<int>(bufs.size());
+    const std::size_t m = static_cast<std::size_t>(lay.max_m);
+    vbuf = thread_vectors<double>(m, T);
+    small = thread_vectors<double>(static_cast<std::size_t>(n_nests), T);
+    acc_s = thread_vectors<double>(static_cast<std::size_t>(J + comp.n), T);
+    acc_ac = thread_vectors<double>(static_cast<std::size_t>(stride) * J, T);
+    if (comp.repeated) {
+      slot = thread_vectors<int>(static_cast<std::size_t>(J), T, -1);
+      code = thread_vectors<int>(m, T);
+      tot = thread_vectors<double>(m, T);
+      totc = thread_vectors<double>(m, T);
+    }
+  }
+
+  void pass(const arma::vec& delta, BlpPass& out) {
+    const choicer_off N = lay.N;
+    const int T = static_cast<int>(bufs.size());
+    const arma::uword n_s = static_cast<arma::uword>(J + comp.n);
+    const double* d = delta.memptr();
+    const double* xb = Xb.memptr();
+    const double* lam = lambda.memptr();
+    const bool repeated = comp.repeated;
+    // the threads that ran (as MnlBlpModel's pass)
+    int T_used = 1;
+#ifdef _OPENMP
+    const int chunk = situation_chunk(lay);  // situations per dispatch
+#pragma omp parallel num_threads(T)
+#endif
+    {
+      const int tid = kernel_thread_num();
+#ifdef _OPENMP
+      if (tid == 0) T_used = omp_get_num_threads();
+#endif
+      NlThreadBuffers& b = bufs[tid];
+      NlProbs& pr = b.pr;
+      arma::vec local_shares(acc_s[tid].data(), n_s, false, true);
+      local_shares.zeros();
+      double* ac = acc_ac[tid].data();
+      std::fill(ac, ac + static_cast<std::size_t>(stride) * J, 0.0);
+      double* v = vbuf[tid].data();
+      double* sm = small[tid].data();
+      int* slot_t = repeated ? slot[tid].data() : nullptr;
+      int* code_t = repeated ? code[tid].data() : nullptr;
+      double* tot_t = repeated ? tot[tid].data() : nullptr;
+      double* totc_t = repeated ? totc[tid].data() : nullptr;
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic, chunk)
+#endif
+      for (choicer_off i = 0; i < N; ++i) {
+        const int m_i = lay.m(i);
+        const choicer_off r0 = lay.row_off[i];
+        const int* alt = lay.alt + r0;
+        for (int a = 0; a < m_i; ++a) v[a] = xb[r0 + a] + d[alt[a] - 1];
+        int* nest0 = b.nest0.data();
+        nl_gather_nests(nest0, alt, nest, m_i);
+        nl_situation_probs(v, m_i, lambda, n_nests, outside, offered, b);
+        const arma::vec P_i(pr.P_i.data(), m_i, false, true);
+        const double* Pc = pr.P_j_given_k.data();
+        const double w_i = weights[i];
+        const int c = comp.of[alt[0] - 1];
+        if (outside) {
+          local_shares(J + c) += w_i * std::exp(pr.log_P_outside);
+        }
+        for (int a = 0; a < m_i; ++a) {
+          local_shares(alt[a] - 1) += w_i * P_i(a);
+        }
+        // the base: the outside option, or the component's reference
+        const double P0 = outside ? std::exp(pr.log_P_outside) : 0.0;
+        double Pref = 0.0;
+        int g_ref = -1;
+        if (!outside) {
+          const int bc = comp.ref[c] + 1;
+          for (int a = 0; a < m_i; ++a) {
+            if (alt[a] == bc) {
+              Pref += P_i(a);
+              g_ref = nest0[a];
+            }
+          }
+        }
+        // the items: the rows, or the codes' totals where codes repeat
+        int n_d = m_i;
+        const double* Pt = pr.P_i.data();
+        const double* Pct = Pc;
+        if (repeated) {
+          n_d = 0;
+          for (int a = 0; a < m_i; ++a) {
+            const int j = alt[a] - 1;
+            if (slot_t[j] < 0) {
+              slot_t[j] = n_d;
+              code_t[n_d] = a;  // a row of the code (its nest)
+              tot_t[n_d] = 0.0;
+              totc_t[n_d++] = 0.0;
+            }
+            tot_t[slot_t[j]] += P_i(a);
+            totc_t[slot_t[j]] += Pc[a];
+          }
+          Pt = tot_t;
+          Pct = totc_t;
+        }
+        auto row_of = [&](const int k) { return repeated ? code_t[k] : k; };
+        for (int k = 0; k < n_d; ++k) sm[nest0[row_of(k)]] = 0.0;
+        for (int k = 0; k < n_d; ++k) {
+          if (!(Pct[k] > 0.5)) sm[nest0[row_of(k)]] += Pct[k];
+        }
+        for (int k = 0; k < n_d; ++k) {
+          const int a = row_of(k);
+          const int j = alt[a] - 1;
+          const int g = nest0[a];
+          const double l = lam[g];
+          const double p = Pt[k], pc = Pct[k];
+          const double rest = pc > 0.5 ? sm[g] : 1.0 - pc;  // 1 - P(j|g)
+          double* acj = ac + static_cast<std::size_t>(stride) * j;
+          acj[0] += w_i * (p * (rest / l + pc - p));
+          const double cb = outside
+              ? p * P0
+              : Pref * ((g == g_ref ? ((1.0 - l) / l) * pc : 0.0) + p);
+          acj[1] += w_i * cb;
+          if (lam1) {  // the same probabilities with lambda = 1
+            acj[2] += w_i * (p * (1.0 - p));
+            acj[3] += w_i * (p * (outside ? P0 : Pref));
+          }
+        }
+        if (repeated) {
+          for (int k = 0; k < n_d; ++k) slot_t[alt[code_t[k]] - 1] = -1;
+        }
+      }
+    }
+    if (lam1 && out.A1.n_elem != static_cast<arma::uword>(J)) {
+      out.A1.set_size(J);
+      out.C1.set_size(J);
+    }
+    for (int j = 0; j < J; ++j) {
+      double s = 0.0, A = 0.0, C = 0.0, A1 = 0.0, C1 = 0.0;
+      const std::size_t o = static_cast<std::size_t>(stride) * j;
+      for (int t = 0; t < T_used; ++t) {
+        s += acc_s[t][j];
+        A += acc_ac[t][o];
+        C += acc_ac[t][o + 1];
+        if (lam1) {
+          A1 += acc_ac[t][o + 2];
+          C1 += acc_ac[t][o + 3];
+        }
+      }
+      out.s[j] = s / W;
+      out.A[j] = A / W;
+      out.C[j] = C / W;
+      if (lam1) {
+        out.A1[j] = A1 / W;
+        out.C1[j] = C1 / W;
+      }
+    }
+    for (int k = 0; k < comp.n; ++k) {
+      double s0 = 0.0;
+      for (int t = 0; t < T_used; ++t) s0 += acc_s[t][J + k];
+      out.s0[k] = s0 / W;
+    }
+  }
+};
+
+//' The share inversion of the nested logit
 //'
-//' Damped iterative fixed point recovering delta given target shares, using the
-//' NL probability structure. `damping = 1` reproduces the plain BLP update.
+//' The engine behind nl_blp_contraction() and blp() (blp_engine.h): the
+//' input checks of nl_blp_contraction(), in their order, every dissimilarity
+//' positive and finite right after lambda's length, then the share
+//' inversion's own (a finite start, finite and non-negative weights, the
+//' targets' sums and bounds), then the solver. damping comes in control.
 //'
-//' @param delta J x 1 vector with initial guess for deltas (ASCs).
-//' @param target_shares vector with target shares (outside-option share first when present).
-//' @param X sum(M) x K design matrix with covariates.
-//' @param beta K x 1 vector with fixed coefficients.
-//' @param lambda full nest dissimilarity vector of length n_nests (singletons = 1).
-//' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based indexing.
-//' @param nest_idx J x 1 vector with nest indices for each alternative; 1-based indexing.
-//' @param M N x 1 vector with number of alternatives for each individual.
-//' @param weights N x 1 vector with weights for each observation.
-//' @param include_outside_option whether to include outside option normalized to V=0, lambda=1.
-//' @param damping damping factor for the update (default 1.0 = plain BLP).
-//' @param tol convergence tolerance.
-//' @param max_iter maximum number of iterations.
-//' @returns vector with contraction's delta (ASCs) output.
-//' @examples
-//' \donttest{
-//' library(data.table)
-//' set.seed(42)
-//' N <- 50; J <- 4
-//' dt <- data.table(id = rep(1:N, each = J), alt = rep(1:J, N))
-//' dt[, `:=`(x1 = rnorm(.N), x2 = rnorm(.N))]
-//' dt[, nest := ifelse(alt <= 2, "A", "B")]
-//' dt[, choice := 0L]
-//' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
-//' fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest")
-//' beta <- coef(fit)[fit$param_map$beta]
-//' lambda <- rep(1, length(unique(fit$data$nest_idx)))
-//' lambda[as.integer(names(which(table(fit$data$nest_idx) > 1)))] <-
-//'   coef(fit)[fit$param_map$lambda]
-//' delta <- nl_blp_contraction(rep(0, J), rep(1/J, J), fit$data$X, beta, lambda,
-//'   fit$data$alt_idx, fit$data$nest_idx, fit$data$M, fit$data$weights)
-//' delta
-//' }
-//' @export
+//' @inheritParams nl_blp_contraction
+//' @param control List from .blp_control().
+//' @return As mnl_blp_solve().
+//' @noRd
 // [[Rcpp::export]]
-arma::vec nl_blp_contraction(
+Rcpp::List nl_blp_solve(
     const arma::vec& delta,
     const arma::vec& target_shares,
     const arma::mat& X,
@@ -3031,31 +3209,29 @@ arma::vec nl_blp_contraction(
     const Rcpp::IntegerVector& nest_idx,
     const Rcpp::IntegerVector& M,
     const arma::vec& weights,
-    const bool include_outside_option = false,
-    const double damping  = 1.0,
-    const double tol      = 1e-8,
-    const int    max_iter = 1000
+    const bool include_outside_option,
+    const Rcpp::List& control
 ) {
+  const BlpControl ctl = blp_control(control);
   const bool use_asc = true;
   const int n_nests = nl_n_nests(nest_idx);
 
-  const int num_alts =
-      include_outside_option ? (delta.n_elem + 1) : delta.n_elem;
+  const int J = static_cast<int>(delta.n_elem);
+  const int num_alts = include_outside_option ? J + 1 : J;
   if ((int)target_shares.n_elem != num_alts) {
     Rcpp::stop("Error: target_shares must have the same length as the total number of alternatives.");
   }
-  if (arma::any(target_shares <= 0)) {
-    Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
+  for (arma::uword k = 0; k < target_shares.n_elem; ++k) {
+    if (!(target_shares[k] > 0)) {
+      Rcpp::stop("Error: all target_shares must be strictly positive (log(share) is undefined otherwise).");
+    }
   }
   const ChoiceLayout lay = nl_layout_build(X, alt_idx, nest_idx, M, use_asc,
                                            delta, &weights);
 
-  // nl_parse_theta() is not run here, so check the two invariants that keep
-  // nl_individual_probs() in bounds against the lambda given: nest codes from
-  // 1, and one lambda per nest. A code below 1 or a lambda of another length
-  // used to fail an Armadillo bounds or size check inside the parallel loop
-  // (which terminates R under OpenMP); nl_individual_probs() now indexes
-  // lambda directly.
+  // nl_parse_theta() is not run here, so check the invariants that keep the
+  // probabilities in bounds against the lambda given: nest codes from 1, and
+  // one lambda per nest, each positive and finite.
   const int nest_min = *std::min_element(nest_idx.begin(), nest_idx.end());
   if (nest_min < 1) {
     Rcpp::stop("nest_idx must use 1-based nest indices (found %s).",
@@ -3065,90 +3241,36 @@ arma::vec nl_blp_contraction(
     Rcpp::stop("lambda must have one entry per nest of nest_idx (%d); it has "
                "%d.", n_nests, lambda.n_elem);
   }
-
-  // X * beta, once: only delta changes across the iterations. Each one adds
-  // its ASCs to a copy of it, in one buffer kept across them, and predicts the
-  // shares with working arrays allocated once, here.
-  const double denominator = shares_denominator(weights);
-  const arma::vec Xb = X * beta;
-  arma::vec base_util;
-  NlSharesWork ws(lay, n_nests, num_alts);
-  arma::vec shares(num_alts);
-  auto predict_shares = [&](const arma::vec& inside_delta) {
-    base_util = Xb;
-    add_row_asc(base_util, lay, inside_delta);
-    nl_predict_shares_internal(base_util, lay, nest_idx.begin(), lambda,
-                               weights, denominator, n_nests, num_alts,
-                               include_outside_option, ws, shares);
-  };
-
-  // The iteration bookkeeping (delta_old/delta_new, target/predicted log-shares,
-  // residual) lives in the outside-inclusive share space of length num_alts:
-  //   index 0 = outside option (when present), indices 1..J = inside alts.
-  // But predict_shares() adds the ASCs by inside alternative (add_row_asc()
-  // reads delta at each row's code minus 1, in 0..J-1), so it takes a length-J
-  // inside-delta vector (the outside option is handled separately via
-  // include_outside_option). We therefore feed it
-  // delta_old.subvec(1, num_alts - 1) when an outside option is present, and
-  // pin the outside slot delta_old[0] = 0 throughout (the outside option's
-  // utility is the fixed normalization).
-  arma::vec delta_old = arma::zeros(num_alts);
-  if (include_outside_option) {
-    delta_old.subvec(1, num_alts - 1) = delta;
-    delta_old[0] = 0.0;
-  } else {
-    delta_old = delta;
-    delta_old -= delta_old[0];
-  }
-
-  // The inside deltas, refilled in place from delta_old at every iteration
-  arma::vec inside_delta_old(include_outside_option ? num_alts - 1 : num_alts);
-  auto set_inside_delta = [&]() {
-    if (include_outside_option) {
-      inside_delta_old = delta_old.subvec(1, num_alts - 1);
-    } else {
-      inside_delta_old = delta_old;
+  for (int k = 0; k < n_nests; ++k) {
+    if (!(lambda[k] > 0) || !std::isfinite(lambda[k])) {
+      Rcpp::stop("lambda must be positive and finite (nest %d's is %g).", k + 1,
+                 lambda[k]);
     }
-  };
-  set_inside_delta();
+  }
 
-  predict_shares(inside_delta_old);
-  arma::vec log_shares_old = arma::log(shares);
-  arma::vec log_shares_target = arma::log(target_shares);
-  arma::vec delta_new = delta_old;
+  const double W = shares_denominator(weights);
+  const arma::vec Xb = X * beta;  // once: only delta changes across passes
 
-  arma::vec delta_diff(num_alts, arma::fill::ones);
-  double residual = 10.0;
-  int iter = 0;
-
-  while (iter < max_iter) {
-    Rcpp::checkUserInterrupt(); // H4: allow user to interrupt long-running contraction
-    delta_new = delta_old + damping * (log_shares_target - log_shares_old);
-    if (include_outside_option) {
-      // Outside option's delta is the fixed normalization; pin it at 0.
-      delta_new[0] = 0.0;
+  blp_check_start(delta, weights);
+  const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
+                                            include_outside_option);
+  const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option, J);
+  arma::vec d = delta;
+  if (!include_outside_option && J > 0) d -= delta[0];
+  NlBlpModel model(lay, Xb, nest_idx.begin(), lambda, n_nests, weights, W,
+                   include_outside_option, J, comp);
+  // The floor of the step's denominator in the nests with lambda > 1
+  // (blp_engine.h): (1 + lambda) / (2 lambda) of the lambda = 1 diagonal.
+  arma::vec floor_scale;
+  if (model.lam1) {
+    floor_scale.zeros(J);
+    for (int j = 0; j < J; ++j) {
+      const double l = lambda[nest_idx[j] - 1];
+      if (l > 1.0) floor_scale[j] = (1.0 + l) / (2.0 * l);
     }
-    delta_diff = arma::abs(delta_new - delta_old);
-    residual = arma::max(delta_diff);
-    if (residual < tol) {
-      break;
-    }
-    delta_old = delta_new;
-    set_inside_delta();
-    predict_shares(inside_delta_old);
-    log_shares_old = arma::log(shares);
-    ++iter;
   }
-
-  if (iter >= max_iter) {
-    Rcpp::Rcout << "Warning: Maximum iterations reached without convergence." << std::endl;
-  }
-
-  delta_new -= delta_new[0];
-
-  if (include_outside_option) {
-    return delta_new.subvec(1, num_alts - 1);
-  } else {
-    return delta_new;
-  }
+  BlpPass last(J, comp.n);
+  const BlpResult res = blp_solve(model, comp, pb, d, ctl, &last,
+                                  model.lam1 ? &floor_scale : nullptr);
+  return blp_result(d, res, ctl, last);
 }
