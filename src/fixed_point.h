@@ -41,6 +41,9 @@ struct FpControl {
   double tol = 1e-8;        // on the map's residual
   double damping = 1.0;     // multiplies the base step
   int max_backtracks = 10;  // halvings of a step whose trial point failed
+  int patience = 0;         // accepted steps without a new best residual
+                            // before a restart from the best point with the
+                            // step's relaxation halved; 0: no restarts
 };
 
 struct FpResult {
@@ -48,13 +51,20 @@ struct FpResult {
   int iterations = 0;       // accepted steps
   int evaluations = 0;      // of the map, the failed ones included
   int backtracks = 0;       // halvings
+  int restarts = 0;         // from the best point, after patience ran out
   double residual = std::numeric_limits<double>::quiet_NaN();  // at the point returned
 };
 
 // The plain iteration, safeguarded: a trial point that fails is retried with
 // the step halved, up to max_backtracks times (each an evaluation), before
-// the solver stops. x holds the start and receives the result: the first
-// evaluated point whose residual is at most tol, or, when none is, the
+// the solver stops; and, with patience > 0, an iteration whose best residual
+// has not improved in patience accepted steps (it diverges, or cycles)
+// restarts from its best point with the relaxation of its steps halved for
+// the rest of the call (again at each further restart): a base step that
+// overshoots some direction contracts once it is short enough. (While every residual so far is infinite, as when
+// an outside share underflows at the start, there is no best point to return
+// to, and no step counts.) x holds the start and receives the result: the
+// first evaluated point whose residual is at most tol, or, when none is, the
 // evaluated point of smallest residual (the start itself when max_evals is
 // 0, unevaluated).
 template <class Map>
@@ -62,7 +72,7 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
   FpResult out;
   if (ctl.max_evals <= 0) return out;
   const arma::uword n = map.n();
-  arma::vec step(n), trial(n), trial_step(n), best(n);
+  arma::vec step(n), trial(n), trial_step(n), best(n), best_step(n);
   double res = 0.0;
   Rcpp::checkUserInterrupt();
   ++out.evaluations;
@@ -72,7 +82,10 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
     return out;
   }
   best = x;
+  best_step = step;
   double best_res = res;
+  double relax = 1.0;  // halved at every restart
+  int since = 0;       // accepted steps since the best residual improved
   for (;;) {
     if (res <= ctl.tol) {
       out.code = FP_CONVERGED;
@@ -83,7 +96,7 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
       out.code = FP_MAX_EVALS;
       break;
     }
-    double t = ctl.damping;
+    double t = ctl.damping * relax;
     double trial_res = 0.0;
     bool ok = false;
     for (int b = 0;; ++b) {
@@ -106,6 +119,16 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
     if (res < best_res) {
       best_res = res;
       best = x;
+      best_step = step;
+      since = 0;
+    } else if (ctl.patience > 0 && std::isfinite(best_res) &&
+               ++since >= ctl.patience) {
+      x = best;
+      step = best_step;
+      res = best_res;
+      relax *= 0.5;
+      since = 0;
+      ++out.restarts;
     }
   }
   x = best;

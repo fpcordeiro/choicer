@@ -1151,14 +1151,22 @@ nested logit's step.
 
 #### 6.4.2 The step
 
-With $r = \log s^* - \log \hat{s}(\delta)$ and $b$ the outside option (or, without one, the
-reference of $j$'s component), each iteration takes
+With $r = \log s^* - \log \hat{s}(\delta)$, $b$ the outside option (or, without one, the
+reference of $j$'s component) and $\rho_j = r_j - r_b$, the step is the multinomial
+logit's (§7.3 of the [multinomial logit article](multinomial_logit_math.html)): a common
+shift $\tau$ of the component's free constants, then the exact diagonal of the
+derivative of $\rho$ on the rest,
 
 $$
-\delta_j \leftarrow \delta_j + \kappa\, \frac{r_j - r_b}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b}
+\delta_j \leftarrow \delta_j + \kappa \left(\tau + \frac{\rho_j - h_j \tau}{D_j}\right),
+\qquad
+D_j = \frac{A_{jj}}{\hat{s}_j} + \frac{C_{jb}}{\hat{s}_b},
+\qquad
+h_j = \frac{C_{jb}}{\hat{s}_j} + \sum_k \frac{C_{kb}}{\hat{s}_b},
 $$
 
 for alternative $j$ in nest $g$, where $\kappa \in (0, 1]$ is `damping` (default 1),
+$\tau$ solves $\sum_j \hat{s}_j (\rho_j - h_j \tau) = 0$,
 
 $$
 A_{jj} = \frac{\partial \hat{s}_j}{\partial \delta_j}
@@ -1172,14 +1180,20 @@ $$
 C_{jb} = \frac{\sum_i w_i P_{ib}\left(\frac{1 - \lambda_g}{\lambda_g} P_i(j \mid g)\, 1\{b \in g\} + P_{ij}\right)}{\sum_i w_i}.
 $$
 
-The denominator is the exact diagonal of the derivative of $r_j - r_b$. Berry's
-contraction takes 1 in its place, and so overshoots within a nest: its step's derivative
-there is about $1/\lambda_g$, and its iteration diverges where $\lambda_g$ is small
-($\lambda_g \le 0.4$ on the simulated designs we tried) unless damped by about $\lambda_g$.
-The exact diagonal carries the $1/\lambda_g$, so no damping is needed. For a nest's
-dominant alternative, $1 - P_i(j \mid g)$ is formed as the sum of its nest-mates'
-conditional probabilities, since $\lambda_g$ can be as small as $10^{-16}$, where the
-difference loses every digit.
+The nested logit's share Jacobian is symmetric (its shares are the gradient of the
+log-sum, for any $\lambda_g > 0$) and its rows sum to zero, so $-h_j$ is the exact rate
+at which $\rho_j$ responds to the common shift, as in the logit. Berry, Levinsohn and Pakes's (1995)
+contraction, `method = "original"`, takes $\kappa r_j$ ($\kappa (r_j - r_b)$ without an
+outside option, the reference held): no shift, no outside-share correction, and 1 in place
+of $D_j$. It therefore overshoots within a nest: its step's derivative there is about
+$1/\lambda_g$, and its iteration can diverge where $\lambda_g$ is small (it failed on 8
+of the 18 simulated designs we tried with $\lambda_g \le 0.4$, and on none with larger
+$\lambda_g$) unless damped by about $\lambda_g$. The exact diagonal
+carries the $1/\lambda_g$, so no damping is needed. For a nest's dominant alternative,
+$1 - P_i(j \mid g)$ is formed as the sum of its nest-mates' conditional probabilities,
+since $\lambda_g$ can be as small as $10^{-16}$, where the difference loses every digit.
+The logit's other safeguards apply: the step's cap, its halving where the shares are not
+finite, and the restarts.
 
 #### 6.4.3 Nests with $\lambda_g > 1$
 
@@ -1188,9 +1202,9 @@ inclusive value, and with it the shares of $j$'s nest-mates where the nest is sm
 safeguards apply.
 
 - An alternative whose co-choice with the base is negative ($b$ in its nest, without an
-  outside option) takes at most the unscaled step (denominator at least 1): its exact
-  diagonal nets out the complementarity and can be near zero or negative.
-- The denominator is at least $(1 + \lambda_g)/(2\lambda_g)$ times the one the same
+  outside option) has a diagonal $D_j$ of at least 1: its exact diagonal nets out the
+  complementarity and can be near zero or negative.
+- The diagonal $D_j$ is at least $(1 + \lambda_g)/(2\lambda_g)$ times the one the same
   probabilities give with $\lambda_g = 1$ ($\sum_i w_i P_{ij}(1 - P_{ij})/\sum_i w_i$ over
   $\hat{s}_j$, plus $\sum_i w_i P_{ij}P_{ib}/\sum_i w_i$ over $\hat{s}_b$). A common shift
   of a nest's constants moves its shares as in a logit, with derivative about 1, while a
@@ -1200,10 +1214,10 @@ safeguards apply.
   equally: the step's error then contracts by about $(\lambda_g - 1)/(\lambda_g + 1)$ in
   each.
 
-On simulated designs with $\lambda$ from 1.05 to 5, nests of 2 to 10 alternatives and
-heterogeneous choice sets, the step converged wherever Berry's contraction did, in at most
-1.04 times its evaluations, and also where it did not (with an outside option, Berry's
-contraction needed 500 to 3,000 evaluations or more, the step 10 to 100).
+On 80 simulated designs with $\lambda$ from 1.05 to 5, nests of 2 and 5 alternatives, 12
+and 60 alternatives and heterogeneous choice sets, solved to $10^{-12}$, the step
+converged on every one, in a median 0.32 of Berry's evaluations and never more (with an
+outside option, Berry's contraction needed 129 to 170 evaluations, the step 9 to 70).
 
 #### 6.4.4 The layout of `delta`
 

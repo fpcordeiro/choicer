@@ -40,9 +40,19 @@ one-column matrix of one share per alternative (the outside option's
 first, when the model has one), finite, positive, and summing to 1
 within \code{sqrt(.Machine$double.eps)}. They start from the fitted
 constants (zeros for a model fitted without them) unless
-\code{delta_init} is given. \code{method = "simple"} is the scaled step
-of \code{\link{blp_contraction}()}, which takes no settings in
-\code{control}.
+\code{delta_init} is given. \code{method = "simple"} (the default) is the
+two-level step of \code{\link{blp_contraction}()}: a common shift of the
+constants, then the rest of each residual over the exact diagonal of its
+derivative. \code{method = "original"} is the contraction of Berry,
+Levinsohn and Pakes (1995, eq. 6.8),
+\eqn{\delta \leftarrow \delta + \log S - \log s(\delta)}, normalized as
+the step is (the outside option's utility 0, or each group's reference
+held) and, for the nested logit, multiplied by \code{damping}. Both run
+under the same checks, stopping rule, evaluation budget
+(\code{max_iter}), warning and returned point, and halve a step whose
+shares are not finite, so their results and \code{"convergence"} records
+compare directly; the step's cap and its restarts belong to
+\code{"simple"} alone. Neither takes settings in \code{control}.
 }
 \examples{
 \donttest{

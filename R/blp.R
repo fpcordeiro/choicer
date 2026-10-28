@@ -37,21 +37,33 @@
 #'   residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 #'   outside option's included; see Details). Default 1e-8.
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @details Each iteration evaluates the shares once and moves every constant
-#'   by its log-share residual against a base, \eqn{r_j - r_b} with
-#'   \eqn{r = \log S - \log s(\delta)}, scaled by the exact diagonal of that
-#'   residual's derivative, \eqn{A_{jj}/s_j + C_{jb}/s_b}, where \eqn{A_{jj}}
-#'   is the diagonal of the share Jacobian \eqn{\partial s/\partial \delta} and
-#'   \eqn{C_{jb} = \sum_i w_i P_{ij} P_{ib}} the share-weighted co-choice of
-#'   \eqn{j} and the base. The base is the outside option (Fukasawa's 2024
+#' @details With \eqn{r = \log S - \log s(\delta)}, the iteration solves
+#'   \eqn{\rho_j = r_j - r_b = 0} for every free constant, the log-share
+#'   residual against a base: the outside option (Fukasawa's 2024
 #'   outside-share correction) or, without one, the reference of the
-#'   alternative's group: the alternatives that share choice situations
-#'   (directly or through others) form a connected component, whose constants
+#'   alternative's group. (The alternatives that share choice situations,
+#'   directly or through others, form a connected component, whose constants
 #'   the shares identify only up to a common level, so its smallest code's
-#'   constant is held at its start. Berry's contraction takes the same steps
-#'   without the scaling. A scaled step is at most 5 log units long, or as long
-#'   as the unscaled one where that is longer, and a step whose shares are not
-#'   finite is halved, up to ten times.
+#'   constant is held at its start.) Each iteration evaluates the shares once
+#'   and takes a step in two parts. First a common shift \eqn{\tau} of the
+#'   group's free constants, to which each \eqn{\rho_j} responds at the rate
+#'   \eqn{-h_j}, \eqn{h_j = C_{jb}/s_j + \sum_k C_{kb}/s_b} exactly, where
+#'   \eqn{C_{jb} = \sum_i w_i P_{ij} P_{ib} / \sum_i w_i} is the share-weighted
+#'   co-choice of \eqn{j} and the base; \eqn{\tau} solves
+#'   \eqn{\sum_j s_j (\rho_j - h_j \tau) = 0}, to first order the shift that
+#'   matches the base's share. Then the rest of each residual, divided by the
+#'   exact diagonal of its derivative, \eqn{A_{jj}/s_j + C_{jb}/s_b}, where
+#'   \eqn{A_{jj}} is the diagonal of the share Jacobian
+#'   \eqn{\partial s/\partial \delta}. The diagonal alone would misjudge the
+#'   common shift, and diverge where the base's share is small and each
+#'   alternative dominates choice situations of its own. Berry, Levinsohn and
+#'   Pakes's (1995) contraction (\code{blp(method = "original")}) moves each
+#'   constant by its own residual, \eqn{r_j} (without an outside option
+#'   \eqn{r_j - r_b}, the reference held). A step is at most 5 log units long,
+#'   or \eqn{|\rho_j|} where that is longer; a step whose shares are not finite
+#'   is halved, up to ten times; and an iteration whose best residual has not
+#'   improved for 30 iterations (it diverges, or cycles) restarts from its best
+#'   point and halves its later steps, again at each further restart.
 #'
 #'   The iteration stops at the first evaluation whose largest absolute
 #'   log-share residual is at most \code{tol} (residuals relative to the
@@ -82,6 +94,9 @@
 #' @references Berry, S. T. (1994). Estimating discrete-choice models of
 #'   product differentiation. \emph{RAND Journal of Economics}, 25(2),
 #'   242--262.
+#'
+#'   Berry, S., Levinsohn, J., and Pakes, A. (1995). Automobile prices in
+#'   market equilibrium. \emph{Econometrica}, 63(4), 841--890.
 #'
 #'   Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static /
 #'   dynamic BLP estimations. arXiv:2404.04494.
@@ -132,16 +147,19 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
 #'   scaled by the share Jacobian's diagonal, whose within-nest term
 #'   \eqn{(1 - P(j|g))/\lambda_g} keeps them stable under strong nesting, so
 #'   damping is seldom needed.
-#' @details The step's scale is the nested logit's derivative,
+#' @details The step's diagonal is built from the nested logit's derivative,
 #'   \eqn{A_{jj} = \sum_i w_i P_{ij}((1 - P_i(j|g))/\lambda_g + P_i(j|g) -
-#'   P_{ij})} for alternative \eqn{j} in nest \eqn{g}, and, without an outside
-#'   option, its exact co-choice with the reference \eqn{b}, \eqn{\sum_i w_i
-#'   P_{ib}((1 - \lambda_g)/\lambda_g\, P_i(j|g)\, 1\{b \in g\} + P_{ij})}.
-#'   In a nest with \eqn{\lambda_g > 1} nest-mates are complements, and two
-#'   safeguards apply. An alternative whose co-choice with the reference is
-#'   negative (the reference in its nest) takes at most the unscaled step:
-#'   its scale nets out the complementarity and can be near 0 or negative.
-#'   And the scale is at least \eqn{(1 + \lambda_g)/(2\lambda_g)} times the
+#'   P_{ij}) / \sum_i w_i} for alternative \eqn{j} in nest \eqn{g}, and,
+#'   without an outside option, its exact co-choice with the reference
+#'   \eqn{b}, \eqn{\sum_i w_i P_{ib}((1 - \lambda_g)/\lambda_g\, P_i(j|g)\,
+#'   1\{b \in g\} + P_{ij}) / \sum_i w_i}, which also give the exact rate at
+#'   which the residuals respond to the common shift (the nested logit's share
+#'   Jacobian is symmetric, with rows summing to zero). In a nest with
+#'   \eqn{\lambda_g > 1} nest-mates are complements where the nest's choice
+#'   probability is below \eqn{1 - 1/\lambda_g}, and two safeguards apply. An alternative whose co-choice with the reference is
+#'   negative (the reference in its nest) has a diagonal of at least 1: its
+#'   exact one nets out the complementarity and can be near 0 or negative.
+#'   And the diagonal is at least \eqn{(1 + \lambda_g)/(2\lambda_g)} times the
 #'   one the same probabilities give with \eqn{\lambda_g = 1}: a common shift
 #'   of a nest's constants moves its shares as in a logit, while the exact
 #'   diagonal is smaller by the within-nest \eqn{1/\lambda_g}, so its step
@@ -188,9 +206,10 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
 #' \code{\link{blp_contraction}()} for the mixed logit: the constants at which
 #' the simulated shares \eqn{s_j(\delta) = \sum_i w_i S^{-1} \sum_r
 #' P_{ijr}(\delta) / \sum_i w_i} equal the targets, over the draws given, with
-#' the other parameters fixed. The step's scale averages each draw's terms,
-#' \eqn{A_{jj} = \sum_i w_i S^{-1} \sum_r P_{ijr}(1 - P_{ijr})} and
-#' \eqn{C_{jb} = \sum_i w_i S^{-1} \sum_r P_{ijr} P_{ibr}}.
+#' the other parameters fixed. The step's \eqn{A_{jj}} and \eqn{C_{jb}}
+#' average each draw's terms, \eqn{A_{jj} = \sum_i w_i S^{-1} \sum_r
+#' P_{ijr}(1 - P_{ijr}) / \sum_i w_i} and \eqn{C_{jb} = \sum_i w_i S^{-1}
+#' \sum_r P_{ijr} P_{ibr} / \sum_i w_i}.
 #'
 #' @inheritParams blp_contraction
 #' @param delta Start: one constant per inside alternative (\eqn{J}, the
@@ -280,14 +299,22 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'
 #' @param tol,max_iter,damping As in \code{blp_contraction()} and
 #'   \code{nl_blp_contraction()}.
-#' @param method The solver: \code{"simple"} (Phase B adds others).
-#' @param map The base map: \code{"reduced"} (the scaled step) or
-#'   \code{"plain"} (Berry's contraction; tests).
+#' @param method The method, as blp() names it: \code{"simple"} (the
+#'   two-level step with restarts) or \code{"original"} (Berry, Levinsohn and
+#'   Pakes's contraction). Both run the engine's simple iteration
+#'   (\code{iteration}); they differ in the map and the restarts.
+#' @param map The base map, by default the method's: \code{"reduced"} (the
+#'   two-level step), \code{"plain"} (Berry's) or \code{"jacobi"} (the
+#'   diagonal alone; tests).
+#' @param patience Accepted steps without a new best residual before a
+#'   restart from the best point, the relaxation halved (0: none); by
+#'   default \code{.BLP_PATIENCE} on the two-level map, else 0.
 #' @param keep_pass Whether the solver returns its last pass (tests).
 #' @returns A list for \code{*_blp_solve()}'s \code{control}.
 #' @noRd
 .blp_control <- function(tol = 1e-8, max_iter = 1000L, damping = 1,
-                         method = "simple", map = "reduced", keep_pass = FALSE) {
+                         method = "simple", map = NULL, patience = NULL,
+                         keep_pass = FALSE) {
   tol <- .int64_to_double(tol, "`tol`")
   max_iter <- .int64_to_double(max_iter, "`max_iter`")
   if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol < 0) {
@@ -304,10 +331,18 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
       damping <= 0 || damping > 1) {
     stop("`damping` must be a single number in (0, 1].", call. = FALSE)
   }
-  list(method = method, map = map, max_evals = as.integer(max_iter),
-       tol = as.numeric(tol), damping = as.numeric(damping),
+  if (is.null(map)) map <- if (identical(method, "original")) "plain" else "reduced"
+  if (is.null(patience)) patience <- if (map == "reduced") .BLP_PATIENCE else 0L
+  list(method = method, iteration = "simple", map = map,
+       max_evals = as.integer(max_iter), tol = as.numeric(tol),
+       damping = as.numeric(damping), patience = as.integer(patience),
        keep_pass = isTRUE(keep_pass))
 }
+
+# Method "simple"'s restarts: after this many accepted steps without a new
+# best residual (it diverges or cycles; a converging two-level iteration
+# stalls for far fewer)
+.BLP_PATIENCE <- 30L
 
 # The solver's statuses, by code (src/fixed_point.h)
 .BLP_STATUS <- c("converged", "max_iter", "non_finite", "non_finite_start")
@@ -445,8 +480,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 
 #' The solver blp() runs, and its settings
 #'
-#' Phase A's one method, "simple" (the scaled step), takes no settings in
-#' `control`.
+#' "simple" (the two-level step) and "original" (Berry, Levinsohn and
+#' Pakes's contraction) take no settings in `control`.
 #'
 #' @param method The method's name.
 #' @param control A list of the method's settings.
@@ -454,8 +489,9 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' @noRd
 .blp_method <- function(method, control) {
   if (!is.character(method) || length(method) != 1L || is.na(method) ||
-      !method %in% "simple") {
-    stop("`method` must be \"simple\": the scaled step of ?blp_contraction.",
+      !method %in% c("simple", "original")) {
+    stop("`method` must be \"simple\" (the two-level step of ?blp_contraction) ",
+         "or \"original\" (Berry, Levinsohn and Pakes's contraction).",
          call. = FALSE)
   }
   if (!is.list(control) || is.object(control)) {

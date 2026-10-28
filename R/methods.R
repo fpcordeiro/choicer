@@ -1348,9 +1348,19 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #'   first, when the model has one), finite, positive, and summing to 1
 #'   within \code{sqrt(.Machine$double.eps)}. They start from the fitted
 #'   constants (zeros for a model fitted without them) unless
-#'   \code{delta_init} is given. \code{method = "simple"} is the scaled step
-#'   of \code{\link{blp_contraction}()}, which takes no settings in
-#'   \code{control}.
+#'   \code{delta_init} is given. \code{method = "simple"} (the default) is the
+#'   two-level step of \code{\link{blp_contraction}()}: a common shift of the
+#'   constants, then the rest of each residual over the exact diagonal of its
+#'   derivative. \code{method = "original"} is the contraction of Berry,
+#'   Levinsohn and Pakes (1995, eq. 6.8),
+#'   \eqn{\delta \leftarrow \delta + \log S - \log s(\delta)}, normalized as
+#'   the step is (the outside option's utility 0, or each group's reference
+#'   held) and, for the nested logit, multiplied by \code{damping}. Both run
+#'   under the same checks, stopping rule, evaluation budget
+#'   (\code{max_iter}), warning and returned point, and halve a step whose
+#'   shares are not finite, so their results and \code{"convergence"} records
+#'   compare directly; the step's cap and its restarts belong to
+#'   \code{"simple"} alone. Neither takes settings in \code{control}.
 #' @returns The constants: an n x 1 matrix with one row per inside
 #'   alternative, named by the alternatives' labels, and the attribute
 #'   \code{"convergence"}, a list with \code{converged}, \code{status}
@@ -1474,9 +1484,10 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The solver: \code{"simple"} (see \code{\link{blp}()}).
-#' @param control A list of the method's settings (none for
-#'   \code{"simple"}).
+#' @param method The solver: \code{"simple"} (the default) or
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+#'   \code{\link{blp}()}).
+#' @param control A list of the method's settings (none for either).
 #' @param ... Additional arguments (ignored).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
@@ -1680,9 +1691,10 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   or batch jobs with memory limits), a budget above the memory actually
 #'   free can end the R session rather than fall back: lower it, or use
 #'   \code{0}, when memory is tight.
-#' @param method The solver: \code{"simple"} (see \code{\link{blp}()}).
-#' @param control A list of the method's settings (none for
-#'   \code{"simple"}).
+#' @param method The solver: \code{"simple"} (the default) or
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+#'   \code{\link{blp}()}).
+#' @param control A list of the method's settings (none for either).
 #' @param ... Additional arguments (ignored).
 #' @details The inversion integrates each choice situation over the same
 #'   draws as \code{predict()} (for a cross-sectional fit, the estimation
@@ -1946,9 +1958,10 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The solver: \code{"simple"} (see \code{\link{blp}()}).
-#' @param control A list of the method's settings (none for
-#'   \code{"simple"}).
+#' @param method The solver: \code{"simple"} (the default) or
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+#'   \code{\link{blp}()}).
+#' @param control A list of the method's settings (none for either).
 #' @param ... Additional arguments (ignored).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples

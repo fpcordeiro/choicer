@@ -96,9 +96,10 @@ option the first is 0.
 \code{\link{blp_contraction}()} for the mixed logit: the constants at which
 the simulated shares \eqn{s_j(\delta) = \sum_i w_i S^{-1} \sum_r
 P_{ijr}(\delta) / \sum_i w_i} equal the targets, over the draws given, with
-the other parameters fixed. The step's scale averages each draw's terms,
-\eqn{A_{jj} = \sum_i w_i S^{-1} \sum_r P_{ijr}(1 - P_{ijr})} and
-\eqn{C_{jb} = \sum_i w_i S^{-1} \sum_r P_{ijr} P_{ibr}}.
+the other parameters fixed. The step's \eqn{A_{jj}} and \eqn{C_{jb}}
+average each draw's terms, \eqn{A_{jj} = \sum_i w_i S^{-1} \sum_r
+P_{ijr}(1 - P_{ijr}) / \sum_i w_i} and \eqn{C_{jb} = \sum_i w_i S^{-1}
+\sum_r P_{ijr} P_{ibr} / \sum_i w_i}.
 }
 \details{
 With \code{gen_seed >= 0} the draws are formed again at every

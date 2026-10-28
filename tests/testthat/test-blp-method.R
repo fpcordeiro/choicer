@@ -18,6 +18,132 @@ bm_mnl_fit <- function(outside = FALSE, seed = 7L) {
   }
 }
 
+# The reproducer of the review of PR #56 as a fit of each model: three choice
+# situations (each repeated) in which alternatives 2, 3 and 4 each dominate
+# one, with beta = 1, the nested logit's lambdas 1 and the mixed logit's
+# random design zero, so that each is the same multinomial logit.
+bm_repro_x <- c(0, 3, -3, -3, 0, -3, 3, -3, 0, -3, -3, 3)
+bm_repro_fit <- function(model) {
+  R <- 10L
+  set.seed(5L)
+  dt <- data.table::data.table(id = rep(seq_len(3L * R), each = 4L),
+                               alt = rep(1:4, 3L * R), x1 = rep(bm_repro_x, R),
+                               nest = rep(c(1L, 1L, 2L, 2L), 3L * R),
+                               w1 = stats::rnorm(12L * R))
+  dt[, choice := as.integer(seq_len(.N) == sample.int(.N, 1L)), by = id]
+  fit <- suppressWarnings(switch(model,
+    mnl = run_mnlogit(dt, "id", "alt", "choice", "x1"),
+    nl = run_nestlogit(dt, "id", "alt", "choice", "x1", "nest",
+                       control = list(maxeval = 20L)),
+    mxl = run_mxlogit(data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
+                      covariate_cols = "x1", random_var_cols = "w1", S = 5L,
+                      control = list(maxeval = 20L))))
+  pm <- fit$param_map
+  fit$coefficients[pm$beta] <- 1
+  if (model == "nl") fit$coefficients[pm$lambda] <- 1
+  if (model == "mxl") fit$data$W[] <- 0
+  fit
+}
+
+test_that("both methods solve the review's reproducer through every model's blp()", {
+  # The diagonal step alone diverged here (test-blp-engine.R)
+  ds <- c(0, 1, 1, 1)
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, ds[-1L]), matrix(bm_repro_x),
+                                               rep(1:4, 3L), rep(4L, 3L), rep(1, 3L)))
+  for (model in c("mnl", "nl", "mxl")) {
+    fit <- bm_repro_fit(model)
+    # the fit is the reproducer: its solution meets the targets at once
+    at <- blp(fit, target_shares = S, delta_init = ds)
+    expect_identical(attr(at, "convergence")$evaluations, 1L, label = model)
+    for (method in c("simple", "original")) {
+      lab <- sprintf("%s, %s", model, method)
+      d <- blp(fit, target_shares = S, delta_init = rep(0, 4L), method = method)
+      cv <- attr(d, "convergence")
+      expect_true(cv$converged, label = lab)
+      expect_identical(cv$method, method, label = lab)
+      expect_lte(cv$evaluations, 10L, label = lab)
+      expect_equal(as.numeric(d), ds, tolerance = 1e-8, label = lab)
+    }
+  }
+})
+
+test_that("both methods recover known constants on each model", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  dn <- create_small_nl_data()
+  nl <- run_nestlogit(dn, "id", "alt", "choice", c("x1", "x2"), "nest",
+                      control = list(maxeval = 50L))
+  nl$coefficients[nl$param_map$lambda] <- c(0.7, 0.85)
+  mxl <- suppressWarnings(run_mxlogit(
+    data = create_small_mxl_data(), id_col = "id", alt_col = "alt",
+    choice_col = "choice", covariate_cols = "x1", random_var_cols = c("w1", "w2"),
+    S = 10L, control = list(maxeval = 30L)))
+  fits <- list(mnl = bm_mnl_fit(), mnl_outside = bm_mnl_fit(outside = TRUE), nl = nl,
+               mxl = mxl)
+  for (nm in names(fits)) {
+    fit <- fits[[nm]]
+    asc <- fit$param_map$asc
+    outside <- isTRUE(fit$include_outside_option)
+    set.seed(match(nm, names(fits)))
+    fit$coefficients[asc] <- stats::rnorm(length(asc))
+    ds <- if (outside) fit$coefficients[asc] else c(0, fit$coefficients[asc])
+    S <- as.numeric(predict(fit, type = "shares"))
+    for (method in c("simple", "original")) {
+      lab <- sprintf("%s, %s", nm, method)
+      d <- blp(fit, target_shares = S, delta_init = rep(0, length(ds)), tol = 1e-10,
+               method = method)
+      expect_true(attr(d, "convergence")$converged, label = lab)
+      expect_equal(as.numeric(d), as.numeric(ds), tolerance = 1e-8, label = lab)
+    }
+  }
+})
+
+test_that("method = \"original\" is Berry, Levinsohn and Pakes's contraction", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)  # (identical results at one thread)
+  for (outside in c(FALSE, TRUE)) {
+    fit <- bm_mnl_fit(outside)
+    # (far from the fitted shares, about 1/4 each)
+    S <- if (outside) c(0.3, 0.25, 0.2, 0.15, 0.1) else c(0.4, 0.3, 0.2, 0.1)
+    d <- blp(fit, target_shares = S, method = "original")
+    pm <- fit$param_map
+    start <- if (outside) fit$coefficients[pm$asc] else c(0, fit$coefficients[pm$asc])
+    # the engine's plain map: delta + log S - log s(delta), normalized
+    r <- choicer:::mnl_blp_solve(as.numeric(start), S, fit$data$X,
+                                 fit$coefficients[pm$beta], fit$data$alt_idx, fit$data$M,
+                                 fit$data$weights, outside,
+                                 choicer:::.blp_control(map = "plain", patience = 0L))
+    expect_identical(as.numeric(d), as.numeric(r$delta))
+    expect_identical(attr(d, "convergence")$evaluations, r$evaluations)
+    # one step from the start, by hand: two evaluations return the better of
+    # the start and the point one step on
+    resid <- function(dl) {
+      s <- as.numeric(choicer:::mnl_predict_shares(
+        c(fit$coefficients[pm$beta], if (outside) dl else dl[-1L]), fit$data$X,
+        fit$data$alt_idx, fit$data$M, fit$data$weights, TRUE, outside))
+      r <- log(S) - log(s)
+      list(step = if (outside) r[-1L] else r - r[1L],
+           res = max(abs(if (outside) r else r - r[1L])))
+    }
+    start <- as.numeric(start)
+    on1 <- start + resid(start)$step
+    best <- if (resid(on1)$res < resid(start)$res) on1 else start
+    d2 <- suppressWarnings(blp(fit, target_shares = S, method = "original", max_iter = 2))
+    expect_equal(as.numeric(d2), best, tolerance = 1e-12)
+  }
+  # a nested logit's damping multiplies Berry's step too
+  dt <- create_small_nl_data()
+  nl <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest",
+                      control = list(maxeval = 50L))
+  nl$coefficients[nl$param_map$lambda] <- c(0.7, 0.85)
+  S <- rev(as.numeric(predict(nl, type = "shares")))
+  o1 <- blp(nl, target_shares = S, method = "original")
+  o5 <- blp(nl, target_shares = S, method = "original", damping = 0.5)
+  expect_equal(as.numeric(o5), as.numeric(o1), tolerance = 1e-6)
+  expect_gt(attr(o5, "convergence")$evaluations, attr(o1, "convergence")$evaluations)
+  expect_identical(attr(o5, "convergence")$method, "original")
+})
+
 test_that("blp() labels its constants and records its convergence", {
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)  # (identical results at one thread)
@@ -111,9 +237,12 @@ test_that("blp() checks its start, method and settings", {
                "`delta_init` must be finite")
   d <- blp(fit, target_shares = rev(S), delta_init = rep(0, 4L))
   expect_true(attr(d, "convergence")$converged)
-  expect_error(blp(fit, target_shares = S, method = "anderson"), "must be \"simple\"")
+  expect_error(blp(fit, target_shares = S, method = "anderson"),
+               "must be \"simple\" \\(the two-level step of \\?blp_contraction\\) or \"original\"")
   expect_error(blp(fit, target_shares = S, control = list(m = 5)),
                "`control` takes no settings with method \"simple\" \\(it has `m`\\)")
+  expect_error(blp(fit, target_shares = S, method = "original", control = list(m = 5)),
+               "`control` takes no settings with method \"original\"")
   expect_error(blp(fit, target_shares = S, control = "x"), "must be a list")
   expect_error(blp(fit, target_shares = S, tol = -1), "`tol` must be a single")
   expect_error(blp(fit, target_shares = S, max_iter = 2.5), "`max_iter` must be a whole")

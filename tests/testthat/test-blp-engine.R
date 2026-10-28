@@ -1,6 +1,6 @@
 # The share inversion's engine (src/blp_engine.h, src/fixed_point.h): its
 # passes against the prediction kernels and a finite-difference Jacobian, the
-# reduced-Jacobi map and its safeguards, components and the targets' checks,
+# two-level map and its safeguards, components and the targets' checks,
 # the stopping rule and the warning, through the internal solvers
 # (*_blp_solve()) and the exported contractions.
 
@@ -324,13 +324,59 @@ test_that("the nested logit converges where Berry's contraction does not", {
   }
 })
 
-test_that("an alternative that complements the base takes at most Berry's step", {
+test_that("the common shift converges where the diagonal step alone diverges", {
+  # The reproducer of the review of PR #56: three choice situations, in each
+  # of which one of alternatives 2-4 dominates, and the reference, 1, is
+  # rarely chosen. At the solution, a common shift of the free constants
+  # moves every log-share residual against the base at the rate h = 1, while
+  # the diagonal step takes it to move each at D = 0.355: alone, that step
+  # multiplies the common shift's error by 1 - h / D = -1.82 and diverges,
+  # where Berry's contraction converges.
+  X <- matrix(c(0, 3, -3, -3, 0, -3, 3, -3, 0, -3, -3, 3), ncol = 1L)
+  alt <- rep(1:4, 3L)
+  M <- rep(4L, 3L)
+  w <- rep(1, 3L)
+  ds <- c(0, 1, 1, 1)
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, ds[-1L]), X, alt, M, w))
+  at <- eng_pass(choicer:::mnl_blp_solve(ds, S, X, 1, alt, M, w, FALSE,
+                                         eng_ctl(tol = 0, max_iter = 1L, keep_pass = TRUE)))
+  D <- at$A / at$s + at$C / at$s[1L]
+  h <- at$C / at$s + sum(at$C[-1L]) / at$s[1L]
+  expect_equal((1 - h / D)[-1L], rep(-1.8175, 3L), tolerance = 1e-4)
+  # the three models' exports, from zeros
+  expect_equal(as.numeric(blp_contraction(rep(0, 4L), S, X, 1, alt, M, w)), ds,
+               tolerance = 1e-8)
+  expect_equal(as.numeric(nl_blp_contraction(rep(0, 4L), S, X, 1, c(1, 1), alt,
+                                             c(1L, 1L, 2L, 2L), M, w)), ds,
+               tolerance = 1e-8)
+  eta <- array(stats::rnorm(15L), c(1L, 5L, 3L))
+  expect_equal(as.numeric(mxl_blp_contraction(rep(0, 4L), S, X, matrix(0, 12L, 1L), 1,
+                                              0, log(0.5), alt, M, w, eta, 0L, FALSE,
+                                              TRUE, FALSE)), ds, tolerance = 1e-8)
+  r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE, eng_ctl())
+  expect_identical(r$code, 0L)
+  expect_lte(r$evaluations, 5L)
+  # the diagonal step alone never improves on its start; the restarts halve
+  # it until it contracts
+  r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE,
+                               eng_ctl(map = "jacobi", patience = 0L))
+  expect_identical(r$code, 1L)
+  expect_identical(as.numeric(r$delta), rep(0, 4L))
+  r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE,
+                               eng_ctl(map = "jacobi", patience = 30L))
+  expect_identical(r$code, 0L)
+  expect_gte(r$restarts, 1L)
+  expect_equal(as.numeric(r$delta), ds, tolerance = 1e-8)
+})
+
+test_that("an alternative that complements the base has a diagonal of at least 1", {
   # Situations of two kinds: {1, 2, 3}, where 3 dominates, and {2, 3}, where 2
   # does; 1 and 2 share a nest with lambda = 2.5. Where 1 is offered, raising
   # delta_2 raises its nest's inclusive value and 1's share with it, so the
   # co-choice of 2 with the reference 1 is negative and the exact diagonal
-  # nets out to about 0: unbounded, its steps leave the iteration at its
-  # start; at most Berry's step, it converges as Berry's contraction does.
+  # nets out to about 0 (here -0.2): unbounded, its steps leave the iteration
+  # at its start; floored at 1, it converges at least as fast as Berry's
+  # contraction.
   N <- 200L
   sets <- lapply(seq_len(N), function(i) if (i %% 2L) 1:3 else 2:3)
   alt <- as.integer(unlist(sets))
@@ -384,6 +430,8 @@ test_that("a nest with a large lambda keeps a logit's diagonal as a floor", {
 })
 
 test_that("the step cap rescues a far noisy start in a segmented market", {
+  # (slow for every map: the regions' levels relative to one another meet
+  # through few situations; about 3,050 evaluations here, Berry's 5,500)
   d <- eng_design(1007L, 1200L, 24L, 4L, K = 4L, border = 0.02)
   set.seed(41L)
   ds <- stats::rnorm(24L)
@@ -392,7 +440,7 @@ test_that("the step cap rescues a far noisy start in a segmented market", {
   set.seed(42L)
   start <- ds + stats::rnorm(24L, 0, 3)
   r <- choicer:::mnl_blp_solve(start, S, d$X, eng_beta, d$alt, d$M, d$w, FALSE,
-                               eng_ctl(tol = 1e-10, max_iter = 3000L))
+                               eng_ctl(tol = 1e-10, max_iter = 4000L))
   expect_identical(r$code, 0L)
   expect_equal(as.numeric(r$delta), ds, tolerance = 1e-6)
 })

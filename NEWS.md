@@ -7,41 +7,65 @@
 model's market shares equal target shares (Berry 1994), with one engine in
 place of three copies of Berry's contraction. The solution is the same; the
 iteration that reaches it, its stopping rule and its handling of inputs that
-have no solution are new, so results move within the tolerance.
+have no solution are new, so results move within the tolerance. The
+contraction remains available, under the engine's rules, as
+`blp(method = "original")`.
 
-- **The step.** Each iteration evaluates the shares once and moves every free
-  constant by its log-share residual against a base, r_j - r_b (r = log S -
-  log s), divided by that residual's exact derivative in its own constant,
-  A_jj / s_j + C_jb / s_b, where A_jj is the share Jacobian's diagonal and
-  C_jb the co-choice of j with the base: the outside option (the correction
-  of Fukasawa 2024) or, without one, the reference of the alternative's
-  group. Berry's contraction divides by 1. On the 121 simulated designs of the
-  plan's test bed (multinomial, nested and mixed logits; 2 to 5,000
+- **The step.** The iteration solves for the free constants at which each
+  log-share residual against a base, r_j - r_b (r = log S - log s), is zero;
+  the base is the outside option (the correction of Fukasawa 2024) or,
+  without one, the reference of the alternative's group. Each iteration
+  evaluates the shares once and takes a step in two parts. It first shifts
+  the group's free constants together by tau, chosen to match the base's
+  share to first order: residual j responds to such a shift at the rate
+  -h_j, with h_j = C_jb / s_j + sum_k C_kb / s_b exactly and C_jb the
+  co-choice of j with the base. It then divides the rest of each residual
+  by that residual's exact derivative in its own constant, A_jj / s_j +
+  C_jb / s_b, where A_jj is the share Jacobian's diagonal. Without the
+  shift, that diagonal misjudges a common move of the constants: where the
+  base's share is small and each alternative dominates choice situations of
+  its own, it multiplies the shift's error by less than -1 and diverges
+  where Berry's contraction converges. Berry's contraction moves each
+  constant by its own log-share residual, r_j (r_j - r_b with the reference
+  held), and remains available as `blp(method = "original")`.
+
+  On 121 simulated designs (multinomial, nested and mixed logits; 2 to 5,000
   alternatives; full, regional and chained choice sets; outside shares from
   0.02 to 0.5; far starts), solved to 1e-12, the step converged on every one
-  and needed a median 0.37 of the contraction's evaluations of the shares
-  (10th to 90th percentiles 0.06 and 0.81; medians 32 against 161 for the
-  multinomial logit, 16.5 against 184 for the nested and 173 against 593 for
-  the mixed logit, over the designs where both converged). The contraction
-  did not converge within 3,000 evaluations on 8 nested logits with lambda of
-  0.4 or less, where its step overshoots by about 1 / lambda; the step needed
-  24 to 115. It was slower on one design, binary choice sets chained over ten
-  alternatives without an outside option: 2,196 evaluations against 1,299,
-  both past the default `max_iter`.
-- **Safeguards.** A step is at most 5 log units long, or as long as the
-  contraction's where that is longer. An evaluation whose shares are not
-  finite halves the step.
-  Two more apply in nests with lambda above 1, whose nest-mates are
-  complements. An alternative whose co-choice with the reference is negative
-  takes at most the contraction's step. The step's denominator is at least
-  (1 + lambda) / (2 lambda) times the one the same probabilities give with
-  lambda = 1, where the exact one would overshoot a common shift of the
-  nest's constants and, for lambda above 2, diverge. On 84 nested logits with
-  lambda from 1.05 to 5 the step converged on all, in at most 1.04 times the
-  contraction's evaluations, while the contraction failed on 7 (with an
-  outside option it needed 500 to more than 3,000 evaluations, the step 10 to
-  101). `damping`, for the nested logit, now multiplies the step and must lie
-  in (0, 1]; small lambda no longer needs it.
+  and needed a median 0.36 of the contraction's evaluations of the shares
+  (10th to 90th percentiles 0.04 and 0.81; medians 32 against 161 for the
+  multinomial logit, 15 against 184 for the nested and 174 against 593 for
+  the mixed logit, over the designs where both converged). It never needed
+  more than 1.05 times the contraction's evaluations: the most was on binary
+  choice sets chained over ten alternatives without an outside option,
+  1,357 against 1,299, both past the default `max_iter`. The contraction did
+  not converge within 3,000 evaluations on 8 nested logits with lambda of 0.4
+  or less, where its step overshoots by about 1 / lambda; the step needed 23
+  to 119. On 80 designs in which each alternative dominates choice
+  situations of its own and the base is rarely chosen, solved to 1e-10 for
+  each model, the step did not converge within 3,000 evaluations on 1, 2
+  and 1 (multinomial, nested and mixed logits; each was still approaching
+  its solution, and reached it within 19,000; the contraction failed on them
+  too), and the contraction on 22, 27 and 20; where both converged, the step
+  needed a median 0.16 of the contraction's evaluations, at most 0.52.
+- **Safeguards.** A step is at most 5 log units long, or as long as its
+  residual against the base, |r_j - r_b|, where that is longer. An
+  evaluation whose shares are not finite halves the step. An iteration whose
+  best residual has not improved for 30 iterations (it diverges, or cycles)
+  restarts from its best point and halves its later steps, again at each
+  further restart; none of the designs above needed it. Two more apply in
+  nests with lambda above 1, whose nest-mates are complements where the
+  nest's choice probability is below 1 - 1 / lambda. An alternative whose
+  co-choice with the reference is negative divides by at least 1. The
+  step's divisor is at least (1 + lambda) / (2 lambda) times the one the
+  same probabilities give with lambda = 1, where the exact one would
+  overshoot a common shift of the nest's constants and, for lambda above 2,
+  diverge. On 80 nested logits with lambda from 1.05 to 5 the step converged
+  on all, in a median 0.32 of the contraction's evaluations and never more
+  (with an outside option the contraction needed 129 to 170 evaluations, the
+  step 9 to 70). `damping`, for the nested logit, now multiplies the step and
+  must lie in (0, 1]; with the default step, small lambda no longer needs it
+  (`method = "original"` still may).
 - **Stopping rule.** The iteration stops at the first evaluation whose
   largest absolute log-share residual is at most `tol` (relative to the
   reference of each group without an outside option; with one, each group's
@@ -80,15 +104,20 @@ have no solution are new, so results move within the tolerance.
   evaluation of the shares. Such inputs gave NaN, constants that drifted
   without converging, or, with lambda of 0 or below, shares without
   meaning.
-- **`blp()`** checks its targets in R before the model's solver runs (and
-  so before a mixed logit forms its draws): one share per alternative, the
+- **`blp()`** checks its targets in R before the model's solver runs (and so
+  before a mixed logit forms its draws): one share per alternative, the
   outside option's first, finite, positive and summing to 1. It checks
-  `delta_init` the same way, and gains `method` (`"simple"`, the step above)
-  and `control` (none of its settings yet). Its result keeps its n x 1 shape
-  and gains the inside alternatives' labels as row names and a
-  `"convergence"` attribute: the warning's record (converged, status,
-  iterations, evaluations, residual, `tol` and method), there whether or not
-  it converged.
+  `delta_init` the same way, and gains `method` and `control` (no settings
+  yet). `method = "simple"`, the default, is the step above; `"original"` is
+  the contraction of Berry, Levinsohn and Pakes (1995, eq. 6.8),
+  delta + log S - log s(delta), normalized as the step is and, for the nested
+  logit, multiplied by `damping`. Both share the checks, the stopping rule,
+  the evaluation budget, the warning, the point returned and the halving of a
+  step whose shares are not finite; the step's cap and the restarts belong to
+  the default step only. Its result keeps its n x 1 shape and gains the inside
+  alternatives' labels as row names and a `"convergence"` attribute: the
+  warning's record (converged, status, iterations, evaluations, residual,
+  `tol` and method), there whether or not it converged.
 - **Cost per evaluation.** Each evaluation of the shares also forms the
   step's derivatives. On simulated claims- and census-style designs (8.7 and
   9.8 million rows; the mixed logit's 1.4 and 1.5 million, with 20 draws), an
