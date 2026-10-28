@@ -79,9 +79,18 @@
 //     the outside share's correction, and without the common shift, that
 //     iteration (gamma = 0: r_j over A_jj / s_j; r_b is then infinite).
 // And the iteration's own (fixed_point.h): a trial point whose shares are not
-// finite halves the step; with method "simple", an iteration whose best
-// residual stops improving restarts from its best point with its steps'
-// relaxation halved.
+// finite halves the step; with method "simple", a stall (no new best residual
+// in patience steps) halves the later steps, returning to the best point only
+// when the residual has grown past twice the best, once per best point; and
+// once a window of steps fails to halve the best residual, Berry's
+// contraction joins from the start, the two taking evaluations in turn, and
+// the first to meet tol returns. A diagonal step can amplify a small residual
+// of an alternative whose share barely responds to its own constant (one
+// that nearly owns its choice situations) into a step that wrecks the shares
+// of its neighbours there, and then oscillate; Berry's step is never
+// amplified, so where Berry's contraction converges at a steady pace the race
+// bounds the method's evaluations by twice its own, plus those before it
+// joined.
 //
 // Stopping rule (every method): the largest absolute residual |r_j - r_ref|
 // over the inside alternatives without an outside option, |r_j| with one,
@@ -104,7 +113,9 @@ struct BlpControl {
   int max_evals = 1000;
   double tol = 1e-8;
   double damping = 1.0;
-  int patience = 0;         // restarts after this many steps without progress
+  int patience = 0;         // steps without a new best residual: a stall
+  int window = 0;           // steps that must halve the best residual, or
+                            // Berry's contraction joins (FpControl)
   bool keep_pass = false;   // tests: return the last pass
 };
 
@@ -345,6 +356,7 @@ struct BlpMapEval {
   arma::vec num, den, h;                  // per free constant
   arma::vec sb, csum, wnum, wh, tau;      // per component (the common shift)
   double fallbacks = 0;
+  bool berry = false;  // the fallback step, Berry's, while the solver asks
 
   BlpMapEval(Model& model_, const BlpComponents& comp_, const BlpProblem& pb_,
              const int map_, arma::vec& delta_, const arma::vec* floor_scale_)
@@ -355,6 +367,8 @@ struct BlpMapEval {
         wnum(comp_.n), wh(comp_.n), tau(comp_.n) {}
 
   arma::uword n() const { return pb.free.size(); }
+  bool has_fallback() const { return map != BLP_MAP_PLAIN; }
+  void use_fallback(const bool on) { berry = on; }
 
   bool eval(const arma::vec& x, double& res, arma::vec& step) {
     const int J = pb.J;
@@ -380,7 +394,7 @@ struct BlpMapEval {
       res = arma::datum::inf;
       return false;
     }
-    if (map == BLP_MAP_PLAIN) {
+    if (map == BLP_MAP_PLAIN || berry) {
       for (std::size_t k = 0; k < nf; ++k) {
         const int j = pb.free[k];
         step[k] = pb.outside ? r[j] : r[j] - r[comp.ref[comp.of[j]]];
@@ -493,6 +507,7 @@ inline BlpResult blp_solve(Model& model, const BlpComponents& comp,
   fc.tol = ctl.tol;
   fc.damping = ctl.damping;
   fc.patience = ctl.patience;
+  fc.window = ctl.window;
   BlpResult out;
   if (pb.free.empty()) {
     out.fp.code = FP_CONVERGED;  // every constant held: nothing to solve
@@ -528,6 +543,7 @@ inline BlpControl blp_control(const Rcpp::List& control) {
   c.tol = Rcpp::as<double>(control["tol"]);
   c.damping = Rcpp::as<double>(control["damping"]);
   c.patience = Rcpp::as<int>(control["patience"]);
+  c.window = Rcpp::as<int>(control["window"]);
   c.keep_pass = Rcpp::as<bool>(control["keep_pass"]);
   return c;
 }
@@ -542,7 +558,9 @@ inline Rcpp::List blp_result(const arma::vec& delta, const BlpResult& res,
       Rcpp::Named("iterations") = res.fp.iterations,
       Rcpp::Named("evaluations") = res.fp.evaluations,
       Rcpp::Named("backtracks") = res.fp.backtracks,
-      Rcpp::Named("restarts") = res.fp.restarts,
+      Rcpp::Named("stalls") = res.fp.stalls,
+      Rcpp::Named("race") = res.fp.race,
+      Rcpp::Named("berry") = res.fp.fallback,
       Rcpp::Named("residual") = res.fp.residual,
       Rcpp::Named("fallbacks") = res.fallbacks);
   if (ctl.keep_pass) {

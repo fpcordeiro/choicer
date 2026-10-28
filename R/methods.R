@@ -1359,8 +1359,9 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #'   under the same checks, stopping rule, evaluation budget
 #'   (\code{max_iter}), warning and returned point, and halve a step whose
 #'   shares are not finite, so their results and \code{"convergence"} records
-#'   compare directly; the step's cap and its restarts belong to
-#'   \code{"simple"} alone. Neither takes settings in \code{control}.
+#'   compare directly; the step's cap, its stalls and the contraction joining
+#'   it belong to \code{"simple"} alone. Neither takes settings in
+#'   \code{control}.
 #' @returns The constants: an n x 1 matrix with one row per inside
 #'   alternative, named by the alternatives' labels, and the attribute
 #'   \code{"convergence"}, a list with \code{converged}, \code{status}

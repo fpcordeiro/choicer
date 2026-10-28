@@ -86,9 +86,25 @@ Pakes's (1995) contraction (\code{blp(method = "original")}) moves each
 constant by its own residual, \eqn{r_j} (without an outside option
 \eqn{r_j - r_b}, the reference held). A step is at most 5 log units long,
 or \eqn{|\rho_j|} where that is longer; a step whose shares are not finite
-is halved, up to ten times; and an iteration whose best residual has not
-improved for 30 iterations (it diverges, or cycles) restarts from its best
-point and halves its later steps, again at each further restart.
+is halved, up to ten times. An iteration whose best residual has not
+improved for 30 iterations (a stall) halves its later steps; it returns
+to its best point only when its residual at the stall exceeds twice the
+best (it diverges), once per best point, and otherwise goes on from where
+it is, each such stall doubling the iterations the next one waits for,
+so that constants climbing back from where their shares barely respond
+are not pulled back. And once 100 iterations fail to halve the best
+residual, or a trial point's shares stay non-finite after every halving,
+Berry, Levinsohn and Pakes's contraction joins from the start: the two
+take evaluations in turn, the first to meet \code{tol} returns, and the
+contraction stops if 100 of its own iterations fail to halve its residual
+while the step's is lower. A divided step can amplify the small residual
+of an alternative that nearly owns its choice situations into a step
+that wrecks its neighbours' shares there, and then oscillate; the
+contraction's step is never amplified. So wherever the contraction
+converges in \eqn{E} evaluations, halving its residual at least every 100
+iterations, this converges within \eqn{T + 2E}, \eqn{T} the evaluations
+before the contraction joined (when the step's trial points need no
+halving meanwhile).
 
 The iteration stops at the first evaluation whose largest absolute
 log-share residual is at most \code{tol} (residuals relative to the

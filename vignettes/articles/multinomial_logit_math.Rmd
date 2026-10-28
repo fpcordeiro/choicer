@@ -546,20 +546,43 @@ to 5 log units, not beyond (an alternative chosen almost wherever it is offered 
 diagonal near zero). In an iteration where a component's outside share underflows
 to zero, the step drops the outside correction and the common shift ($r_j$ over
 $A_{jj}/\hat{s}_j$). An evaluation whose shares are not finite halves the step, up to ten
-times. And an iteration whose best residual has not improved for 30 iterations (it
-diverges, or cycles) restarts from its best point and halves its later steps, again at
-each further restart: a step that overshoots some direction contracts once it is short
-enough. Berry's contraction takes only the halving of steps whose shares are not finite.
+times. An iteration whose best residual has not improved for 30 iterations (a stall)
+halves its later steps. If its residual at the stall is more than twice the best, the
+steps diverge, and it first returns to its best point, once per best point; otherwise it
+goes on from where it is, each such stall doubling the iterations the next one waits
+for. Going on matters:
+far from the solution the common shift can strand constants where their shares barely
+respond (alternatives offered with the base only in situations that others dominate),
+and the way back can climb for dozens of iterations at a residual above the best so far,
+a climb that returning to that best point at every stall would never complete. And the
+scaling can amplify a small residual of an alternative that nearly owns its choice
+situations, whose diagonal is near zero, into a step that wrecks the shares of its
+neighbours there; the two then oscillate, and the residual decays too slowly. Berry's
+contraction never amplifies a step, so it races the step once the step stops making
+progress: when 100 iterations fail to halve the best residual (or a trial point's shares
+stay non-finite after every halving), the contraction starts from the same start and the
+two take evaluations of the shares in turn. The first to reach the tolerance returns;
+the contraction stops early if 100 of its own iterations fail to halve its residual
+while the step's is lower. Where the contraction converges in $E$ evaluations, halving
+its residual at least every 100 iterations, the method converges within $T + 2E$, $T$
+the evaluations before the contraction joined (when the step's trial points need no
+halving meanwhile). Berry's contraction itself, as `method = "original"`, takes only the
+halving of steps whose shares are not finite.
 
 On the 121 simulated designs of choicer's test bed (multinomial, nested and mixed logits;
 2 to 5,000 alternatives; full, regional and chained choice sets; far starts), solved to
 $10^{-12}$, the step converged on every one; where Berry's contraction converged too (113
 designs), the step needed a median 0.36 of its evaluations, and never more than 1.05
-times as many; no iteration restarted. On 80 designs built
-like the example above, solved to $10^{-10}$, it did not converge within 3,000
-evaluations on one, which it was still approaching (it took 7,071), and Berry's
+times as many; no iteration stalled, and the contraction never joined. On 80 designs
+built like the example above, solved to $10^{-10}$, it did not converge within 3,000
+evaluations on one, which it was still approaching (it took 7,272), and Berry's
 contraction failed on 22; where both converged, the step needed a median 0.16 of Berry's
-evaluations.
+evaluations. On 999 small designs drawn to be hard (3 to 6 alternatives in 2 to 8 choice
+situations of random sizes, single-alternative ones included; covariates and constants
+integers in $[-10, 10]$ and $[-3, 3]$; half with an outside option), at the default
+tolerance and 1,000 evaluations, the method failed on 103 and Berry's contraction on
+592, never where the contraction converged; where both converged, the method needed a
+median 0.12 of the contraction's evaluations.
 
 ### 7.4 Stopping Rule and Result
 

@@ -1193,7 +1193,9 @@ carries the $1/\lambda_g$, so no damping is needed. For a nest's dominant altern
 $1 - P_i(j \mid g)$ is formed as the sum of its nest-mates' conditional probabilities,
 since $\lambda_g$ can be as small as $10^{-16}$, where the difference loses every digit.
 The logit's other safeguards apply: the step's cap, its halving where the shares are not
-finite, and the restarts.
+finite, its stalls, and the contraction racing it once 100 iterations fail to halve the
+best residual (multiplied by `damping` like the step; where it diverges, at small
+$\lambda_g$, it falls behind and stops).
 
 #### 6.4.3 Nests with $\lambda_g > 1$
 

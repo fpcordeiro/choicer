@@ -45,17 +45,20 @@ contraction remains available, under the engine's rules, as
   situations of its own and the base is rarely chosen, solved to 1e-10 for
   each model, the step did not converge within 3,000 evaluations on 1, 2
   and 1 (multinomial, nested and mixed logits; each was still approaching
-  its solution, and reached it within 19,000; the contraction failed on them
+  its solution, and reached it within 20,000; the contraction failed on them
   too), and the contraction on 22, 27 and 20; where both converged, the step
   needed a median 0.16 of the contraction's evaluations, at most 0.52.
 - **Safeguards.** A step is at most 5 log units long, or as long as its
   residual against the base, |r_j - r_b|, where that is longer. An
   evaluation whose shares are not finite halves the step. An iteration whose
-  best residual has not improved for 30 iterations (it diverges, or cycles)
-  restarts from its best point and halves its later steps, again at each
-  further restart; none of the designs above needed it. Two more apply in
-  nests with lambda above 1, whose nest-mates are complements where the
-  nest's choice probability is below 1 - 1 / lambda. An alternative whose
+  best residual has not improved for 30 iterations (a stall) halves its later
+  steps. Where its residual at the stall is more than twice the best (it
+  diverges), it first returns to its best point, once per best point;
+  otherwise it goes on from where it is, and each such stall doubles the
+  iterations the next one waits for, so that constants climbing back from
+  where their shares barely respond are not pulled back. Two more safeguards
+  apply in nests with lambda above 1, whose nest-mates are complements where
+  the nest's choice probability is below 1 - 1 / lambda. An alternative whose
   co-choice with the reference is negative divides by at least 1. The
   step's divisor is at least (1 + lambda) / (2 lambda) times the one the
   same probabilities give with lambda = 1, where the exact one would
@@ -66,6 +69,31 @@ contraction remains available, under the engine's rules, as
   step 9 to 70). `damping`, for the nested logit, now multiplies the step and
   must lie in (0, 1]; with the default step, small lambda no longer needs it
   (`method = "original"` still may).
+- **Berry's contraction as a fallback.** The step can amplify the small
+  residual of an alternative that nearly owns its choice situations into a
+  step that wrecks its neighbours' shares there, which the contraction never
+  does. So once 100 iterations fail to halve the best residual, or a trial
+  point's shares stay non-finite after every halving (the step then stops,
+  and the contraction goes on alone), the contraction races the step from
+  the start: the two take evaluations in turn, the first to meet `tol` is
+  returned, and the contraction stops if 100 of its own iterations fail to
+  halve its residual while the step's is lower. Where the contraction
+  converges in E evaluations, halving its residual at least every 100
+  iterations, the default converges within T + 2E, T the evaluations before
+  the contraction joined (when the step's trial points need no halving
+  meanwhile). No design above stalled at the budgets reported; the
+  contraction joined on 6 of the 240 in which each alternative dominates
+  situations of its own, at evaluation 201: four that neither solved within
+  3,000 evaluations, and two that it made 1.08 times as long. On 2,995 small
+  designs drawn to be hard (3 to 6 alternatives in 2 to 8 choice situations
+  of random sizes, single-alternative ones included; integer covariates and
+  constants in [-10, 10] and [-3, 3], the mixed logit's random-coefficient
+  covariate in [-3, 3]; half with an outside option; the three models,
+  lambda from 0.2 to 2), at the default tolerance and 1,000 evaluations, the
+  default failed on 296 and the contraction on 1,742, the default on only
+  one where the contraction converged (a nested logit that the contraction
+  needed 770 evaluations for); where both converged, the default needed
+  about a tenth of the contraction's evaluations.
 - **Stopping rule.** The iteration stops at the first evaluation whose
   largest absolute log-share residual is at most `tol` (relative to the
   reference of each group without an outside option; with one, each group's
@@ -113,9 +141,10 @@ contraction remains available, under the engine's rules, as
   delta + log S - log s(delta), normalized as the step is and, for the nested
   logit, multiplied by `damping`. Both share the checks, the stopping rule,
   the evaluation budget, the warning, the point returned and the halving of a
-  step whose shares are not finite; the step's cap and the restarts belong to
-  the default step only. Its result keeps its n x 1 shape and gains the inside
-  alternatives' labels as row names and a `"convergence"` attribute: the
+  step whose shares are not finite; the step's cap, its stalls and the race
+  with the contraction belong to the default only. Its result keeps its
+  n x 1 shape and gains the inside alternatives' labels as row names and a
+  `"convergence"` attribute: the
   warning's record (converged, status, iterations, evaluations, residual,
   `tol` and method), there whether or not it converged.
 - **Cost per evaluation.** Each evaluation of the shares also forms the
