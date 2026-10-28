@@ -499,32 +499,67 @@ them may still be unattainable, and the iteration then does not converge.
 ### 7.3 The Iteration
 
 Write $r = \log S - \log \hat{s}(\delta)$ for the log-share residuals and $b$ for the base:
-the outside option, or, without one, the reference of $j$'s component. Berry's contraction
-updates $\delta_j \leftarrow \delta_j + r_j$. choicer takes, for every free constant, the
-Newton step on that coordinate of the residual relative to the base, the other constants
-held:
+the outside option, or, without one, the reference of $j$'s component. The free constants
+solve $\rho_j(\delta) = r_j - r_b = 0$; with an outside option, $r_j - r_0$ is the
+outside-share correction of Fukasawa (2024). Berry, Levinsohn and Pakes's (1995)
+contraction, `method = "original"`, updates $\delta_j \leftarrow \delta_j + r_j$ (with the
+component's reference held, $\delta_j + r_j - r_b$).
+
+The derivative of $\rho$ in the free constants is
 
 $$
-\delta_j \leftarrow \delta_j + \frac{r_j - r_b}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b},
+-\frac{\partial \rho_j}{\partial \delta_k}
+= \frac{1}{\hat{s}_j}\frac{\partial \hat{s}_j}{\partial \delta_k} + \frac{C_{kb}}{\hat{s}_b},
 \qquad
-A_{jj} = \frac{\sum_i w_i P_{ij}(1 - P_{ij})}{\sum_i w_i},
+A_{jj} = \frac{\partial \hat{s}_j}{\partial \delta_j}
+= \frac{\sum_i w_i P_{ij}(1 - P_{ij})}{\sum_i w_i},
 \qquad
-C_{jb} = \frac{\sum_i w_i P_{ij} P_{ib}}{\sum_i w_i},
+C_{jb} = -\frac{\partial \hat{s}_b}{\partial \delta_j}
+= \frac{\sum_i w_i P_{ij} P_{ib}}{\sum_i w_i}:
 $$
 
-where $A_{jj} = \partial \hat{s}_j / \partial \delta_j$ and $C_{jb} = -\partial
-\hat{s}_b / \partial \delta_j$, so the denominator is the exact diagonal of the derivative
-of $r_j - r_b$. Berry's contraction takes 1 in its place; with an outside option, the
-numerator $r_j - r_0$ is the outside-share correction of Fukasawa (2024). A choice
-situation that lists an alternative twice contributes its total probability. One
-evaluation of the shares gives $\hat{s}$, $A$ and $C$ together.
+a part with a dominant diagonal, $A_{jj}/\hat{s}_j$, plus a term common to every row, the
+response of the base's share. The default step, `method = "simple"`, treats the two in
+turn. A common shift $\tau$ of the component's free constants moves each $\rho_j$ by
+$-h_j \tau$ to first order, where $h_j = C_{jb}/\hat{s}_j + \sum_k C_{kb}/\hat{s}_b$
+exactly (the share Jacobian is symmetric and its rows sum to zero), and $\tau$ solves
+$\sum_j \hat{s}_j (\rho_j - h_j \tau) = 0$, to first order the shift that matches the
+base's share. The rest of each residual takes the exact diagonal of the derivative:
 
-Two safeguards keep the step from failing where Berry's contraction converges: a step is
-at most $\max(|r_j - r_b|, 5)$ in magnitude (the scaling may lengthen Berry's step to at
-most 5 log units, never beyond Berry's own: an alternative chosen almost wherever it is
-offered has a denominator near zero), and in an iteration where a component's outside share underflows to zero the
-step drops the outside correction ($r_j$ over $A_{jj}/\hat{s}_j$). An evaluation whose
-shares are not finite halves the step, up to ten times.
+$$
+\delta_j \leftarrow \delta_j + \tau + \frac{\rho_j - h_j \tau}{D_j},
+\qquad
+D_j = \frac{A_{jj}}{\hat{s}_j} + \frac{C_{jb}}{\hat{s}_b}.
+$$
+
+The diagonal alone misjudges the common shift. Where the base's share is small and each
+alternative dominates choice situations of its own, $1 - h_j/D_j$ falls below $-1$ and
+that step diverges where Berry's contraction converges: in three choice situations, each
+won by one of alternatives 2 to 4 ($x'\beta$ of 3 for the winner, $-3$ for the other two
+and 0 for a rarely chosen alternative 1, with constants $(0, 1, 1, 1)$), it is $-1.82$ at
+the solution. A choice situation that lists an alternative twice contributes its total
+probability. One evaluation of the shares gives $\hat{s}$, $A$ and $C$ together.
+
+Safeguards keep the step from failing where Berry's contraction converges. A step is at
+most $\max(|\rho_j|, 5)$ in magnitude: the scaling may lengthen the unscaled step $\rho_j$
+to 5 log units, not beyond (an alternative chosen almost wherever it is offered has a
+diagonal near zero). In an iteration where a component's outside share underflows
+to zero, the step drops the outside correction and the common shift ($r_j$ over
+$A_{jj}/\hat{s}_j$). An evaluation whose shares are not finite halves the step, up to ten
+times. And an iteration whose best residual has not improved for 30 iterations (it
+diverges, or cycles) restarts from its best point and halves its later steps, again at
+each further restart: a step that overshoots some direction contracts once it is short
+enough. Berry's contraction takes only the halving of steps whose shares are not finite.
+
+On the 121 simulated designs of choicer's test bed (multinomial, nested and mixed logits;
+2 to 5,000 alternatives; full, regional and chained choice sets; far starts), solved to
+$10^{-12}$, the step converged on every one; where Berry's contraction converged too (113
+designs), the step needed a median 0.36 of its evaluations, and never more than 1.05
+times as many; no iteration restarted. On 80 designs built
+like the example above, solved to $10^{-10}$, it did not converge within 3,000
+evaluations on one, which it was still approaching (it took 7,071), and Berry's
+contraction failed on 22; where both converged, the step needed a median 0.16 of Berry's
+evaluations.
 
 ### 7.4 Stopping Rule and Result
 

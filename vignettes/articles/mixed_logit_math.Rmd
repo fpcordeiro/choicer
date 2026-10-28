@@ -1776,22 +1776,33 @@ and $P_{ij}^s(\delta)$ is the probability for individual $i$, alternative $j$, a
 The inversion is the multinomial logit's (§7 of the [multinomial logit
 article](multinomial_logit_math.html)), with the simulated probabilities: its
 identification, its checks of the targets, its step and its stopping rule are the same.
-With $r = \log s - \log \hat{s}(\delta)$ ($s$ the targets) and $b$ the outside option or,
-without one, the reference of $j$'s component, each iteration takes
+With $r = \log s - \log \hat{s}(\delta)$ ($s$ the targets), $b$ the outside option or,
+without one, the reference of $j$'s component, and $\rho_j = r_j - r_b$, each iteration
+shifts the component's free constants together by $\tau$, then takes the exact diagonal
+on the rest:
 
 $$
-\delta_j \leftarrow \delta_j + \frac{r_j - r_b}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b},
+\delta_j \leftarrow \delta_j + \tau + \frac{\rho_j - h_j \tau}{A_{jj}/\hat{s}_j + C_{jb}/\hat{s}_b},
 \qquad
 A_{jj} = \frac{\sum_i w_i \frac{1}{S}\sum_{s} P_{ij}^s(1 - P_{ij}^s)}{\sum_i w_i},
 \qquad
 C_{jb} = \frac{\sum_i w_i \frac{1}{S}\sum_{s} P_{ij}^s P_{ib}^s}{\sum_i w_i},
 $$
 
-the exact diagonal of the derivative of $r_j - r_b$: the logit's terms, draw by draw, then
-averaged. Every alternative is a substitute for every other within a draw, so $C_{jb} \ge
-0$. Berry's contraction takes 1 for the denominator. A step is at most $\max(|r_j - r_b|,
-5)$ in magnitude, and where a component's outside share underflows to zero the step drops
-the outside correction for that iteration.
+where $-h_j$, $h_j = C_{jb}/\hat{s}_j + \sum_k C_{kb}/\hat{s}_b$, is the exact rate at
+which $\rho_j$ responds to the common shift and $\tau$ solves
+$\sum_j \hat{s}_j(\rho_j - h_j \tau) = 0$. The denominator is the exact diagonal of the
+derivative of $\rho_j$: the logit's terms, draw by draw, then averaged. Within a draw the
+shares are a logit's, so the simulated share Jacobian is symmetric with rows summing to
+zero, which makes $h_j$ exact, and every
+alternative is a substitute for every other, so $C_{jb} \ge 0$. Berry, Levinsohn and
+Pakes's (1995) contraction, `method = "original"`, takes $r_j$ itself ($r_j - r_b$
+without an outside option, the reference held). The safeguards are the logit's: a step is
+at most $\max(|\rho_j|, 5)$ in magnitude; where a component's outside share underflows to
+zero the step drops the outside correction and the common shift for that iteration; a
+step whose shares are not finite is halved; and an iteration whose best residual has not
+improved for 30 iterations restarts from its best point and halves its later steps, again
+at each further restart.
 
 The iteration stops at the first evaluation whose largest absolute residual (relative to
 each component's reference without an outside option; with one, each component's outside

@@ -73,16 +73,19 @@ the nested logit's shares equal the targets, with \eqn{\beta} and the
 dissimilarities held fixed.
 }
 \details{
-The step's scale is the nested logit's derivative,
+The step's diagonal is built from the nested logit's derivative,
 \eqn{A_{jj} = \sum_i w_i P_{ij}((1 - P_i(j|g))/\lambda_g + P_i(j|g) -
-  P_{ij})} for alternative \eqn{j} in nest \eqn{g}, and, without an outside
-option, its exact co-choice with the reference \eqn{b}, \eqn{\sum_i w_i
-  P_{ib}((1 - \lambda_g)/\lambda_g\, P_i(j|g)\, 1\{b \in g\} + P_{ij})}.
-In a nest with \eqn{\lambda_g > 1} nest-mates are complements, and two
-safeguards apply. An alternative whose co-choice with the reference is
-negative (the reference in its nest) takes at most the unscaled step:
-its scale nets out the complementarity and can be near 0 or negative.
-And the scale is at least \eqn{(1 + \lambda_g)/(2\lambda_g)} times the
+  P_{ij}) / \sum_i w_i} for alternative \eqn{j} in nest \eqn{g}, and,
+without an outside option, its exact co-choice with the reference
+\eqn{b}, \eqn{\sum_i w_i P_{ib}((1 - \lambda_g)/\lambda_g\, P_i(j|g)\,
+  1\{b \in g\} + P_{ij}) / \sum_i w_i}, which also give the exact rate at
+which the residuals respond to the common shift (the nested logit's share
+Jacobian is symmetric, with rows summing to zero). In a nest with
+\eqn{\lambda_g > 1} nest-mates are complements where the nest's choice
+probability is below \eqn{1 - 1/\lambda_g}, and two safeguards apply. An alternative whose co-choice with the reference is
+negative (the reference in its nest) has a diagonal of at least 1: its
+exact one nets out the complementarity and can be near 0 or negative.
+And the diagonal is at least \eqn{(1 + \lambda_g)/(2\lambda_g)} times the
 one the same probabilities give with \eqn{\lambda_g = 1}: a common shift
 of a nest's constants moves its shares as in a logit, while the exact
 diagonal is smaller by the within-nest \eqn{1/\lambda_g}, so its step

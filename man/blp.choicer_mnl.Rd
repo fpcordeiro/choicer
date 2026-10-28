@@ -32,10 +32,11 @@ residual (default 1e-8; see \code{\link{blp_contraction}()}).}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
 
-\item{method}{The solver: \code{"simple"} (see \code{\link{blp}()}).}
+\item{method}{The solver: \code{"simple"} (the default) or
+\code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+\code{\link{blp}()}).}
 
-\item{control}{A list of the method's settings (none for
-\code{"simple"}).}
+\item{control}{A list of the method's settings (none for either).}
 
 \item{...}{Additional arguments (ignored).}
 }

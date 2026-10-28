@@ -62,21 +62,33 @@ counterfactual share matching. \code{\link{blp}()} runs it on a fitted
 model; these functions take the model's inputs directly.
 }
 \details{
-Each iteration evaluates the shares once and moves every constant
-by its log-share residual against a base, \eqn{r_j - r_b} with
-\eqn{r = \log S - \log s(\delta)}, scaled by the exact diagonal of that
-residual's derivative, \eqn{A_{jj}/s_j + C_{jb}/s_b}, where \eqn{A_{jj}}
-is the diagonal of the share Jacobian \eqn{\partial s/\partial \delta} and
-\eqn{C_{jb} = \sum_i w_i P_{ij} P_{ib}} the share-weighted co-choice of
-\eqn{j} and the base. The base is the outside option (Fukasawa's 2024
+With \eqn{r = \log S - \log s(\delta)}, the iteration solves
+\eqn{\rho_j = r_j - r_b = 0} for every free constant, the log-share
+residual against a base: the outside option (Fukasawa's 2024
 outside-share correction) or, without one, the reference of the
-alternative's group: the alternatives that share choice situations
-(directly or through others) form a connected component, whose constants
+alternative's group. (The alternatives that share choice situations,
+directly or through others, form a connected component, whose constants
 the shares identify only up to a common level, so its smallest code's
-constant is held at its start. Berry's contraction takes the same steps
-without the scaling. A scaled step is at most 5 log units long, or as long
-as the unscaled one where that is longer, and a step whose shares are not
-finite is halved, up to ten times.
+constant is held at its start.) Each iteration evaluates the shares once
+and takes a step in two parts. First a common shift \eqn{\tau} of the
+group's free constants, to which each \eqn{\rho_j} responds at the rate
+\eqn{-h_j}, \eqn{h_j = C_{jb}/s_j + \sum_k C_{kb}/s_b} exactly, where
+\eqn{C_{jb} = \sum_i w_i P_{ij} P_{ib} / \sum_i w_i} is the share-weighted
+co-choice of \eqn{j} and the base; \eqn{\tau} solves
+\eqn{\sum_j s_j (\rho_j - h_j \tau) = 0}, to first order the shift that
+matches the base's share. Then the rest of each residual, divided by the
+exact diagonal of its derivative, \eqn{A_{jj}/s_j + C_{jb}/s_b}, where
+\eqn{A_{jj}} is the diagonal of the share Jacobian
+\eqn{\partial s/\partial \delta}. The diagonal alone would misjudge the
+common shift, and diverge where the base's share is small and each
+alternative dominates choice situations of its own. Berry, Levinsohn and
+Pakes's (1995) contraction (\code{blp(method = "original")}) moves each
+constant by its own residual, \eqn{r_j} (without an outside option
+\eqn{r_j - r_b}, the reference held). A step is at most 5 log units long,
+or \eqn{|\rho_j|} where that is longer; a step whose shares are not finite
+is halved, up to ten times; and an iteration whose best residual has not
+improved for 30 iterations (it diverges, or cycles) restarts from its best
+point and halves its later steps, again at each further restart.
 
 The iteration stops at the first evaluation whose largest absolute
 log-share residual is at most \code{tol} (residuals relative to the
@@ -121,6 +133,9 @@ delta
 Berry, S. T. (1994). Estimating discrete-choice models of
 product differentiation. \emph{RAND Journal of Economics}, 25(2),
 242--262.
+
+Berry, S., Levinsohn, J., and Pakes, A. (1995). Automobile prices in
+market equilibrium. \emph{Econometrica}, 63(4), 841--890.
 
 Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static /
 dynamic BLP estimations. arXiv:2404.04494.

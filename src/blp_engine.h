@@ -30,16 +30,38 @@
 //
 // The base map (method "simple"): with r = log S - log s, b the outside
 // option (or, without one, the component's reference) and r_b its residual,
-//   step_j = (r_j - r_b) / (A_jj / s_j + C_jb / s_b),
-// whose denominator is the exact diagonal of the derivative of r_j - r_b
-// with respect to delta_j (Berry's contraction takes 1 instead; with an
-// outside option this is Fukasawa's (2024) outside-share correction, gamma =
-// 1, scaled). Safeguards (the first and third for the nested logit with
-// lambda > 1, whose nest-mates are complements):
+// num_j = r_j - r_b is the residual of the equations log(s_j / s_b) =
+// log(S_j / S_b) (with an outside option, Fukasawa's (2024) outside-share
+// correction). Their Jacobian on the free constants is
+//   G = diag(1 / s) J + 1 c' / s_b,
+// J the share Jacobian and c_j = C_jb = -ds_b / ddelta_j the co-choice of j
+// with the base: a part with a dominant diagonal, plus a rank-one coupling
+// through the base that moves every free constant's residual together. The
+// step treats the two in turn (a two-level step):
+//   * the common shift of the component's free constants by tau, from the
+//     share-weighted equation sum_j s_j (num_j - h_j tau) = 0, where
+//     h = G 1, h_j = C_jb / s_j + sum_k C_kb / s_b, is the exact rate at
+//     which num responds to that shift (the share Jacobian's rows sum to
+//     zero over every alternative, the base's included, and it is
+//     symmetric, so a row's sum over the free constants is the co-choice
+//     with the base): it fits the base's share to first order;
+//   * the rest by the exact diagonal of G, D_j = A_jj / s_j + C_jb / s_b:
+//   step_j = tau + (num_j - h_j tau) / D_j.
+// The diagonal alone (the internal map BLP_MAP_JACOBI, step_j = num_j / D_j)
+// misjudges the common shift: where the base's share is small and each
+// alternative dominates choice situations of its own, its multiplier on that
+// shift, 1 - h_j / D_j, falls below -1, and the map diverges where Berry's
+// converges.
+// Berry's contraction (BLP_MAP_PLAIN, the method "original": Berry, Levinsohn
+// and Pakes 1995, eq. 6.8) takes r_j itself (num_j without an outside option,
+// the reference held).
+// Safeguards of the diagonal (the first and third for the nested logit with
+// lambda > 1, whose nest-mates are complements where the nest's choice
+// probability is below 1 - 1 / lambda):
 //   * an alternative whose co-choice with the base is negative (the base in
-//     its nest, without an outside option) takes at most Berry's step (its
-//     denominator at least 1): the diagonal then nets out complementarity
-//     and can be near 0 or negative;
+//     its nest, without an outside option) has a denominator of at least 1:
+//     the diagonal then nets out complementarity and can be near 0 or
+//     negative;
 //   * a denominator that is not positive and finite takes 1;
 //   * in a nest with lambda > 1 the denominator is at least
 //     (1 + lambda) / (2 lambda) times the one the same probabilities give
@@ -50,13 +72,16 @@
 //     shift by up to lambda (the map diverges for lambda above 2); the factor
 //     relaxes the two directions equally;
 //   * a step is capped at max(|r_j - r_b|, BLP_STEP_CAP) in magnitude: the
-//     scaling may lengthen Berry's step to at most that many log units, never
-//     beyond Berry's own (a near-captive alternative far from its target has
+//     scaling may lengthen the unscaled step r_j - r_b to that many log
+//     units, not beyond (a near-captive alternative far from its target has
 //     a denominator near 0);
 //   * a component whose outside share underflows to 0 takes the step without
-//     the outside share's correction that iteration (gamma = 0: r_j over
-//     A_jj / s_j; r_b is then infinite).
-// The internal map BLP_MAP_PLAIN is Berry's step, for the tests.
+//     the outside share's correction, and without the common shift, that
+//     iteration (gamma = 0: r_j over A_jj / s_j; r_b is then infinite).
+// And the iteration's own (fixed_point.h): a trial point whose shares are not
+// finite halves the step; with method "simple", an iteration whose best
+// residual stops improving restarts from its best point with its steps'
+// relaxation halved.
 //
 // Stopping rule (every method): the largest absolute residual |r_j - r_ref|
 // over the inside alternatives without an outside option, |r_j| with one,
@@ -71,7 +96,7 @@ constexpr double BLP_STEP_CAP = 5.0;
 // weight) are rescaled to them; farther, they are an error.
 constexpr double BLP_SUM_TOL = 1.4901161193847656e-08;  // sqrt(DBL_EPSILON)
 
-enum BlpMap { BLP_MAP_REDUCED = 0, BLP_MAP_PLAIN = 1 };
+enum BlpMap { BLP_MAP_REDUCED = 0, BLP_MAP_PLAIN = 1, BLP_MAP_JACOBI = 2 };
 
 struct BlpControl {
   int method = FP_SIMPLE;
@@ -79,6 +104,7 @@ struct BlpControl {
   int max_evals = 1000;
   double tol = 1e-8;
   double damping = 1.0;
+  int patience = 0;         // restarts after this many steps without progress
   bool keep_pass = false;   // tests: return the last pass
 };
 
@@ -316,13 +342,17 @@ struct BlpMapEval {
   const arma::vec* floor_scale;  // J, 0 where no floor; nullptr: none
   BlpPass pass;
   arma::vec r, r0;
+  arma::vec num, den, h;                  // per free constant
+  arma::vec sb, csum, wnum, wh, tau;      // per component (the common shift)
   double fallbacks = 0;
 
   BlpMapEval(Model& model_, const BlpComponents& comp_, const BlpProblem& pb_,
              const int map_, arma::vec& delta_, const arma::vec* floor_scale_)
       : model(model_), comp(comp_), pb(pb_), map(map_), delta(delta_),
         floor_scale(floor_scale_), pass(pb_.J, comp_.n), r(pb_.J),
-        r0(pb_.outside ? comp_.n : 0) {}
+        r0(pb_.outside ? comp_.n : 0), num(pb_.free.size()),
+        den(pb_.free.size()), h(pb_.free.size()), sb(comp_.n), csum(comp_.n),
+        wnum(comp_.n), wh(comp_.n), tau(comp_.n) {}
 
   arma::uword n() const { return pb.free.size(); }
 
@@ -350,52 +380,89 @@ struct BlpMapEval {
       res = arma::datum::inf;
       return false;
     }
+    if (map == BLP_MAP_PLAIN) {
+      for (std::size_t k = 0; k < nf; ++k) {
+        const int j = pb.free[k];
+        step[k] = pb.outside ? r[j] : r[j] - r[comp.ref[comp.of[j]]];
+      }
+      return true;
+    }
+    // The residuals against the base, the diagonal and its safeguards; and
+    // each component's base share (0: none this iteration) and co-choices
+    sb.zeros();
+    csum.zeros();
+    for (int c = 0; c < comp.n; ++c) {
+      if (pb.outside) {
+        if (pass.s0[c] > 0 && std::isfinite(r0[c])) sb[c] = pass.s0[c];
+      } else {
+        sb[c] = pass.s[comp.ref[c]];
+      }
+    }
     for (std::size_t k = 0; k < nf; ++k) {
       const int j = pb.free[k];
       const int c = comp.of[j];
-      double num;
-      if (map == BLP_MAP_PLAIN) {
-        num = pb.outside ? r[j] : r[j] - r[comp.ref[c]];
-        step[k] = num;
-        continue;
-      }
       const double a_s = pass.A[j] / pass.s[j];
-      double den;
-      double sb = 0.0;  // the base's share; 0: no base this iteration
-      if (pb.outside) {
-        if (pass.s0[c] > 0 && std::isfinite(r0[c])) {
-          num = r[j] - r0[c];
-          sb = pass.s0[c];
-          den = a_s + pass.C[j] / sb;
-        } else {
-          num = r[j];
-          den = a_s;
-          ++fallbacks;
-        }
+      double d;
+      if (sb[c] > 0) {
+        num[k] = r[j] - (pb.outside ? r0[c] : r[comp.ref[c]]);
+        d = a_s + pass.C[j] / sb[c];
+        csum[c] += pass.C[j];
       } else {
-        const int b = comp.ref[c];
-        num = r[j] - r[b];
-        sb = pass.s[b];
-        den = a_s + pass.C[j] / sb;
-      }
-      if (sb > 0 && pass.C[j] < 0 && !(den >= 1.0)) {
-        den = 1.0;
+        num[k] = r[j];  // gamma = 0: the outside share underflowed
+        d = a_s;
         ++fallbacks;
       }
-      if (!(den > 0) || !std::isfinite(den)) {
-        den = 1.0;
+      if (sb[c] > 0 && pass.C[j] < 0 && !(d >= 1.0)) {
+        d = 1.0;
         ++fallbacks;
       }
-      if (sb > 0 && floor_scale && (*floor_scale)[j] > 0) {
+      if (!(d > 0) || !std::isfinite(d)) {
+        d = 1.0;
+        ++fallbacks;
+      }
+      if (sb[c] > 0 && floor_scale && (*floor_scale)[j] > 0) {
         const double d1 =
-            (*floor_scale)[j] * (pass.A1[j] / pass.s[j] + pass.C1[j] / sb);
-        if (d1 > den) {
-          den = d1;
+            (*floor_scale)[j] * (pass.A1[j] / pass.s[j] + pass.C1[j] / sb[c]);
+        if (d1 > d) {
+          d = d1;
           ++fallbacks;
         }
       }
-      double st = num / den;
-      const double cap = std::max(std::fabs(num), BLP_STEP_CAP);
+      den[k] = d;
+    }
+    // The common shift: the rate h_j at which residual j responds to it, and
+    // its size tau from sum_j s_j (num_j - h_j tau) = 0
+    tau.zeros();
+    if (map == BLP_MAP_REDUCED) {
+      wnum.zeros();
+      wh.zeros();
+      for (std::size_t k = 0; k < nf; ++k) {
+        const int j = pb.free[k];
+        const int c = comp.of[j];
+        if (!(sb[c] > 0)) continue;
+        h[k] = pass.C[j] / pass.s[j] + csum[c] / sb[c];
+        wnum[c] += pass.s[j] * num[k];
+        wh[c] += pass.s[j] * h[k];
+      }
+      for (int c = 0; c < comp.n; ++c) {
+        // (none without a base, or without free constants: an alternative
+        // alone in its component, with no outside option)
+        if (!(sb[c] > 0) || (!pb.outside && comp.size[c] < 2)) continue;
+        // (wh = csum (1 + sum_j s_j / s_b) > 0, csum being the base's own
+        // derivative: lost only to underflow, and the shift with it)
+        const double t = wnum[c] / wh[c];
+        if (wh[c] > 0 && std::isfinite(t)) {
+          tau[c] = t;
+        } else {
+          ++fallbacks;
+        }
+      }
+    }
+    for (std::size_t k = 0; k < nf; ++k) {
+      const int c = comp.of[pb.free[k]];
+      double st = tau[c] != 0.0 ? tau[c] + (num[k] - h[k] * tau[c]) / den[k]
+                                : num[k] / den[k];
+      const double cap = std::max(std::fabs(num[k]), BLP_STEP_CAP);
       if (std::fabs(st) > cap) {
         st = std::copysign(cap, st);
         ++fallbacks;
@@ -425,6 +492,7 @@ inline BlpResult blp_solve(Model& model, const BlpComponents& comp,
   fc.max_evals = ctl.max_evals;
   fc.tol = ctl.tol;
   fc.damping = ctl.damping;
+  fc.patience = ctl.patience;
   BlpResult out;
   if (pb.free.empty()) {
     out.fp.code = FP_CONVERGED;  // every constant held: nothing to solve
@@ -441,20 +509,25 @@ inline BlpResult blp_solve(Model& model, const BlpComponents& comp,
 // The control list of the internal entry points (.blp_control() in R).
 inline BlpControl blp_control(const Rcpp::List& control) {
   BlpControl c;
-  const std::string method = Rcpp::as<std::string>(control["method"]);
-  if (method != "simple") Rcpp::stop("Internal error: unknown BLP method \"%s\".", method);
+  const std::string iteration = Rcpp::as<std::string>(control["iteration"]);
+  if (iteration != "simple") {
+    Rcpp::stop("Internal error: unknown BLP iteration \"%s\".", iteration);
+  }
   c.method = FP_SIMPLE;
   const std::string map = Rcpp::as<std::string>(control["map"]);
   if (map == "reduced") {
     c.map = BLP_MAP_REDUCED;
   } else if (map == "plain") {
     c.map = BLP_MAP_PLAIN;
+  } else if (map == "jacobi") {
+    c.map = BLP_MAP_JACOBI;
   } else {
     Rcpp::stop("Internal error: unknown BLP map \"%s\".", map);
   }
   c.max_evals = Rcpp::as<int>(control["max_evals"]);
   c.tol = Rcpp::as<double>(control["tol"]);
   c.damping = Rcpp::as<double>(control["damping"]);
+  c.patience = Rcpp::as<int>(control["patience"]);
   c.keep_pass = Rcpp::as<bool>(control["keep_pass"]);
   return c;
 }
@@ -469,6 +542,7 @@ inline Rcpp::List blp_result(const arma::vec& delta, const BlpResult& res,
       Rcpp::Named("iterations") = res.fp.iterations,
       Rcpp::Named("evaluations") = res.fp.evaluations,
       Rcpp::Named("backtracks") = res.fp.backtracks,
+      Rcpp::Named("restarts") = res.fp.restarts,
       Rcpp::Named("residual") = res.fp.residual,
       Rcpp::Named("fallbacks") = res.fallbacks);
   if (ctl.keep_pass) {

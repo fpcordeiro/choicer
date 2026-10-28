@@ -1056,7 +1056,36 @@ run_blp <- function() {
     }
   }
 
+  # -- The reproducer of the review of PR #56 ---------------------------------
+  # Three situations, each won by one of alternatives 2-4, the reference
+  # rarely chosen: a diagonal step alone overshoots the common shift of the
+  # constants (by a factor of 2.8) and diverges. The nested logit with
+  # lambdas 1 and the mixed logit with a zero random design are the same
+  # multinomial logit.
+  rx <- matrix(c(0, 3, -3, -3, 0, -3, 3, -3, 0, -3, -3, 3), ncol = 1L)
+  ralt <- rep(1:4, 3L)
+  rM <- rep(4L, 3L)
+  rw <- rep(1, 3L)
+  rds <- c(0, 1, 1, 1)
+  rS <- as.numeric(choicer:::mnl_predict_shares(c(1, rds[-1L]), rx, ralt, rM, rw))
+  out[["repro|mnl"]] <- golden_blp("blp_contraction",
+    list(delta = rep(0, 4L), target_shares = rS, X = rx, beta = 1, alt_idx = ralt,
+         M = rM, weights = rw), ref = rds, expect = "converged")
+  out[["repro|nl"]] <- golden_blp("nl_blp_contraction",
+    list(delta = rep(0, 4L), target_shares = rS, X = rx, beta = 1, lambda = c(1, 1),
+         alt_idx = ralt, nest_idx = c(1L, 1L, 2L, 2L), M = rM, weights = rw),
+    ref = rds, expect = "converged")
+  set.seed(56001L)
+  out[["repro|mxl"]] <- golden_blp("mxl_blp_contraction",
+    list(delta = rep(0, 4L), target_shares = rS, X = rx, W = matrix(0, 12L, 1L),
+         beta = 1, mu = 0, L_params = log(0.5), alt_idx = ralt, M = rM, weights = rw,
+         eta_draws = array(stats::rnorm(15L), c(1L, 5L, 3L)), rc_dist = 0L,
+         rc_correlation = FALSE, rc_mean = FALSE), ref = rds, expect = "converged")
+
   # -- blp() on fits ----------------------------------------------------------
+  # (method = "original", Berry, Levinsohn and Pakes's contraction under the
+  # engine's rules, is main's contraction: main's blp() takes the argument in
+  # its dots)
   for (ioo in c(FALSE, TRUE)) {
     s <- data.table::as.data.table(simulate_mnl_data(
       N = 300L, J = 5L, beta = c(0.8, -0.6), delta = c(0.4, -0.3, 0.2, 0.1, -0.2),
@@ -1096,6 +1125,8 @@ run_blp <- function() {
         S <- P$sfun(ds)
         out[[paste0(tag, "|known")]] <- golden_blp("blp", list(fit, target_shares = S),
                                                    ref = ds, expect = "converged")
+        out[[paste0(tag, "|known|original")]] <- golden_blp("blp",
+          list(fit, target_shares = S, method = "original"), ref = ds)
         tg <- as.numeric(predict(fit, type = "shares"))
         out[[paste0(tag, "|symmetrized")]] <- golden_blp("blp",
           list(fit, target_shares = (tg + rev(tg)) / 2))
@@ -1114,6 +1145,8 @@ run_blp <- function() {
         if (m == "nl") {
           out[[paste0(tag, "|damping")]] <- golden_blp("blp",
             list(fit, target_shares = S, damping = 0.6), ref = ds)
+          out[[paste0(tag, "|damping|original")]] <- golden_blp("blp",
+            list(fit, target_shares = S, damping = 0.6, method = "original"), ref = ds)
         }
       }
     }
@@ -1154,6 +1187,8 @@ run_blp <- function() {
           list(fit, target_shares = S, keep_draws_bytes = kb), ref = ds,
           expect = "converged")
       }
+      out[[paste0(tag, "|original")]] <- golden_blp("blp",
+        list(fit, target_shares = S, method = "original"), ref = ds)
       # kept draws are the values each evaluation would form
       out[[paste0(tag, "|same_keep")]] <- identical(
         as.numeric(out[[paste0(tag, "|keep=0")]]$value),
