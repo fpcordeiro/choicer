@@ -1804,8 +1804,9 @@ step whose shares are not finite is halved; an iteration whose best residual has
 improved for 30 iterations (a stall) halves its later steps, returning to its best point
 first only where its residual at the stall exceeds twice the best (once per best point),
 and otherwise doubling the iterations the next stall waits for; and once 100 iterations
-fail to halve the best residual, the contraction races the step from the start, the
-first to reach the tolerance returning.
+fail to halve the best residual, the contraction races the step from the start (stopping
+when it is behind and slow, and going on whenever the step alone fails to halve its best
+residual within 200 iterations), the first to reach the tolerance returning.
 
 The iteration stops at the first evaluation whose largest absolute residual (relative to
 each component's reference without an outside option; with one, each component's outside
