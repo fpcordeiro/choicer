@@ -1800,9 +1800,12 @@ Pakes's (1995) contraction, `method = "original"`, takes $r_j$ itself ($r_j - r_
 without an outside option, the reference held). The safeguards are the logit's: a step is
 at most $\max(|\rho_j|, 5)$ in magnitude; where a component's outside share underflows to
 zero the step drops the outside correction and the common shift for that iteration; a
-step whose shares are not finite is halved; and an iteration whose best residual has not
-improved for 30 iterations restarts from its best point and halves its later steps, again
-at each further restart.
+step whose shares are not finite is halved; an iteration whose best residual has not
+improved for 30 iterations (a stall) halves its later steps, returning to its best point
+first only where its residual at the stall exceeds twice the best (once per best point),
+and otherwise doubling the iterations the next stall waits for; and once 100 iterations
+fail to halve the best residual, the contraction races the step from the start, the
+first to reach the tolerance returning.
 
 The iteration stops at the first evaluation whose largest absolute residual (relative to
 each component's reference without an outside option; with one, each component's outside

@@ -1365,11 +1365,13 @@ struct MnlBlpModel {
 //'
 //' @inheritParams blp_contraction
 //' @param control List from .blp_control(): iteration, map, max_evals, tol,
-//'   damping, patience and keep_pass.
+//'   damping, patience, window and keep_pass.
 //' @return List: delta (n x 1, as blp_contraction() returns it), code (0
 //'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
-//'   start), iterations, evaluations, backtracks, restarts, residual,
-//'   fallbacks; with keep_pass, pass (s, A, C, s0 of the last evaluation).
+//'   start), iterations, evaluations, backtracks, stalls, race (the evaluations
+//'   before Berry's contraction joined; 0 if it did not), berry (whether the
+//'   point returned is its), residual, fallbacks; with keep_pass, pass (s, A,
+//'   C, s0 of the last evaluation).
 //' @noRd
 // [[Rcpp::export]]
 Rcpp::List mnl_blp_solve(

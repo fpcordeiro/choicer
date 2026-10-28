@@ -1,6 +1,7 @@
 # The share inversion's engine (src/blp_engine.h, src/fixed_point.h): its
 # passes against the prediction kernels and a finite-difference Jacobian, the
-# two-level map and its safeguards, components and the targets' checks,
+# two-level map and its safeguards (the stalls, and the race with Berry's
+# contraction among them), components and the targets' checks,
 # the stopping rule and the warning, through the internal solvers
 # (*_blp_solve()) and the exported contractions.
 
@@ -356,8 +357,9 @@ test_that("the common shift converges where the diagonal step alone diverges", {
   r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE, eng_ctl())
   expect_identical(r$code, 0L)
   expect_lte(r$evaluations, 5L)
-  # the diagonal step alone never improves on its start; the restarts halve
-  # it until it contracts
+  # the diagonal step alone never improves on its start; a stall, its
+  # residual having grown past twice the best, takes it back to the best
+  # point and halves it, and then it contracts
   r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE,
                                eng_ctl(map = "jacobi", patience = 0L))
   expect_identical(r$code, 1L)
@@ -365,8 +367,107 @@ test_that("the common shift converges where the diagonal step alone diverges", {
   r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE,
                                eng_ctl(map = "jacobi", patience = 30L))
   expect_identical(r$code, 0L)
-  expect_gte(r$restarts, 1L)
+  expect_gte(r$stalls, 1L)
   expect_equal(as.numeric(r$delta), ds, tolerance = 1e-8)
+})
+
+test_that("a stall shortens the steps without pulling a climb back", {
+  # The reproducer of the re-review of PR #56. Far from the solution the
+  # reference, 1, barely responds to the common shift, which sends the
+  # constants of 2 and 3 to about -27, where their shares come only from the
+  # two situations without the reference; the way back climbs for about 60
+  # steps at a residual a little above the best so far. Sent back to that
+  # best point at every stall with shorter steps, the iteration stayed there
+  # for good (residual 0.0966 after 100,000 evaluations): from it, the
+  # two-level step raises the residual however short. Going on from where it
+  # is, at half the step, it converges; Berry's contraction takes 624.
+  X <- matrix(c(2, -10, -4, -4, -8, 0, 3, 4, 0, 3, 3), ncol = 1L)
+  alt <- c(1:4, 1:4, 2L, 2:3)
+  M <- c(4L, 4L, 1L, 2L)
+  w <- c(1.074, 0.940, 0.553, 0.889)
+  ds <- c(0, 2, 0, 3)
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, ds[-1L]), X, alt, M, w))
+  resid <- function(d) {
+    eng_resid(as.numeric(choicer:::mnl_predict_shares(c(1, d[-1L]), X, alt, M, w)), S,
+              FALSE)
+  }
+  trap <- c(0, -26.63545, -28.54366, 2.83895)
+  at <- eng_pass(choicer:::mnl_blp_solve(trap, S, X, 1, alt, M, w, FALSE,
+                                         eng_ctl(tol = 0, max_iter = 1L, keep_pass = TRUE)))
+  r <- log(S) - log(at$s)
+  num <- (r - r[1L])[-1L]
+  C <- at$C[-1L]
+  s <- at$s[-1L]
+  h <- C / s + sum(C) / at$s[1L]
+  tau <- sum(s * num) / sum(s * h)
+  step <- c(0, tau + (num - h * tau) / (at$A[-1L] / s + C / at$s[1L]))
+  expect_gt(resid(trap + 1e-5 * step), resid(trap))
+  expect_lt(resid(trap + 1e-3 * c(0, num)), resid(trap))  # Berry's step lowers it
+  # the three models' exports, from zeros (at tol 1e-8 the constants are
+  # within about 1e-7)
+  expect_equal(as.numeric(blp_contraction(rep(0, 4L), S, X, 1, alt, M, w)), ds,
+               tolerance = 1e-6)
+  expect_equal(as.numeric(nl_blp_contraction(rep(0, 4L), S, X, 1, c(1, 1), alt,
+                                             c(1L, 1L, 2L, 2L), M, w)), ds,
+               tolerance = 1e-6)
+  eta <- array(stats::rnorm(20L), c(1L, 5L, 4L))
+  expect_equal(as.numeric(mxl_blp_contraction(rep(0, 4L), S, X, matrix(0, 11L, 1L), 1,
+                                              0, log(0.5), alt, M, w, eta, 0L, FALSE,
+                                              TRUE, FALSE)), ds, tolerance = 1e-6)
+  # a stall on the climb (one here, 199 evaluations), and no need of Berry's
+  # contraction
+  r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE, eng_ctl())
+  expect_identical(r$code, 0L)
+  expect_gte(r$stalls, 1L)
+  expect_identical(r$race, 0L)
+  expect_lte(r$evaluations, 400L)
+  expect_identical(choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE,
+                                           eng_ctl(patience = 0L, window = 0L))$code, 0L)
+  expect_identical(choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE,
+                                           eng_ctl(method = "original"))$code, 0L)
+})
+
+test_that("Berry's contraction joins an iteration that stops halving its residual", {
+  # Alternative 2 nearly owns the only situation that offers it (its
+  # diagonal is 4.5e-5 at the solution), so the divided step amplifies its
+  # small residuals to the 5-unit cap and wrecks the share of 4, its
+  # neighbour there; the two oscillate, and the residual decays too slowly to
+  # meet tol in 20,000 evaluations. Berry's contraction needs 6.
+  X <- matrix(c(6, -5, 0, -3, 8, 5, 7, -6, -10), ncol = 1L)
+  alt <- c(5L, 6L, 1L, 3L, 5L, 6L, 2L, 4L, 6L)
+  M <- c(2L, 4L, 3L)
+  w <- c(1.106, 0.545, 0.985)
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, 0, 1, 3, 0, -1), X, alt, M, w))
+  r <- choicer:::mnl_blp_solve(rep(0, 6L), S, X, 1, alt, M, w, FALSE,
+                               eng_ctl(window = 0L, max_iter = 2000L))
+  expect_identical(r$code, 1L)
+  rb <- choicer:::mnl_blp_solve(rep(0, 6L), S, X, 1, alt, M, w, FALSE,
+                                eng_ctl(method = "original"))
+  expect_identical(rb$code, 0L)
+  # with the race (the default), Berry's iteration from the start converges
+  # first: the same point, after at most T + 2E evaluations
+  r <- choicer:::mnl_blp_solve(rep(0, 6L), S, X, 1, alt, M, w, FALSE, eng_ctl())
+  expect_identical(r$code, 0L)
+  expect_true(r$berry)
+  expect_gt(r$race, 0L)
+  expect_lte(r$evaluations, r$race + 2L * rb$evaluations)
+  expect_identical(as.numeric(r$delta), as.numeric(rb$delta))
+  # a budget that ends where the race would begin, or just after it
+  for (k in r$race + 0:2) {
+    rk <- choicer:::mnl_blp_solve(rep(0, 6L), S, X, 1, alt, M, w, FALSE,
+                                  eng_ctl(max_iter = k))
+    expect_identical(rk$code, 1L)
+    expect_identical(rk$evaluations, k)
+    expect_identical(dim(rk$delta), c(6L, 1L))
+    expect_true(all(is.finite(rk$delta)))
+    expect_identical(rk$race, if (k > r$race) r$race else 0L)
+  }
+  # and the exports
+  expect_identical(blp_contraction(rep(0, 6L), S, X, 1, alt, M, w), r$delta)
+  eta <- array(stats::rnorm(15L), c(1L, 5L, 3L))
+  d <- mxl_blp_contraction(rep(0, 6L), S, X, matrix(0, 9L, 1L), 1, 0, log(0.5), alt, M, w,
+                           eta, 0L, FALSE, TRUE, FALSE)
+  expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
 })
 
 test_that("an alternative that complements the base has a diagonal of at least 1", {
@@ -431,7 +532,9 @@ test_that("a nest with a large lambda keeps a logit's diagonal as a floor", {
 
 test_that("the step cap rescues a far noisy start in a segmented market", {
   # (slow for every map: the regions' levels relative to one another meet
-  # through few situations; about 3,050 evaluations here, Berry's 5,500)
+  # through few situations; about 3,650 evaluations here, of which Berry's
+  # contraction, racing the step until it falls behind, takes about 600; its
+  # own 5,500)
   d <- eng_design(1007L, 1200L, 24L, 4L, K = 4L, border = 0.02)
   set.seed(41L)
   ds <- stats::rnorm(24L)
@@ -440,7 +543,7 @@ test_that("the step cap rescues a far noisy start in a segmented market", {
   set.seed(42L)
   start <- ds + stats::rnorm(24L, 0, 3)
   r <- choicer:::mnl_blp_solve(start, S, d$X, eng_beta, d$alt, d$M, d$w, FALSE,
-                               eng_ctl(tol = 1e-10, max_iter = 4000L))
+                               eng_ctl(tol = 1e-10, max_iter = 5000L))
   expect_identical(r$code, 0L)
   expect_equal(as.numeric(r$delta), ds, tolerance = 1e-6)
 })

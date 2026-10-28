@@ -61,9 +61,25 @@
 #'   constant by its own residual, \eqn{r_j} (without an outside option
 #'   \eqn{r_j - r_b}, the reference held). A step is at most 5 log units long,
 #'   or \eqn{|\rho_j|} where that is longer; a step whose shares are not finite
-#'   is halved, up to ten times; and an iteration whose best residual has not
-#'   improved for 30 iterations (it diverges, or cycles) restarts from its best
-#'   point and halves its later steps, again at each further restart.
+#'   is halved, up to ten times. An iteration whose best residual has not
+#'   improved for 30 iterations (a stall) halves its later steps; it returns
+#'   to its best point only when its residual at the stall exceeds twice the
+#'   best (it diverges), once per best point, and otherwise goes on from where
+#'   it is, each such stall doubling the iterations the next one waits for,
+#'   so that constants climbing back from where their shares barely respond
+#'   are not pulled back. And once 100 iterations fail to halve the best
+#'   residual, or a trial point's shares stay non-finite after every halving,
+#'   Berry, Levinsohn and Pakes's contraction joins from the start: the two
+#'   take evaluations in turn, the first to meet \code{tol} returns, and the
+#'   contraction stops if 100 of its own iterations fail to halve its residual
+#'   while the step's is lower. A divided step can amplify the small residual
+#'   of an alternative that nearly owns its choice situations into a step
+#'   that wrecks its neighbours' shares there, and then oscillate; the
+#'   contraction's step is never amplified. So wherever the contraction
+#'   converges in \eqn{E} evaluations, halving its residual at least every 100
+#'   iterations, this converges within \eqn{T + 2E}, \eqn{T} the evaluations
+#'   before the contraction joined (when the step's trial points need no
+#'   halving meanwhile).
 #'
 #'   The iteration stops at the first evaluation whose largest absolute
 #'   log-share residual is at most \code{tol} (residuals relative to the
@@ -300,21 +316,25 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' @param tol,max_iter,damping As in \code{blp_contraction()} and
 #'   \code{nl_blp_contraction()}.
 #' @param method The method, as blp() names it: \code{"simple"} (the
-#'   two-level step with restarts) or \code{"original"} (Berry, Levinsohn and
-#'   Pakes's contraction). Both run the engine's simple iteration
-#'   (\code{iteration}); they differ in the map and the restarts.
+#'   two-level step, its stalls and its race with Berry's contraction) or
+#'   \code{"original"} (Berry, Levinsohn and Pakes's contraction). Both run
+#'   the engine's simple iteration (\code{iteration}); they differ in the map,
+#'   the stalls and the race.
 #' @param map The base map, by default the method's: \code{"reduced"} (the
 #'   two-level step), \code{"plain"} (Berry's) or \code{"jacobi"} (the
 #'   diagonal alone; tests).
-#' @param patience Accepted steps without a new best residual before a
-#'   restart from the best point, the relaxation halved (0: none); by
-#'   default \code{.BLP_PATIENCE} on the two-level map, else 0.
+#' @param patience Accepted steps without a new best residual that make a
+#'   stall, which halves the later steps (0: none); by default
+#'   \code{.BLP_PATIENCE} on the two-level map, else 0.
+#' @param window Accepted steps within which the best residual must halve, or
+#'   Berry's contraction joins from the start (0: never); by default
+#'   \code{.BLP_WINDOW} on the two-level map, else 0.
 #' @param keep_pass Whether the solver returns its last pass (tests).
 #' @returns A list for \code{*_blp_solve()}'s \code{control}.
 #' @noRd
 .blp_control <- function(tol = 1e-8, max_iter = 1000L, damping = 1,
                          method = "simple", map = NULL, patience = NULL,
-                         keep_pass = FALSE) {
+                         window = NULL, keep_pass = FALSE) {
   tol <- .int64_to_double(tol, "`tol`")
   max_iter <- .int64_to_double(max_iter, "`max_iter`")
   if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol < 0) {
@@ -333,16 +353,21 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   }
   if (is.null(map)) map <- if (identical(method, "original")) "plain" else "reduced"
   if (is.null(patience)) patience <- if (map == "reduced") .BLP_PATIENCE else 0L
+  if (is.null(window)) window <- if (map == "reduced") .BLP_WINDOW else 0L
   list(method = method, iteration = "simple", map = map,
        max_evals = as.integer(max_iter), tol = as.numeric(tol),
        damping = as.numeric(damping), patience = as.integer(patience),
-       keep_pass = isTRUE(keep_pass))
+       window = as.integer(window), keep_pass = isTRUE(keep_pass))
 }
 
-# Method "simple"'s restarts: after this many accepted steps without a new
-# best residual (it diverges or cycles; a converging two-level iteration
-# stalls for far fewer)
+# Method "simple"'s stalls: this many accepted steps without a new best
+# residual (it diverges, cycles or climbs; a converging two-level iteration
+# improves far sooner)
 .BLP_PATIENCE <- 30L
+
+# And its race: Berry's contraction joins from the start once this many
+# accepted steps fail to halve the best residual
+.BLP_WINDOW <- 100L
 
 # The solver's statuses, by code (src/fixed_point.h)
 .BLP_STATUS <- c("converged", "max_iter", "non_finite", "non_finite_start")
