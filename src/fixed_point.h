@@ -49,7 +49,10 @@ struct FpControl {
                             // make a stall (0: no stalls)
   int window = 0;           // accepted base steps within which the best
                             // residual must halve, or the fallback step joins
-                            // (0: it never does)
+                            // (0: it never does) or, stopped, goes on (twice
+                            // as many while it is stopped); and the
+                            // fallback's evaluations within which its own must
+                            // halve while it is behind, or it stops
 };
 
 struct FpResult {
@@ -59,6 +62,7 @@ struct FpResult {
   int backtracks = 0;       // halvings
   int stalls = 0;           // of the base step
   int race = 0;             // evaluations before the fallback joined (0: it did not)
+  int resumes = 0;          // times the fallback, stopped as behind, went on
   bool fallback = false;    // the point returned is the fallback's
   double residual = std::numeric_limits<double>::quiet_NaN();  // at the point returned
 };
@@ -73,7 +77,8 @@ struct FpLane {
   int patience = 0;          // doubled at a stall that does not diverge
   int since = 0;             // accepted steps since the best residual improved
   bool returned = false;     // to the current best point, at a stall
-  int window = 0;            // accepted steps in the current window
+  int window = 0;            // the current window's accepted steps (the
+                             // fallback's: its evaluations)
   double window_best = 0.0;  // the best residual when it began
   void init(const arma::uword n) {
     x.set_size(n);
@@ -151,15 +156,23 @@ inline int fp_lane_step(Map& map, FpLane& L, const FpControl& ctl,
 //   * with window > 0 and a map with a fallback step, once window accepted
 //     steps fail to halve the best residual (or a trial point fails after
 //     every halving), the fallback step joins from the start: the two
-//     iterations take evaluations in turn, the fallback's without stalls,
-//     and the first to meet tol returns; the fallback stops early where a
-//     window of its steps fails to halve its best residual while the base
-//     step's is lower (it is behind, and slow), and goes on again should the
-//     base step's trial point later fail. Wherever the fallback alone
-//     converges from the start in E evaluations, halving its residual within
-//     every window, this then converges within T + 2E, T the evaluations
-//     before it joined (halvings of the base step's trial points aside),
-//     however the base step fares.
+//     iterations take steps in turn (each with its halvings), the
+//     fallback's without stalls, and the first to meet tol returns. The
+//     fallback stops where a window of its evaluations fails to halve its
+//     best residual while the base step's is lower (it is behind, and slow);
+//     the base step then has windows of its own, twice as long, and the
+//     fallback goes on from where it stopped whenever the base step fails to
+//     halve its best residual within one (or its trial point fails).
+//     Wherever the fallback alone converges from the start in E evaluations,
+//     this then converges within T + 2E if the fallback halves its best
+//     residual within every window of its evaluations, and within T + 4E
+//     otherwise (each stop follows a window of its evaluations, matched by
+//     at most as many of the base step's steps, and is followed by at most
+//     one failing window of the base step's, twice as long), T being the
+//     evaluations before it joined, however the base step fares; not counted
+//     are halvings of the base step's trial points after it joined, and the
+//     windows in which the base step alone halved its best residual (with
+//     tol > 0, at most log2 of its residual over tol).
 // x holds the start and receives the result: the first evaluated point whose
 // residual is at most tol, or, when none is, the evaluated point of smallest
 // residual of either iteration (the start itself when max_evals is 0,
@@ -185,6 +198,10 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
   a.best_res = a.res;
   a.window_best = a.res;
   const bool can_race = ctl.window > 0 && map.has_fallback();
+  // the base step's windows while the fallback is stopped
+  const int solo_window = ctl.window <= std::numeric_limits<int>::max() / 2
+                              ? 2 * ctl.window
+                              : std::numeric_limits<int>::max();
   bool a_on = true, b_on = false, b_failed = false, raced = false;
   for (;;) {
     if (a_on && a.res <= ctl.tol) {
@@ -203,15 +220,16 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
     if (out.evaluations >= ctl.max_evals) break;
     bool join = false;
     if (a_on) {
+      const int a_window =
+          raced && !b_on && !b_failed ? solo_window : ctl.window;
       const int st = fp_lane_step(map, a, ctl, ctl.patience > 0, out);
       if (st == FP_STEP_BUDGET) break;
       if (st == FP_STEP_FAILED) {
         a_on = false;
         join = true;
-        if (raced && !b_failed) b_on = true;  // resumes if stopped as behind
       } else if (a.res <= ctl.tol) {
         continue;
-      } else if (ctl.window > 0 && ++a.window >= ctl.window) {
+      } else if (ctl.window > 0 && ++a.window >= a_window) {
         if (std::isfinite(a.best_res) && std::isfinite(a.window_best) &&
             !(a.best_res <= 0.5 * a.window_best)) {
           join = true;
@@ -239,21 +257,31 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
       b.window_best = b.best_res;
       continue;
     }
+    if (join && raced && !b_on && !b_failed) {
+      if (out.evaluations >= ctl.max_evals) break;  // none left for it
+      b_on = true;  // stopped as behind: it goes on from where it stopped
+      ++out.resumes;
+    }
     if (b_on) {
       map.use_fallback(true);
+      const int before = out.evaluations;
       const int st = fp_lane_step(map, b, ctl, false, out);
       map.use_fallback(false);
       if (st == FP_STEP_BUDGET) break;
       if (st == FP_STEP_FAILED) {
         b_on = false;
         b_failed = true;
-      } else if (b.res > ctl.tol && ++b.window >= ctl.window) {
-        // the race ends where the fallback falls behind: a window of its
-        // steps that failed to halve its best residual, the base step's
-        // being lower
+      } else if (b.res > ctl.tol &&
+                 (b.window += out.evaluations - before) >= ctl.window) {
+        // the fallback stops where it falls behind: a window of its
+        // evaluations that failed to halve its best residual, the base
+        // step's being lower; the base step then has a full window, twice
+        // as long, to halve its own
         if (a_on && !(b.best_res <= 0.5 * b.window_best) &&
             a.best_res < b.best_res) {
           b_on = false;
+          a.window = 0;
+          a.window_best = a.best_res;
         }
         b.window = 0;
         b.window_best = b.best_res;

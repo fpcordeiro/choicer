@@ -470,6 +470,92 @@ test_that("Berry's contraction joins an iteration that stops halving its residua
   expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
 })
 
+test_that("Berry's contraction goes on again when the step stops halving its residual", {
+  # The reproducer of the third review of PR #56: a nested logit (lambda = 0.2
+  # in the nest of 1 and 2) whose third situation offers only 2 and 4; their
+  # shares elsewhere are small. From zeros the step carries the constants of 2
+  # and 4 down together, to about -90, where that situation still gives them
+  # their shares and the residual (7.8e-4) no longer responds to their common
+  # level; on the way back to the solution, (-3, -5), it rises before it
+  # falls. Berry's contraction, joining after evaluation 201, fell behind and
+  # stopped, and the step stayed at that point for good (1,000,000
+  # evaluations). The contraction now goes on whenever the step alone fails to
+  # halve its best residual within 200 iterations, and converges as it would
+  # alone (8,367 of its own evaluations; 19,720 in all, above T + 2E = 16,935
+  # and within T + 4E = 33,669).
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  X <- matrix(c(6, 0, 7, 1, -2, 5, 8, 0, -1, 10, 0, 3, 0, -2, -3), ncol = 1L)
+  alt <- c(1:5, 1:5, 2L, 4L, 1:3)
+  M <- c(5L, 5L, 2L, 3L)
+  w <- c(1.035, 0.524, 2.255, 1.560)
+  nest <- c(1L, 1L, 2L, 2L, 3L)
+  lam <- c(0.2, 1, 1)
+  sh <- function(d) {
+    as.numeric(choicer:::nl_predict_shares(c(1, lam[1:2], d[-1L]), X, alt, M, w, nest,
+                                           TRUE, FALSE))
+  }
+  S <- sh(c(0, -3, -5, -5, 1))
+  resid <- function(d) eng_resid(sh(d), S, FALSE)
+  trap <- c(0, -90.3615118, -4.9997695, -92.3622983, 1.1272149)
+  up <- c(0, 1, 0, 1, 0)
+  expect_lt(abs(resid(trap + 40 * up) - resid(trap)), 1e-12)
+  expect_gt(resid(trap + 80 * up), resid(trap))
+  r0 <- choicer:::nl_blp_solve(rep(0, 5L), S, X, 1, lam, alt, nest, M, w, FALSE,
+                               eng_ctl(window = 0L, max_iter = 5000L))
+  expect_identical(r0$code, 1L)
+  expect_lt(max(r0$delta[c(2L, 4L)]), -50)
+  rb <- choicer:::nl_blp_solve(rep(0, 5L), S, X, 1, lam, alt, nest, M, w, FALSE,
+                               eng_ctl(method = "original", max_iter = 20000L))
+  expect_identical(rb$code, 0L)
+  r <- choicer:::nl_blp_solve(rep(0, 5L), S, X, 1, lam, alt, nest, M, w, FALSE,
+                              eng_ctl(max_iter = 30000L))
+  expect_identical(r$code, 0L)
+  expect_true(r$berry)
+  expect_gt(r$race, 0L)
+  expect_gte(r$resumes, 1L)
+  expect_lte(r$evaluations, r$race + 4L * rb$evaluations)
+  expect_identical(r$delta, rb$delta)
+  expect_identical(nl_blp_contraction(rep(0, 5L), S, X, 1, lam, alt, nest, M, w,
+                                      max_iter = 30000L), r$delta)
+  # A logit from a sweep of small hard designs, whose first situation offers
+  # only 2 and 3: the step's best residual stays at 0.0027 for over 46,000
+  # evaluations while their constants come back down from about 2.6 too high
+  # through larger residuals. The contraction, joining after evaluation 201,
+  # halves its best residual over its first 100 evaluations (3.2 to 0.0042)
+  # but not over its next 100 (0.0035, above the step's 0.0027), and stops at
+  # evaluation 602. The step then has 200 iterations alone, after which the
+  # contraction goes on, once: with a budget of 803 evaluations, not 802,
+  # since it needs one left. Through the logit's and the mixed logit's exports
+  # (a zero random design)
+  X <- matrix(c(9, 2, 3, -8, -5, 0, 3, -9, -1, 4, 0, 7), ncol = 1L)
+  alt <- c(2L, 3L, 1:5, 4L, 2L, 4L, 5L, 4L)
+  M <- c(2L, 5L, 1L, 3L, 1L)
+  w <- c(0.558, 1.128, 0.697, 0.536, 1.152)
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, -2, 0, 3, 2), X, alt, M, w))
+  rb <- choicer:::mnl_blp_solve(rep(0, 5L), S, X, 1, alt, M, w, FALSE,
+                                eng_ctl(method = "original", max_iter = 100000L))
+  expect_identical(rb$code, 0L)
+  r <- choicer:::mnl_blp_solve(rep(0, 5L), S, X, 1, alt, M, w, FALSE,
+                               eng_ctl(max_iter = 200000L))
+  expect_identical(r$code, 0L)
+  expect_true(r$berry)
+  expect_gte(r$resumes, 1L)
+  expect_lte(r$evaluations, r$race + 4L * rb$evaluations)
+  expect_identical(r$delta, rb$delta)
+  for (k in c(802L, 803L)) {
+    rk <- choicer:::mnl_blp_solve(rep(0, 5L), S, X, 1, alt, M, w, FALSE,
+                                  eng_ctl(max_iter = k))
+    expect_identical(c(rk$race, rk$resumes), c(r$race, if (k == 802L) 0L else 1L))
+  }
+  expect_identical(blp_contraction(rep(0, 5L), S, X, 1, alt, M, w, max_iter = 200000L),
+                   r$delta)
+  eta <- array(stats::rnorm(25L), c(1L, 5L, 5L))
+  d <- mxl_blp_contraction(rep(0, 5L), S, X, matrix(0, 12L, 1L), 1, 0, log(0.5), alt, M,
+                           w, eta, 0L, FALSE, TRUE, FALSE, max_iter = 200000L)
+  expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
+})
+
 test_that("an alternative that complements the base has a diagonal of at least 1", {
   # Situations of two kinds: {1, 2, 3}, where 3 dominates, and {2, 3}, where 2
   # does; 1 and 2 share a nest with lambda = 2.5. Where 1 is offered, raising

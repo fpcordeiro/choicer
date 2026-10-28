@@ -1118,6 +1118,43 @@ run_blp <- function() {
     list(delta = rep(0, 6L), target_shares = rcS, X = rcx, beta = 1, alt_idx = rcalt,
          M = rcM, weights = rcw), ref = rcds, expect = "converged")
 
+  # -- The reproducers of the third review of PR #56 ---------------------------
+  # resume: Berry's contraction stops as behind, and the step then makes no
+  # progress: it has carried the constants of alternatives that make up a
+  # situation's whole choice set far down, where the residual no longer
+  # responds to their common level (the nested logit), or they come back
+  # down through larger residuals (the logit); the contraction goes on when
+  # the step alone fails to halve its best residual within 200 iterations
+  r3x <- matrix(c(6, 0, 7, 1, -2, 5, 8, 0, -1, 10, 0, 3, 0, -2, -3), ncol = 1L)
+  r3alt <- c(1:5, 1:5, 2L, 4L, 1:3)
+  r3M <- c(5L, 5L, 2L, 3L)
+  r3w <- c(1.035, 0.524, 2.255, 1.560)
+  r3nest <- c(1L, 1L, 2L, 2L, 3L)
+  r3lam <- c(0.2, 1, 1)
+  r3ds <- c(0, -3, -5, -5, 1)
+  r3S <- as.numeric(choicer:::nl_predict_shares(c(1, r3lam[1:2], r3ds[-1L]), r3x, r3alt,
+                                                r3M, r3w, r3nest, TRUE, FALSE))
+  out[["resume|nl"]] <- golden_blp("nl_blp_contraction",
+    list(delta = rep(0, 5L), target_shares = r3S, X = r3x, beta = 1, lambda = r3lam,
+         alt_idx = r3alt, nest_idx = r3nest, M = r3M, weights = r3w, max_iter = 30000L),
+    ref = r3ds, expect = "converged")
+  r4x <- matrix(c(9, 2, 3, -8, -5, 0, 3, -9, -1, 4, 0, 7), ncol = 1L)
+  r4alt <- c(2L, 3L, 1:5, 4L, 2L, 4L, 5L, 4L)
+  r4M <- c(2L, 5L, 1L, 3L, 1L)
+  r4w <- c(0.558, 1.128, 0.697, 0.536, 1.152)
+  r4ds <- c(0, -2, 0, 3, 2)
+  r4S <- as.numeric(choicer:::mnl_predict_shares(c(1, r4ds[-1L]), r4x, r4alt, r4M, r4w))
+  out[["resume|mnl"]] <- golden_blp("blp_contraction",
+    list(delta = rep(0, 5L), target_shares = r4S, X = r4x, beta = 1, alt_idx = r4alt,
+         M = r4M, weights = r4w, max_iter = 200000L), ref = r4ds, expect = "converged")
+  set.seed(56003L)
+  out[["resume|mxl"]] <- golden_blp("mxl_blp_contraction",
+    list(delta = rep(0, 5L), target_shares = r4S, X = r4x, W = matrix(0, 12L, 1L),
+         beta = 1, mu = 0, L_params = log(0.5), alt_idx = r4alt, M = r4M, weights = r4w,
+         eta_draws = array(stats::rnorm(25L), c(1L, 5L, 5L)), rc_dist = 0L,
+         rc_correlation = FALSE, rc_mean = FALSE, max_iter = 200000L), ref = r4ds,
+    expect = "converged")
+
   # -- blp() on fits ----------------------------------------------------------
   # (method = "original", Berry, Levinsohn and Pakes's contraction under the
   # engine's rules, is main's contraction: main's blp() takes the argument in

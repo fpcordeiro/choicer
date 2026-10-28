@@ -29,25 +29,27 @@ contraction remains available, under the engine's rules, as
   constant by its own log-share residual, r_j (r_j - r_b with the reference
   held), and remains available as `blp(method = "original")`.
 
-  On 121 simulated designs (multinomial, nested and mixed logits; 2 to 5,000
-  alternatives; full, regional and chained choice sets; outside shares from
-  0.02 to 0.5; far starts), solved to 1e-12, the step converged on every one
-  and needed a median 0.36 of the contraction's evaluations of the shares
-  (10th to 90th percentiles 0.04 and 0.81; medians 32 against 161 for the
-  multinomial logit, 15 against 184 for the nested and 174 against 593 for
-  the mixed logit, over the designs where both converged). It never needed
-  more than 1.05 times the contraction's evaluations: the most was on binary
-  choice sets chained over ten alternatives without an outside option,
-  1,357 against 1,299, both past the default `max_iter`. The contraction did
-  not converge within 3,000 evaluations on 8 nested logits with lambda of 0.4
-  or less, where its step overshoots by about 1 / lambda; the step needed 23
-  to 119. On 80 designs in which each alternative dominates choice
-  situations of its own and the base is rarely chosen, solved to 1e-10 for
-  each model, the step did not converge within 3,000 evaluations on 1, 2
-  and 1 (multinomial, nested and mixed logits; each was still approaching
-  its solution, and reached it within 20,000; the contraction failed on them
-  too), and the contraction on 22, 27 and 20; where both converged, the step
-  needed a median 0.16 of the contraction's evaluations, at most 0.52.
+  On 121 simulated designs (multinomial, nested and mixed logits; 2 to
+  5,000 alternatives; full, regional and chained choice sets; outside
+  shares from 0.02 to 0.5; far starts), solved to 1e-12, the step converged
+  on every one and needed a median 0.36 of the contraction's evaluations of
+  the shares (10th to 90th percentiles 0.04 and 0.81; medians 32 against
+  161 for the multinomial logit, 15 against 184 for the nested and 174
+  against 593 for the mixed logit, over the designs where both converged).
+  It never needed more than 1.05 times the contraction's evaluations: the
+  most was on binary choice sets chained over ten alternatives without an
+  outside option, 1,357 against 1,299, both past the default `max_iter`.
+  The contraction did not converge within 3,000 evaluations on 8 nested
+  logits with lambda of 0.4 or less, where its step overshoots by about 1 /
+  lambda; the step needed 23 to 119. On 80 designs in which each
+  alternative dominates choice situations of its own and the base is rarely
+  chosen, solved to 1e-10 for each model, the step did not converge within
+  3,000 evaluations on 1, 2 and 1 (multinomial, nested and mixed logits;
+  each was still approaching its solution, and reached it within 26,000,
+  the racing contraction's turns included; the contraction alone failed on
+  them too), and the contraction on 22, 27 and 20; where both converged,
+  the step needed a median 0.16 of the contraction's evaluations, at most
+  0.52.
 - **Safeguards.** A step is at most 5 log units long, or as long as its
   residual against the base, |r_j - r_b|, where that is longer. An
   evaluation whose shares are not finite halves the step. An iteration whose
@@ -71,29 +73,44 @@ contraction remains available, under the engine's rules, as
   (`method = "original"` still may).
 - **Berry's contraction as a fallback.** The step can amplify the small
   residual of an alternative that nearly owns its choice situations into a
-  step that wrecks its neighbours' shares there, which the contraction never
-  does. So once 100 iterations fail to halve the best residual, or a trial
-  point's shares stay non-finite after every halving (the step then stops,
-  and the contraction goes on alone), the contraction races the step from
-  the start: the two take evaluations in turn, the first to meet `tol` is
-  returned, and the contraction stops if 100 of its own iterations fail to
-  halve its residual while the step's is lower. Where the contraction
-  converges in E evaluations, halving its residual at least every 100
-  iterations, the default converges within T + 2E, T the evaluations before
-  the contraction joined (when the step's trial points need no halving
-  meanwhile). No design above stalled at the budgets reported; the
-  contraction joined on 6 of the 240 in which each alternative dominates
-  situations of its own, at evaluation 201: four that neither solved within
-  3,000 evaluations, and two that it made 1.08 times as long. On 2,995 small
-  designs drawn to be hard (3 to 6 alternatives in 2 to 8 choice situations
-  of random sizes, single-alternative ones included; integer covariates and
-  constants in [-10, 10] and [-3, 3], the mixed logit's random-coefficient
-  covariate in [-3, 3]; half with an outside option; the three models,
-  lambda from 0.2 to 2), at the default tolerance and 1,000 evaluations, the
-  default failed on 296 and the contraction on 1,742, the default on only
-  one where the contraction converged (a nested logit that the contraction
-  needed 770 evaluations for); where both converged, the default needed
-  about a tenth of the contraction's evaluations.
+  step that wrecks its neighbours' shares there, and it can carry the
+  constants of alternatives that make up the whole choice set of some choice
+  situations so far down that the residual barely responds to their common
+  level; the contraction does neither. So once 100 iterations fail to halve
+  the best residual, or a trial point's shares stay non-finite after every
+  halving (the step then stops, and the contraction goes on alone), the
+  contraction races the step from the start: the two take steps in turn,
+  each with its halvings, and the first to meet `tol` is returned. The
+  contraction stops if 100 of its own evaluations fail to halve its best
+  residual while the step's best is lower; the step then has 200 iterations
+  at a time to halve its own best residual, and whenever it fails to, the
+  contraction goes on from where it stopped. Where the contraction converges
+  in E evaluations, the default converges within T + 4E, and within T + 2E
+  where the contraction halves its best residual within every 100 of its
+  evaluations, T being the evaluations before the contraction joined; the
+  bound leaves out the step's halvings after the contraction joined and any
+  200 iterations in which the step alone halved its best residual. No design
+  above stalled at the budgets reported; the contraction joined on 6 of the
+  240 in which each alternative dominates situations of its own, at
+  evaluation 201: four that neither solved within 3,000 evaluations, and two
+  that it made 1.08 times as long. On 2,995 small designs drawn to be hard
+  (3 to 6 alternatives in 2 to 8 choice situations of random sizes,
+  single-alternative ones included; integer covariates and constants in
+  [-10, 10] and [-3, 3], the mixed logit's random-coefficient covariate in
+  [-3, 3]; half with an outside option; the three models, lambda from 0.2 to
+  2), at the default tolerance and 1,000 evaluations, the default failed on
+  296 and the contraction on 1,742, the default on only one where the
+  contraction converged (a nested logit that the contraction needed 770
+  evaluations for); where both converged, the default needed about a tenth
+  of the contraction's evaluations. With 200,000 evaluations the default
+  failed on 73, 15 of them designs that the contraction solved, in 97,115 to
+  177,800 evaluations, where T + 4E exceeds the budget. The contraction's
+  turns cost evaluations where the step is slow but gets there: 1.07 to 1.20
+  times the step's own from 10 far starts in a segmented market, and 1.06 to
+  1.34 times on the four of the 240 that took more than 3,000 (3,607 to
+  25,225 evaluations; both solved to 1e-10); more where the contraction
+  keeps halving its steps (1.45 times on a nested logit with lambda 0.06
+  whose contraction never improves on its start).
 - **Stopping rule.** The iteration stops at the first evaluation whose
   largest absolute log-share residual is at most `tol` (relative to the
   reference of each group without an outside option; with one, each group's

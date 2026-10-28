@@ -1195,7 +1195,8 @@ since $\lambda_g$ can be as small as $10^{-16}$, where the difference loses ever
 The logit's other safeguards apply: the step's cap, its halving where the shares are not
 finite, its stalls, and the contraction racing it once 100 iterations fail to halve the
 best residual (multiplied by `damping` like the step; where it diverges, at small
-$\lambda_g$, it falls behind and stops).
+$\lambda_g$, it falls behind and stops, going on whenever the step alone fails to halve
+its best residual within 200 iterations, or its trial point fails).
 
 #### 6.4.3 Nests with $\lambda_g > 1$
 

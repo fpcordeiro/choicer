@@ -83,14 +83,21 @@
 // in patience steps) halves the later steps, returning to the best point only
 // when the residual has grown past twice the best, once per best point; and
 // once a window of steps fails to halve the best residual, Berry's
-// contraction joins from the start, the two taking evaluations in turn, and
-// the first to meet tol returns. A diagonal step can amplify a small residual
-// of an alternative whose share barely responds to its own constant (one
-// that nearly owns its choice situations) into a step that wrecks the shares
-// of its neighbours there, and then oscillate; Berry's step is never
-// amplified, so where Berry's contraction converges at a steady pace the race
-// bounds the method's evaluations by twice its own, plus those before it
-// joined.
+// contraction joins from the start, the two taking steps in turn, and the
+// first to meet tol returns (Berry's stops when a window of its evaluations
+// leaves it behind and slow, and goes on whenever the step alone fails to
+// halve its best residual within a window twice as long). A diagonal step
+// can amplify a small residual of an alternative whose share barely
+// responds to its own constant (one that nearly owns its choice situations)
+// into a step that wrecks the shares of its neighbours there, and then
+// oscillate, and it can carry the constants of alternatives that make up
+// the whole choice set of some situations far down, where the residual
+// barely responds to their common level; Berry's step is never amplified,
+// so wherever Berry's contraction converges the race bounds the method's
+// evaluations by four times its own (twice where it halves its best
+// residual within every window), plus those before it joined, leaving out
+// the step's halvings after it joined and the windows in which the step
+// alone halved its best residual (fixed_point.h).
 //
 // Stopping rule (every method): the largest absolute residual |r_j - r_ref|
 // over the inside alternatives without an outside option, |r_j| with one,
@@ -115,7 +122,9 @@ struct BlpControl {
   double damping = 1.0;
   int patience = 0;         // steps without a new best residual: a stall
   int window = 0;           // steps that must halve the best residual, or
-                            // Berry's contraction joins (FpControl)
+                            // Berry's contraction joins, or goes on after a
+                            // stop (twice as many then); and its evaluations
+                            // that must halve its own (FpControl)
   bool keep_pass = false;   // tests: return the last pass
 };
 
@@ -560,6 +569,7 @@ inline Rcpp::List blp_result(const arma::vec& delta, const BlpResult& res,
       Rcpp::Named("backtracks") = res.fp.backtracks,
       Rcpp::Named("stalls") = res.fp.stalls,
       Rcpp::Named("race") = res.fp.race,
+      Rcpp::Named("resumes") = res.fp.resumes,
       Rcpp::Named("berry") = res.fp.fallback,
       Rcpp::Named("residual") = res.fp.residual,
       Rcpp::Named("fallbacks") = res.fallbacks);

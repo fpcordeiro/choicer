@@ -93,18 +93,27 @@ best (it diverges), once per best point, and otherwise goes on from where
 it is, each such stall doubling the iterations the next one waits for,
 so that constants climbing back from where their shares barely respond
 are not pulled back. And once 100 iterations fail to halve the best
-residual, or a trial point's shares stay non-finite after every halving,
-Berry, Levinsohn and Pakes's contraction joins from the start: the two
-take evaluations in turn, the first to meet \code{tol} returns, and the
-contraction stops if 100 of its own iterations fail to halve its residual
-while the step's is lower. A divided step can amplify the small residual
-of an alternative that nearly owns its choice situations into a step
-that wrecks its neighbours' shares there, and then oscillate; the
-contraction's step is never amplified. So wherever the contraction
-converges in \eqn{E} evaluations, halving its residual at least every 100
-iterations, this converges within \eqn{T + 2E}, \eqn{T} the evaluations
-before the contraction joined (when the step's trial points need no
-halving meanwhile).
+residual, or a trial point's shares stay non-finite after every halving
+(the step then stops, and the contraction goes on alone), Berry,
+Levinsohn and Pakes's contraction joins from the start: the two take
+steps in turn, each with its halvings, and the first to meet \code{tol}
+returns. The contraction stops if 100 of its own evaluations fail to
+halve its best residual while the step's best is lower; the step then
+has 200 iterations at a time to halve its own best residual, and
+whenever it fails to (or its trial point's shares stay non-finite), the
+contraction goes on from where it stopped. A divided step can amplify
+the small residual of an alternative that nearly owns its choice
+situations into a step that wrecks its neighbours' shares there, and
+then oscillate, or carry the constants of alternatives that make up the
+whole choice set of some choice situations so far down that the
+residual barely responds to their common level; the contraction's step
+is never amplified. So wherever the contraction converges in \eqn{E}
+evaluations, this converges within \eqn{T + 4E}, and within
+\eqn{T + 2E} where the contraction halves its best residual within every
+100 of its evaluations, \eqn{T} being the evaluations before the
+contraction joined; the bound leaves out the step's halvings after the
+contraction joined and any 200 iterations in which the step alone
+halved its best residual.
 
 The iteration stops at the first evaluation whose largest absolute
 log-share residual is at most \code{tol} (residuals relative to the
