@@ -257,3 +257,187 @@ test_that("the cache is kept only within its budget", {
     expect_false(rx$exp_kept)
   }
 })
+
+# -- The nested logit ---------------------------------------------------------
+
+xp_nl_s <- function(d, delta, ioo, nest, lam) {
+  as.numeric(choicer:::nl_predict_shares(
+    c(xp_beta, lam[tabulate(nest) > 1L], xp_free(delta, ioo)), d$X, d$alt, d$M,
+    d$w, nest, TRUE, ioo))
+}
+xp_nl <- function(d, start, S, ioo, nest, lam, ctl) {
+  choicer:::nl_blp_solve(start, S, d$X, xp_beta, lam, d$alt, nest, d$M, d$w, ioo, ctl)
+}
+
+test_that("a nested logit's evaluation from the cache gives the prediction kernel's shares", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  # three nests of three and a singleton; repeated codes in some situations
+  d <- xp_design(2101L, 300L, 10L, 6L)
+  nest <- c(1L, 1L, 1L, 2L, 2L, 2L, 3L, 3L, 3L, 4L)
+  r0 <- c(0L, cumsum(d$M))
+  for (t in 1:12) d$alt[r0[t] + 1L] <- d$alt[r0[t] + 2L]
+  for (lam_in in c(1e-3, 0.4, 1.4)) {
+    lam <- c(lam_in, 0.7, lam_in, 1)
+    for (ioo in c(FALSE, TRUE)) {
+      set.seed(23L + ioo)
+      ds <- xp_norm(stats::rnorm(10L), ioo)
+      # well within the span, in units of lambda
+      d1 <- xp_norm(ds + stats::rnorm(10L, 0, 0.1 * min(lam)), ioo)
+      S <- xp_nl_s(d, xp_norm(stats::rnorm(10L), ioo), ioo, nest, lam)
+      lab <- sprintf("lambda %g, ioo %d", lam_in, ioo)
+      rx <- xp_nl(d, d1, S, ioo, nest, lam,
+                  xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+      rl <- xp_nl(d, d1, S, ioo, nest, lam, xp_ctl(max_iter = 1L, keep_pass = TRUE))
+      expect_identical(c(rx$exp_evals, rx$exp_forms, rx$exp_floors), c(1, 1, 0),
+                       label = lab)
+      s1 <- xp_nl_s(d, d1, ioo, nest, lam)
+      px <- xp_pass(rx)
+      pl <- xp_pass(rl)
+      expect_equal(px$s, if (ioo) s1[-1L] else s1, tolerance = 1e-14, label = lab)
+      if (ioo) expect_equal(px$s0, s1[1L], tolerance = 1e-14, label = lab)
+      expect_equal(px$A, pl$A, tolerance = 1e-12, label = lab)
+      expect_equal(px$C, pl$C, tolerance = 1e-12, label = lab)
+      if (lam_in > 1) {
+        expect_equal(px$A1, pl$A1, tolerance = 1e-12, label = lab)
+        expect_equal(px$C1, pl$C1, tolerance = 1e-12, label = lab)
+      }
+    }
+  }
+})
+
+test_that("a nested logit's span is in units of its dissimilarities", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_design(2102L, 200L, 6L, 4L)
+  nest <- c(1L, 1L, 1L, 2L, 2L, 2L)
+  lam <- c(0.5, 1)
+  S <- xp_nl_s(d, c(0, 0.2, -0.1, 0.3, 0, -0.2), FALSE, nest, lam)
+  ds <- c(0, 0.2, -0.1, 0.3, 0, -0.2)
+  for (move in c(24, 26)) {  # scaled: 48 and 52
+    d1 <- replace(ds, 2L, ds[2L] + move)
+    rx <- xp_nl(d, d1, S, FALSE, nest, lam,
+                xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+    rl <- xp_nl(d, d1, S, FALSE, nest, lam, xp_ctl(max_iter = 1L, keep_pass = TRUE))
+    if (move < 25) {
+      expect_identical(c(rx$exp_evals, rx$exp_forms), c(1, 1))
+      expect_equal(xp_pass(rx)$s, xp_pass(rl)$s, tolerance = 1e-14)
+    } else {
+      expect_identical(c(rx$exp_evals, rx$exp_forms), c(0, 2))
+      expect_identical(xp_pass(rx), xp_pass(rl))
+    }
+  }
+  # an alternative of the lambda = 1 nest moved by 40 is within the span (in
+  # units of 0.5 it would not be)
+  d1 <- replace(ds, 5L, ds[5L] + 40)
+  rx <- xp_nl(d, d1, S, FALSE, nest, lam,
+              xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+  rl <- xp_nl(d, d1, S, FALSE, nest, lam, xp_ctl(max_iter = 1L, keep_pass = TRUE))
+  expect_identical(c(rx$exp_evals, rx$exp_forms), c(1, 1))
+  expect_equal(xp_pass(rx)$s, xp_pass(rl)$s, tolerance = 1e-14)
+})
+
+test_that("rows negligible at the cache's origin are kept for when they dominate", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  # each alternative far below its nest-mates at the origin (scaled distances
+  # up to 40), then moved within the span until it dominates its nest
+  d <- xp_design(2105L, 200L, 6L, 4L)
+  nest <- c(1L, 1L, 1L, 2L, 2L, 2L)
+  for (ioo in c(FALSE, TRUE)) {
+    for (lam in c(0.3, 1)) {
+      ds <- xp_norm(c(0, -8, 0.5, 0, -12 * lam, 0.3) , ioo)
+      d1 <- xp_norm(replace(ds, c(2L, 5L), c(4, 4 * lam)), ioo)
+      S <- xp_nl_s(d, ds, ioo, nest, rep(lam, 2L))
+      lab <- sprintf("lambda %g, ioo %d", lam, ioo)
+      rx <- xp_nl(d, d1, S, ioo, nest, rep(lam, 2L),
+                  xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+      expect_identical(c(rx$exp_evals, rx$exp_forms), c(1, 1), label = lab)
+      s1 <- xp_nl_s(d, d1, ioo, nest, rep(lam, 2L))
+      expect_equal(xp_pass(rx)$s, if (ioo) s1[-1L] else s1, tolerance = 1e-14,
+                   label = lab)
+      expect_lt(max(abs(log(xp_pass(rx)$s) - log(if (ioo) s1[-1L] else s1))), 1e-12,
+                label = lab)
+      # the same for the multinomial logit
+      rx <- xp_mnl(d, d1, S[seq_along(S)], ioo,
+                   xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+      s1 <- xp_mnl_s(d, d1, ioo)
+      expect_lt(max(abs(log(xp_pass(rx)$s) - log(if (ioo) s1[-1L] else s1))), 1e-12,
+                label = lab)
+    }
+  }
+})
+
+test_that("the nested logit's exp-space pass solves as its usual pass does", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_design(2103L, 600L, 9L, 6L)
+  nest <- rep(1:3, each = 3L)
+  for (lam in c(0.2, 0.7, 1.5)) {
+    for (ioo in c(FALSE, TRUE)) {
+      set.seed(29L + ioo)
+      ds <- xp_norm(stats::rnorm(9L), ioo)
+      S <- xp_nl_s(d, ds, ioo, nest, rep(lam, 3L))
+      for (method in c("simple", "anderson")) {
+        lab <- sprintf("%s, lambda %g, ioo %d", method, lam, ioo)
+        rl <- xp_nl(d, rep(0, 9L), S, ioo, nest, rep(lam, 3L),
+                    xp_ctl(1e-12, 2000L, method = method))
+        rx <- xp_nl(d, rep(0, 9L), S, ioo, nest, rep(lam, 3L),
+                    xp_ctl(1e-12, 2000L, method = method, pass = "exp"))
+        expect_identical(rx$code, 0L, label = lab)
+        expect_equal(as.numeric(rx$delta), ds, tolerance = 1e-9, label = lab)
+        expect_equal(as.numeric(rx$delta), as.numeric(rl$delta), tolerance = 1e-10,
+                     label = lab)
+        expect_identical(rx$exp_evals + rx$exp_forms, as.numeric(rx$evaluations),
+                         label = lab)
+        expect_gt(rx$exp_evals, 0)
+      }
+    }
+  }
+  skip_if_not(isTRUE(thread_info()$openmp_enabled))
+  set_omp_threads(2L)
+  S <- xp_nl_s(d, ds, TRUE, nest, rep(0.4, 3L))
+  r2 <- xp_nl(d, rep(0, 9L), S, TRUE, nest, rep(0.4, 3L),
+              xp_ctl(1e-12, 2000L, method = "anderson", pass = "exp"))
+  expect_equal(as.numeric(r2$delta), ds, tolerance = 1e-9)
+  expect_gt(r2$exp_evals, 0)
+})
+
+test_that("a nested logit with more nests than rows keeps its cache on the offered path", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  # six nests of two, three rows per situation: the probabilities go over the
+  # nests each situation offers (nl_individual_probs_offered())
+  d <- xp_design(2104L, 300L, 12L, 3L)
+  nest <- rep(1:6, each = 2L)
+  lam <- c(0.3, 0.6, 1, 1.4, 0.8, 0.5)
+  for (ioo in c(FALSE, TRUE)) {
+    set.seed(31L + ioo)
+    ds <- xp_norm(stats::rnorm(12L), ioo)
+    S <- xp_nl_s(d, xp_norm(stats::rnorm(12L), ioo), ioo, nest, lam)
+    d1 <- xp_norm(ds + stats::rnorm(12L, 0, 0.05), ioo)
+    lab <- sprintf("ioo %d", ioo)
+    rx <- xp_nl(d, d1, S, ioo, nest, lam,
+                xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+    expect_identical(c(rx$exp_evals, rx$exp_forms), c(1, 1), label = lab)
+    s1 <- xp_nl_s(d, d1, ioo, nest, lam)
+    expect_equal(xp_pass(rx)$s, if (ioo) s1[-1L] else s1, tolerance = 1e-14, label = lab)
+    # beyond the span (30 utility units in a nest with lambda 0.3): the usual
+    # pass, which forms the cache, bit for bit
+    d2 <- replace(ds, 2L, ds[2L] + 30)
+    rx <- xp_nl(d, d2, S, ioo, nest, lam,
+                xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds))
+    rl <- xp_nl(d, d2, S, ioo, nest, lam, xp_ctl(max_iter = 1L, keep_pass = TRUE))
+    expect_identical(c(rx$exp_evals, rx$exp_forms), c(0, 2), label = lab)
+    expect_identical(xp_pass(rx), xp_pass(rl), label = lab)
+    # and the cache is kept only within its budget
+    rx <- xp_nl(d, rep(0, 12L), S, ioo, nest, lam,
+                xp_ctl(1e-10, 1000L, pass = "exp", cache_bytes = 8 * length(d$alt) - 1))
+    expect_false(rx$exp_kept, label = lab)
+    rl <- xp_nl(d, rep(0, 12L), S, ioo, nest, lam, xp_ctl(1e-10, 1000L))
+    expect_identical(rx$delta, rl$delta, label = lab)
+    rx <- xp_nl(d, rep(0, 12L), S, ioo, nest, lam,
+                xp_ctl(1e-10, 1000L, pass = "exp", cache_bytes = 8 * length(d$alt)))
+    expect_true(rx$exp_kept, label = lab)
+  }
+})

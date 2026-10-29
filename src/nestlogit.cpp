@@ -300,6 +300,91 @@ static inline void nl_situation_probs(const double* V, const int m,
   }
 }
 
+// nl_situation_probs() that also writes each row's exponential within its
+// nest to keep (nl_individual_probs<true>()): the share inversion's
+// exp-space cache. The probabilities are nl_situation_probs()'s bit for bit.
+static inline void nl_situation_probs_keep(const double* V, const int m,
+                                           const arma::vec& lambda, const int n_nests,
+                                           const bool include_outside_option,
+                                           const bool offered, NlThreadBuffers& b,
+                                           double* keep) {
+  if (offered) {
+    const int n_o = nl_offered_nests(b, m, true);
+    nl_individual_probs_offered<true>(V, b.nest0.data(), m, lambda, b.nests.data(),
+                                      n_o, include_outside_option, b.pr, keep);
+    nl_offered_nests_clear(b, n_o);
+  } else {
+    nl_individual_probs<true>(V, b.nest0.data(), m, lambda, n_nests,
+                              include_outside_option, b.pr, keep);
+  }
+}
+
+// A situation's probabilities from the share inversion's exp-space cache
+// (NlBlpModel): its rows' exponentials E = exp(V0_j / lambda_k - c_k), kept
+// at the origin delta0 (V0 = X beta + delta0, c_k the nest's largest
+// V0 / lambda_k there, recomputed here from xb and d0 with
+// nl_individual_probs()'s operations), times f_j = exp((delta_j - delta0_j) /
+// lambda_k). Then I_k = exp(c_k) times the sum of E f over the nest's rows,
+// the nests' terms lambda_k log I_k, their probabilities and the rows' as in
+// nl_individual_probs(): one log and one exp per nest the situation offers,
+// no exponential or logarithm per row. Writes P(j|k) and P_ij to b.pr (rows
+// in nest0's nests, which b.nest0 holds) and returns the outside option's
+// probability (0 without one). Where every nest's term is below -709 the
+// outside option's weight overflows and the probabilities are NaN: the
+// inversion's floor (blp_engine.h) then runs the usual pass.
+static inline double nl_exp_probs(const double* E, const double* f, const double* xb,
+                                  const double* d0, const int* alt, const int m,
+                                  const double* lam, const bool outside,
+                                  NlThreadBuffers& b) {
+  NlProbs& pr = b.pr;
+  const int* nest0 = b.nest0.data();
+  const int n_o = nl_offered_nests(b, m, false);
+  const int* nests = b.nests.data();
+  double* cmax = pr.max_V_k.data();     // per nest: the origin's largest V / lambda
+  double* I1 = pr.I_k_unscaled.data();  // and the sum of its rows' E f
+  double* t = pr.nest_terms.data();
+  double* Pk = pr.P_k.data();
+  double* Pc = pr.P_j_given_k.data();
+  double* P = pr.P_i.data();
+  const double inf = arma::datum::inf;
+  for (int o = 0; o < n_o; ++o) {
+    cmax[nests[o]] = -inf;
+    I1[nests[o]] = 0.0;
+  }
+  for (int j = 0; j < m; ++j) {
+    const int k = nest0[j];
+    const double vl = (xb[j] + d0[alt[j] - 1]) / lam[k];
+    if (vl > cmax[k]) cmax[k] = vl;
+  }
+  for (int j = 0; j < m; ++j) {
+    Pc[j] = E[j] * f[alt[j] - 1];
+    I1[nest0[j]] += Pc[j];
+  }
+  double tmax = -inf;
+  for (int o = 0; o < n_o; ++o) {
+    const int k = nests[o];
+    t[k] = lam[k] * (cmax[k] + std::log(I1[k]));
+    if (t[k] > tmax) tmax = t[k];
+  }
+  if (!std::isfinite(tmax)) tmax = 0;
+  double sum = 0.0;
+  for (int o = 0; o < n_o; ++o) {
+    const int k = nests[o];
+    Pk[k] = std::exp(t[k] - tmax);
+    sum += Pk[k];
+  }
+  const double w0 = outside ? std::exp(0.0 - tmax) : 0.0;
+  sum += w0;
+  for (int o = 0; o < n_o; ++o) Pk[nests[o]] /= sum;
+  for (int j = 0; j < m; ++j) {
+    const int k = nest0[j];
+    Pc[j] /= I1[k];
+    P[j] = Pc[j] * Pk[k];
+  }
+  nl_offered_nests_clear(b, n_o);
+  return w0 / sum;
+}
+
 // Free constant of a row with 0-based alternative alt0 (as
 // scatter_delta_grad() places it), or -1.
 static inline int nl_free_delta(const int alt0, const bool has_delta,
@@ -2995,6 +3080,11 @@ Rcpp::NumericMatrix nl_diversion_ratios_parallel(
 // one half): the textbook 1/lambda - (1 - lambda)/lambda P(j|g) cancels when
 // lambda is small (fitted dissimilarities go down to 1e-16). Where a
 // situation lists a code twice, A and C take the code's totals.
+//
+// With the exp-space pass (blp_engine.h), the pass at an origin also keeps
+// each row's exponential within its nest, and an evaluation near the origin
+// (its distance in units of each alternative's lambda) forms the
+// probabilities from them (nl_exp_probs()).
 // ============================================================================
 struct NlBlpModel {
   const ChoiceLayout& lay;
@@ -3017,6 +3107,8 @@ struct NlBlpModel {
   std::vector<std::vector<double>> acc_ac;   // A, C (and A1, C1) of each alternative, interleaved
   std::vector<std::vector<int>> slot, code;  // repeated codes (as MnlBlpModel's)
   std::vector<std::vector<double>> tot, totc;
+  BlpExpCache xc;                            // the exp-space cache's state
+  std::unique_ptr<double[]> E;               // its exponentials, each row's
 
   NlBlpModel(const ChoiceLayout& lay_, const arma::vec& Xb_, const int* nest_,
              const arma::vec& lambda_, const int n_nests_, const arma::vec& w_,
@@ -3026,7 +3118,8 @@ struct NlBlpModel {
         weights(w_), W(W_), outside(outside_), J(J_), comp(comp_),
         offered(nl_offered_probs(lambda_, lay_)),
         lam1(lambda_.max() > 1.0), stride(lam1 ? 4 : 2),
-        bufs(nl_thread_buffers(lay_.max_m, n_nests_, 0, situation_team(lay_))) {
+        bufs(nl_thread_buffers(lay_.max_m, n_nests_, 0, situation_team(lay_))),
+        xc(J_, outside_) {
     const int T = static_cast<int>(bufs.size());
     const std::size_t m = static_cast<std::size_t>(lay.max_m);
     vbuf = thread_vectors<double>(m, T);
@@ -3041,13 +3134,52 @@ struct NlBlpModel {
     }
   }
 
+  // Keep the exp-space cache if its bytes (a double per row) are within
+  // budget and can be had. Its distances are in units of each alternative's
+  // lambda.
+  bool keep_exp(const double budget) {
+    if (lay.n_rows <= 0 ||
+        !(sizeof(double) * static_cast<double>(lay.n_rows) <= budget)) {
+      return false;
+    }
+    try {
+      E.reset(new double[static_cast<std::size_t>(lay.n_rows)]);
+    } catch (const std::bad_alloc&) {
+      return false;
+    }
+    xc.scale.set_size(static_cast<arma::uword>(J));
+    for (int j = 0; j < J; ++j) xc.scale[j] = lambda[nest[j] - 1];
+    return true;
+  }
+
   void pass(const arma::vec& delta, BlpPass& out) {
+    if (E) {
+      blp_exp_pass(*this, xc, delta, out);
+    } else {
+      sweep<false, false>(delta, out);
+    }
+  }
+
+  // Form the exp-space cache at delta0 (tests: control$origin)
+  void form(const arma::vec& delta0) {
+    BlpPass scratch(J, comp.n);
+    sweep<false, true>(delta0, scratch);
+    xc.formed(delta0, scratch);
+  }
+
+  // One pass: the usual one (Exp false), storing the exp-space cache (Store),
+  // or from the cache (Exp, its factors in xc.factor).
+  template <bool Exp, bool Store>
+  void sweep(const arma::vec& delta, BlpPass& out) {
     const choicer_off N = lay.N;
     const int T = static_cast<int>(bufs.size());
     const arma::uword n_s = static_cast<arma::uword>(J + comp.n);
     const double* d = delta.memptr();
     const double* xb = Xb.memptr();
     const double* lam = lambda.memptr();
+    double* e = E.get();
+    const double* fa = xc.factor.memptr();
+    const double* d0 = xc.d0.memptr();
     const bool repeated = comp.repeated;
     // the threads that ran (as MnlBlpModel's pass)
     int T_used = 1;
@@ -3079,22 +3211,37 @@ struct NlBlpModel {
         const int m_i = lay.m(i);
         const choicer_off r0 = lay.row_off[i];
         const int* alt = lay.alt + r0;
-        for (int a = 0; a < m_i; ++a) v[a] = xb[r0 + a] + d[alt[a] - 1];
         int* nest0 = b.nest0.data();
-        nl_gather_nests(nest0, alt, nest, m_i);
-        nl_situation_probs(v, m_i, lambda, n_nests, outside, offered, b);
+        double P0x = 0.0;  // from the cache: the outside option's probability
+        if (Exp) {
+          nl_gather_nests(nest0, alt, nest, m_i);
+          P0x = nl_exp_probs(e + r0, fa, xb + r0, d0, alt, m_i, lam, outside, b);
+        } else {
+          for (int a = 0; a < m_i; ++a) v[a] = xb[r0 + a] + d[alt[a] - 1];
+          nl_gather_nests(nest0, alt, nest, m_i);
+          if (Store) {
+            nl_situation_probs_keep(v, m_i, lambda, n_nests, outside, offered, b,
+                                    e + r0);
+          } else {
+            nl_situation_probs(v, m_i, lambda, n_nests, outside, offered, b);
+          }
+        }
         const arma::vec P_i(pr.P_i.data(), m_i, false, true);
         const double* Pc = pr.P_j_given_k.data();
         const double w_i = weights[i];
         const int c = comp.of[alt[0] - 1];
         if (outside) {
-          local_shares(J + c) += w_i * std::exp(pr.log_P_outside);
+          if (Exp) {
+            local_shares(J + c) += w_i * P0x;
+          } else {
+            local_shares(J + c) += w_i * std::exp(pr.log_P_outside);
+          }
         }
         for (int a = 0; a < m_i; ++a) {
           local_shares(alt[a] - 1) += w_i * P_i(a);
         }
         // the base: the outside option, or the component's reference
-        const double P0 = outside ? std::exp(pr.log_P_outside) : 0.0;
+        const double P0 = outside ? (Exp ? P0x : std::exp(pr.log_P_outside)) : 0.0;
         double Pref = 0.0;
         int g_ref = -1;
         if (!outside) {
@@ -3269,8 +3416,19 @@ Rcpp::List nl_blp_solve(
       if (l > 1.0) floor_scale[j] = (1.0 + l) / (2.0 * l);
     }
   }
+  bool kept = false;
+  if (ctl.pass == BLP_PASS_EXP && !pb.free.empty() &&
+      (ctl.max_evals > 1 || ctl.origin.n_elem > 0)) {
+    // (the call holds the design and X beta)
+    const double held = sizeof(double) * (static_cast<double>(X.n_elem) +
+                                          static_cast<double>(Xb.n_elem));
+    kept = model.keep_exp(blp_cache_budget(ctl.cache_bytes, held));
+    if (kept && ctl.origin.n_elem > 0) model.form(blp_origin(ctl, J, include_outside_option));
+  }
   BlpPass last(J, comp.n);
   const BlpResult res = blp_solve(model, comp, pb, d, ctl, &last,
                                   model.lam1 ? &floor_scale : nullptr);
-  return blp_result(d, res, ctl, last);
+  Rcpp::List out = blp_result(d, res, ctl, last);
+  blp_exp_record(out, ctl, kept, model.xc);
+  return out;
 }
