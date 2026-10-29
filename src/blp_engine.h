@@ -3,6 +3,7 @@
 
 #include "choicer.h"
 #include "choicer_internal.h"
+#include "choicer_derivs.h"
 #include "fixed_point.h"
 #include <algorithm>
 #include <cmath>
@@ -112,7 +113,15 @@ constexpr double BLP_STEP_CAP = 5.0;
 // weight) are rescaled to them; farther, they are an error.
 constexpr double BLP_SUM_TOL = 1.4901161193847656e-08;  // sqrt(DBL_EPSILON)
 
+// The exp-space pass (BlpExpCache, below): the largest distance from the
+// cache's origin, in log units, at which an evaluation uses the cache; and
+// the share of the memory limit (kernel_memory_limit()) that caches may take,
+// less what the call already holds.
+constexpr double BLP_EXP_SPAN = 50.0;
+constexpr double BLP_CACHE_SHARE = 0.5;
+
 enum BlpMap { BLP_MAP_REDUCED = 0, BLP_MAP_PLAIN = 1, BLP_MAP_JACOBI = 2 };
+enum BlpPassKind { BLP_PASS_LOG = 0, BLP_PASS_EXP = 1 };
 
 struct BlpControl {
   int method = FP_SIMPLE;
@@ -135,6 +144,11 @@ struct BlpControl {
   double step_max = 1.0;
   double step_factor = 4.0;
   bool keep_pass = false;   // tests: return the last pass
+  int pass = BLP_PASS_LOG;  // the passes' arithmetic (BlpExpCache)
+  double cache_bytes = arma::datum::inf;  // the multinomial and nested logits'
+                                          // exp-space cache: most bytes
+  arma::vec origin;         // tests: where the exp-space cache is formed first
+                            // (empty: at the first evaluation)
 };
 
 // Components of the situation-alternative graph through the situations of
@@ -351,6 +365,158 @@ struct BlpPass {
       : s(J, arma::fill::zeros), A(J, arma::fill::zeros), C(J, arma::fill::zeros),
         s0(static_cast<arma::uword>(n_comp), arma::fill::zeros) {}
 };
+
+// ----------------------------------------------------------------------------
+// The exp-space pass
+//
+// A model's pass forms every choice probability as a quotient of
+// exponentials, one per row (and draw), each exp(utility - shift) for a shift
+// per choice situation (per offered nest in the nested logit, per draw in the
+// mixed logit). Only delta changes between evaluations, so a model may keep
+// those exponentials from its pass at an origin delta0, its cache, and
+// evaluate at delta by multiplying the row's by a_j = exp((delta_j - delta0_j)
+// / scale_j) (scale_j = 1, or the dissimilarity of j's nest): J exponentials
+// per evaluation instead of one or more per row, and the same quotients, so
+// the same probabilities up to rounding.
+//
+// The cache is used only within BLP_EXP_SPAN of its origin, d = max_j
+// |delta_j - delta0_j| / scale_j <= 50, where the factors and the sums stay
+// far from overflow and a row whose exponential was subnormal at the origin
+// (known to a few bits) carries at most DBL_MIN e^(2 d) into its probability.
+// An evaluation from the cache is kept only if every share it gives, the
+// outside options' included, is finite and at least F(d) = 2^53 DBL_MIN
+// e^(2 d) (about 5.4e-249 at the span), where that error, summed over a
+// situation's rows, is below rounding. Otherwise, and beyond the span, the
+// model runs its usual pass at delta and stores its exponentials on the way:
+// delta becomes the origin, and that evaluation is the usual pass bit for
+// bit. A cache whose own pass gave a share below F(span) is not used until a
+// later usual pass gives none (conservative: near such an origin, shares are
+// tiny, and most evaluations from it would end in the usual pass). A delta
+// that is not finite takes the usual pass and leaves the cache as it was.
+// ----------------------------------------------------------------------------
+
+// F(d): the smallest share an evaluation at distance d from the cache's
+// origin may give (above).
+inline double blp_exp_floor(const double d) {
+  return std::ldexp(std::exp(2.0 * d), -969);  // 2^53 DBL_MIN e^(2 d)
+}
+
+struct BlpExpCache {
+  arma::vec d0;        // the origin
+  arma::vec factor;    // exp((delta - delta0) / scale) of the evaluation in hand
+  arma::vec scale;     // empty: 1 for every alternative
+  bool outside = false;
+  bool valid = false;  // a cache formed at d0
+  bool tiny = false;   // its pass gave a share below F(BLP_EXP_SPAN)
+  double evals = 0;    // evaluations from the cache
+  double forms = 0;    // usual passes that formed it
+  double floors = 0;   // evaluations from it discarded by the floor
+
+  BlpExpCache(const int J, const bool outside_)
+      : d0(static_cast<arma::uword>(J)), factor(static_cast<arma::uword>(J)),
+        outside(outside_) {}
+
+  // Whether the evaluation at delta uses the cache; then factor holds its
+  // factors and d its distance from the origin
+  bool use(const arma::vec& delta, double& d) {
+    if (!valid || tiny) return false;
+    const arma::uword J = delta.n_elem;
+    const bool scaled = scale.n_elem == J;
+    d = 0.0;
+    for (arma::uword j = 0; j < J; ++j) {
+      double x = delta[j] - d0[j];
+      if (scaled) x /= scale[j];
+      const double ax = std::fabs(x);
+      if (!(ax <= BLP_EXP_SPAN)) return false;  // (NaN included)
+      d = std::max(d, ax);
+      factor[j] = x;
+    }
+    for (arma::uword j = 0; j < J; ++j) factor[j] = std::exp(factor[j]);
+    return true;
+  }
+
+  // Whether a pass's shares are all finite and at least lo
+  bool above(const BlpPass& out, const double lo) const {
+    for (arma::uword j = 0; j < out.s.n_elem; ++j) {
+      if (!(out.s[j] >= lo) || !std::isfinite(out.s[j])) return false;
+    }
+    if (outside) {
+      for (arma::uword k = 0; k < out.s0.n_elem; ++k) {
+        if (!(out.s0[k] >= lo) || !std::isfinite(out.s0[k])) return false;
+      }
+    }
+    return true;
+  }
+
+  // The usual pass at delta formed the cache
+  void formed(const arma::vec& delta, const BlpPass& out) {
+    d0 = delta;
+    valid = true;
+    tiny = !above(out, blp_exp_floor(BLP_EXP_SPAN));
+    ++forms;
+  }
+};
+
+// One evaluation of a model that keeps an exp-space cache (above): its
+// sweep<true, false>() evaluates from the cache, sweep<false, true>() is its
+// usual pass storing the cache, and sweep<false, false>() its usual pass.
+template <class Model>
+inline void blp_exp_pass(Model& model, BlpExpCache& xc, const arma::vec& delta,
+                         BlpPass& out) {
+  double d = 0.0;
+  if (xc.use(delta, d)) {
+    model.template sweep<true, false>(delta, out);
+    if (xc.above(out, blp_exp_floor(d))) {
+      ++xc.evals;
+      return;
+    }
+    ++xc.floors;
+  }
+  if (!delta.is_finite()) {
+    model.template sweep<false, false>(delta, out);
+    return;
+  }
+  model.template sweep<false, true>(delta, out);
+  xc.formed(delta, out);
+}
+
+// The bytes the share inversion may keep in a cache: budget, capped by
+// BLP_CACHE_SHARE of the memory limit (kernel_memory_limit(): the option
+// choicer.max_memory, else the physical memory) less held, the bytes the call
+// already holds; no cap where the limit is unknown (0) or infinite. A budget
+// that is not positive (NaN included) keeps nothing. It reads an option (and
+// stops on a malformed one): call it on the primary thread, and only where a
+// cache may be kept.
+inline double blp_cache_budget(const double budget, const double held) {
+  if (!(budget > 0)) return 0.0;
+  const char* source = "";
+  const double limit = kernel_memory_limit(source);
+  if (!(limit > 0) || std::isinf(limit)) return budget;
+  const double cap = BLP_CACHE_SHARE * limit - held;
+  return cap > 0 ? std::min(budget, cap) : 0.0;
+}
+
+// The exp-space cache's origin given for tests (control$origin), normalized
+// as the solvers normalize a start: J finite constants, less the first's
+// without an outside option.
+inline arma::vec blp_origin(const BlpControl& ctl, const int J, const bool outside) {
+  if (ctl.origin.n_elem != static_cast<arma::uword>(J) || !ctl.origin.is_finite()) {
+    Rcpp::stop("Internal error: control$origin must hold %d finite constants.", J);
+  }
+  arma::vec o = ctl.origin;
+  if (!outside && J > 0) o -= ctl.origin[0];
+  return o;
+}
+
+// The exp-space cache's record on an internal entry point's result.
+inline void blp_exp_record(Rcpp::List& out, const BlpControl& ctl, const bool kept,
+                           const BlpExpCache& xc) {
+  if (ctl.pass != BLP_PASS_EXP) return;
+  out["exp_kept"] = kept;
+  out["exp_evals"] = xc.evals;
+  out["exp_forms"] = xc.forms;
+  out["exp_floors"] = xc.floors;
+}
 
 struct BlpResult {
   FpResult fp;
@@ -592,6 +758,23 @@ inline BlpControl blp_control(const Rcpp::List& control) {
   c.step_max = Rcpp::as<double>(control["step_max"]);
   c.step_factor = Rcpp::as<double>(control["step_factor"]);
   c.keep_pass = Rcpp::as<bool>(control["keep_pass"]);
+  // (optional: lists made before these settings existed lack them)
+  if (control.containsElementNamed("pass")) {
+    const std::string pass = Rcpp::as<std::string>(control["pass"]);
+    if (pass == "log") {
+      c.pass = BLP_PASS_LOG;
+    } else if (pass == "exp") {
+      c.pass = BLP_PASS_EXP;
+    } else {
+      Rcpp::stop("Internal error: unknown BLP pass \"%s\".", pass);
+    }
+  }
+  if (control.containsElementNamed("cache_bytes")) {
+    c.cache_bytes = Rcpp::as<double>(control["cache_bytes"]);
+  }
+  if (control.containsElementNamed("origin") && !Rf_isNull(control["origin"])) {
+    c.origin = Rcpp::as<arma::vec>(control["origin"]);
+  }
   return c;
 }
 

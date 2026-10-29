@@ -637,7 +637,9 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #' @param control List from .blp_control(): iteration, map, max_evals, tol,
 #'   damping, patience, window, Anderson acceleration's memory,
 #'   max_condition, restart_patience, restart_progress and restart_best,
-#'   SQUAREM's scheme, step_min, step_max and step_factor, and keep_pass.
+#'   SQUAREM's scheme, step_min, step_max and step_factor, keep_pass, and the
+#'   passes' arithmetic: pass ("log" or "exp"), cache_bytes and origin
+#'   (blp_engine.h's BlpExpCache).
 #' @return List: delta (n x 1, as blp_contraction() returns it), code (0
 #'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
 #'   start), iterations, evaluations, backtracks, stalls, race (the evaluations
@@ -645,7 +647,10 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #'   it went on after stopping as behind), restarts (Anderson acceleration's
 #'   restarts; SQUAREM's extrapolated points that failed),
 #'   berry (whether the point returned is its), residual, fallbacks; with
-#'   keep_pass, pass (s, A, C, s0 of the last evaluation).
+#'   keep_pass, pass (s, A, C, s0 of the last evaluation); with pass "exp",
+#'   exp_kept (whether the cache was allocated), exp_evals (evaluations from
+#'   it), exp_forms (usual passes that formed it) and exp_floors (evaluations
+#'   from it that the floor sent to the usual pass).
 #' @noRd
 mnl_blp_solve <- function(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control) {
     .Call(`_choicer_mnl_blp_solve`, delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control)
