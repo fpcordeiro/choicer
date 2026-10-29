@@ -336,6 +336,23 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// test_fp_solve
+Rcpp::List test_fp_solve(const arma::mat& A, const arma::vec& b, const arma::vec& x0, const Rcpp::List& control, const Rcpp::IntegerVector& fail, const Rcpp::NumericVector& script, const bool fallback);
+RcppExport SEXP _choicer_test_fp_solve(SEXP ASEXP, SEXP bSEXP, SEXP x0SEXP, SEXP controlSEXP, SEXP failSEXP, SEXP scriptSEXP, SEXP fallbackSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type A(ASEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type b(bSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type x0(x0SEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type control(controlSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type fail(failSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type script(scriptSEXP);
+    Rcpp::traits::input_parameter< const bool >::type fallback(fallbackSEXP);
+    rcpp_result_gen = Rcpp::wrap(test_fp_solve(A, b, x0, control, fail, script, fallback));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mnl_loglik_gradient_parallel
 Rcpp::List mnl_loglik_gradient_parallel(const arma::vec& theta, const arma::mat& X, const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const bool use_asc, const bool include_outside_option, const bool opg_diag);
 RcppExport SEXP _choicer_mnl_loglik_gradient_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP opg_diagSEXP) {
@@ -1346,6 +1363,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_test_arma_view_n_elem", (DL_FUNC) &_choicer_test_arma_view_n_elem, 0},
     {"_choicer_test_sym_acc", (DL_FUNC) &_choicer_test_sym_acc, 4},
     {"_choicer_test_physical_memory", (DL_FUNC) &_choicer_test_physical_memory, 0},
+    {"_choicer_test_fp_solve", (DL_FUNC) &_choicer_test_fp_solve, 7},
     {"_choicer_mnl_loglik_gradient_parallel", (DL_FUNC) &_choicer_mnl_loglik_gradient_parallel, 9},
     {"_choicer_mnl_bhhh_parallel", (DL_FUNC) &_choicer_mnl_bhhh_parallel, 9},
     {"_choicer_mnl_cluster_meat_parallel", (DL_FUNC) &_choicer_mnl_cluster_meat_parallel, 10},

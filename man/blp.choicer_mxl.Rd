@@ -50,11 +50,14 @@ or batch jobs with memory limits), a budget above the memory actually
 free can end the R session rather than fall back: lower it, or use
 \code{0}, when memory is tight.}
 
-\item{method}{The solver: \code{"simple"} (the default) or
-\code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+\item{method}{The solver: \code{"simple"} (the default),
+\code{"original"}, Berry, Levinsohn and Pakes's contraction, or
+\code{"anderson"}, Anderson acceleration of \code{"simple"} (see
 \code{\link{blp}()}).}
 
-\item{control}{A list of the method's settings (none for either).}
+\item{control}{A list of the method's settings: for \code{"anderson"},
+\code{memory} and \code{max_condition} (see
+\code{\link{blp_contraction}()}); none for the others.}
 
 \item{...}{Additional arguments (ignored).}
 }

@@ -9,7 +9,8 @@ place of three copies of Berry's contraction. The solution is the same; the
 iteration that reaches it, its stopping rule and its handling of inputs that
 have no solution are new, so results move within the tolerance. The
 contraction remains available, under the engine's rules, as
-`blp(method = "original")`.
+`blp(method = "original")`, and Anderson acceleration of the new step as
+`method = "anderson"`.
 
 - **The step.** The iteration solves for the free constants at which each
   log-share residual against a base, r_j - r_b (r = log S - log s), is zero;
@@ -111,6 +112,36 @@ contraction remains available, under the engine's rules, as
   25,225 evaluations; both solved to 1e-10); more where the contraction
   keeps halving its steps (1.45 times on a nested logit with lambda 0.06
   whose contraction never improves on its start).
+- **Anderson acceleration.** `blp(method = "anderson")`, and the `method`
+  argument the exported functions gain, accelerate the step by Anderson
+  acceleration (type II; Walker and Ni 2011). Each iteration combines the last
+  10 changes in the step (`control = list(memory = )`) to cancel the current
+  step in least squares, dropping the oldest while that problem's condition
+  estimate exceeds 1e8 (`max_condition`), and so extrapolates along the slow
+  directions the step crawls: the level shifts between groups of alternatives
+  that share few choice situations. It restarts, clearing its history, when
+  five iterations bring no residual below 0.9 of the best so far or the shares
+  at an extrapolated point are not finite. It restarts from where it is, and
+  goes back to its best point only where its residual has grown past twice the
+  best, since the way to the solution can climb through larger residuals
+  first; restarting from its best point every time failed on four to five
+  times as many of the small designs above. It races the contraction as the
+  default does, so the bound T + 4E holds (its trial points whose shares are
+  not finite left out, as the step's halvings are). On the 121 simulated
+  designs above it converged on every one, in medians of 13, 12 and 16.5
+  evaluations of the shares (multinomial, nested and mixed logits; the default
+  32, 18.5 and 174), never more than 1.25 times the default's; on the 80
+  nested logits with lambda above 1 in a median 0.67 of the default's
+  evaluations, never more. From 10 far starts in a market of four regions it
+  needed 27 to 36 evaluations, the default 3,143 to 3,655. On the 5,985 small
+  hard designs (the 2,995 above and 2,990 more drawn alike) it failed on 163,
+  85 and 62 at 1,000, 20,000 and 200,000 evaluations, the default on 590, 236
+  and 122, and where both converged it needed a median 0.45 of the default's
+  evaluations (90th percentile 1.14). Where the targets lie within working
+  precision of what the data can attain, the constants are not identified to
+  that precision (conditioning above 10^7), and the extrapolation can stop
+  farther from the constants the targets came from than the default does, its
+  shares still within `tol`. `"simple"` remains the default.
 - **Stopping rule.** The iteration stops at the first evaluation whose
   largest absolute log-share residual is at most `tol` (relative to the
   reference of each group without an outside option; with one, each group's
@@ -152,14 +183,17 @@ contraction remains available, under the engine's rules, as
 - **`blp()`** checks its targets in R before the model's solver runs (and so
   before a mixed logit forms its draws): one share per alternative, the
   outside option's first, finite, positive and summing to 1. It checks
-  `delta_init` the same way, and gains `method` and `control` (no settings
-  yet). `method = "simple"`, the default, is the step above; `"original"` is
-  the contraction of Berry, Levinsohn and Pakes (1995, eq. 6.8),
-  delta + log S - log s(delta), normalized as the step is and, for the nested
-  logit, multiplied by `damping`. Both share the checks, the stopping rule,
-  the evaluation budget, the warning, the point returned and the halving of a
-  step whose shares are not finite; the step's cap, its stalls and the race
-  with the contraction belong to the default only. Its result keeps its
+  `delta_init` the same way, and gains `method` and `control`.
+  `method = "simple"`, the default, is the step above; `"anderson"` its
+  acceleration, whose settings (`memory`, `max_condition`) go in `control`;
+  `"original"` is the contraction of Berry, Levinsohn and Pakes (1995, eq.
+  6.8), delta + log S - log s(delta), normalized as the step is and, for the
+  nested logit, multiplied by `damping`. All share the checks, the stopping
+  rule, the evaluation budget, the warning, the point returned and the
+  halving of a step whose shares are not finite (`"anderson"` restarts first
+  where an extrapolated point's are not); the step's stalls belong to the
+  default, its cap to the step that `"anderson"` extrapolates too, and the
+  race with the contraction to both. Its result keeps its
   n x 1 shape and gains the inside alternatives' labels as row names and a
   `"convergence"` attribute: the
   warning's record (converged, status, iterations, evaluations, residual,
@@ -175,7 +209,8 @@ contraction remains available, under the engine's rules, as
   at one thread and two to three at eleven (0.3 s at 10^8 rows). Fewer
   evaluations more than make up for it.
 - **The exported functions** keep their arguments, defaults, layouts of
-  `delta` and n x 1 results; they are now R functions over the engine.
+  `delta` and n x 1 results; they are now R functions over the engine, and
+  gain `method` and `control` as their last arguments.
   `mxl_blp_contraction()` converts an integer or logical cube of draws to
   double, where it read such a cube from a temporary copy that R could free
   while it was read.

@@ -1807,6 +1807,8 @@ and otherwise doubling the iterations the next stall waits for; and once 100 ite
 fail to halve the best residual, the contraction races the step from the start (stopping
 when it is behind and slow, and going on whenever the step alone fails to halve its best
 residual within 200 iterations), the first to reach the tolerance returning.
+`method = "anderson"` accelerates the step as in the logit (Anderson acceleration; §7.3 of
+the [multinomial logit article](multinomial_logit_math.html)).
 
 The iteration stops at the first evaluation whose largest absolute residual (relative to
 each component's reference without an outside option; with one, each component's outside

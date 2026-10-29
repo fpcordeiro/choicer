@@ -574,6 +574,33 @@ leaves out the step's halvings after the contraction joined and any 200 iteratio
 which the step alone halved its best residual. Berry's contraction itself, as `method =
 "original"`, takes only the halving of steps whose shares are not finite.
 
+`method = "anderson"` accelerates the same step, Anderson acceleration of type II (Walker
+and Ni 2011). Write $f(\delta)$ for the step at $\delta$, and $\Delta X$ and $\Delta F$
+for the last $m$ differences (`memory`, default 10, cut to the number of free constants)
+between successive iterates and between their steps, newest first. Each iteration solves
+the least squares
+$\min_\gamma \|f - \Delta F \gamma\|_2$, the combination of past changes in the step that
+best cancels the current one, and moves to
+
+$$
+\delta \leftarrow \delta - \Delta X \gamma + \left(f - \Delta F \gamma\right),
+$$
+
+the capped step above while there are no differences. On a linear map, undamped and with
+unlimited memory, this is essentially GMRES (Walker and Ni 2011), so it handles the slow
+modes of segmented choice sets that the step alone crawls along. The least squares go through a Householder QR of $\Delta F$,
+one per iteration, and the oldest differences are dropped while the triangular factor's
+condition estimate, $\max_i |R_{ii}| / \min_i |R_{ii}|$, exceeds `max_condition`
+(default $10^8$). Its safeguards are on the residual, never on a merit function: when
+five iterations bring no residual below 0.9 times the best so far, or the shares at an
+extrapolated point are not finite, it clears its differences and takes the plain step
+from where it is, halved while its shares are not finite; only where its residual has
+grown past twice the best does it go back to its best point, once per best point, since
+a path to the solution can climb through larger residuals first (the step's stalls
+above). It races the contraction like the step, each of its iterations one evaluation of
+the shares besides trial points whose shares are not finite (left out of the bound, as
+the step's halvings are), so the bound $T + 4E$ holds for it too.
+
 On the 121 simulated designs of choicer's test bed (multinomial, nested and mixed logits;
 2 to 5,000 alternatives; full, regional and chained choice sets; far starts), solved to
 $10^{-12}$, the step converged on every one; where Berry's contraction converged too (113
@@ -588,6 +615,15 @@ included; covariates and constants integers in $[-10, 10]$ and $[-3, 3]$; half w
 outside option), at the default tolerance and 1,000 evaluations, the method failed on 103
 and Berry's contraction on 592, never where the contraction converged; where both
 converged, the method needed a median 0.12 of the contraction's evaluations.
+
+With `method = "anderson"` the same 121 designs converged in medians of 13, 12 and 16.5
+evaluations for the multinomial, nested and mixed logits (32, 18.5 and 174 with
+`"simple"`), never more than 1.25 times `"simple"`'s, and the 24-alternative market of
+four regions from 10 far starts in 27 to 36 evaluations, where `"simple"` needed 3,143
+to 3,655. On the 999 small hard designs above and 999 more drawn alike it failed on 61,
+29 and 20 at 1,000, 20,000 and 200,000 evaluations, against 210, 80 and 39 for
+`"simple"`, and needed a median 0.45 to 0.48 of `"simple"`'s evaluations where both
+converged.
 
 ### 7.4 Stopping Rule and Result
 
@@ -1121,6 +1157,7 @@ the kernel's report, `logit_sanitize()` in
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
 - Berry, S., Gandhi, A., & Haile, P. (2013). Connected substitutes and invertibility of demand. *Econometrica*, 81(5), 2087-2111.
 - Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static / dynamic BLP estimations. arXiv:2404.04494.
+- Walker, H. F., & Ni, P. (2011). Anderson acceleration for fixed-point iterations. *SIAM Journal on Numerical Analysis*, 49(4), 1715-1735.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
 - Manski, C. F., & McFadden, D. (1981). Alternative estimators and sample designs for discrete choice analysis. In C. F. Manski & D. McFadden (Eds.), *Structural Analysis of Discrete Data with Econometric Applications* (pp. 2-50). MIT Press.
 - Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based samples. *Econometrica*, 49(5), 1289-1316.

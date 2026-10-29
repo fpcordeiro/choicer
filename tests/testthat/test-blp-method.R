@@ -45,7 +45,7 @@ bm_repro_fit <- function(model) {
   fit
 }
 
-test_that("both methods solve the review's reproducer through every model's blp()", {
+test_that("every method solves the review's reproducer through every model's blp()", {
   # The diagonal step alone diverged here (test-blp-engine.R)
   ds <- c(0, 1, 1, 1)
   S <- as.numeric(choicer:::mnl_predict_shares(c(1, ds[-1L]), matrix(bm_repro_x),
@@ -55,7 +55,7 @@ test_that("both methods solve the review's reproducer through every model's blp(
     # the fit is the reproducer: its solution meets the targets at once
     at <- blp(fit, target_shares = S, delta_init = ds)
     expect_identical(attr(at, "convergence")$evaluations, 1L, label = model)
-    for (method in c("simple", "original")) {
+    for (method in c("simple", "original", "anderson")) {
       lab <- sprintf("%s, %s", model, method)
       d <- blp(fit, target_shares = S, delta_init = rep(0, 4L), method = method)
       cv <- attr(d, "convergence")
@@ -67,7 +67,7 @@ test_that("both methods solve the review's reproducer through every model's blp(
   }
 })
 
-test_that("both methods recover known constants on each model", {
+test_that("every method recovers known constants on each model", {
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
   dn <- create_small_nl_data()
@@ -88,13 +88,18 @@ test_that("both methods recover known constants on each model", {
     fit$coefficients[asc] <- stats::rnorm(length(asc))
     ds <- if (outside) fit$coefficients[asc] else c(0, fit$coefficients[asc])
     S <- as.numeric(predict(fit, type = "shares"))
-    for (method in c("simple", "original")) {
+    for (method in c("simple", "original", "anderson")) {
       lab <- sprintf("%s, %s", nm, method)
       d <- blp(fit, target_shares = S, delta_init = rep(0, length(ds)), tol = 1e-10,
                method = method)
       expect_true(attr(d, "convergence")$converged, label = lab)
+      expect_identical(attr(d, "convergence")$method, method, label = lab)
       expect_equal(as.numeric(d), as.numeric(ds), tolerance = 1e-8, label = lab)
     }
+    # a method's settings, through control
+    d <- blp(fit, target_shares = S, delta_init = rep(0, length(ds)), tol = 1e-10,
+             method = "anderson", control = list(memory = 3L, max_condition = 1e6))
+    expect_equal(as.numeric(d), as.numeric(ds), tolerance = 1e-8, label = nm)
   }
 })
 
@@ -237,12 +242,16 @@ test_that("blp() checks its start, method and settings", {
                "`delta_init` must be finite")
   d <- blp(fit, target_shares = rev(S), delta_init = rep(0, 4L))
   expect_true(attr(d, "convergence")$converged)
-  expect_error(blp(fit, target_shares = S, method = "anderson"),
-               "must be \"simple\" \\(the two-level step of \\?blp_contraction\\) or \"original\"")
+  expect_error(blp(fit, target_shares = S, method = "newton"),
+               "must be \"simple\" \\(the two-level step of \\?blp_contraction\\), \"original\"")
   expect_error(blp(fit, target_shares = S, control = list(m = 5)),
                "`control` takes no settings with method \"simple\" \\(it has `m`\\)")
   expect_error(blp(fit, target_shares = S, method = "original", control = list(m = 5)),
                "`control` takes no settings with method \"original\"")
+  expect_error(blp(fit, target_shares = S, method = "anderson", control = list(m = 5)),
+               "`control` takes `memory` and `max_condition` with method \"anderson\"")
+  expect_error(blp(fit, target_shares = S, method = "anderson",
+                   control = list(memory = 0)), "`control\\$memory` must be a whole")
   expect_error(blp(fit, target_shares = S, control = "x"), "must be a list")
   expect_error(blp(fit, target_shares = S, tol = -1), "`tol` must be a single")
   expect_error(blp(fit, target_shares = S, max_iter = 2.5), "`max_iter` must be a whole")

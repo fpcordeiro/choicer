@@ -4,8 +4,8 @@
 // the raw-array softmax, log-sum-exp and nested logit probabilities to their
 // Armadillo counterparts bit for bit, check how Armadillo is configured (its
 // index word), check how the derivative kernels choose and size their
-// accumulators, and read the physical memory the estimation kernels' memory
-// check compares with.
+// accumulators, read the physical memory the estimation kernels' memory
+// check compares with, and run the fixed-point solver on a test map.
 //
 // DO NOT add any of these to the public documentation or NAMESPACE.
 
@@ -13,6 +13,8 @@
 #include "choicer.h"
 #include "choicer_internal.h"
 #include "choicer_derivs.h"
+#include "blp_engine.h"
+#include <algorithm>
 
 //' stable_softmax_n(), log_sum_exp_n() and max_shifted_lse_n() next to
 //' stable_softmax(), logSumExp() and the Armadillo expression of the mixed
@@ -281,4 +283,89 @@ Rcpp::List test_sym_acc(const double n, const int K_c, const int T,
 // [[Rcpp::export(rng = false)]]
 double test_physical_memory() {
   return choicer_physical_memory();
+}
+
+// A map for the fixed-point solver's tests (fixed_point.h): the step
+// f(x) = b - A x, its residual max |f(x)| or, for the first evaluations, a
+// scripted one (NA: the computed one), evaluations that fail on a schedule
+// (the k-th, 1-based, fails where `fail` lists k), and a fallback step f(x) / 2
+// while the solver asks for it (where it has one). Every evaluated point is
+// recorded, with its residual and whether it was the fallback's.
+struct FpTestMap {
+  const arma::mat& A;
+  const arma::vec& b;
+  const std::vector<int>& fail;
+  const std::vector<double>& script;
+  const bool fallback;
+  bool fb = false;
+  int count = 0;
+  std::vector<double> trace_x, trace_res;
+  std::vector<int> trace_fb;
+
+  FpTestMap(const arma::mat& A_, const arma::vec& b_, const std::vector<int>& fail_,
+            const std::vector<double>& script_, const bool fallback_)
+      : A(A_), b(b_), fail(fail_), script(script_), fallback(fallback_) {}
+
+  arma::uword n() const { return b.n_elem; }
+  bool has_fallback() const { return fallback; }
+  void use_fallback(const bool on) { fb = on; }
+  bool eval(const arma::vec& x, double& res, arma::vec& step) {
+    ++count;
+    trace_x.insert(trace_x.end(), x.begin(), x.end());
+    trace_fb.push_back(fb ? 1 : 0);
+    if (std::find(fail.begin(), fail.end(), count) != fail.end()) {
+      res = arma::datum::inf;
+      trace_res.push_back(res);
+      return false;
+    }
+    step = b - A * x;
+    res = arma::abs(step).max();
+    const std::size_t k = static_cast<std::size_t>(count - 1);
+    if (k < script.size() && !std::isnan(script[k])) res = script[k];
+    if (fb) step *= 0.5;
+    trace_res.push_back(res);
+    return true;
+  }
+};
+
+//' The fixed-point solver on a test map, for tests
+//'
+//' @param A,b The linear step f(x) = b - A x (A square, b its length).
+//' @param x0 The start.
+//' @param control List from .blp_control() (its method, budget, tol,
+//'   damping, patience, window and the methods' settings).
+//' @param fail 1-based indices of the evaluations that fail.
+//' @param script Residuals of the first evaluations (NA: computed).
+//' @param fallback Whether the map has a fallback step, f(x) / 2.
+//' @return List: x (the point returned), the solver's record (code,
+//'   iterations, evaluations, backtracks, stalls, race, resumes, restarts,
+//'   fallback, residual) and the evaluations' trace (trace_x, an n x
+//'   evaluations matrix; trace_res, the residuals; trace_fb, whether each was
+//'   the fallback's).
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List test_fp_solve(const arma::mat& A, const arma::vec& b,
+                         const arma::vec& x0, const Rcpp::List& control,
+                         const Rcpp::IntegerVector& fail,
+                         const Rcpp::NumericVector& script, const bool fallback) {
+  if (A.n_rows != b.n_elem || A.n_cols != b.n_elem || x0.n_elem != b.n_elem) {
+    Rcpp::stop("A must be n x n and b and x0 of length n.");
+  }
+  const FpControl fc = blp_fp_control(blp_control(control));
+  const std::vector<int> fail_v(fail.begin(), fail.end());
+  const std::vector<double> script_v(script.begin(), script.end());
+  FpTestMap map(A, b, fail_v, script_v, fallback);
+  arma::vec x = x0;
+  const FpResult r = fp_solve(map, x, fc);
+  arma::mat tx(map.trace_x.data(), b.n_elem, static_cast<arma::uword>(map.count));
+  return Rcpp::List::create(
+      Rcpp::Named("x") = Rcpp::NumericVector(x.begin(), x.end()),
+      Rcpp::Named("code") = r.code, Rcpp::Named("iterations") = r.iterations,
+      Rcpp::Named("evaluations") = r.evaluations,
+      Rcpp::Named("backtracks") = r.backtracks, Rcpp::Named("stalls") = r.stalls,
+      Rcpp::Named("race") = r.race, Rcpp::Named("resumes") = r.resumes,
+      Rcpp::Named("restarts") = r.restarts, Rcpp::Named("fallback") = r.fallback,
+      Rcpp::Named("residual") = r.residual, Rcpp::Named("trace_x") = tx,
+      Rcpp::Named("trace_res") = Rcpp::wrap(map.trace_res),
+      Rcpp::Named("trace_fb") = Rcpp::wrap(map.trace_fb));
 }

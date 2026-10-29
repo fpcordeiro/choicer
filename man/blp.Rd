@@ -47,13 +47,20 @@ derivative. \code{method = "original"} is the contraction of Berry,
 Levinsohn and Pakes (1995, eq. 6.8),
 \eqn{\delta \leftarrow \delta + \log S - \log s(\delta)}, normalized as
 the step is (the outside option's utility 0, or each group's reference
-held) and, for the nested logit, multiplied by \code{damping}. Both run
-under the same checks, stopping rule, evaluation budget
-(\code{max_iter}), warning and returned point, and halve a step whose
-shares are not finite, so their results and \code{"convergence"} records
-compare directly; the step's cap, its stalls and the contraction joining
-it belong to \code{"simple"} alone. Neither takes settings in
-\code{control}.
+held) and, for the nested logit, multiplied by \code{damping}.
+\code{method = "anderson"} accelerates the two-level step (Anderson
+acceleration; see \code{\link{blp_contraction}()}), its settings in
+\code{control}: \code{memory}, how many differences between successive
+iterates it keeps (default 10), and \code{max_condition} (default
+\eqn{10^8}). Every
+method runs under the same checks, stopping rule, evaluation budget
+(\code{max_iter}), warning and returned point, and halves a step whose
+shares are not finite (\code{"anderson"} restarts first where an
+extrapolated point's are not), so their results and \code{"convergence"}
+records compare directly. The step's stalls belong to \code{"simple"};
+its cap to the two-level step, which \code{"anderson"} extrapolates; and
+the contraction's joining to both. Only \code{"anderson"} takes settings
+in \code{control}.
 }
 \examples{
 \donttest{

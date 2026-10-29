@@ -24,7 +24,9 @@ mxl_blp_contraction(
   max_iter = 1000L,
   gen_seed = -1L,
   gen_scramble = 1L,
-  gen_S = 0L
+  gen_S = 0L,
+  method = "simple",
+  control = list()
 )
 }
 \arguments{
@@ -87,6 +89,18 @@ contraction). Other values are an error.}
 
 \item{gen_S}{Integer number of draws per individual, used only when
 \code{gen_seed >= 0}.}
+
+\item{method}{The iteration: \code{"simple"} (the default), the two-level
+step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
+contraction; or \code{"anderson"}, Anderson acceleration of the
+two-level step.}
+
+\item{control}{A list of the method's settings. \code{"anderson"} takes
+\code{memory}, how many differences between successive iterates it keeps
+(a whole number from 1 to 100, cut to the number of free constants;
+default 10), and \code{max_condition}, the largest condition estimate it
+accepts for their least squares (at least 1; default \eqn{10^8}). The
+other methods take none.}
 }
 \value{
 The constants, an n x 1 matrix (\eqn{J} rows); without an outside

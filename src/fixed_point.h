@@ -2,6 +2,7 @@
 #define CHOICER_FIXED_POINT_HPP
 
 #include "choicer.h"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -24,12 +25,16 @@
 // warning (under options(warn = 2) a warning would jump past the destructors
 // of the working vectors): its outcome is a code, which the R callers turn
 // into a classed warning. Its working vectors are allocated once per call
-// (the fallback's when it starts), none per iteration. Phase B of the BLP
-// engine plan adds Anderson acceleration and SQUAREM on the same maps
-// (FpMethod).
+// (the fallback's when it starts), none per iteration.
+//
+// Methods (FpMethod), each an iteration that takes one accepted evaluation
+// per turn (besides the trial points that fail) and races the fallback step
+// in the same way (fp_race()):
+//   FP_SIMPLE    the damped base step, with stalls (FpSimpleLane);
+//   FP_ANDERSON  Anderson acceleration of the base step (FpAndersonLane).
 // ============================================================================
 
-enum FpMethod { FP_SIMPLE = 0 };
+enum FpMethod { FP_SIMPLE = 0, FP_ANDERSON = 1 };
 
 enum FpCode {
   FP_CONVERGED = 0,       // an evaluated point with residual <= tol, returned
@@ -53,6 +58,15 @@ struct FpControl {
                             // as many while it is stopped); and the
                             // fallback's evaluations within which its own must
                             // halve while it is behind, or it stops
+  // Anderson acceleration (FP_ANDERSON)
+  int memory = 10;               // differences kept
+  double max_condition = 1e8;    // of their least squares: the oldest are
+                                 // dropped while its estimate exceeds this
+  int restart_patience = 5;      // iterations without a residual below
+  double restart_progress = 0.9; // this fraction of the best: a restart
+  bool restart_best = false;     // restart from the best point always (Phase
+                                 // R's rule; research), not only where the
+                                 // residual has grown past twice the best
 };
 
 struct FpResult {
@@ -63,6 +77,7 @@ struct FpResult {
   int stalls = 0;           // of the base step
   int race = 0;             // evaluations before the fallback joined (0: it did not)
   int resumes = 0;          // times the fallback, stopped as behind, went on
+  int restarts = 0;         // of an Anderson iteration
   bool fallback = false;    // the point returned is the fallback's
   double residual = std::numeric_limits<double>::quiet_NaN();  // at the point returned
 };
@@ -94,7 +109,7 @@ enum FpStep { FP_STEP_OK, FP_STEP_FAILED, FP_STEP_BUDGET };
 
 // One step of a lane: its trial point, retried with the step halved while it
 // fails (each an evaluation), then accepted; and, with stalls, the stall rule
-// (fp_simple). FP_STEP_FAILED: every trial failed; FP_STEP_BUDGET: no
+// (fp_race()). FP_STEP_FAILED: every trial failed; FP_STEP_BUDGET: no
 // evaluation was left for one.
 template <class Map>
 inline int fp_lane_step(Map& map, FpLane& L, const FpControl& ctl,
@@ -140,51 +155,280 @@ inline int fp_lane_step(Map& map, FpLane& L, const FpControl& ctl,
   return FP_STEP_OK;
 }
 
-// The plain iteration, safeguarded:
+// The iterations that race the fallback step (fp_race()), each the method's
+// lane a: setup() sizes its vectors, and turn() takes one step, an
+// evaluation accepted (more where trial points fail), returning an FpStep.
+
+// FP_SIMPLE: the damped base step, with the stall rule (fp_lane_step()).
+struct FpSimpleLane : FpLane {
+  void setup(const arma::uword n, const FpControl& ctl) {
+    init(n);
+    patience = ctl.patience;
+  }
+  template <class Map>
+  int turn(Map& map, const FpControl& ctl, FpResult& out) {
+    return fp_lane_step(map, *this, ctl, ctl.patience > 0, out);
+  }
+};
+
+// FP_ANDERSON: Anderson acceleration, type II (Walker and Ni 2011), of the
+// base step f. From the differences of the last memory iterates and of their
+// steps, dX = [x_k - x_{k-1}, ...] and dF = [f_k - f_{k-1}, ...] (newest
+// first), the least-squares coefficients gamma = argmin ||f_k - dF gamma||
+// give
+//   x_{k+1} = x_k - dX gamma + damping (f_k - dF gamma),
+// the damped base step while there are none. The least squares go through a
+// Householder QR of dF, newest column first, so that dropping the oldest
+// columns while the triangular factor's condition estimate, max |R_ii| /
+// min |R_ii|, exceeds max_condition (or a column depends on the newer ones)
+// truncates the factorization: one per iteration, O(n memory^2), on vectors
+// allocated once. Safeguards on the residual, never on a merit function
+// (after Phase R's solve_anderson_safe() in the BLP engine plan's research):
+// a restart when restart_patience iterations bring no residual below
+// restart_progress times the best, or when an extrapolated point fails. It
+// clears the differences and takes the damped base step from where the
+// iteration is, or, where its residual has grown past twice the best (it
+// diverges), from the best point, once per best point. A base step (the
+// restart's, or the first one, while there are no differences) is halved
+// while its trial point fails, and the turn ends in FP_STEP_FAILED when it
+// still fails after max_backtracks halvings. Restarting from the best point
+// every time (Phase R's rule, restart_best) holds the iteration where a path
+// to the solution climbs through larger residuals first, as the plain
+// iteration's stalls once did (fp_race()): on Phase A's sweeps of small hard
+// designs it failed on four to five times as many.
+struct FpAndersonLane : FpLane {
+  arma::mat dX, dF, qr;  // n x memory: the differences, slot `head` the
+                         // newest, and the factorization's work
+  arma::vec beta, gam;   // the reflectors' scalars and the coefficients
+  arma::vec qtf;         // Q' f
+  int m = 0;             // columns: memory, at most n
+  int k = 0;             // differences kept
+  int head = 0;          // slot of the newest
+  int quiet = 0;         // iterations without the restart's progress
+  bool due = false;      // a restart, at the next turn
+
+  void setup(const arma::uword n, const FpControl& ctl) {
+    init(n);
+    m = static_cast<int>(std::max<arma::uword>(
+        1, std::min(n, static_cast<arma::uword>(std::max(ctl.memory, 1)))));
+    dX.set_size(n, m);
+    dF.set_size(n, m);
+    qr.set_size(n, m);
+    beta.set_size(m);
+    gam.set_size(m);
+    qtf.set_size(n);
+  }
+
+  int slot(const int c) const { return (head - c + m) % m; }  // c-th newest
+
+  // gamma for the k newest differences, the older ones dropped where their
+  // least squares are ill-conditioned (k may fall to 0)
+  void solve(const FpControl& ctl) {
+    const arma::uword n = x.n_elem;
+    for (int c = 0; c < k; ++c) {
+      const double* src = dF.colptr(slot(c));
+      std::copy(src, src + n, qr.colptr(c));
+    }
+    int kept = k;
+    double rmax = 0.0, rmin = 0.0;
+    for (int c = 0; c < k; ++c) {
+      // the reflector that zeroes column c below its diagonal (LAPACK's
+      // dlarfg): R_cc = r, the rest of v stored in place, v_c = 1
+      double* a = qr.colptr(c);
+      double sq = 0.0;
+      for (arma::uword i = c + 1; i < n; ++i) sq += a[i] * a[i];
+      const double alpha = a[c];
+      double r = alpha, bc = 0.0;
+      if (sq > 0) {
+        r = -std::copysign(std::hypot(alpha, std::sqrt(sq)), alpha);
+        bc = (r - alpha) / r;
+        const double scal = 1.0 / (alpha - r);
+        for (arma::uword i = c + 1; i < n; ++i) a[i] *= scal;
+        a[c] = r;
+      }
+      beta[c] = bc;
+      const double ar = std::fabs(r);
+      rmax = c ? std::max(rmax, ar) : ar;
+      rmin = c ? std::min(rmin, ar) : ar;
+      if (!(ar > 0) || !std::isfinite(ar) || rmax > ctl.max_condition * rmin) {
+        kept = c;
+        break;
+      }
+      for (int d = c + 1; d < k; ++d) {
+        double* b = qr.colptr(d);
+        double w = b[c];
+        for (arma::uword i = c + 1; i < n; ++i) w += a[i] * b[i];
+        w *= bc;
+        b[c] -= w;
+        for (arma::uword i = c + 1; i < n; ++i) b[i] -= w * a[i];
+      }
+    }
+    k = kept;  // the older differences are dropped for good
+    if (k == 0) return;
+    // gamma = R^-1 (Q' f), the first k entries
+    double* q = qtf.memptr();
+    std::copy(step.memptr(), step.memptr() + n, q);
+    for (int c = 0; c < k; ++c) {
+      const double* a = qr.colptr(c);
+      double w = q[c];
+      for (arma::uword i = c + 1; i < n; ++i) w += a[i] * q[i];
+      w *= beta[c];
+      q[c] -= w;
+      for (arma::uword i = c + 1; i < n; ++i) q[i] -= w * a[i];
+    }
+    for (int c = k - 1; c >= 0; --c) {
+      double v = q[c];
+      for (int d = c + 1; d < k; ++d) v -= qr(c, d) * gam[d];
+      gam[c] = v / qr(c, c);
+    }
+  }
+
+  // The trial point accepted: the differences from the current point (none
+  // after a restart), the point, and the restart's rule
+  void accept(const double trial_res, const bool push, const FpControl& ctl,
+              FpResult& out) {
+    const arma::uword n = x.n_elem;
+    if (push) {
+      head = (head + 1) % m;
+      double* dx = dX.colptr(head);
+      double* df = dF.colptr(head);
+      for (arma::uword i = 0; i < n; ++i) {
+        dx[i] = trial[i] - x[i];
+        df[i] = trial_step[i] - step[i];
+      }
+      if (k < m) ++k;
+    }
+    x = trial;
+    step = trial_step;
+    res = trial_res;
+    ++out.iterations;
+    // (no count while every residual so far is infinite: no best point yet)
+    if (std::isfinite(best_res)) {
+      if (res < ctl.restart_progress * best_res) {
+        quiet = 0;
+      } else {
+        ++quiet;
+      }
+    }
+    if (res < best_res) {
+      best_res = res;
+      best = x;
+      best_step = step;
+      returned = false;
+    }
+    if (quiet >= ctl.restart_patience) due = true;
+  }
+
+  template <class Map>
+  int turn(Map& map, const FpControl& ctl, FpResult& out) {
+    if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
+    const arma::uword n = x.n_elem;
+    const double t0 = ctl.damping;
+    double trial_res = 0.0;
+    bool restart = due;
+    if (!restart) {
+      solve(ctl);
+      if (k > 0) {  // the extrapolated point
+        double* tr = trial.memptr();
+        for (arma::uword i = 0; i < n; ++i) tr[i] = x[i] + t0 * step[i];
+        for (int c = 0; c < k; ++c) {
+          const double* dx = dX.colptr(slot(c));
+          const double* df = dF.colptr(slot(c));
+          const double g = gam[c];
+          for (arma::uword i = 0; i < n; ++i) tr[i] -= g * (dx[i] + t0 * df[i]);
+        }
+        Rcpp::checkUserInterrupt();
+        ++out.evaluations;
+        if (map.eval(trial, trial_res, trial_step)) {
+          accept(trial_res, true, ctl, out);
+          return FP_STEP_OK;
+        }
+        if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
+        restart = true;  // it failed
+      }
+    }
+    // The damped base step, halved while its trial point fails: while there
+    // are no differences, from where the iteration is; at a restart, which
+    // clears them, from there too, or from the best point where the
+    // iteration diverges
+    bool back = false;
+    if (restart) {
+      ++out.restarts;
+      due = false;
+      quiet = 0;
+      k = 0;
+      back = ctl.restart_best || (res > 2.0 * best_res && !returned);
+      if (back) returned = true;
+    }
+    const arma::vec& from = back ? best : x;
+    const arma::vec& from_step = back ? best_step : step;
+    double t = t0;
+    for (int b = 0;; ++b) {
+      trial = from + t * from_step;
+      Rcpp::checkUserInterrupt();
+      ++out.evaluations;
+      if (map.eval(trial, trial_res, trial_step)) break;
+      if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
+      if (b >= ctl.max_backtracks) return FP_STEP_FAILED;
+      t *= 0.5;
+      ++out.backtracks;
+    }
+    accept(trial_res, !restart, ctl, out);
+    return FP_STEP_OK;
+  }
+};
+
+// The method's iteration (Lane: FpSimpleLane, the plain iteration, or
+// FpAndersonLane), safeguarded:
 //   * a trial point that fails is retried with the step halved, up to
-//     max_backtracks times (each an evaluation);
-//   * with patience > 0, a stall (patience accepted steps without a new best
-//     residual) halves the relaxation of the later steps; if the residual has
-//     grown past twice the best (the steps diverge), the iteration also
-//     returns to its best point, once per best point, and otherwise it
-//     continues from where it is and doubles its patience: a path whose
-//     residual rises on its way (constants climbing back from where their
-//     shares barely respond) is shortened but never discarded, so a stall
-//     cannot hold the iteration at a point. (While every residual so far is
-//     infinite, as when an outside share underflows at the start, there is
-//     no best point to return to, and no step counts.);
+//     max_backtracks times (each an evaluation; Anderson's extrapolated point
+//     restarts instead, and its restart's step is halved);
+//   * the plain iteration, with patience > 0: a stall (patience accepted
+//     steps without a new best residual) halves the relaxation of the later
+//     steps; if the residual has grown past twice the best (the steps
+//     diverge), the iteration also returns to its best point, once per best
+//     point, and otherwise it continues from where it is and doubles its
+//     patience: a path whose residual rises on its way (constants climbing
+//     back from where their shares barely respond) is shortened but never
+//     discarded, so a stall cannot hold the iteration at a point. (While
+//     every residual so far is infinite, as when an outside share underflows
+//     at the start, there is no best point to return to, and no step
+//     counts.) Anderson's iteration restarts instead (FpAndersonLane);
 //   * with window > 0 and a map with a fallback step, once window accepted
-//     steps fail to halve the best residual (or a trial point fails after
-//     every halving), the fallback step joins from the start: the two
-//     iterations take steps in turn (each with its halvings), the
+//     steps of the method fail to halve its best residual (or a trial point
+//     fails after every halving), the fallback step joins from the start:
+//     the two iterations take steps in turn (each with its halvings), the
 //     fallback's without stalls, and the first to meet tol returns. The
 //     fallback stops where a window of its evaluations fails to halve its
-//     best residual while the base step's is lower (it is behind, and slow);
-//     the base step then has windows of its own, twice as long, and the
-//     fallback goes on from where it stopped whenever the base step fails to
+//     best residual while the method's is lower (it is behind, and slow);
+//     the method then has windows of its own, twice as long, and the
+//     fallback goes on from where it stopped whenever the method fails to
 //     halve its best residual within one (or its trial point fails).
 //     Wherever the fallback alone converges from the start in E evaluations,
 //     this then converges within T + 2E if the fallback halves its best
 //     residual within every window of its evaluations, and within T + 4E
 //     otherwise (each stop follows a window of its evaluations, matched by
-//     at most as many of the base step's steps, and is followed by at most
-//     one failing window of the base step's, twice as long), T being the
-//     evaluations before it joined, however the base step fares; not counted
-//     are halvings of the base step's trial points after it joined, and the
-//     windows in which the base step alone halved its best residual (with
-//     tol > 0, at most log2 of its residual over tol).
+//     at most as many of the method's steps, and is followed by at most one
+//     failing window of the method's, twice as long), T being the
+//     evaluations before it joined, however the method fares; not counted
+//     are the method's failed trial points after it joined (halvings, and
+//     Anderson's extrapolated points that failed), and the windows in which
+//     the method alone halved its best residual (with tol > 0, at most log2
+//     of its residual over tol). Every method takes one evaluation per
+//     accepted step besides those failed trial points, so the bound holds
+//     for each.
 // x holds the start and receives the result: the first evaluated point whose
 // residual is at most tol, or, when none is, the evaluated point of smallest
 // residual of either iteration (the start itself when max_evals is 0,
 // unevaluated).
-template <class Map>
-inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
+template <class Lane, class Map>
+inline FpResult fp_race(Map& map, arma::vec& x, const FpControl& ctl) {
   FpResult out;
   if (ctl.max_evals <= 0) return out;
   const arma::uword n = map.n();
-  FpLane a, b;  // the base step's iteration and the fallback's
-  a.init(n);
-  a.patience = ctl.patience;
+  Lane a;    // the method's iteration
+  FpLane b;  // the fallback's
+  a.setup(n, ctl);
   a.x = x;
   Rcpp::checkUserInterrupt();
   ++out.evaluations;
@@ -222,7 +466,7 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
     if (a_on) {
       const int a_window =
           raced && !b_on && !b_failed ? solo_window : ctl.window;
-      const int st = fp_lane_step(map, a, ctl, ctl.patience > 0, out);
+      const int st = a.turn(map, ctl, out);
       if (st == FP_STEP_BUDGET) break;
       if (st == FP_STEP_FAILED) {
         a_on = false;
@@ -301,9 +545,11 @@ inline FpResult fp_simple(Map& map, arma::vec& x, const FpControl& ctl) {
 template <class Map>
 inline FpResult fp_solve(Map& map, arma::vec& x, const FpControl& ctl) {
   switch (ctl.method) {
+  case FP_ANDERSON:
+    return fp_race<FpAndersonLane>(map, x, ctl);
   case FP_SIMPLE:
   default:
-    return fp_simple(map, x, ctl);
+    return fp_race<FpSimpleLane>(map, x, ctl);
   }
 }
 

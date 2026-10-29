@@ -788,26 +788,260 @@ test_that("two threads agree with one to the tolerance", {
   ds <- stats::rnorm(10L)
   ds <- ds - ds[1L]
   S <- mnl_s(d, ds, FALSE)
+  for (method in c("simple", "anderson")) {
+    set_omp_threads(1L)
+    e1 <- blp_contraction(rep(0, 10L), S, d$X, eng_beta, d$alt, d$M, d$w,
+                          tol = 1e-12, method = method)
+    set_omp_threads(2L)
+    e2 <- blp_contraction(rep(0, 10L), S, d$X, eng_beta, d$alt, d$M, d$w,
+                          tol = 1e-12, method = method)
+    expect_equal(e2, e1, tolerance = 1e-10, label = method)
+  }
+})
+
+test_that("Anderson acceleration recovers a known delta in each model and layout", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)  # (identical results at one thread)
+  d <- eng_design(1003L, 400L, 8L, 5L, K = 2L, border = 0.1, Kw = 2L)
+  nest <- rep(1:4, each = 2L)
+  lam <- c(0.5, 0.7, 0.9, 0.6)
+  eta <- get_halton_normals(20L, length(d$M), 2L)
+  th <- c(eng_beta, 0.3, -0.2, log(0.7), 0.2, log(0.5))
+  for (ioo in c(FALSE, TRUE)) {
+    set.seed(21L + ioo)
+    ds <- stats::rnorm(8L)
+    if (!ioo) ds <- ds - ds[1L]
+    S <- mnl_s(d, ds, ioo)
+    est <- blp_contraction(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
+                           tol = 1e-12, method = "anderson")
+    expect_equal(dim(est), c(8L, 1L))
+    expect_equal(as.numeric(est), ds, tolerance = 1e-9)
+    if (!ioo) expect_identical(est[1L], 0)
+    r <- choicer:::mnl_blp_solve(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
+                                 eng_ctl(tol = 1e-12, method = "anderson"))
+    expect_identical(r$code, 0L)
+    expect_identical(r$race, 0L)
+    expect_lte(r$residual, 1e-12)
+    expect_identical(r$delta, est)
+    S <- nl_s(d, ds, ioo, nest, lam)
+    est <- nl_blp_contraction(rep(0, 8L), S, d$X, eng_beta, lam, d$alt, nest, d$M,
+                              d$w, ioo, tol = 1e-12, method = "anderson")
+    expect_equal(as.numeric(est), ds, tolerance = 1e-9)
+    S <- as.numeric(choicer:::mxl_predict_shares(
+      c(th, eng_free(ds, ioo)), d$X, d$W, d$alt, d$M, d$w, eta, c(0L, 1L), TRUE, TRUE,
+      TRUE, ioo))
+    est <- mxl_blp_contraction(rep(0, 8L), S, d$X, d$W, eng_beta, c(0.3, -0.2),
+                               c(log(0.7), 0.2, log(0.5)), d$alt, d$M, d$w, eta,
+                               c(0L, 1L), TRUE, TRUE, ioo, tol = 1e-12,
+                               method = "anderson")
+    expect_equal(as.numeric(est), ds, tolerance = 1e-9)
+  }
+})
+
+# The race reproducers above, and a sweep design, with Anderson acceleration.
+# Its least squares amplify last-bit differences, so the paths (who wins the
+# race, after how many evaluations) can differ across platforms: the first
+# test holds anywhere, the second pins the development machine's paths and is
+# skipped on CRAN and CI (as the package's other path snapshots are).
+aa_cases <- function() {
+  list(
+    # the re-review's: the two-level step climbs back for about 60 steps
+    climb = list(X = matrix(c(2, -10, -4, -4, -8, 0, 3, 4, 0, 3, 3), ncol = 1L),
+                 alt = c(1:4, 1:4, 2L, 2:3), M = c(4L, 4L, 1L, 2L),
+                 w = c(1.074, 0.940, 0.553, 0.889), ds = c(0, 2, 0, 3)),
+    # alternative 2 nearly owns its situation, and the divided step oscillates
+    oscillate = list(X = matrix(c(6, -5, 0, -3, 8, 5, 7, -6, -10), ncol = 1L),
+                     alt = c(5L, 6L, 1L, 3L, 5L, 6L, 2L, 4L, 6L), M = c(2L, 4L, 3L),
+                     w = c(1.106, 0.545, 0.985), ds = c(0, 0, 1, 3, 0, -1)),
+    # a logit from a sweep of small hard designs (two situations)
+    sweep = list(X = matrix(c(10, -3, 2, 2, 6, 7, -7, 10, 7, -9, -10), ncol = 1L),
+                 alt = c(1:6, 1:3, 5:6), M = 6:5, w = c(0.521, 0.926),
+                 ds = c(0, -2, 2, 1, 0, -1)))
+}
+aa_solve <- function(cs, ...) {
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, cs$ds[-1L]), cs$X, cs$alt, cs$M,
+                                               cs$w))
+  choicer:::mnl_blp_solve(rep(0, length(cs$ds)), S, cs$X, 1, cs$alt, cs$M, cs$w, FALSE,
+                          eng_ctl(...))
+}
+# The third review's nested logit (above): the two-level step carries the
+# constants of 2 and 4 down to where the residual no longer responds to their
+# level
+aa_nl_trap <- function(...) {
+  X <- matrix(c(6, 0, 7, 1, -2, 5, 8, 0, -1, 10, 0, 3, 0, -2, -3), ncol = 1L)
+  alt <- c(1:5, 1:5, 2L, 4L, 1:3)
+  M <- c(5L, 5L, 2L, 3L)
+  w <- c(1.035, 0.524, 2.255, 1.560)
+  nest <- c(1L, 1L, 2L, 2L, 3L)
+  lam <- c(0.2, 1, 1)
+  S <- as.numeric(choicer:::nl_predict_shares(c(1, lam[1:2], -3, -5, -5, 1), X, alt, M,
+                                              w, nest, TRUE, FALSE))
+  choicer:::nl_blp_solve(rep(0, 5L), S, X, 1, lam, alt, nest, M, w, FALSE, eng_ctl(...))
+}
+
+test_that("Anderson acceleration converges on the race reproducers", {
+  on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
-  e1 <- blp_contraction(rep(0, 10L), S, d$X, eng_beta, d$alt, d$M, d$w, tol = 1e-12)
-  set_omp_threads(2L)
-  e2 <- blp_contraction(rep(0, 10L), S, d$X, eng_beta, d$alt, d$M, d$w, tol = 1e-12)
-  expect_equal(e2, e1, tolerance = 1e-10)
+  for (nm in names(aa_cases())) {
+    r <- aa_solve(aa_cases()[[nm]], method = "anderson", max_iter = 20000L)
+    # (the shares within tol; the oscillating design's constants are
+    # determined only to about 0.02 by them, its conditioning being 2e6)
+    expect_identical(r$code, 0L, label = nm)
+    expect_lte(r$residual, 1e-8)
+  }
+  # (Berry's contraction converges in 8,367 evaluations, so the race
+  # converges within T + 4E, T being the evaluations before it joins)
+  expect_identical(aa_nl_trap(method = "anderson", max_iter = 40000L)$code, 0L)
+})
+
+test_that("Anderson acceleration's paths on the race reproducers", {
+  skip_on_cran()  # (the development machine's paths: see aa_cases())
+  skip_on_ci()
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  cs <- aa_cases()
+  # Within T + 4E wherever the race runs (no trial point failed here)
+  for (nm in names(cs)) {
+    rb <- aa_solve(cs[[nm]], method = "original", max_iter = 20000L)
+    r <- aa_solve(cs[[nm]], method = "anderson", max_iter = 20000L)
+    if (r$race > 0L) expect_lte(r$evaluations, r$race + 4L * rb$evaluations)
+  }
+  rb <- aa_nl_trap(method = "original", max_iter = 20000L)
+  r <- aa_nl_trap(method = "anderson", max_iter = 40000L)
+  expect_gt(r$race, 0L)
+  expect_lte(r$evaluations, r$race + 4L * rb$evaluations)
+  # The climb: restarts that keep it, a few dozen evaluations (the two-level
+  # step's stalls: about 200), and Phase R's restart from the best point
+  # gets there too
+  r <- aa_solve(cs$climb, method = "anderson")
+  rs <- aa_solve(cs$climb)
+  expect_gte(r$restarts, 1L)
+  expect_identical(r$race, 0L)
+  expect_lt(r$evaluations, rs$evaluations)
+  expect_identical(aa_solve(cs$climb, method = "anderson", restart_best = TRUE)$code, 0L)
+  # The oscillation: the two-level step needs Berry's contraction; Anderson's
+  # iteration converges by itself, in fewer evaluations than the race;
+  # restarting from its best point every time, it stays there without the
+  # race
+  rs <- aa_solve(cs$oscillate)
+  r <- aa_solve(cs$oscillate, method = "anderson")
+  expect_gt(rs$race, 0L)
+  expect_identical(r$race, 0L)
+  expect_lt(r$evaluations, rs$evaluations)
+  rb <- aa_solve(cs$oscillate, method = "anderson", restart_best = TRUE, window = 0L)
+  expect_identical(rb$code, 1L)
+  expect_gt(rb$restarts, 100L)
+  # The sweep design: extrapolating fails to make progress, and without the
+  # race the iteration stays near a residual of 0.004; with it, Berry's
+  # contraction joins after 201 evaluations and converges first, at its own
+  # point, within T + 2E
+  r0 <- aa_solve(cs$sweep, method = "anderson", window = 0L, max_iter = 5000L)
+  expect_identical(r0$code, 1L)
+  expect_gt(r0$residual, 1e-3)
+  rb <- aa_solve(cs$sweep, method = "original", max_iter = 20000L)
+  r <- aa_solve(cs$sweep, method = "anderson", max_iter = 20000L)
+  expect_true(r$berry)
+  expect_gt(r$race, 0L)
+  expect_lte(r$evaluations, r$race + 2L * rb$evaluations)
+  expect_identical(r$delta, rb$delta)
+})
+
+test_that("Anderson's least squares drop the differences they cannot use", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- eng_design(1016L, 600L, 12L, 4L, K = 3L, border = 0.05)
+  set.seed(61L)
+  ds <- stats::rnorm(12L)
+  ds <- ds - ds[1L]
+  S <- mnl_s(d, ds, FALSE)
+  run <- function(method = "anderson", ...) {
+    choicer:::mnl_blp_solve(rep(0, 12L), S, d$X, eng_beta, d$alt, d$M, d$w, FALSE,
+                            eng_ctl(tol = 1e-12, max_iter = 5000L, method = method,
+                                    settings = list(...)))
+  }
+  # A condition limit of 1 keeps only the newest difference (unless the
+  # triangular factor's diagonal is constant): the iterates of memory 1,
+  # which needs Berry's contraction here (three regions that share few
+  # alternatives)
+  r1 <- run(memory = 1L)
+  rc <- run(max_condition = 1)
+  expect_identical(r1$code, 0L)
+  expect_identical(rc[c("delta", "evaluations", "restarts", "race")],
+                   r1[c("delta", "evaluations", "restarts", "race")])
+  # memory 10 (the default): a few dozen evaluations, where the two-level
+  # step alone needs over a thousand
+  r10 <- run()
+  rs <- run("simple")
+  expect_identical(r10$code, 0L)
+  expect_identical(r10$race, 0L)
+  expect_lt(10L * r10$evaluations, rs$evaluations)
+  expect_lt(r10$evaluations, r1$evaluations)
+  expect_equal(as.numeric(r10$delta), ds, tolerance = 1e-9)
+  # Memory beyond the free constants (two alternatives: one) is cut to them
+  ds2 <- c(0, 0.7)
+  X2 <- matrix(c(0.5, -0.5, 1, 0.2), ncol = 1L)
+  S2 <- as.numeric(choicer:::mnl_predict_shares(c(1, 0.7), X2, c(1:2, 1:2), c(2L, 2L),
+                                                c(1, 1)))
+  r2 <- choicer:::mnl_blp_solve(c(0, 0), S2, X2, 1, c(1:2, 1:2), c(2L, 2L), c(1, 1),
+                                FALSE, eng_ctl(tol = 1e-12, method = "anderson"))
+  expect_identical(r2$code, 0L)
+  expect_equal(as.numeric(r2$delta), ds2, tolerance = 1e-10)
+})
+
+test_that("the methods' settings are checked before any evaluation", {
+  d <- eng_design(1017L, 100L, 4L, 4L)
+  S <- mnl_s(d, c(0, 0.2, 0.1, -0.3), FALSE)
+  bc <- function(...) blp_contraction(rep(0, 4L), S, d$X, eng_beta, d$alt, d$M, d$w, ...)
+  expect_error(bc(method = "newton"), "`method` must be \"simple\"")
+  expect_error(bc(method = NA_character_), "`method` must be")
+  expect_error(bc(method = c("simple", "anderson")), "`method` must be")
+  expect_error(bc(control = list(memory = 5L)),
+               "`control` takes no settings with method \"simple\" (it has `memory`)",
+               fixed = TRUE)
+  expect_error(bc(method = "anderson", control = list(m = 5L)),
+               "`control` takes `memory` and `max_condition` with method \"anderson\"; it has `m`",
+               fixed = TRUE)
+  expect_error(bc(method = "anderson", control = list(5L)), "must name each of its settings once")
+  expect_error(bc(method = "anderson", control = list(memory = 5L, memory = 6L)),
+               "must name each of its settings once")
+  for (m in list(0L, 101L, 2.5, NA, "a", c(5L, 6L), NULL)) {
+    expect_error(bc(method = "anderson", control = list(memory = m)),
+                 "`control$memory` must be a whole number from 1 to 100", fixed = TRUE)
+  }
+  for (mc in list(0.5, NA_real_, "a", c(10, 100), NULL)) {
+    expect_error(bc(method = "anderson", control = list(max_condition = mc)),
+                 "`control$max_condition` must be a single number of at least 1",
+                 fixed = TRUE)
+  }
+  expect_error(bc(method = "anderson", control = "memory"), "must be a list")
+  # the settings given, the others at their defaults
+  expect_silent(e <- bc(method = "anderson", control = list(memory = 3L)))
+  expect_silent(e <- bc(method = "anderson", control = list(max_condition = Inf)))
+  ctl <- eng_ctl(method = "anderson", settings = list(memory = 3L))
+  expect_identical(ctl[c("iteration", "memory", "max_condition", "patience", "window")],
+                   list(iteration = "anderson", memory = 3L, max_condition = 1e8,
+                        patience = 0L, window = 100L))
 })
 
 test_that("the exports keep their signatures and return n x 1 matrices", {
+  # (method and control come last, after the arguments they always had)
   expect_identical(names(formals(blp_contraction)),
                    c("delta", "target_shares", "X", "beta", "alt_idx", "M", "weights",
-                     "include_outside_option", "tol", "max_iter"))
+                     "include_outside_option", "tol", "max_iter", "method", "control"))
   expect_identical(names(formals(nl_blp_contraction)),
                    c("delta", "target_shares", "X", "beta", "lambda", "alt_idx",
                      "nest_idx", "M", "weights", "include_outside_option", "damping",
-                     "tol", "max_iter"))
+                     "tol", "max_iter", "method", "control"))
   expect_identical(names(formals(mxl_blp_contraction)),
                    c("delta", "target_shares", "X", "W", "beta", "mu", "L_params",
                      "alt_idx", "M", "weights", "eta_draws", "rc_dist",
                      "rc_correlation", "rc_mean", "include_outside_option", "tol",
-                     "max_iter", "gen_seed", "gen_scramble", "gen_S"))
+                     "max_iter", "gen_seed", "gen_scramble", "gen_S", "method",
+                     "control"))
+  for (f in list(blp_contraction, nl_blp_contraction, mxl_blp_contraction)) {
+    expect_identical(formals(f)$method, "simple")
+    expect_identical(formals(f)$control, quote(list()))
+  }
   expect_identical(formals(blp_contraction)$max_iter, 1000L)
   expect_identical(formals(nl_blp_contraction)$damping, 1)
 })
