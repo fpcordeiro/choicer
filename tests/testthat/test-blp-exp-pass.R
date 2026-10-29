@@ -441,3 +441,168 @@ test_that("a nested logit with more nests than rows keeps its cache on the offer
     expect_true(rx$exp_kept, label = lab)
   }
 })
+
+# -- Compensated share sums ---------------------------------------------------
+
+test_that("compensated share sums keep the small terms a plain sum drops", {
+  skip_on_cran()  # (two million rows)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  # one situation of weight 1, where alternative 1's probability is p (in
+  # [2^-8, 2^-7)), then 2^20 of weight 2^-62 where it is 1/2: each small term,
+  # 2^-63, is below half a unit of the running share, so a plain sum drops
+  # every one; a plain total of the weights drops half of them (one of its two
+  # accumulators starts at 1). The exact share is (p + 2^-43) / (1 + 2^-42),
+  # p + 2^-43 and 1 + 2^-42 being exact.
+  n_small <- 2^20
+  N <- n_small + 1
+  alt <- rep(1:2, N)
+  M <- rep(2L, N)
+  X <- matrix(0, 2 * N, 1L)
+  X[2L, 1L] <- 5
+  w <- c(1, rep(2^-62, n_small))
+  run <- function(comp, X, alt, M, w) {
+    choicer:::mnl_blp_solve(c(0, 0), c(0.5, 0.5), X, 1, alt, M, w, FALSE,
+                            xp_ctl(max_iter = 1L, keep_pass = TRUE, compensate = comp))
+  }
+  # p as the pass forms it, from the first situation alone
+  p <- xp_pass(run("off", X[1:2, , drop = FALSE], 1:2, 2L, 1))$s[1L]
+  ref <- (p + 2^-43) / (1 + 2^-42)
+  rk <- run("on", X, alt, M, w)
+  rp <- run("off", X, alt, M, w)
+  expect_true(rk$compensated)
+  expect_null(rp$compensated)
+  expect_lt(abs(xp_pass(rk)$s[1L] / ref - 1), 2^-52)
+  expect_gt(abs(xp_pass(rp)$s[1L] / ref - 1), 1e-14)
+  # "auto" compensates only above 2^22 situations (per thread for the passes)
+  ra <- run("auto", X, alt, M, w)
+  expect_false(ra$compensated)
+  expect_identical(xp_pass(ra), xp_pass(rp))
+})
+
+test_that("compensated sums keep the components' weights exact", {
+  skip_on_cran()  # (two million rows)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  # an outside option and two components: alternatives 1 and 2 in one
+  # situation of weight 1 and 2^20 of weight 2^-62, alternatives 3 and 4 in 10
+  # of weight 1. Without covariates every situation of a component has the
+  # same probabilities, so the shares are each component's probabilities
+  # times its weight, 1 + 2^-42 or 10, over 11 + 2^-42 (all exact), and the
+  # outside option's share in a component (its weight less its inside
+  # targets) needs that weight exactly.
+  n_small <- 2^20
+  alt <- c(rep(1:2, 1 + n_small), rep(3:4, 10))
+  M <- rep(2L, 1 + n_small + 10)
+  X <- matrix(0, length(alt), 1L)
+  w <- c(1, rep(2^-62, n_small), rep(1, 10))
+  ds <- c(0.5, -0.3, 0.2, 0.4)
+  one <- function(d) {  # a component's probabilities, the outside option's first
+    as.numeric(choicer:::mnl_predict_shares(c(0, d), matrix(0, 2, 1), 1:2, 2L, 1, TRUE, TRUE))
+  }
+  P1 <- one(ds[1:2])
+  P2 <- one(ds[3:4])
+  w1 <- 1 + 2^-42
+  W <- 11 + 2^-42
+  S <- c(P1[1L] * w1 + P2[1L] * 10, P1[2:3] * w1, P2[2:3] * 10) / W
+  run <- function(comp) {
+    choicer:::mnl_blp_solve(ds, S, X, 0, alt, M, w, TRUE,
+                            xp_ctl(0, 1L, compensate = comp))
+  }
+  # (a component's outside target, its weight less its inside targets, loses
+  # a few units to cancellation)
+  expect_lt(run("on")$residual, 4e-15)
+  expect_gt(run("off")$residual, 1e-13)
+})
+
+test_that("compensated sums give each model's prediction to rounding", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_design(2201L, 300L, 8L, 5L)
+  nest <- c(1L, 1L, 2L, 2L, 3L, 3L, 4L, 4L)
+  lam <- c(0.5, 0.8, 1, 1.3)
+  for (ioo in c(FALSE, TRUE)) {
+    set.seed(41L + ioo)
+    ds <- xp_norm(stats::rnorm(8L), ioo)
+    d1 <- xp_norm(ds + stats::rnorm(8L, 0, 0.1), ioo)
+    S <- xp_mnl_s(d, ds, ioo)
+    S2 <- xp_nl_s(d, ds, ioo, nest, lam)
+    s1 <- xp_mnl_s(d, d1, ioo)
+    s2 <- xp_nl_s(d, d1, ioo, nest, lam)
+    for (pass in c("log", "exp")) {
+      lab <- sprintf("%s, ioo %d", pass, ioo)
+      # (the exp pass from a cache formed at ds: one evaluation from it)
+      ctl <- xp_ctl(max_iter = 1L, keep_pass = TRUE, compensate = "on", pass = pass,
+                    origin = if (pass == "exp") ds)
+      r <- xp_mnl(d, d1, S, ioo, ctl)
+      expect_true(r$compensated, label = lab)
+      if (pass == "exp") expect_identical(r$exp_evals, 1, label = lab)
+      expect_equal(xp_pass(r)$s, if (ioo) s1[-1L] else s1, tolerance = 1e-14, label = lab)
+      if (ioo) expect_equal(xp_pass(r)$s0, s1[1L], tolerance = 1e-14, label = lab)
+      r <- xp_nl(d, d1, S2, ioo, nest, lam, ctl)
+      expect_true(r$compensated, label = lab)
+      if (pass == "exp") expect_identical(r$exp_evals, 1, label = lab)
+      expect_equal(xp_pass(r)$s, if (ioo) s2[-1L] else s2, tolerance = 1e-14, label = lab)
+      if (ioo) expect_equal(xp_pass(r)$s0, s2[1L], tolerance = 1e-14, label = lab)
+    }
+    # and they solve as the plain sums do, on either pass
+    for (method in c("simple", "anderson")) {
+      lab <- sprintf("%s, ioo %d", method, ioo)
+      rl <- xp_mnl(d, rep(0, 8L), S, ioo, xp_ctl(1e-12, 1000L, method = method))
+      rk <- xp_mnl(d, rep(0, 8L), S, ioo, xp_ctl(1e-12, 1000L, method = method,
+                                                  compensate = "on", pass = "exp"))
+      expect_identical(rk$code, 0L, label = lab)
+      expect_gt(rk$exp_evals, 0)
+      expect_equal(as.numeric(rk$delta), as.numeric(rl$delta), tolerance = 1e-11,
+                   label = lab)
+      rl <- xp_nl(d, rep(0, 8L), S2, ioo, nest, lam, xp_ctl(1e-12, 2000L, method = method))
+      rk <- xp_nl(d, rep(0, 8L), S2, ioo, nest, lam,
+                  xp_ctl(1e-12, 2000L, method = method, compensate = "on", pass = "exp"))
+      expect_identical(rk$code, 0L, label = lab)
+      expect_gt(rk$exp_evals, 0)
+      expect_equal(as.numeric(rk$delta), as.numeric(rl$delta), tolerance = 1e-10,
+                   label = lab)
+    }
+  }
+  skip_if_not(isTRUE(thread_info()$openmp_enabled))
+  set_omp_threads(2L)
+  rk <- xp_mnl(d, rep(0, 8L), S, TRUE, xp_ctl(1e-12, 1000L, method = "anderson",
+                                               compensate = "on", pass = "exp"))
+  expect_equal(as.numeric(rk$delta), ds, tolerance = 1e-10)
+})
+
+test_that("the mixed logit's compensated sums keep its draws and its prediction", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_design(2202L, 200L, 6L, 4L)
+  set.seed(43L)
+  W <- matrix(stats::rnorm(2L * length(d$alt)), ncol = 2L)
+  mu <- c(0.3, -0.2)
+  Lp <- c(log(0.7), 0.2, log(0.5))
+  S_ <- 15L
+  gen <- list(gen_seed = 3L, gen_scramble = 1L, gen_S = S_)
+  empty <- array(0, c(2L, 0L, 0L))
+  for (ioo in c(FALSE, TRUE)) {
+    ds <- xp_norm(c(0, 0.3, -0.2, 0.5, 0.1, -0.4), ioo)
+    s1 <- as.numeric(do.call(choicer:::mxl_predict_shares, c(list(
+      c(xp_beta, mu, Lp, xp_free(ds, ioo)), d$X, W, d$alt, d$M, d$w, empty,
+      c(0L, 0L), TRUE, TRUE, TRUE, ioo), gen)))
+    solve <- function(start, ctl, budget) {
+      do.call(choicer:::mxl_blp_solve, c(list(
+        start, s1, d$X, W, xp_beta, mu, Lp, d$alt, d$M, d$w, empty, c(0L, 0L), TRUE,
+        TRUE, ioo, ctl), gen, list(cache_bytes = budget)))
+    }
+    lab <- sprintf("ioo %d", ioo)
+    r <- solve(ds, xp_ctl(max_iter = 1L, keep_pass = TRUE, compensate = "on"), 0)
+    expect_true(r$compensated, label = lab)
+    expect_equal(xp_pass(r)$s, if (ioo) s1[-1L] else s1, tolerance = 1e-14, label = lab)
+    if (ioo) expect_equal(xp_pass(r)$s0, s1[1L], tolerance = 1e-14, label = lab)
+    rk <- solve(rep(0, 6L), xp_ctl(1e-12, 1000L, method = "anderson", compensate = "on"), Inf)
+    rl <- solve(rep(0, 6L), xp_ctl(1e-12, 1000L, method = "anderson"), Inf)
+    expect_identical(rk$code, 0L, label = lab)
+    expect_equal(as.numeric(rk$delta), as.numeric(rl$delta), tolerance = 1e-11, label = lab)
+    # the draws kept as before
+    expect_true(rk$kept, label = lab)
+    expect_identical(rk$reads, length(d$M) * (rk$passes - 1), label = lab)
+  }
+})
