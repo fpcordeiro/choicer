@@ -132,15 +132,21 @@ test_that("Anderson's least squares drop differences of steps that vanish", {
   expect_equal(r1$x, 1, tolerance = 1e-10)
 })
 
-test_that("an infinite residual at the start counts no stagnation", {
+test_that("an infinite residual counts no stagnation, and Anderson takes plain steps", {
   A <- diag(c(1, 0.5))
   b <- drop(A %*% c(1, 2))
   # residuals infinite for the first eight evaluations (as where an outside
-  # share underflows at the start): no restart while there is no best point
+  # share underflows at the start): no restart while there is no best point,
+  # and plain steps, no difference kept, up to the first step between two
+  # finite residuals (the tenth evaluation's)
   r <- fp_run(A, b, c(0, 0), fp_ctl(tol = 1e-10, max_iter = 200L, method = "anderson"),
               script = rep(Inf, 8L))
   expect_identical(r$code, 0L)
   expect_identical(r$restarts, 0L)
+  for (k in 1:9) {
+    xk <- r$trace_x[, k]
+    expect_equal(r$trace_x[, k + 1L], xk + fp_step(A, b, xk), label = paste("step", k))
+  }
 })
 
 test_that("SQUAREM's cycle, and its failed extrapolation giving way to the double step", {

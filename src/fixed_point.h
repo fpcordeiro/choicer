@@ -187,7 +187,11 @@ struct FpSimpleLane : FpLane {
 // first), the least-squares coefficients gamma = argmin ||f_k - dF gamma||
 // give
 //   x_{k+1} = x_k - dX gamma + damping (f_k - dF gamma),
-// the damped base step while there are none. The least squares go through a
+// the damped base step while there are none, and while the residual is
+// infinite: the map's step is then a fallback of another form (the share
+// inversion's where an outside share underflows), whose differences say
+// nothing of the fixed point, so none is kept across it. The least squares
+// go through a
 // Householder QR of dF, newest column first, so that dropping the oldest
 // columns while the triangular factor's condition estimate, max |R_ii| /
 // min |R_ii|, exceeds max_condition (or a column depends on the newer ones)
@@ -336,8 +340,11 @@ struct FpAndersonLane : FpLane {
     const double t0 = ctl.damping;
     double trial_res = 0.0;
     bool restart = due;
+    // While the residual is infinite (as where an outside share underflows),
+    // the map's step is a fallback of another form: no extrapolation
+    if (!std::isfinite(res)) k = 0;
     if (!restart) {
-      solve(ctl);
+      if (k > 0) solve(ctl);
       if (k > 0) {  // the extrapolated point
         double* tr = trial.memptr();
         for (arma::uword i = 0; i < n; ++i) tr[i] = x[i] + t0 * step[i];
@@ -350,7 +357,7 @@ struct FpAndersonLane : FpLane {
         Rcpp::checkUserInterrupt();
         ++out.evaluations;
         if (map.eval(trial, trial_res, trial_step)) {
-          accept(trial_res, true, ctl, out);
+          accept(trial_res, std::isfinite(trial_res), ctl, out);
           return FP_STEP_OK;
         }
         if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
@@ -383,7 +390,8 @@ struct FpAndersonLane : FpLane {
       t *= 0.5;
       ++out.backtracks;
     }
-    accept(trial_res, !restart, ctl, out);
+    accept(trial_res, !restart && std::isfinite(res) && std::isfinite(trial_res),
+           ctl, out);
     return FP_STEP_OK;
   }
 };

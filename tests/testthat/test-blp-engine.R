@@ -638,11 +638,16 @@ test_that("an outside share that underflows takes the step without its correctio
   d <- eng_design(1008L, 200L, 5L, 5L)
   ds <- c(0.3, -0.2, 0.1, 0.4, -0.5)
   S <- mnl_s(d, ds, TRUE)
-  r <- choicer:::mnl_blp_solve(rep(800, 5L), S, d$X, eng_beta, d$alt, d$M, d$w,
-                               TRUE, eng_ctl(tol = 1e-10))
-  expect_identical(r$code, 0L)
-  expect_gt(r$fallbacks, 0L)
-  expect_equal(as.numeric(r$delta), ds, tolerance = 1e-8)
+  # (Anderson acceleration takes that step unextrapolated until the share
+  # returns: from this start it stayed there for 20,000 evaluations when it
+  # extrapolated it)
+  for (method in c("simple", "anderson", "squarem")) {
+    r <- choicer:::mnl_blp_solve(rep(800, 5L), S, d$X, eng_beta, d$alt, d$M, d$w,
+                                 TRUE, eng_ctl(tol = 1e-10, method = method))
+    expect_identical(r$code, 0L, label = method)
+    expect_gt(r$fallbacks, 0L)
+    expect_equal(as.numeric(r$delta), ds, tolerance = 1e-8, label = method)
+  }
 })
 
 test_that("components hold their references; their targets must fit their weight", {

@@ -597,7 +597,11 @@ extrapolated point are not finite, it clears its differences and takes the plain
 from where it is, halved while its shares are not finite; only where its residual has
 grown past twice the best does it go back to its best point, once per best point, since
 a path to the solution can climb through larger residuals first (the step's stalls
-above). It races the contraction like the step, each of its iterations one evaluation of
+above). Where a component's outside share underflows it takes the step unextrapolated,
+keeping no differences, until the share returns: the step then has another form (no
+outside correction, no common shift), and its level drifts by about the same amount at
+every iteration, which the least squares would try to cancel instead of follow. It races
+the contraction like the step, each of its iterations one evaluation of
 the shares besides trial points whose shares are not finite (left out of the bound, as
 the step's halvings are), so the bound $T + 4E$ holds for it too.
 

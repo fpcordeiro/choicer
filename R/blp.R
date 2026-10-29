@@ -122,7 +122,9 @@
 #'   finite, the iteration clears its differences and takes the step from
 #'   where it is, or from its best point where its residual has grown past
 #'   twice the best (once per best point), halving that step while its
-#'   shares are not finite. It races Berry, Levinsohn and Pakes's
+#'   shares are not finite. Where a component's outside share underflows,
+#'   it takes the step above unextrapolated until the share returns. It
+#'   races Berry, Levinsohn and Pakes's
 #'   contraction as the default does, with the same windows; each of its
 #'   iterations takes one evaluation of the shares besides the trial points
 #'   whose shares are not finite, which the bound leaves out as it leaves out
