@@ -37,6 +37,16 @@
 #'   residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 #'   outside option's included; see Details). Default 1e-8.
 #' @param max_iter The most evaluations of the shares (default 1000).
+#' @param method The iteration: \code{"simple"} (the default), the two-level
+#'   step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
+#'   contraction; or \code{"anderson"}, Anderson acceleration of the
+#'   two-level step.
+#' @param control A list of the method's settings. \code{"anderson"} takes
+#'   \code{memory}, how many differences between successive iterates it keeps
+#'   (a whole number from 1 to 100, cut to the number of free constants;
+#'   default 10), and \code{max_condition}, the largest condition estimate it
+#'   accepts for their least squares (at least 1; default \eqn{10^8}). The
+#'   other methods take none.
 #' @details With \eqn{r = \log S - \log s(\delta)}, the iteration solves
 #'   \eqn{\rho_j = r_j - r_b = 0} for every free constant, the log-share
 #'   residual against a base: the outside option (Fukasawa's 2024
@@ -90,6 +100,29 @@
 #'   contraction joined and any 200 iterations in which the step alone
 #'   halved its best residual.
 #'
+#'   \code{method = "anderson"} accelerates the same step (Anderson
+#'   acceleration of type II; Walker and Ni 2011). Write \eqn{f(\delta)} for
+#'   the step at \eqn{\delta}, and \eqn{\Delta X} and \eqn{\Delta F} for the
+#'   last \code{memory} differences between successive iterates and between
+#'   their steps. Each iteration finds the coefficients \eqn{\gamma} whose
+#'   combination of past changes in the step best cancels the current step,
+#'   \eqn{\min_\gamma \| f - \Delta F \gamma \|_2}, and moves to
+#'   \eqn{\delta - \Delta X \gamma + f - \Delta F \gamma}, with the step's part
+#'   multiplied by \code{damping} for the nested logit: the capped step
+#'   above, extrapolated. On a linear map, undamped and with unlimited
+#'   memory, this is essentially GMRES. The oldest differences are dropped
+#'   while the least squares' condition estimate exceeds
+#'   \code{max_condition}. When five iterations bring no residual below 0.9
+#'   times the best so far, or the shares at an extrapolated point are not
+#'   finite, the iteration clears its differences and takes the step from
+#'   where it is, or from its best point where its residual has grown past
+#'   twice the best (once per best point), halving that step while its
+#'   shares are not finite. It races Berry, Levinsohn and Pakes's
+#'   contraction as the default does, with the same windows; each of its
+#'   iterations takes one evaluation of the shares besides the trial points
+#'   whose shares are not finite, which the bound leaves out as it leaves out
+#'   the step's halvings, so the same bound holds.
+#'
 #'   The iteration stops at the first evaluation whose largest absolute
 #'   log-share residual is at most \code{tol} (residuals relative to the
 #'   component's reference without an outside option; with one, the outside
@@ -125,6 +158,9 @@
 #'
 #'   Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static /
 #'   dynamic BLP estimations. arXiv:2404.04494.
+#'
+#'   Walker, H. F., and Ni, P. (2011). Anderson acceleration for fixed-point
+#'   iterations. \emph{SIAM Journal on Numerical Analysis}, 49(4), 1715--1735.
 #' @examples
 #' \donttest{
 #' library(data.table)
@@ -143,8 +179,10 @@
 #' @export
 blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
                             include_outside_option = FALSE, tol = 1e-8,
-                            max_iter = 1000L) {
-  ctl <- .blp_control(tol, max_iter)
+                            max_iter = 1000L, method = "simple",
+                            control = list()) {
+  m <- .blp_method(method, control)
+  ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings)
   res <- mnl_blp_solve(delta, target_shares, X, beta, alt_idx, M, weights,
                        include_outside_option, ctl)
   .blp_unconverged(res, ctl, "blp_contraction()")
@@ -218,8 +256,11 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
 nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
                                nest_idx, M, weights,
                                include_outside_option = FALSE, damping = 1.0,
-                               tol = 1e-8, max_iter = 1000L) {
-  ctl <- .blp_control(tol, max_iter, damping)
+                               tol = 1e-8, max_iter = 1000L, method = "simple",
+                               control = list()) {
+  m <- .blp_method(method, control)
+  ctl <- .blp_control(tol, max_iter, damping, method = m$method,
+                      settings = m$settings)
   res <- nl_blp_solve(delta, target_shares, X, beta, lambda, alt_idx, nest_idx,
                       M, weights, include_outside_option, ctl)
   .blp_unconverged(res, ctl, "nl_blp_contraction()")
@@ -305,8 +346,10 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
                                 rc_correlation = TRUE, rc_mean = FALSE,
                                 include_outside_option = FALSE, tol = 1e-8,
                                 max_iter = 1000L, gen_seed = -1L,
-                                gen_scramble = 1L, gen_S = 0L) {
-  ctl <- .blp_control(tol, max_iter)
+                                gen_scramble = 1L, gen_S = 0L,
+                                method = "simple", control = list()) {
+  m <- .blp_method(method, control)
+  ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings)
   # The kernels read a cube of doubles in place; a cube of another type would
   # be read from a temporary that R may free during the call
   if (is.integer(eta_draws) || is.logical(eta_draws)) {
@@ -325,28 +368,41 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' @param tol,max_iter,damping As in \code{blp_contraction()} and
 #'   \code{nl_blp_contraction()}.
 #' @param method The method, as blp() names it: \code{"simple"} (the
-#'   two-level step, its stalls and its race with Berry's contraction) or
-#'   \code{"original"} (Berry, Levinsohn and Pakes's contraction). Both run
-#'   the engine's simple iteration (\code{iteration}); they differ in the map,
-#'   the stalls and the race.
+#'   two-level step, its stalls and its race with Berry's contraction),
+#'   \code{"original"} (Berry, Levinsohn and Pakes's contraction) or
+#'   \code{"anderson"} (Anderson acceleration of the two-level step, racing
+#'   the contraction as \code{"simple"} does). The first two run the engine's
+#'   simple iteration (\code{iteration}) and differ in the map, the stalls and
+#'   the race.
+#' @param settings The method's settings, checked (\code{.blp_method()});
+#'   the defaults of \code{.BLP_SETTINGS} for those not given.
 #' @param map The base map, by default the method's: \code{"reduced"} (the
 #'   two-level step), \code{"plain"} (Berry's) or \code{"jacobi"} (the
 #'   diagonal alone; tests).
 #' @param patience Accepted steps without a new best residual that make a
 #'   stall, which halves the later steps (0: none); by default
-#'   \code{.BLP_PATIENCE} on the two-level map, else 0.
+#'   \code{.BLP_PATIENCE} for the simple iteration on the two-level map, else
+#'   0.
 #' @param window Accepted steps within which the best residual must halve, or
 #'   Berry's contraction joins from the start (0: never), or, stopped as
 #'   behind, goes on (twice as many while it is stopped); and the
 #'   contraction's evaluations within which its own must halve while the
-#'   step's is lower, or it stops. By default \code{.BLP_WINDOW} on the
+#'   method's is lower, or it stops. By default \code{.BLP_WINDOW} on the
 #'   two-level map, else 0.
 #' @param keep_pass Whether the solver returns its last pass (tests).
+#' @param restart_patience,restart_progress Anderson's restart: this many
+#'   iterations without a residual below \code{restart_progress} times the
+#'   best so far.
+#' @param restart_best Whether Anderson restarts from its best point every
+#'   time (Phase R's rule; research), rather than where it is unless its
+#'   residual has grown past twice the best.
 #' @returns A list for \code{*_blp_solve()}'s \code{control}.
 #' @noRd
 .blp_control <- function(tol = 1e-8, max_iter = 1000L, damping = 1,
-                         method = "simple", map = NULL, patience = NULL,
-                         window = NULL, keep_pass = FALSE) {
+                         method = "simple", settings = list(), map = NULL,
+                         patience = NULL, window = NULL, keep_pass = FALSE,
+                         restart_patience = 5L, restart_progress = 0.9,
+                         restart_best = FALSE) {
   tol <- .int64_to_double(tol, "`tol`")
   max_iter <- .int64_to_double(max_iter, "`max_iter`")
   if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol < 0) {
@@ -363,13 +419,22 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
       damping <= 0 || damping > 1) {
     stop("`damping` must be a single number in (0, 1].", call. = FALSE)
   }
+  iteration <- if (identical(method, "anderson")) "anderson" else "simple"
   if (is.null(map)) map <- if (identical(method, "original")) "plain" else "reduced"
-  if (is.null(patience)) patience <- if (map == "reduced") .BLP_PATIENCE else 0L
+  if (is.null(patience)) {
+    patience <- if (map == "reduced" && iteration == "simple") .BLP_PATIENCE else 0L
+  }
   if (is.null(window)) window <- if (map == "reduced") .BLP_WINDOW else 0L
-  list(method = method, iteration = "simple", map = map,
+  st <- .BLP_SETTINGS$anderson
+  st[names(settings)] <- settings
+  list(method = method, iteration = iteration, map = map,
        max_evals = as.integer(max_iter), tol = as.numeric(tol),
        damping = as.numeric(damping), patience = as.integer(patience),
-       window = as.integer(window), keep_pass = isTRUE(keep_pass))
+       window = as.integer(window), memory = as.integer(st$memory),
+       max_condition = as.numeric(st$max_condition),
+       restart_patience = as.integer(restart_patience),
+       restart_progress = as.numeric(restart_progress),
+       restart_best = isTRUE(restart_best), keep_pass = isTRUE(keep_pass))
 }
 
 # Method "simple"'s stalls: this many accepted steps without a new best
@@ -377,12 +442,20 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 # improves far sooner)
 .BLP_PATIENCE <- 30L
 
-# And its race: Berry's contraction joins from the start once this many
-# accepted steps fail to halve the best residual, stops when this many of its
-# own evaluations fail to halve its best residual while the step's is lower,
-# and goes on whenever twice this many of the step's, alone, fail to halve
-# the step's
+# And its race, every method's on the two-level step: Berry's contraction
+# joins from the start once this many accepted steps fail to halve the best
+# residual, stops when this many of its own evaluations fail to halve its best
+# residual while the method's is lower, and goes on whenever twice this many
+# of the method's, alone, fail to halve the method's
 .BLP_WINDOW <- 100L
+
+# The methods, with their settings' defaults ("simple" and "original" take
+# none): Anderson acceleration keeps the differences of its last `memory`
+# iterates, the oldest dropped while their least squares' condition estimate
+# exceeds `max_condition`
+.BLP_SETTINGS <- list(
+  simple = list(), original = list(),
+  anderson = list(memory = 10L, max_condition = 1e8))
 
 # The solver's statuses, by code (src/fixed_point.h)
 .BLP_STATUS <- c("converged", "max_iter", "non_finite", "non_finite_start")
@@ -518,32 +591,64 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   di
 }
 
-#' The solver blp() runs, and its settings
+#' The method blp() and the exported functions run, and its settings
 #'
 #' "simple" (the two-level step) and "original" (Berry, Levinsohn and
-#' Pakes's contraction) take no settings in `control`.
+#' Pakes's contraction) take no settings in `control`; "anderson" takes
+#' `memory` and `max_condition` (.BLP_SETTINGS).
 #'
 #' @param method The method's name.
 #' @param control A list of the method's settings.
-#' @returns The method's name.
+#' @returns List: method, and settings (every one of the method's, the
+#'   defaults for those not given).
 #' @noRd
 .blp_method <- function(method, control) {
   if (!is.character(method) || length(method) != 1L || is.na(method) ||
-      !method %in% c("simple", "original")) {
-    stop("`method` must be \"simple\" (the two-level step of ?blp_contraction) ",
-         "or \"original\" (Berry, Levinsohn and Pakes's contraction).",
+      !method %in% names(.BLP_SETTINGS)) {
+    stop("`method` must be \"simple\" (the two-level step of ?blp_contraction), ",
+         "\"original\" (Berry, Levinsohn and Pakes's contraction) or ",
+         "\"anderson\" (Anderson acceleration of the two-level step).",
          call. = FALSE)
   }
   if (!is.list(control) || is.object(control)) {
     stop("`control` must be a list of the method's settings.", call. = FALSE)
   }
+  st <- .BLP_SETTINGS[[method]]
   if (length(control)) {
     nm <- names(control)
-    shown <- if (is.null(nm)) "unnamed entries" else paste0("`", nm, "`", collapse = ", ")
-    stop(sprintf("`control` takes no settings with method \"%s\" (it has %s).",
-                 method, shown), call. = FALSE)
+    if (!length(st)) {
+      shown <- if (is.null(nm)) "unnamed entries" else paste0("`", nm, "`", collapse = ", ")
+      stop(sprintf("`control` takes no settings with method \"%s\" (it has %s).",
+                   method, shown), call. = FALSE)
+    }
+    if (is.null(nm) || anyNA(nm) || !all(nzchar(nm)) || anyDuplicated(nm)) {
+      stop("`control` must name each of its settings once.", call. = FALSE)
+    }
+    bad <- setdiff(nm, names(st))
+    if (length(bad)) {
+      stop(sprintf("`control` takes %s with method \"%s\"; it has %s.",
+                   paste0("`", names(st), "`", collapse = " and "), method,
+                   paste0("`", bad, "`", collapse = ", ")), call. = FALSE)
+    }
+    st[nm] <- control
   }
-  method
+  if (identical(method, "anderson")) {
+    m <- .int64_to_double(st$memory, "`control$memory`")
+    if (!is.numeric(m) || length(m) != 1L || !is.finite(m) || m != round(m) ||
+        m < 1 || m > 100) {
+      stop("`control$memory` must be a whole number from 1 to 100: the past ",
+           "iterates whose differences Anderson acceleration keeps.", call. = FALSE)
+    }
+    mc <- .int64_to_double(st$max_condition, "`control$max_condition`")
+    if (!is.numeric(mc) || length(mc) != 1L || is.na(mc) || mc < 1) {
+      stop("`control$max_condition` must be a single number of at least 1: the ",
+           "largest condition estimate of the least squares on the differences ",
+           "kept.", call. = FALSE)
+    }
+    st$memory <- as.integer(m)
+    st$max_condition <- as.numeric(mc)
+  }
+  list(method = method, settings = st)
 }
 
 #' The share inversion of blp(), common to its methods
@@ -572,8 +677,9 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   J <- nrow(object$alt_mapping) - outside
   target <- .blp_targets(target_shares, J, outside)
   start <- .blp_delta_init(object, delta_init, J, outside, free_ok)
-  method <- .blp_method(method, control)
-  ctl <- .blp_control(tol, max_iter, damping, method = method)
+  m <- .blp_method(method, control)
+  ctl <- .blp_control(tol, max_iter, damping, method = m$method,
+                      settings = m$settings)
   res <- solve(start, target, ctl)
   .blp_unconverged(res, ctl, "blp()")
   out <- res$delta

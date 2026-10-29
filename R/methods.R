@@ -1355,13 +1355,20 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #'   Levinsohn and Pakes (1995, eq. 6.8),
 #'   \eqn{\delta \leftarrow \delta + \log S - \log s(\delta)}, normalized as
 #'   the step is (the outside option's utility 0, or each group's reference
-#'   held) and, for the nested logit, multiplied by \code{damping}. Both run
-#'   under the same checks, stopping rule, evaluation budget
-#'   (\code{max_iter}), warning and returned point, and halve a step whose
-#'   shares are not finite, so their results and \code{"convergence"} records
-#'   compare directly; the step's cap, its stalls and the contraction joining
-#'   it belong to \code{"simple"} alone. Neither takes settings in
-#'   \code{control}.
+#'   held) and, for the nested logit, multiplied by \code{damping}.
+#'   \code{method = "anderson"} accelerates the two-level step (Anderson
+#'   acceleration; see \code{\link{blp_contraction}()}), its settings in
+#'   \code{control}: \code{memory}, how many differences between successive
+#'   iterates it keeps (default 10), and \code{max_condition} (default
+#'   \eqn{10^8}). Every
+#'   method runs under the same checks, stopping rule, evaluation budget
+#'   (\code{max_iter}), warning and returned point, and halves a step whose
+#'   shares are not finite (\code{"anderson"} restarts first where an
+#'   extrapolated point's are not), so their results and \code{"convergence"}
+#'   records compare directly. The step's stalls belong to \code{"simple"};
+#'   its cap to the two-level step, which \code{"anderson"} extrapolates; and
+#'   the contraction's joining to both. Only \code{"anderson"} takes settings
+#'   in \code{control}.
 #' @returns The constants: an n x 1 matrix with one row per inside
 #'   alternative, named by the alternatives' labels, and the attribute
 #'   \code{"convergence"}, a list with \code{converged}, \code{status}
@@ -1485,10 +1492,13 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The solver: \code{"simple"} (the default) or
-#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+#' @param method The solver: \code{"simple"} (the default),
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction, or
+#'   \code{"anderson"}, Anderson acceleration of \code{"simple"} (see
 #'   \code{\link{blp}()}).
-#' @param control A list of the method's settings (none for either).
+#' @param control A list of the method's settings: for \code{"anderson"},
+#'   \code{memory} and \code{max_condition} (see
+#'   \code{\link{blp_contraction}()}); none for the others.
 #' @param ... Additional arguments (ignored).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
@@ -1692,10 +1702,13 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   or batch jobs with memory limits), a budget above the memory actually
 #'   free can end the R session rather than fall back: lower it, or use
 #'   \code{0}, when memory is tight.
-#' @param method The solver: \code{"simple"} (the default) or
-#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+#' @param method The solver: \code{"simple"} (the default),
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction, or
+#'   \code{"anderson"}, Anderson acceleration of \code{"simple"} (see
 #'   \code{\link{blp}()}).
-#' @param control A list of the method's settings (none for either).
+#' @param control A list of the method's settings: for \code{"anderson"},
+#'   \code{memory} and \code{max_condition} (see
+#'   \code{\link{blp_contraction}()}); none for the others.
 #' @param ... Additional arguments (ignored).
 #' @details The inversion integrates each choice situation over the same
 #'   draws as \code{predict()} (for a cross-sectional fit, the estimation
@@ -1959,10 +1972,13 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The solver: \code{"simple"} (the default) or
-#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction (see
+#' @param method The solver: \code{"simple"} (the default),
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction, or
+#'   \code{"anderson"}, Anderson acceleration of \code{"simple"} (see
 #'   \code{\link{blp}()}).
-#' @param control A list of the method's settings (none for either).
+#' @param control A list of the method's settings: for \code{"anderson"},
+#'   \code{memory} and \code{max_condition} (see
+#'   \code{\link{blp_contraction}()}); none for the others.
 #' @param ... Additional arguments (ignored).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples

@@ -14,7 +14,9 @@ blp_contraction(
   weights,
   include_outside_option = FALSE,
   tol = 1e-08,
-  max_iter = 1000L
+  max_iter = 1000L,
+  method = "simple",
+  control = list()
 )
 }
 \arguments{
@@ -47,6 +49,18 @@ residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 outside option's included; see Details). Default 1e-8.}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
+
+\item{method}{The iteration: \code{"simple"} (the default), the two-level
+step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
+contraction; or \code{"anderson"}, Anderson acceleration of the
+two-level step.}
+
+\item{control}{A list of the method's settings. \code{"anderson"} takes
+\code{memory}, how many differences between successive iterates it keeps
+(a whole number from 1 to 100, cut to the number of free constants;
+default 10), and \code{max_condition}, the largest condition estimate it
+accepts for their least squares (at least 1; default \eqn{10^8}). The
+other methods take none.}
 }
 \value{
 The constants, an n x 1 matrix (\eqn{J} rows, inside alternatives
@@ -115,6 +129,29 @@ contraction joined; the bound leaves out the step's halvings after the
 contraction joined and any 200 iterations in which the step alone
 halved its best residual.
 
+\code{method = "anderson"} accelerates the same step (Anderson
+acceleration of type II; Walker and Ni 2011). Write \eqn{f(\delta)} for
+the step at \eqn{\delta}, and \eqn{\Delta X} and \eqn{\Delta F} for the
+last \code{memory} differences between successive iterates and between
+their steps. Each iteration finds the coefficients \eqn{\gamma} whose
+combination of past changes in the step best cancels the current step,
+\eqn{\min_\gamma \| f - \Delta F \gamma \|_2}, and moves to
+\eqn{\delta - \Delta X \gamma + f - \Delta F \gamma}, with the step's part
+multiplied by \code{damping} for the nested logit: the capped step
+above, extrapolated. On a linear map, undamped and with unlimited
+memory, this is essentially GMRES. The oldest differences are dropped
+while the least squares' condition estimate exceeds
+\code{max_condition}. When five iterations bring no residual below 0.9
+times the best so far, or the shares at an extrapolated point are not
+finite, the iteration clears its differences and takes the step from
+where it is, or from its best point where its residual has grown past
+twice the best (once per best point), halving that step while its
+shares are not finite. It races Berry, Levinsohn and Pakes's
+contraction as the default does, with the same windows; each of its
+iterations takes one evaluation of the shares besides the trial points
+whose shares are not finite, which the bound leaves out as it leaves out
+the step's halvings, so the same bound holds.
+
 The iteration stops at the first evaluation whose largest absolute
 log-share residual is at most \code{tol} (residuals relative to the
 component's reference without an outside option; with one, the outside
@@ -164,6 +201,9 @@ market equilibrium. \emph{Econometrica}, 63(4), 841--890.
 
 Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static /
 dynamic BLP estimations. arXiv:2404.04494.
+
+Walker, H. F., and Ni, P. (2011). Anderson acceleration for fixed-point
+iterations. \emph{SIAM Journal on Numerical Analysis}, 49(4), 1715--1735.
 }
 \seealso{
 \code{\link{blp}()}, \code{\link{nl_blp_contraction}()},

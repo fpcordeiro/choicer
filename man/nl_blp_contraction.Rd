@@ -17,7 +17,9 @@ nl_blp_contraction(
   include_outside_option = FALSE,
   damping = 1,
   tol = 1e-08,
-  max_iter = 1000L
+  max_iter = 1000L,
+  method = "simple",
+  control = list()
 )
 }
 \arguments{
@@ -62,6 +64,18 @@ residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 outside option's included; see Details). Default 1e-8.}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
+
+\item{method}{The iteration: \code{"simple"} (the default), the two-level
+step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
+contraction; or \code{"anderson"}, Anderson acceleration of the
+two-level step.}
+
+\item{control}{A list of the method's settings. \code{"anderson"} takes
+\code{memory}, how many differences between successive iterates it keeps
+(a whole number from 1 to 100, cut to the number of free constants;
+default 10), and \code{max_condition}, the largest condition estimate it
+accepts for their least squares (at least 1; default \eqn{10^8}). The
+other methods take none.}
 }
 \value{
 The constants, an n x 1 matrix (\eqn{J} rows); without an outside

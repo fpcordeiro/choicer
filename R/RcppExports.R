@@ -445,6 +445,25 @@ test_physical_memory <- function() {
     .Call(`_choicer_test_physical_memory`)
 }
 
+#' The fixed-point solver on a test map, for tests
+#'
+#' @param A,b The linear step f(x) = b - A x (A square, b its length).
+#' @param x0 The start.
+#' @param control List from .blp_control() (its method, budget, tol,
+#'   damping, patience, window and the methods' settings).
+#' @param fail 1-based indices of the evaluations that fail.
+#' @param script Residuals of the first evaluations (NA: computed).
+#' @param fallback Whether the map has a fallback step, f(x) / 2.
+#' @return List: x (the point returned), the solver's record (code,
+#'   iterations, evaluations, backtracks, stalls, race, resumes, restarts,
+#'   fallback, residual) and the evaluations' trace (trace_x, an n x
+#'   evaluations matrix; trace_res, the residuals; trace_fb, whether each was
+#'   the fallback's).
+#' @noRd
+test_fp_solve <- function(A, b, x0, control, fail, script, fallback) {
+    .Call(`_choicer_test_fp_solve`, A, b, x0, control, fail, script, fallback)
+}
+
 #' Log-likelihood and gradient for multinomial logit model
 #'
 #' Computes the log-likelihood and its gradient for the Multinomial Logit model using OpenMP for parallelization.
@@ -616,14 +635,16 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #'
 #' @inheritParams blp_contraction
 #' @param control List from .blp_control(): iteration, map, max_evals, tol,
-#'   damping, patience, window and keep_pass.
+#'   damping, patience, window, Anderson acceleration's memory,
+#'   max_condition, restart_patience, restart_progress and restart_best, and
+#'   keep_pass.
 #' @return List: delta (n x 1, as blp_contraction() returns it), code (0
 #'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
 #'   start), iterations, evaluations, backtracks, stalls, race (the evaluations
 #'   before Berry's contraction joined; 0 if it did not), resumes (the times
-#'   it went on after stopping as behind), berry (whether the point returned
-#'   is its), residual, fallbacks; with keep_pass, pass (s, A, C, s0 of the
-#'   last evaluation).
+#'   it went on after stopping as behind), restarts (Anderson acceleration's),
+#'   berry (whether the point returned is its), residual, fallbacks; with
+#'   keep_pass, pass (s, A, C, s0 of the last evaluation).
 #' @noRd
 mnl_blp_solve <- function(delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control) {
     .Call(`_choicer_mnl_blp_solve`, delta, target_shares, X, beta, alt_idx, M, weights, include_outside_option, control)

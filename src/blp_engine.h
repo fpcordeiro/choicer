@@ -125,6 +125,11 @@ struct BlpControl {
                             // Berry's contraction joins, or goes on after a
                             // stop (twice as many then); and its evaluations
                             // that must halve its own (FpControl)
+  int memory = 10;          // Anderson acceleration's settings (FpControl)
+  double max_condition = 1e8;
+  int restart_patience = 5;
+  double restart_progress = 0.9;
+  bool restart_best = false;
   bool keep_pass = false;   // tests: return the last pass
 };
 
@@ -500,6 +505,23 @@ struct BlpMapEval {
   }
 };
 
+// The solver's settings (fixed_point.h) of a control list's.
+inline FpControl blp_fp_control(const BlpControl& ctl) {
+  FpControl fc;
+  fc.method = ctl.method;
+  fc.max_evals = ctl.max_evals;
+  fc.tol = ctl.tol;
+  fc.damping = ctl.damping;
+  fc.patience = ctl.patience;
+  fc.window = ctl.window;
+  fc.memory = ctl.memory;
+  fc.max_condition = ctl.max_condition;
+  fc.restart_patience = ctl.restart_patience;
+  fc.restart_progress = ctl.restart_progress;
+  fc.restart_best = ctl.restart_best;
+  return fc;
+}
+
 // Solve for delta (J entries, in: the start, already normalized; out: the
 // result) with the model's passes.
 template <class Model>
@@ -510,13 +532,7 @@ inline BlpResult blp_solve(Model& model, const BlpComponents& comp,
   BlpMapEval<Model> map(model, comp, pb, ctl.map, delta, floor_scale);
   arma::vec x(pb.free.size());
   for (std::size_t k = 0; k < pb.free.size(); ++k) x[k] = delta[pb.free[k]];
-  FpControl fc;
-  fc.method = ctl.method;
-  fc.max_evals = ctl.max_evals;
-  fc.tol = ctl.tol;
-  fc.damping = ctl.damping;
-  fc.patience = ctl.patience;
-  fc.window = ctl.window;
+  const FpControl fc = blp_fp_control(ctl);
   BlpResult out;
   if (pb.free.empty()) {
     out.fp.code = FP_CONVERGED;  // every constant held: nothing to solve
@@ -534,10 +550,13 @@ inline BlpResult blp_solve(Model& model, const BlpComponents& comp,
 inline BlpControl blp_control(const Rcpp::List& control) {
   BlpControl c;
   const std::string iteration = Rcpp::as<std::string>(control["iteration"]);
-  if (iteration != "simple") {
+  if (iteration == "simple") {
+    c.method = FP_SIMPLE;
+  } else if (iteration == "anderson") {
+    c.method = FP_ANDERSON;
+  } else {
     Rcpp::stop("Internal error: unknown BLP iteration \"%s\".", iteration);
   }
-  c.method = FP_SIMPLE;
   const std::string map = Rcpp::as<std::string>(control["map"]);
   if (map == "reduced") {
     c.map = BLP_MAP_REDUCED;
@@ -553,6 +572,11 @@ inline BlpControl blp_control(const Rcpp::List& control) {
   c.damping = Rcpp::as<double>(control["damping"]);
   c.patience = Rcpp::as<int>(control["patience"]);
   c.window = Rcpp::as<int>(control["window"]);
+  c.memory = Rcpp::as<int>(control["memory"]);
+  c.max_condition = Rcpp::as<double>(control["max_condition"]);
+  c.restart_patience = Rcpp::as<int>(control["restart_patience"]);
+  c.restart_progress = Rcpp::as<double>(control["restart_progress"]);
+  c.restart_best = Rcpp::as<bool>(control["restart_best"]);
   c.keep_pass = Rcpp::as<bool>(control["keep_pass"]);
   return c;
 }
@@ -570,6 +594,7 @@ inline Rcpp::List blp_result(const arma::vec& delta, const BlpResult& res,
       Rcpp::Named("stalls") = res.fp.stalls,
       Rcpp::Named("race") = res.fp.race,
       Rcpp::Named("resumes") = res.fp.resumes,
+      Rcpp::Named("restarts") = res.fp.restarts,
       Rcpp::Named("berry") = res.fp.fallback,
       Rcpp::Named("residual") = res.fp.residual,
       Rcpp::Named("fallbacks") = res.fallbacks);

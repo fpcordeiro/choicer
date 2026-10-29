@@ -808,6 +808,9 @@ gb_design <- function(seed, N, J, m, K = 1L, border = 0, Kx = 2L, Kw = 0L) {
 # The battery
 # ---------------------------------------------------------------------------
 
+# The accelerated methods of Phase B, each run on the fits' designs
+GB_ACCEL <- c("anderson")
+
 run_blp <- function() {
   out <- list()
   beta <- c(0.8, -0.5)
@@ -1158,7 +1161,10 @@ run_blp <- function() {
   # -- blp() on fits ----------------------------------------------------------
   # (method = "original", Berry, Levinsohn and Pakes's contraction under the
   # engine's rules, is main's contraction: main's blp() takes the argument in
-  # its dots)
+  # its dots. The accelerated methods (Phase B) go through blp() only: a
+  # baseline's blp() stops on a method it does not know, which the tier
+  # accepts, while its exports have no method argument at all, and the
+  # harness could not record the call's problem there)
   for (ioo in c(FALSE, TRUE)) {
     s <- data.table::as.data.table(simulate_mnl_data(
       N = 300L, J = 5L, beta = c(0.8, -0.6), delta = c(0.4, -0.3, 0.2, 0.1, -0.2),
@@ -1200,6 +1206,13 @@ run_blp <- function() {
                                                    ref = ds, expect = "converged")
         out[[paste0(tag, "|known|original")]] <- golden_blp("blp",
           list(fit, target_shares = S, method = "original"), ref = ds)
+        for (am in GB_ACCEL) {
+          out[[paste0(tag, "|known|", am)]] <- golden_blp("blp",
+            list(fit, target_shares = S, method = am), ref = ds, expect = "converged")
+          out[[paste0(tag, "|known|tol12|", am)]] <- golden_blp("blp",
+            list(fit, target_shares = S, method = am, tol = 1e-12), ref = ds,
+            expect = "converged")
+        }
         tg <- as.numeric(predict(fit, type = "shares"))
         out[[paste0(tag, "|symmetrized")]] <- golden_blp("blp",
           list(fit, target_shares = (tg + rev(tg)) / 2))
@@ -1214,12 +1227,27 @@ run_blp <- function() {
             list(fit, target_shares = S, max_iter = 0), ref = FALSE, expect = "capped")
           out[[paste0(tag, "|max_iter=3")]] <- golden_blp("blp",
             list(fit, target_shares = S, max_iter = 3), ref = FALSE, expect = "capped")
+          for (am in GB_ACCEL) {
+            out[[paste0(tag, "|start0|", am)]] <- golden_blp("blp",
+              list(fit, target_shares = S, delta_init = rep(0, J), method = am),
+              ref = ds, expect = "converged")
+            out[[paste0(tag, "|uniform|", am)]] <- golden_blp("blp",
+              list(fit, target_shares = rep(1 / (J + ioo), J + ioo), method = am))
+            out[[paste0(tag, "|max_iter=3|", am)]] <- golden_blp("blp",
+              list(fit, target_shares = S, max_iter = 3, method = am), ref = FALSE,
+              expect = "capped")
+          }
         }
         if (m == "nl") {
           out[[paste0(tag, "|damping")]] <- golden_blp("blp",
             list(fit, target_shares = S, damping = 0.6), ref = ds)
           out[[paste0(tag, "|damping|original")]] <- golden_blp("blp",
             list(fit, target_shares = S, damping = 0.6, method = "original"), ref = ds)
+          for (am in GB_ACCEL) {
+            out[[paste0(tag, "|damping|", am)]] <- golden_blp("blp",
+              list(fit, target_shares = S, damping = 0.6, method = am), ref = ds,
+              expect = "converged")
+          }
         }
       }
     }
@@ -1262,6 +1290,16 @@ run_blp <- function() {
       }
       out[[paste0(tag, "|original")]] <- golden_blp("blp",
         list(fit, target_shares = S, method = "original"), ref = ds)
+      for (am in GB_ACCEL) {
+        for (kb in c(0, Inf)) {
+          out[[sprintf("%s|keep=%g|%s", tag, kb, am)]] <- golden_blp("blp",
+            list(fit, target_shares = S, keep_draws_bytes = kb, method = am), ref = ds,
+            expect = "converged")
+        }
+        out[[paste0(tag, "|tol12|", am)]] <- golden_blp("blp",
+          list(fit, target_shares = S, method = am, tol = 1e-12), ref = ds,
+          expect = "converged")
+      }
       # kept draws are the values each evaluation would form
       out[[paste0(tag, "|same_keep")]] <- identical(
         as.numeric(out[[paste0(tag, "|keep=0")]]$value),
