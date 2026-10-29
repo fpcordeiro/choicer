@@ -809,7 +809,7 @@ gb_design <- function(seed, N, J, m, K = 1L, border = 0, Kx = 2L, Kw = 0L) {
 # ---------------------------------------------------------------------------
 
 # The accelerated methods of Phase B, each run on the fits' designs
-GB_ACCEL <- c("anderson")
+GB_ACCEL <- c("anderson", "squarem")
 
 run_blp <- function() {
   out <- list()

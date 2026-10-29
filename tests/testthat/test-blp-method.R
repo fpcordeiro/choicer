@@ -55,7 +55,7 @@ test_that("every method solves the review's reproducer through every model's blp
     # the fit is the reproducer: its solution meets the targets at once
     at <- blp(fit, target_shares = S, delta_init = ds)
     expect_identical(attr(at, "convergence")$evaluations, 1L, label = model)
-    for (method in c("simple", "original", "anderson")) {
+    for (method in c("simple", "original", "anderson", "squarem")) {
       lab <- sprintf("%s, %s", model, method)
       d <- blp(fit, target_shares = S, delta_init = rep(0, 4L), method = method)
       cv <- attr(d, "convergence")
@@ -88,7 +88,7 @@ test_that("every method recovers known constants on each model", {
     fit$coefficients[asc] <- stats::rnorm(length(asc))
     ds <- if (outside) fit$coefficients[asc] else c(0, fit$coefficients[asc])
     S <- as.numeric(predict(fit, type = "shares"))
-    for (method in c("simple", "original", "anderson")) {
+    for (method in c("simple", "original", "anderson", "squarem")) {
       lab <- sprintf("%s, %s", nm, method)
       d <- blp(fit, target_shares = S, delta_init = rep(0, length(ds)), tol = 1e-10,
                method = method)
@@ -252,6 +252,8 @@ test_that("blp() checks its start, method and settings", {
                "`control` takes `memory` and `max_condition` with method \"anderson\"")
   expect_error(blp(fit, target_shares = S, method = "anderson",
                    control = list(memory = 0)), "`control\\$memory` must be a whole")
+  expect_error(blp(fit, target_shares = S, method = "squarem",
+                   control = list(scheme = 4)), "`control\\$scheme` must be 1, 2 or 3")
   expect_error(blp(fit, target_shares = S, control = "x"), "must be a list")
   expect_error(blp(fit, target_shares = S, tol = -1), "`tol` must be a single")
   expect_error(blp(fit, target_shares = S, max_iter = 2.5), "`max_iter` must be a whole")

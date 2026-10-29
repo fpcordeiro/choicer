@@ -52,15 +52,18 @@ held) and, for the nested logit, multiplied by \code{damping}.
 acceleration; see \code{\link{blp_contraction}()}), its settings in
 \code{control}: \code{memory}, how many differences between successive
 iterates it keeps (default 10), and \code{max_condition} (default
-\eqn{10^8}). Every
-method runs under the same checks, stopping rule, evaluation budget
-(\code{max_iter}), warning and returned point, and halves a step whose
-shares are not finite (\code{"anderson"} restarts first where an
-extrapolated point's are not), so their results and \code{"convergence"}
-records compare directly. The step's stalls belong to \code{"simple"};
-its cap to the two-level step, which \code{"anderson"} extrapolates; and
-the contraction's joining to both. Only \code{"anderson"} takes settings
-in \code{control}.
+\eqn{10^8}). \code{method = "squarem"} extrapolates it by SQUAREM,
+PyBLP's default (settings \code{scheme}, \code{step_min},
+\code{step_max} and \code{step_factor}; PyBLP's defaults 3, 1, 1 and 4).
+Every method runs under the same checks, stopping rule, evaluation
+budget (\code{max_iter}), warning and returned point, and halves a step
+whose shares are not finite (the accelerated methods first fall back
+where an extrapolated point's are not), so their results and
+\code{"convergence"} records compare directly. The step's stalls belong
+to \code{"simple"}; its cap to the two-level step, which
+\code{"anderson"} and \code{"squarem"} extrapolate; and the
+contraction's joining to all three. Only the accelerated methods take
+settings in \code{control}.
 }
 \examples{
 \donttest{

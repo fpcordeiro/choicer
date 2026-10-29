@@ -37,13 +37,14 @@ residual (default 1e-8; see \code{\link{blp_contraction}()}).}
 \item{max_iter}{The most evaluations of the shares (default 1000).}
 
 \item{method}{The solver: \code{"simple"} (the default),
-\code{"original"}, Berry, Levinsohn and Pakes's contraction, or
-\code{"anderson"}, Anderson acceleration of \code{"simple"} (see
-\code{\link{blp}()}).}
+\code{"original"}, Berry, Levinsohn and Pakes's contraction,
+\code{"anderson"}, Anderson acceleration of \code{"simple"}, or
+\code{"squarem"}, SQUAREM on it (see \code{\link{blp}()}).}
 
 \item{control}{A list of the method's settings: for \code{"anderson"},
-\code{memory} and \code{max_condition} (see
-\code{\link{blp_contraction}()}); none for the others.}
+\code{memory} and \code{max_condition}; for \code{"squarem"},
+\code{scheme}, \code{step_min}, \code{step_max} and \code{step_factor}
+(see \code{\link{blp_contraction}()}); none for the others.}
 
 \item{...}{Additional arguments (ignored).}
 }

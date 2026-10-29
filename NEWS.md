@@ -9,8 +9,9 @@ place of three copies of Berry's contraction. The solution is the same; the
 iteration that reaches it, its stopping rule and its handling of inputs that
 have no solution are new, so results move within the tolerance. The
 contraction remains available, under the engine's rules, as
-`blp(method = "original")`, and Anderson acceleration of the new step as
-`method = "anderson"`.
+`blp(method = "original")`, and the new step accelerated as
+`method = "anderson"` (Anderson acceleration) and `method = "squarem"`
+(SQUAREM).
 
 - **The step.** The iteration solves for the free constants at which each
   log-share residual against a base, r_j - r_b (r = log S - log s), is zero;
@@ -142,6 +143,21 @@ contraction remains available, under the engine's rules, as
   that precision (conditioning above 10^7), and the extrapolation can stop
   farther from the constants the targets came from than the default does, its
   shares still within `tol`. `"simple"` remains the default.
+- **SQUAREM.** `method = "squarem"` extrapolates the step by SQUAREM (Varadhan
+  and Roland 2008), the default of PyBLP (Conlon and Gortmaker 2020), with its
+  settings in `control` (`scheme` 3; `step_min` and `step_max` 1 at first,
+  `step_max` multiplied by `step_factor`, 4, each time an accepted step reaches
+  it), and races the contraction too. Each cycle takes two steps and
+  extrapolates along them, three evaluations of the shares in all. It is there
+  for comparison with PyBLP and the literature rather than as a default: on the
+  121 simulated designs it converged on every one, in medians of 17, 14.5 and
+  29 evaluations (multinomial, nested and mixed logits), never more than the
+  default's; from the 10 far starts it needed 1,311 to 1,466 evaluations; and
+  on the 5,985 small hard designs it failed on 630, 295 and 199 at 1,000,
+  20,000 and 200,000 evaluations, more often than the default (590, 236 and
+  122), above all on nested logits. With these bounds it never takes a step
+  shorter than two plain ones, so it cannot damp a step that oscillates within
+  a nest, as Anderson's least squares can.
 - **Stopping rule.** The iteration stops at the first evaluation whose
   largest absolute log-share residual is at most `tol` (relative to the
   reference of each group without an outside option; with one, each group's
@@ -184,16 +200,16 @@ contraction remains available, under the engine's rules, as
   before a mixed logit forms its draws): one share per alternative, the
   outside option's first, finite, positive and summing to 1. It checks
   `delta_init` the same way, and gains `method` and `control`.
-  `method = "simple"`, the default, is the step above; `"anderson"` its
-  acceleration, whose settings (`memory`, `max_condition`) go in `control`;
-  `"original"` is the contraction of Berry, Levinsohn and Pakes (1995, eq.
-  6.8), delta + log S - log s(delta), normalized as the step is and, for the
+  `method = "simple"`, the default, is the step above; `"anderson"` and
+  `"squarem"` its accelerations, whose settings go in `control`; `"original"`
+  is the contraction of Berry, Levinsohn and Pakes (1995, eq. 6.8),
+  delta + log S - log s(delta), normalized as the step is and, for the
   nested logit, multiplied by `damping`. All share the checks, the stopping
   rule, the evaluation budget, the warning, the point returned and the
-  halving of a step whose shares are not finite (`"anderson"` restarts first
-  where an extrapolated point's are not); the step's stalls belong to the
-  default, its cap to the step that `"anderson"` extrapolates too, and the
-  race with the contraction to both. Its result keeps its
+  halving of a step whose shares are not finite (the accelerations first
+  fall back where an extrapolated point's are not); the step's stalls belong
+  to the default, its cap to the step that the accelerations extrapolate
+  too, and the race with the contraction to all three. Its result keeps its
   n x 1 shape and gains the inside alternatives' labels as row names and a
   `"convergence"` attribute: the
   warning's record (converged, status, iterations, evaluations, residual,

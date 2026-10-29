@@ -142,3 +142,119 @@ test_that("an infinite residual at the start counts no stagnation", {
   expect_identical(r$code, 0L)
   expect_identical(r$restarts, 0L)
 })
+
+test_that("SQUAREM's cycle, and its failed extrapolation giving way to the double step", {
+  A <- diag(c(1, 0.5, 0.25))
+  b <- drop(A %*% c(1, 2, 3))
+  x0 <- rep(0, 3L)
+  ctl <- fp_ctl(tol = 1e-10, max_iter = 500L, method = "squarem")
+  # The first cycle: x1 (evaluation 2), then, its step length bounded to 1,
+  # x2 itself (3), then the stabilizing step (4); the bound is now 4, and the
+  # second cycle extrapolates from x1 (5) to a farther point (6)
+  r0 <- fp_run(A, b, x0, ctl)
+  expect_identical(r0$code, 0L)
+  expect_identical(r0$restarts, 0L)
+  x1 <- r0$trace_x[, 2L]
+  expect_equal(r0$trace_x[, 3L], x1 + fp_step(A, b, x1))
+  x5 <- r0$trace_x[, 5L]
+  expect_false(isTRUE(all.equal(r0$trace_x[, 6L], x5 + fp_step(A, b, x5))))
+  # where the extrapolated point fails, x2 = G(x1) instead
+  r <- fp_run(A, b, x0, ctl, fail = 6L)
+  expect_identical(r$code, 0L)
+  expect_identical(r$restarts, 1L)
+  expect_equal(r$trace_x[, 7L], x5 + fp_step(A, b, x5))
+  expect_equal(r$x, c(1, 2, 3), tolerance = 1e-8)
+})
+
+test_that("SQUAREM's bound grows with each extrapolation that reaches it, and shrinks when one fails", {
+  # Here ||r|| / ||v|| exceeds 20 on every cycle, so the step length is the
+  # bound: 1 in the first cycle (x2 itself, evaluation 3), then 4 (6), then
+  # 16 (9)
+  A <- diag(c(0.05, 0.005))
+  b <- drop(A %*% c(1, 2))
+  x0 <- c(0, 0)
+  ctl <- fp_ctl(tol = 1e-10, max_iter = 500L, method = "squarem")
+  # the point extrapolated with step length a from the cycle that starts at
+  # evaluation k
+  ext <- function(tr, k, a) {
+    r <- tr[, k + 1L] - tr[, k]
+    v <- fp_step(A, b, tr[, k + 1L]) - r
+    tr[, k] + 2 * a * r + a^2 * v
+  }
+  r0 <- fp_run(A, b, x0, ctl)
+  expect_identical(r0$code, 0L)
+  expect_identical(r0$restarts, 0L)
+  expect_equal(r0$trace_x[, 6L], ext(r0$trace_x, 4L, 4))
+  expect_equal(r0$trace_x[, 9L], ext(r0$trace_x, 7L, 16))
+  # where the point at 16 fails, x2 instead (10), and the next cycle's bound
+  # is 4 (13)
+  r1 <- fp_run(A, b, x0, ctl, fail = 9L)
+  expect_identical(r1$code, 0L)
+  expect_identical(r1$restarts, 1L)
+  expect_equal(r1$trace_x[, 10L], r1$trace_x[, 8L] + fp_step(A, b, r1$trace_x[, 8L]))
+  expect_equal(r1$trace_x[, 13L], ext(r1$trace_x, 11L, 4))
+  # where the point at 4 fails, the bound returns to its start: the next
+  # cycle takes x2 itself (10), and the one after reaches 4 again (13)
+  r2 <- fp_run(A, b, x0, ctl, fail = 6L)
+  expect_identical(r2$restarts, 1L)
+  expect_equal(r2$trace_x[, 10L], r2$trace_x[, 9L] + fp_step(A, b, r2$trace_x[, 9L]))
+  expect_equal(r2$trace_x[, 13L], ext(r2$trace_x, 11L, 4))
+  # a point taken with an infinite residual (as where every outside share
+  # underflows) does not grow the bound: 4 again (9)
+  r3 <- fp_run(A, b, x0, ctl, script = c(rep(NA, 5L), Inf))
+  expect_identical(r3$code, 0L)
+  expect_equal(r3$trace_x[, 9L], ext(r3$trace_x, 7L, 4))
+  # nor does a halved x2: the second cycle takes x2 itself (7), and the third
+  # extrapolates with 4 (10)
+  r4 <- fp_run(A, b, x0, ctl, fail = 3L)
+  expect_identical(r4$backtracks, 1L)
+  expect_equal(r4$trace_x[, 4L], r4$trace_x[, 2L] + 0.5 * fp_step(A, b, r4$trace_x[, 2L]))
+  expect_equal(r4$trace_x[, 7L], r4$trace_x[, 6L] + fp_step(A, b, r4$trace_x[, 6L]))
+  expect_equal(r4$trace_x[, 10L], ext(r4$trace_x, 8L, 4))
+  # a halved first step starts a new cycle where it lands (6): x1 (7), then
+  # the extrapolated point (8)
+  r5 <- fp_run(A, b, x0, ctl, fail = 5L)
+  expect_equal(r5$trace_x[, 6L], r5$trace_x[, 4L] + 0.5 * fp_step(A, b, r5$trace_x[, 4L]))
+  expect_equal(r5$trace_x[, 7L], r5$trace_x[, 6L] + fp_step(A, b, r5$trace_x[, 6L]))
+  expect_equal(r5$trace_x[, 8L], ext(r5$trace_x, 6L, 4))
+})
+
+test_that("SQUAREM steps plainly where its step length is not finite, and hands over to the fallback", {
+  # A constant step (A = 0): v = 0 and the step length is not finite under
+  # every scheme, so each cycle takes x2 itself: the plain iteration, point
+  # for point
+  rp <- fp_run(matrix(0, 2L, 2L), c(1, -1), c(0, 0),
+               fp_ctl(tol = 1e-12, max_iter = 31L, patience = 0L))
+  for (sc in 1:3) {
+    r <- fp_run(matrix(0, 2L, 2L), c(1, -1), c(0, 0),
+                fp_ctl(tol = 1e-12, max_iter = 31L, method = "squarem",
+                       settings = list(scheme = sc)))
+    expect_identical(r$code, 1L, label = paste("scheme", sc))
+    expect_identical(r$restarts, 0L, label = paste("scheme", sc))
+    expect_identical(r$trace_x, rp$trace_x, label = paste("scheme", sc))
+  }
+  A <- diag(c(0.05, 0.005))
+  b <- drop(A %*% c(1, 2))
+  x0 <- c(0, 0)
+  # the budget can end at a failed extrapolated point
+  r6 <- fp_run(A, b, x0, fp_ctl(tol = 1e-10, max_iter = 6L, method = "squarem"),
+               fail = 6L)
+  expect_identical(r6$code, 1L)
+  expect_identical(r6$evaluations, 6L)
+  expect_identical(r6$restarts, 1L)
+  # the extrapolated point (6) and x2 and its ten halvings (7 to 17) fail:
+  # the fallback starts from the start at evaluation 18 and converges alone
+  ctl <- fp_ctl(tol = 1e-10, max_iter = 20000L, method = "squarem")
+  r <- fp_run(A, b, x0, ctl, fail = 6:17, fallback = TRUE)
+  expect_identical(r$code, 0L)
+  expect_identical(r$restarts, 1L)
+  expect_identical(r$backtracks, 10L)
+  expect_identical(r$race, 17L)
+  expect_true(r$fallback)
+  expect_equal(r$trace_x[, 18L], x0)
+  expect_identical(r$trace_fb[18L], 1L)
+  # without a fallback the iteration stops there
+  r0 <- fp_run(A, b, x0, ctl, fail = 6:17)
+  expect_identical(r0$code, 2L)
+  expect_identical(r0$evaluations, 17L)
+})

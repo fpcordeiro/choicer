@@ -31,10 +31,11 @@
 // per turn (besides the trial points that fail) and races the fallback step
 // in the same way (fp_race()):
 //   FP_SIMPLE    the damped base step, with stalls (FpSimpleLane);
-//   FP_ANDERSON  Anderson acceleration of the base step (FpAndersonLane).
+//   FP_ANDERSON  Anderson acceleration of the base step (FpAndersonLane);
+//   FP_SQUAREM   SQUAREM's squared extrapolation of it (FpSquaremLane).
 // ============================================================================
 
-enum FpMethod { FP_SIMPLE = 0, FP_ANDERSON = 1 };
+enum FpMethod { FP_SIMPLE = 0, FP_ANDERSON = 1, FP_SQUAREM = 2 };
 
 enum FpCode {
   FP_CONVERGED = 0,       // an evaluated point with residual <= tol, returned
@@ -67,6 +68,14 @@ struct FpControl {
   bool restart_best = false;     // restart from the best point always (Phase
                                  // R's rule; research), not only where the
                                  // residual has grown past twice the best
+  // SQUAREM (FP_SQUAREM)
+  int scheme = 3;                // the step length's formula: 1, 2 or 3
+  double step_min = 1.0;         // the step length's bounds at the start
+  double step_max = 1.0;
+  double step_factor = 4.0;      // the upper bound's factor: it multiplies the
+                                 // bound when alpha reaches it at a point
+                                 // accepted, and divides it (not below its
+                                 // start) when such a point fails
 };
 
 struct FpResult {
@@ -77,7 +86,8 @@ struct FpResult {
   int stalls = 0;           // of the base step
   int race = 0;             // evaluations before the fallback joined (0: it did not)
   int resumes = 0;          // times the fallback, stopped as behind, went on
-  int restarts = 0;         // of an Anderson iteration
+  int restarts = 0;         // of an Anderson iteration; SQUAREM's extrapolated
+                            // points that failed
   bool fallback = false;    // the point returned is the fallback's
   double residual = std::numeric_limits<double>::quiet_NaN();  // at the point returned
 };
@@ -378,11 +388,143 @@ struct FpAndersonLane : FpLane {
   }
 };
 
-// The method's iteration (Lane: FpSimpleLane, the plain iteration, or
-// FpAndersonLane), safeguarded:
+// FP_SQUAREM: SQUAREM (Varadhan and Roland 2008), the squared extrapolation
+// of the damped base step, G(x) = x + damping f(x). From a cycle's start x0,
+// x1 = G(x0) and x2 = G(x1) give r = x1 - x0 and v = x2 - 2 x1 + x0, and the
+// cycle moves to the extrapolated point
+//   x_e = x0 + 2 alpha r + alpha^2 v,
+// alpha = ||r|| / ||v|| (scheme 3; scheme 1, -r'v / v'v; scheme 2,
+// -r'r / r'v) bounded to [step_min, step_max]: with PyBLP's defaults, 1 and
+// 1, never shorter than x2 itself, the point of alpha = 1. The next cycle
+// starts at G(x_e), a stabilizing step. When alpha reaches step_max and x_e
+// is accepted with a finite residual (x2 only if its step was not halved),
+// step_max is multiplied by step_factor: with the defaults, after the first
+// cycle's x2, and the bound grows while the extrapolations succeed. An x_e
+// whose shares are not finite gives way to x2, and where alpha had reached
+// step_max it is divided by step_factor, not below its start; step_min stays
+// (Phase R's solve_squarem() in the BLP engine plan's research; residual
+// alone, no merit function). One evaluation per turn: x1, then x_e, then the
+// stabilizing step; a base step whose trial point fails is halved, and a
+// halved step from x0 starts a new cycle where it lands.
+struct FpSquaremLane : FpLane {
+  arma::vec x0, r, v;       // the cycle's start, x1 - x0 and x2 - 2 x1 + x0
+  int phase = 0;            // where the lane is: a cycle's start (0), x1 (1),
+                            // the extrapolated point (2)
+  double step_lo = 1.0, step_hi = 1.0;  // alpha's bounds now
+
+  void setup(const arma::uword n, const FpControl& ctl) {
+    init(n);
+    x0.set_size(n);
+    r.set_size(n);
+    v.set_size(n);
+    step_lo = ctl.step_min;
+    step_hi = ctl.step_max;
+  }
+
+  void accept(const double trial_res, FpResult& out) {
+    x = trial;
+    step = trial_step;
+    res = trial_res;
+    ++out.iterations;
+    if (res < best_res) {
+      best_res = res;
+      best = x;
+      best_step = step;
+    }
+  }
+
+  // The damped base step from where the lane is, halved while its trial
+  // point fails; `full` whether it was not halved.
+  template <class Map>
+  int base_step(Map& map, const FpControl& ctl, FpResult& out, bool& full) {
+    double t = ctl.damping;
+    double trial_res = 0.0;
+    full = true;
+    for (int b = 0;; ++b) {
+      trial = x + t * step;
+      Rcpp::checkUserInterrupt();
+      ++out.evaluations;
+      if (map.eval(trial, trial_res, trial_step)) break;
+      if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
+      if (b >= ctl.max_backtracks) return FP_STEP_FAILED;
+      t *= 0.5;
+      ++out.backtracks;
+      full = false;
+    }
+    accept(trial_res, out);
+    return FP_STEP_OK;
+  }
+
+  template <class Map>
+  int turn(Map& map, const FpControl& ctl, FpResult& out) {
+    if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
+    const arma::uword n = x.n_elem;
+    bool full = true;
+    if (phase == 0) {  // x1 = G(x0)
+      x0 = x;
+      const int st = base_step(map, ctl, out, full);
+      if (st == FP_STEP_OK && full) {
+        for (arma::uword i = 0; i < n; ++i) r[i] = x[i] - x0[i];
+        phase = 1;
+      }
+      return st;
+    }
+    if (phase == 2) {  // the stabilizing step, the next cycle's start
+      const int st = base_step(map, ctl, out, full);
+      if (st == FP_STEP_OK) phase = 0;
+      return st;
+    }
+    // At x1: the step length from r and v = G(x1) - x1 - r
+    double rr = 0.0, vv = 0.0, rv = 0.0;
+    for (arma::uword i = 0; i < n; ++i) {
+      v[i] = ctl.damping * step[i] - r[i];
+      rr += r[i] * r[i];
+      vv += v[i] * v[i];
+      rv += r[i] * v[i];
+    }
+    double alpha = ctl.scheme == 1 ? -rv / vv
+                   : ctl.scheme == 2 ? -rr / rv
+                                     : std::sqrt(rr / vv);
+    if (!std::isfinite(alpha)) alpha = 1.0;
+    alpha = std::max(step_lo, std::min(step_hi, alpha));
+    if (alpha == 1.0) {  // x2 itself
+      const int st = base_step(map, ctl, out, full);
+      if (st == FP_STEP_OK) {
+        if (full && alpha == step_hi && std::isfinite(res)) step_hi *= ctl.step_factor;
+        phase = 2;
+      }
+      return st;
+    }
+    double trial_res = 0.0;
+    for (arma::uword i = 0; i < n; ++i) {
+      trial[i] = x0[i] + 2.0 * alpha * r[i] + alpha * alpha * v[i];
+    }
+    Rcpp::checkUserInterrupt();
+    ++out.evaluations;
+    if (map.eval(trial, trial_res, trial_step)) {
+      accept(trial_res, out);
+      // an overshoot to where every outside share underflows (an infinite
+      // residual) is taken, but does not lengthen the next one
+      if (alpha == step_hi && std::isfinite(trial_res)) step_hi *= ctl.step_factor;
+      phase = 2;
+      return FP_STEP_OK;
+    }
+    // The extrapolated point failed: x2 instead, and a shorter bound
+    ++out.restarts;
+    if (alpha == step_hi) step_hi = std::max(ctl.step_max, step_hi / ctl.step_factor);
+    if (out.evaluations >= ctl.max_evals) return FP_STEP_BUDGET;
+    const int st = base_step(map, ctl, out, full);
+    if (st == FP_STEP_OK) phase = 2;
+    return st;
+  }
+};
+
+// The method's iteration (Lane: FpSimpleLane, the plain iteration,
+// FpAndersonLane or FpSquaremLane), safeguarded:
 //   * a trial point that fails is retried with the step halved, up to
 //     max_backtracks times (each an evaluation; Anderson's extrapolated point
-//     restarts instead, and its restart's step is halved);
+//     restarts instead, and its restart's step is halved; SQUAREM's gives way
+//     to the double step x2);
 //   * the plain iteration, with patience > 0: a stall (patience accepted
 //     steps without a new best residual) halves the relaxation of the later
 //     steps; if the residual has grown past twice the best (the steps
@@ -412,7 +554,7 @@ struct FpAndersonLane : FpLane {
 //     failing window of the method's, twice as long), T being the
 //     evaluations before it joined, however the method fares; not counted
 //     are the method's failed trial points after it joined (halvings, and
-//     Anderson's extrapolated points that failed), and the windows in which
+//     the extrapolated points that failed), and the windows in which
 //     the method alone halved its best residual (with tol > 0, at most log2
 //     of its residual over tol). Every method takes one evaluation per
 //     accepted step besides those failed trial points, so the bound holds
@@ -547,6 +689,8 @@ inline FpResult fp_solve(Map& map, arma::vec& x, const FpControl& ctl) {
   switch (ctl.method) {
   case FP_ANDERSON:
     return fp_race<FpAndersonLane>(map, x, ctl);
+  case FP_SQUAREM:
+    return fp_race<FpSquaremLane>(map, x, ctl);
   case FP_SIMPLE:
   default:
     return fp_race<FpSimpleLane>(map, x, ctl);

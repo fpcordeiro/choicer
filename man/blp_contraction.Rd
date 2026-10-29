@@ -52,15 +52,20 @@ outside option's included; see Details). Default 1e-8.}
 
 \item{method}{The iteration: \code{"simple"} (the default), the two-level
 step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
-contraction; or \code{"anderson"}, Anderson acceleration of the
-two-level step.}
+contraction; \code{"anderson"}, Anderson acceleration of the two-level
+step; or \code{"squarem"}, SQUAREM on it.}
 
 \item{control}{A list of the method's settings. \code{"anderson"} takes
 \code{memory}, how many differences between successive iterates it keeps
 (a whole number from 1 to 100, cut to the number of free constants;
 default 10), and \code{max_condition}, the largest condition estimate it
-accepts for their least squares (at least 1; default \eqn{10^8}). The
-other methods take none.}
+accepts for their least squares (at least 1; default \eqn{10^8}).
+\code{"squarem"} takes \code{scheme}, its step length's formula (1, 2 or
+3; default 3), \code{step_min} and \code{step_max}, the step length's
+bounds at the start (positive; default 1 and 1), and
+\code{step_factor}, what the upper bound is multiplied by when the step
+length reaches it and divided by when such a step fails (at least 1;
+default 4): PyBLP's defaults. The other methods take none.}
 }
 \value{
 The constants, an n x 1 matrix (\eqn{J} rows, inside alternatives
@@ -152,6 +157,26 @@ iterations takes one evaluation of the shares besides the trial points
 whose shares are not finite, which the bound leaves out as it leaves out
 the step's halvings, so the same bound holds.
 
+\code{method = "squarem"} extrapolates the same step by SQUAREM
+(Varadhan and Roland 2008), PyBLP's default (Conlon and Gortmaker 2020).
+With \eqn{G(\delta) = \delta + f(\delta)} (\eqn{f} multiplied by
+\code{damping} for the nested logit), each cycle takes
+\eqn{\delta_1 = G(\delta_0)} and \eqn{\delta_2 = G(\delta_1)}, sets
+\eqn{r = \delta_1 - \delta_0} and \eqn{v = \delta_2 - 2\delta_1 + \delta_0},
+moves to \eqn{\delta_0 + 2\alpha r + \alpha^2 v} with
+\eqn{\alpha = \|r\|/\|v\|} (\code{scheme} 3) bounded below by
+\code{step_min} and above by \code{step_max}, and takes one more step
+\eqn{G} from there: three evaluations of the shares per cycle. With the
+default bounds the first cycle's point is \eqn{\delta_2} itself. When
+\eqn{\alpha} reaches \code{step_max} at a point whose residual is
+finite (for \eqn{\delta_2}, a step not halved), the bound is
+multiplied by \code{step_factor}, so the extrapolation lengthens while
+it succeeds; where the shares at an extrapolated point are not finite,
+the cycle takes \eqn{\delta_2} instead, and a bound that \eqn{\alpha}
+had reached is divided by \code{step_factor}, not below its start.
+\code{step_min} stays. It races the contraction too, one evaluation per
+turn besides the trial points that fail, so the same bound holds.
+
 The iteration stops at the first evaluation whose largest absolute
 log-share residual is at most \code{tol} (residuals relative to the
 component's reference without an outside option; with one, the outside
@@ -201,6 +226,14 @@ market equilibrium. \emph{Econometrica}, 63(4), 841--890.
 
 Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static /
 dynamic BLP estimations. arXiv:2404.04494.
+
+Conlon, C., and Gortmaker, J. (2020). Best practices for differentiated
+products demand estimation with PyBLP. \emph{RAND Journal of Economics},
+51(4), 1108--1161.
+
+Varadhan, R., and Roland, C. (2008). Simple and globally convergent
+methods for accelerating the convergence of any EM algorithm.
+\emph{Scandinavian Journal of Statistics}, 35(2), 335--353.
 
 Walker, H. F., and Ni, P. (2011). Anderson acceleration for fixed-point
 iterations. \emph{SIAM Journal on Numerical Analysis}, 49(4), 1715--1735.

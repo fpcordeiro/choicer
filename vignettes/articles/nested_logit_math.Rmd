@@ -1197,9 +1197,9 @@ finite, its stalls, and the contraction racing it once 100 iterations fail to ha
 best residual (multiplied by `damping` like the step; where it diverges, at small
 $\lambda_g$, it falls behind and stops, going on whenever the step alone fails to halve
 its best residual within 200 iterations, or its trial point fails). `method = "anderson"`
-accelerates this step as in the logit (Anderson acceleration; §7.3 of the
-[multinomial logit article](multinomial_logit_math.html)), with `damping` multiplying the
-step's part of each update.
+and `method = "squarem"` accelerate this step as in the logit (Anderson acceleration and
+SQUAREM; §7.3 of the [multinomial logit article](multinomial_logit_math.html)), with
+`damping` multiplying the step's part of each update.
 
 #### 6.4.3 Nests with $\lambda_g > 1$
 

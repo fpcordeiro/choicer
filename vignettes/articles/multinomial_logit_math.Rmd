@@ -601,6 +601,26 @@ above). It races the contraction like the step, each of its iterations one evalu
 the shares besides trial points whose shares are not finite (left out of the bound, as
 the step's halvings are), so the bound $T + 4E$ holds for it too.
 
+`method = "squarem"` extrapolates the step by SQUAREM (Varadhan and Roland 2008), PyBLP's
+default. With $G(\delta) = \delta + f(\delta)$, each cycle takes $\delta_1 = G(\delta_0)$
+and $\delta_2 = G(\delta_1)$, sets $r = \delta_1 - \delta_0$ and
+$v = \delta_2 - 2\delta_1 + \delta_0$, and moves to
+
+$$
+\delta_0 + 2\alpha r + \alpha^2 v,
+\qquad
+\alpha = \|r\|_2 / \|v\|_2
+$$
+
+(`scheme` 3; scheme 1 takes $-r'v/v'v$, scheme 2 $-r'r/r'v$), bounded to [`step_min`,
+`step_max`], 1 and 1 at first; one more step $G$ from that point starts the next cycle.
+Each time $\alpha$ reaches `step_max` at a point whose residual is finite, the bound is
+multiplied by `step_factor` (4), so the extrapolation lengthens while it succeeds; where
+the shares at an extrapolated point are not finite, the cycle takes $\delta_2$ instead,
+and a bound $\alpha$ had reached is divided by `step_factor`, not below its start. With
+these bounds it never steps shorter than $\delta_2$, so it cannot damp an oscillating step
+as Anderson's least squares can. It races the contraction too.
+
 On the 121 simulated designs of choicer's test bed (multinomial, nested and mixed logits;
 2 to 5,000 alternatives; full, regional and chained choice sets; far starts), solved to
 $10^{-12}$, the step converged on every one; where Berry's contraction converged too (113
@@ -1158,6 +1178,7 @@ the kernel's report, `logit_sanitize()` in
 - Berry, S., Gandhi, A., & Haile, P. (2013). Connected substitutes and invertibility of demand. *Econometrica*, 81(5), 2087-2111.
 - Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static / dynamic BLP estimations. arXiv:2404.04494.
 - Walker, H. F., & Ni, P. (2011). Anderson acceleration for fixed-point iterations. *SIAM Journal on Numerical Analysis*, 49(4), 1715-1735.
+- Varadhan, R., & Roland, C. (2008). Simple and globally convergent methods for accelerating the convergence of any EM algorithm. *Scandinavian Journal of Statistics*, 35(2), 335-353.
 - Manski, C. F., & Lerman, S. R. (1977). The estimation of choice probabilities from choice based samples. *Econometrica*, 45(8), 1977-1988.
 - Manski, C. F., & McFadden, D. (1981). Alternative estimators and sample designs for discrete choice analysis. In C. F. Manski & D. McFadden (Eds.), *Structural Analysis of Discrete Data with Econometric Applications* (pp. 2-50). MIT Press.
 - Cosslett, S. R. (1981). Maximum likelihood estimator for choice-based samples. *Econometrica*, 49(5), 1289-1316.

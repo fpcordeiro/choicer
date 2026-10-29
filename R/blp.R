@@ -39,14 +39,19 @@
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param method The iteration: \code{"simple"} (the default), the two-level
 #'   step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
-#'   contraction; or \code{"anderson"}, Anderson acceleration of the
-#'   two-level step.
+#'   contraction; \code{"anderson"}, Anderson acceleration of the two-level
+#'   step; or \code{"squarem"}, SQUAREM on it.
 #' @param control A list of the method's settings. \code{"anderson"} takes
 #'   \code{memory}, how many differences between successive iterates it keeps
 #'   (a whole number from 1 to 100, cut to the number of free constants;
 #'   default 10), and \code{max_condition}, the largest condition estimate it
-#'   accepts for their least squares (at least 1; default \eqn{10^8}). The
-#'   other methods take none.
+#'   accepts for their least squares (at least 1; default \eqn{10^8}).
+#'   \code{"squarem"} takes \code{scheme}, its step length's formula (1, 2 or
+#'   3; default 3), \code{step_min} and \code{step_max}, the step length's
+#'   bounds at the start (positive; default 1 and 1), and
+#'   \code{step_factor}, what the upper bound is multiplied by when the step
+#'   length reaches it and divided by when such a step fails (at least 1;
+#'   default 4): PyBLP's defaults. The other methods take none.
 #' @details With \eqn{r = \log S - \log s(\delta)}, the iteration solves
 #'   \eqn{\rho_j = r_j - r_b = 0} for every free constant, the log-share
 #'   residual against a base: the outside option (Fukasawa's 2024
@@ -123,6 +128,26 @@
 #'   whose shares are not finite, which the bound leaves out as it leaves out
 #'   the step's halvings, so the same bound holds.
 #'
+#'   \code{method = "squarem"} extrapolates the same step by SQUAREM
+#'   (Varadhan and Roland 2008), PyBLP's default (Conlon and Gortmaker 2020).
+#'   With \eqn{G(\delta) = \delta + f(\delta)} (\eqn{f} multiplied by
+#'   \code{damping} for the nested logit), each cycle takes
+#'   \eqn{\delta_1 = G(\delta_0)} and \eqn{\delta_2 = G(\delta_1)}, sets
+#'   \eqn{r = \delta_1 - \delta_0} and \eqn{v = \delta_2 - 2\delta_1 + \delta_0},
+#'   moves to \eqn{\delta_0 + 2\alpha r + \alpha^2 v} with
+#'   \eqn{\alpha = \|r\|/\|v\|} (\code{scheme} 3) bounded below by
+#'   \code{step_min} and above by \code{step_max}, and takes one more step
+#'   \eqn{G} from there: three evaluations of the shares per cycle. With the
+#'   default bounds the first cycle's point is \eqn{\delta_2} itself. When
+#'   \eqn{\alpha} reaches \code{step_max} at a point whose residual is
+#'   finite (for \eqn{\delta_2}, a step not halved), the bound is
+#'   multiplied by \code{step_factor}, so the extrapolation lengthens while
+#'   it succeeds; where the shares at an extrapolated point are not finite,
+#'   the cycle takes \eqn{\delta_2} instead, and a bound that \eqn{\alpha}
+#'   had reached is divided by \code{step_factor}, not below its start.
+#'   \code{step_min} stays. It races the contraction too, one evaluation per
+#'   turn besides the trial points that fail, so the same bound holds.
+#'
 #'   The iteration stops at the first evaluation whose largest absolute
 #'   log-share residual is at most \code{tol} (residuals relative to the
 #'   component's reference without an outside option; with one, the outside
@@ -158,6 +183,14 @@
 #'
 #'   Fukasawa, T. (2024). Fast and simple inner-loop algorithms of static /
 #'   dynamic BLP estimations. arXiv:2404.04494.
+#'
+#'   Conlon, C., and Gortmaker, J. (2020). Best practices for differentiated
+#'   products demand estimation with PyBLP. \emph{RAND Journal of Economics},
+#'   51(4), 1108--1161.
+#'
+#'   Varadhan, R., and Roland, C. (2008). Simple and globally convergent
+#'   methods for accelerating the convergence of any EM algorithm.
+#'   \emph{Scandinavian Journal of Statistics}, 35(2), 335--353.
 #'
 #'   Walker, H. F., and Ni, P. (2011). Anderson acceleration for fixed-point
 #'   iterations. \emph{SIAM Journal on Numerical Analysis}, 49(4), 1715--1735.
@@ -369,11 +402,11 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'   \code{nl_blp_contraction()}.
 #' @param method The method, as blp() names it: \code{"simple"} (the
 #'   two-level step, its stalls and its race with Berry's contraction),
-#'   \code{"original"} (Berry, Levinsohn and Pakes's contraction) or
-#'   \code{"anderson"} (Anderson acceleration of the two-level step, racing
-#'   the contraction as \code{"simple"} does). The first two run the engine's
-#'   simple iteration (\code{iteration}) and differ in the map, the stalls and
-#'   the race.
+#'   \code{"original"} (Berry, Levinsohn and Pakes's contraction),
+#'   \code{"anderson"} (Anderson acceleration of the two-level step) or
+#'   \code{"squarem"} (SQUAREM on it), the last two racing the contraction as
+#'   \code{"simple"} does. The first two run the engine's simple iteration
+#'   (\code{iteration}) and differ in the map, the stalls and the race.
 #' @param settings The method's settings, checked (\code{.blp_method()});
 #'   the defaults of \code{.BLP_SETTINGS} for those not given.
 #' @param map The base map, by default the method's: \code{"reduced"} (the
@@ -419,13 +452,13 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
       damping <= 0 || damping > 1) {
     stop("`damping` must be a single number in (0, 1].", call. = FALSE)
   }
-  iteration <- if (identical(method, "anderson")) "anderson" else "simple"
+  iteration <- if (method %in% c("anderson", "squarem")) method else "simple"
   if (is.null(map)) map <- if (identical(method, "original")) "plain" else "reduced"
   if (is.null(patience)) {
     patience <- if (map == "reduced" && iteration == "simple") .BLP_PATIENCE else 0L
   }
   if (is.null(window)) window <- if (map == "reduced") .BLP_WINDOW else 0L
-  st <- .BLP_SETTINGS$anderson
+  st <- c(.BLP_SETTINGS$anderson, .BLP_SETTINGS$squarem)
   st[names(settings)] <- settings
   list(method = method, iteration = iteration, map = map,
        max_evals = as.integer(max_iter), tol = as.numeric(tol),
@@ -434,7 +467,9 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
        max_condition = as.numeric(st$max_condition),
        restart_patience = as.integer(restart_patience),
        restart_progress = as.numeric(restart_progress),
-       restart_best = isTRUE(restart_best), keep_pass = isTRUE(keep_pass))
+       restart_best = isTRUE(restart_best), scheme = as.integer(st$scheme),
+       step_min = as.numeric(st$step_min), step_max = as.numeric(st$step_max),
+       step_factor = as.numeric(st$step_factor), keep_pass = isTRUE(keep_pass))
 }
 
 # Method "simple"'s stalls: this many accepted steps without a new best
@@ -452,10 +487,14 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 # The methods, with their settings' defaults ("simple" and "original" take
 # none): Anderson acceleration keeps the differences of its last `memory`
 # iterates, the oldest dropped while their least squares' condition estimate
-# exceeds `max_condition`
+# exceeds `max_condition`; SQUAREM's step length follows `scheme` (1, 2 or
+# 3), bounded to [step_min, step_max], the upper bound multiplied by
+# `step_factor` when an accepted step reaches it and divided by it, not below
+# its start, when one that reached it fails (PyBLP's defaults)
 .BLP_SETTINGS <- list(
   simple = list(), original = list(),
-  anderson = list(memory = 10L, max_condition = 1e8))
+  anderson = list(memory = 10L, max_condition = 1e8),
+  squarem = list(scheme = 3L, step_min = 1, step_max = 1, step_factor = 4))
 
 # The solver's statuses, by code (src/fixed_point.h)
 .BLP_STATUS <- c("converged", "max_iter", "non_finite", "non_finite_start")
@@ -595,7 +634,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'
 #' "simple" (the two-level step) and "original" (Berry, Levinsohn and
 #' Pakes's contraction) take no settings in `control`; "anderson" takes
-#' `memory` and `max_condition` (.BLP_SETTINGS).
+#' `memory` and `max_condition`, "squarem" `scheme`, `step_min`, `step_max`
+#' and `step_factor` (.BLP_SETTINGS).
 #'
 #' @param method The method's name.
 #' @param control A list of the method's settings.
@@ -606,9 +646,9 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   if (!is.character(method) || length(method) != 1L || is.na(method) ||
       !method %in% names(.BLP_SETTINGS)) {
     stop("`method` must be \"simple\" (the two-level step of ?blp_contraction), ",
-         "\"original\" (Berry, Levinsohn and Pakes's contraction) or ",
-         "\"anderson\" (Anderson acceleration of the two-level step).",
-         call. = FALSE)
+         "\"original\" (Berry, Levinsohn and Pakes's contraction), ",
+         "\"anderson\" (Anderson acceleration of the two-level step) or ",
+         "\"squarem\" (SQUAREM on it).", call. = FALSE)
   }
   if (!is.list(control) || is.object(control)) {
     stop("`control` must be a list of the method's settings.", call. = FALSE)
@@ -626,9 +666,14 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
     }
     bad <- setdiff(nm, names(st))
     if (length(bad)) {
+      shown <- paste0("`", names(st), "`")
       stop(sprintf("`control` takes %s with method \"%s\"; it has %s.",
-                   paste0("`", names(st), "`", collapse = " and "), method,
-                   paste0("`", bad, "`", collapse = ", ")), call. = FALSE)
+                   if (length(shown) > 2L) {
+                     paste0(paste(shown[-length(shown)], collapse = ", "), " and ",
+                            shown[length(shown)])
+                   } else {
+                     paste(shown, collapse = " and ")
+                   }, method, paste0("`", bad, "`", collapse = ", ")), call. = FALSE)
     }
     st[nm] <- control
   }
@@ -647,6 +692,34 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
     }
     st$memory <- as.integer(m)
     st$max_condition <- as.numeric(mc)
+  }
+  if (identical(method, "squarem")) {
+    num1 <- function(x, what) {
+      x <- .int64_to_double(x, what)
+      if (!is.numeric(x) || length(x) != 1L || !is.finite(x)) NA_real_ else as.numeric(x)
+    }
+    sc <- num1(st$scheme, "`control$scheme`")
+    if (!sc %in% 1:3) {
+      stop("`control$scheme` must be 1, 2 or 3: SQUAREM's step length (Varadhan ",
+           "and Roland 2008).", call. = FALSE)
+    }
+    lo <- num1(st$step_min, "`control$step_min`")
+    hi <- num1(st$step_max, "`control$step_max`")
+    if (is.na(lo) || is.na(hi) || !(lo > 0) || hi < lo) {
+      stop("`control$step_min` and `control$step_max` must be finite numbers with ",
+           "0 < step_min <= step_max: the first bounds of SQUAREM's step length.",
+           call. = FALSE)
+    }
+    fa <- num1(st$step_factor, "`control$step_factor`")
+    if (is.na(fa) || fa < 1) {
+      stop("`control$step_factor` must be a finite number of at least 1: what ",
+           "SQUAREM multiplies the upper bound of its step length by when a step ",
+           "reaches it.", call. = FALSE)
+    }
+    st$scheme <- as.integer(sc)
+    st$step_min <- lo
+    st$step_max <- hi
+    st$step_factor <- fa
   }
   list(method = method, settings = st)
 }
