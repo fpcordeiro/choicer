@@ -687,10 +687,14 @@ struct NlProbs {
         log_P_k(n_nests) {}
 };
 
+// With Keep, each row's exp(V_j / lambda_k - max) (0 where its nest's
+// maximum is not finite) is also written to keep[j]: the share inversion's
+// exp-space cache (blp_engine.h). The computation is the same either way.
+template <bool Keep = false>
 inline void nl_individual_probs(const double* V, const int* nest, const int m,
                                 const arma::vec& lambda, const int n_nests,
                                 const bool include_outside_option,
-                                NlProbs& pr) {
+                                NlProbs& pr, double* keep = nullptr) {
   const double* lam = lambda.memptr();
   const double inf = arma::datum::inf;
 
@@ -713,7 +717,15 @@ inline void nl_individual_probs(const double* V, const int* nest, const int m,
   for (int j = 0; j < m; ++j) {
     const int k = nest[j];
     if (std::isfinite(max_V_k[k])) {
-      I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
+      if (Keep) {
+        const double e = std::exp(V_over_lambda[j] - max_V_k[k]);
+        I_k_unscaled[k] += e;
+        keep[j] = e;
+      } else {
+        I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
+      }
+    } else if (Keep) {
+      keep[j] = 0.0;
     }
   }
 
@@ -791,12 +803,13 @@ inline bool nl_lambda_positive(const arma::vec& lambda) {
 // in increasing order within each parity, this forms every offered nest's
 // entries, the outside option's and the rows' bit for bit as
 // nl_individual_probs() does; the other nests' entries are not written, and
-// no caller reads them.
+// no caller reads them. Keep as in nl_individual_probs().
+template <bool Keep = false>
 inline void nl_individual_probs_offered(const double* V, const int* nest, const int m,
                                         const arma::vec& lambda, const int* nests,
                                         const int n_o,
                                         const bool include_outside_option,
-                                        NlProbs& pr) {
+                                        NlProbs& pr, double* keep = nullptr) {
   const double* lam = lambda.memptr();
   const double inf = arma::datum::inf;
 
@@ -819,7 +832,15 @@ inline void nl_individual_probs_offered(const double* V, const int* nest, const 
   for (int j = 0; j < m; ++j) {
     const int k = nest[j];
     if (std::isfinite(max_V_k[k])) {
-      I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
+      if (Keep) {
+        const double e = std::exp(V_over_lambda[j] - max_V_k[k]);
+        I_k_unscaled[k] += e;
+        keep[j] = e;
+      } else {
+        I_k_unscaled[k] += std::exp(V_over_lambda[j] - max_V_k[k]);
+      }
+    } else if (Keep) {
+      keep[j] = 0.0;
     }
   }
 
