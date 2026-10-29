@@ -8,7 +8,7 @@
   object,
   target_shares,
   delta_init = NULL,
-  tol = 1e-08,
+  tol = 1e-12,
   max_iter = 1000,
   keep_draws_bytes = 2^32,
   method = "anderson",
@@ -29,7 +29,7 @@ uses the estimated ASCs from the fitted model (zeros for a model fitted
 without them, \code{use_asc = FALSE}).}
 
 \item{tol}{Convergence tolerance on the largest absolute log-share
-residual (default 1e-8; see \code{\link{blp_contraction}()}).}
+residual (default 1e-12; see \code{\link{blp_contraction}()}).}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
 

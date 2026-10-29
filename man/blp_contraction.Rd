@@ -13,7 +13,7 @@ blp_contraction(
   M,
   weights,
   include_outside_option = FALSE,
-  tol = 1e-08,
+  tol = 1e-12,
   max_iter = 1000L,
   method = "anderson",
   control = list()
@@ -46,7 +46,12 @@ utility normalized to 0 (its rows are not in the data).}
 
 \item{tol}{Convergence tolerance on the largest absolute log-share
 residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
-outside option's included; see Details). Default 1e-8.}
+outside option's included; see Details). Default 1e-12. Rounding in the
+sums of the shares over choice situations sets a floor under the
+residual that grows with their number: on one thread about
+\eqn{2 \times 10^{-13}} at \eqn{10^8} rows and near \eqn{10^{-12}} at
+\eqn{10^9} (lower with more threads). Where it reaches \code{tol}, raise
+\code{tol}.}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
 

@@ -636,7 +636,7 @@ turns included), and Berry's contraction failed on 22; where both converged, the
 needed a median 0.16 of Berry's evaluations. On 999 small designs drawn to be hard (3 to
 6 alternatives in 2 to 8 choice situations of random sizes, single-alternative ones
 included; covariates and constants integers in $[-10, 10]$ and $[-3, 3]$; half with an
-outside option), at the default tolerance and 1,000 evaluations, the step failed on 103
+outside option), at tolerance $10^{-8}$ and 1,000 evaluations, the step failed on 103
 and Berry's contraction on 592, never where the contraction converged; where both
 converged, the step needed a median 0.12 of the contraction's evaluations.
 
@@ -647,13 +647,14 @@ four regions from 10 far starts in 27 to 36 evaluations, where `"simple"` needed
 to 3,655. On the 999 small hard designs above and 999 more drawn alike it failed on 61,
 29 and 20 at 1,000, 20,000 and 200,000 evaluations, against 210, 80 and 39 for
 `"simple"`, and needed a median 0.45 to 0.48 of `"simple"`'s evaluations where both
-converged. On simulated claims-, census- and small-scale data (up to $10^7$ rows) it took
-0.25 to 1.03 times `"simple"`'s time, which made it the default.
+converged. On simulated claims-, census- and small-scale data (up to $10^7$ rows), at
+tolerance $10^{-8}$, it took 0.25 to 1.03 times `"simple"`'s time, which made it the
+default.
 
 ### 7.4 Stopping Rule and Result
 
 The iteration stops at the first evaluation whose residual is at most `tol` (default
-$10^{-8}$), and returns that point. The residual is $\max_j |r_j - r_{b(j)}|$ without an
+$10^{-12}$), and returns that point. The residual is $\max_j |r_j - r_{b(j)}|$ without an
 outside option, $b(j)$ the reference of $j$'s component, and with one $\max_j |r_j|$
 together with each component's outside share's $|r_{0c}|$; every share, the outside
 option's included, then matches its target to a relative error of about `tol`. The error

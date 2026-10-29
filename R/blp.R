@@ -35,7 +35,12 @@
 #'   utility normalized to 0 (its rows are not in the data).
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
-#'   outside option's included; see Details). Default 1e-8.
+#'   outside option's included; see Details). Default 1e-12. Rounding in the
+#'   sums of the shares over choice situations sets a floor under the
+#'   residual that grows with their number: on one thread about
+#'   \eqn{2 \times 10^{-13}} at \eqn{10^8} rows and near \eqn{10^{-12}} at
+#'   \eqn{10^9} (lower with more threads). Where it reaches \code{tol}, raise
+#'   \code{tol}.
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param method The iteration: \code{"anderson"} (the default), Anderson
 #'   acceleration of the two-level step of Details; \code{"simple"}, that
@@ -216,7 +221,7 @@
 #' }
 #' @export
 blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
-                            include_outside_option = FALSE, tol = 1e-8,
+                            include_outside_option = FALSE, tol = 1e-12,
                             max_iter = 1000L, method = "anderson",
                             control = list()) {
   m <- .blp_method(method, control)
@@ -294,7 +299,7 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
 nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
                                nest_idx, M, weights,
                                include_outside_option = FALSE, damping = 1.0,
-                               tol = 1e-8, max_iter = 1000L,
+                               tol = 1e-12, max_iter = 1000L,
                                method = "anderson", control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, damping, method = m$method,
@@ -382,7 +387,7 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
 mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
                                 alt_idx, M, weights, eta_draws, rc_dist,
                                 rc_correlation = TRUE, rc_mean = FALSE,
-                                include_outside_option = FALSE, tol = 1e-8,
+                                include_outside_option = FALSE, tol = 1e-12,
                                 max_iter = 1000L, gen_seed = -1L,
                                 gen_scramble = 1L, gen_S = 0L,
                                 method = "anderson", control = list()) {
@@ -404,7 +409,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' The share inversion's settings, checked, as the internal solvers take them
 #'
 #' @param tol,max_iter,damping As in \code{blp_contraction()} and
-#'   \code{nl_blp_contraction()}.
+#'   \code{nl_blp_contraction()}, but for \code{tol}'s default: 1e-8 here,
+#'   the internal callers' and the tests', where the exports' is 1e-12.
 #' @param method The method, as blp() names it: \code{"simple"} (the
 #'   two-level step, its stalls and its race with Berry's contraction),
 #'   \code{"original"} (Berry, Levinsohn and Pakes's contraction),

@@ -561,7 +561,7 @@ test_that("blp_contraction rejects non-positive target shares", {
 # create_small_nl_data() (setup.R): N=30, J=6, two nests of size 3, no outside
 # option. blp.choicer_nl mirrors blp.choicer_mnl:
 #   blp(object, target_shares, delta_init = NULL, damping = 1,
-#       tol = 1e-8, max_iter = 1000, method = "anderson", control = list(), ...)
+#       tol = 1e-12, max_iter = 1000, method = "anderson", control = list(), ...)
 
 fit_nl_for_blp <- function(seed = 123) {
   dt <- create_small_nl_data(seed = seed)

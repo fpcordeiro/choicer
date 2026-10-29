@@ -1493,7 +1493,7 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #'   uses the estimated ASCs from the fitted model (zeros for a model fitted
 #'   without them, \code{use_asc = FALSE}).
 #' @param tol Convergence tolerance on the largest absolute log-share
-#'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
+#'   residual (default 1e-12; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param method The solver: \code{"anderson"} (the default), Anderson
 #'   acceleration of the two-level step; \code{"simple"}, that step alone;
@@ -1519,7 +1519,7 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' }
 #' @export
 blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
-                            tol = 1e-8, max_iter = 1000, method = "anderson",
+                            tol = 1e-12, max_iter = 1000, method = "anderson",
                             control = list(), ...) {
   .blp_common(object, target_shares, delta_init, tol, max_iter, method = method,
               control = control, solve = function(start, target, ctl) {
@@ -1688,7 +1688,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   uses the estimated ASCs from the fitted model (zeros for a model fitted
 #'   without them, \code{use_asc = FALSE}).
 #' @param tol Convergence tolerance on the largest absolute log-share
-#'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
+#'   residual (default 1e-12; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param keep_draws_bytes Most memory, in bytes, that the inversion may use
 #'   to keep the draws across its iterations; it does not change the returned
@@ -1741,7 +1741,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' }
 #' @export
 blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
-                            tol = 1e-8, max_iter = 1000,
+                            tol = 1e-12, max_iter = 1000,
                             keep_draws_bytes = 2^32, method = "anderson",
                             control = list(), ...) {
   keep_draws_bytes <- .int64_to_double(keep_draws_bytes, "keep_draws_bytes")
@@ -1975,7 +1975,7 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @param damping Multiplies each step, in (0, 1] (default 1); seldom needed
 #'   (see \code{\link{nl_blp_contraction}()}).
 #' @param tol Convergence tolerance on the largest absolute log-share
-#'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
+#'   residual (default 1e-12; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param method The solver: \code{"anderson"} (the default), Anderson
 #'   acceleration of the two-level step; \code{"simple"}, that step alone;
@@ -2002,7 +2002,7 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' }
 #' @export
 blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
-                           damping = 1, tol = 1e-8, max_iter = 1000,
+                           damping = 1, tol = 1e-12, max_iter = 1000,
                            method = "anderson", control = list(), ...) {
   .blp_common(object, target_shares, delta_init, tol, max_iter, damping = damping,
               method = method, control = control,

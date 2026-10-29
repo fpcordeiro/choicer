@@ -406,16 +406,17 @@ test_that("a stall shortens the steps without pulling a climb back", {
   expect_lt(resid(trap + 1e-3 * c(0, num)), resid(trap))  # Berry's step lowers it
   # the three models' exports, from zeros, with the step and its stalls (at
   # tol 1e-8 the constants are within about 1e-7)
-  expect_equal(as.numeric(blp_contraction(rep(0, 4L), S, X, 1, alt, M, w,
+  expect_equal(as.numeric(blp_contraction(rep(0, 4L), S, X, 1, alt, M, w, tol = 1e-8,
                                           method = "simple")), ds, tolerance = 1e-6)
   expect_equal(as.numeric(nl_blp_contraction(rep(0, 4L), S, X, 1, c(1, 1), alt,
-                                             c(1L, 1L, 2L, 2L), M, w, method = "simple")),
+                                             c(1L, 1L, 2L, 2L), M, w, tol = 1e-8,
+                                             method = "simple")),
                ds, tolerance = 1e-6)
   eta <- array(stats::rnorm(20L), c(1L, 5L, 4L))
   expect_equal(as.numeric(mxl_blp_contraction(rep(0, 4L), S, X, matrix(0, 11L, 1L), 1,
                                               0, log(0.5), alt, M, w, eta, 0L, FALSE,
-                                              TRUE, FALSE, method = "simple")), ds,
-               tolerance = 1e-6)
+                                              TRUE, FALSE, tol = 1e-8, method = "simple")),
+               ds, tolerance = 1e-6)
   # a stall on the climb (one here, 199 evaluations), and no need of Berry's
   # contraction
   r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE, eng_ctl())
@@ -464,12 +465,12 @@ test_that("Berry's contraction joins an iteration that stops halving its residua
     expect_true(all(is.finite(rk$delta)))
     expect_identical(rk$race, if (k > r$race) r$race else 0L)
   }
-  # and the exports
-  expect_identical(blp_contraction(rep(0, 6L), S, X, 1, alt, M, w, method = "simple"),
-                   r$delta)
+  # and the exports (at the solver's tol)
+  expect_identical(blp_contraction(rep(0, 6L), S, X, 1, alt, M, w, tol = 1e-8,
+                                   method = "simple"), r$delta)
   eta <- array(stats::rnorm(15L), c(1L, 5L, 3L))
   d <- mxl_blp_contraction(rep(0, 6L), S, X, matrix(0, 9L, 1L), 1, 0, log(0.5), alt, M, w,
-                           eta, 0L, FALSE, TRUE, FALSE, method = "simple")
+                           eta, 0L, FALSE, TRUE, FALSE, tol = 1e-8, method = "simple")
   expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
 })
 
@@ -520,7 +521,8 @@ test_that("Berry's contraction goes on again when the step stops halving its res
   expect_lte(r$evaluations, r$race + 4L * rb$evaluations)
   expect_identical(r$delta, rb$delta)
   expect_identical(nl_blp_contraction(rep(0, 5L), S, X, 1, lam, alt, nest, M, w,
-                                      max_iter = 30000L), r$delta)
+                                      tol = 1e-8, max_iter = 30000L, method = "simple"),
+                   r$delta)
   # A logit from a sweep of small hard designs, whose first situation offers
   # only 2 and 3: the step's best residual stays at 0.0027 for over 46,000
   # evaluations while their constants come back down from about 2.6 too high
@@ -551,11 +553,11 @@ test_that("Berry's contraction goes on again when the step stops halving its res
                                   eng_ctl(max_iter = k))
     expect_identical(c(rk$race, rk$resumes), c(r$race, if (k == 802L) 0L else 1L))
   }
-  expect_identical(blp_contraction(rep(0, 5L), S, X, 1, alt, M, w, max_iter = 200000L,
-                                   method = "simple"), r$delta)
+  expect_identical(blp_contraction(rep(0, 5L), S, X, 1, alt, M, w, tol = 1e-8,
+                                   max_iter = 200000L, method = "simple"), r$delta)
   eta <- array(stats::rnorm(25L), c(1L, 5L, 5L))
   d <- mxl_blp_contraction(rep(0, 5L), S, X, matrix(0, 12L, 1L), 1, 0, log(0.5), alt, M,
-                           w, eta, 0L, FALSE, TRUE, FALSE, max_iter = 200000L,
+                           w, eta, 0L, FALSE, TRUE, FALSE, tol = 1e-8, max_iter = 200000L,
                            method = "simple")
   expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
 })
@@ -1152,12 +1154,14 @@ test_that("the exports keep their signatures and return n x 1 matrices", {
                      "control"))
   for (f in list(blp_contraction, nl_blp_contraction, mxl_blp_contraction)) {
     expect_identical(formals(f)$method, "anderson")
+    expect_identical(formals(f)$tol, 1e-12)
     expect_identical(formals(f)$control, quote(list()))
   }
   # blp()'s methods take the same defaults
   for (cls in c("choicer_mnl", "choicer_nl", "choicer_mxl")) {
     fm <- formals(utils::getS3method("blp", cls))
     expect_identical(fm$method, "anderson", label = cls)
+    expect_identical(fm$tol, 1e-12, label = cls)
     expect_identical(fm$control, quote(list()), label = cls)
   }
   expect_identical(formals(blp_contraction)$max_iter, 1000L)
