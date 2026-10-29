@@ -3109,6 +3109,8 @@ struct NlBlpModel {
   std::vector<std::vector<double>> tot, totc;
   BlpExpCache xc;                            // the exp-space cache's state
   std::unique_ptr<double[]> E;               // its exponentials, each row's
+  bool kahan = false;                        // compensated share sums
+  std::vector<std::vector<double>> acc_k;    // and acc_s's compensations
 
   NlBlpModel(const ChoiceLayout& lay_, const arma::vec& Xb_, const int* nest_,
              const arma::vec& lambda_, const int n_nests_, const arma::vec& w_,
@@ -3167,10 +3169,27 @@ struct NlBlpModel {
     xc.formed(delta0, scratch);
   }
 
+  // Compensate the share sums (blp_engine.h)
+  void compensate() {
+    kahan = true;
+    acc_k = thread_vectors<double>(static_cast<std::size_t>(J + comp.n),
+                                   static_cast<int>(bufs.size()));
+  }
+
   // One pass: the usual one (Exp false), storing the exp-space cache (Store),
   // or from the cache (Exp, its factors in xc.factor).
   template <bool Exp, bool Store>
   void sweep(const arma::vec& delta, BlpPass& out) {
+    if (kahan) {
+      sweep_k<Exp, Store, true>(delta, out);
+    } else {
+      sweep_k<Exp, Store, false>(delta, out);
+    }
+  }
+
+  // ... with the share sums compensated (Kahan) or plain
+  template <bool Exp, bool Store, bool Kahan>
+  void sweep_k(const arma::vec& delta, BlpPass& out) {
     const choicer_off N = lay.N;
     const int T = static_cast<int>(bufs.size());
     const arma::uword n_s = static_cast<arma::uword>(J + comp.n);
@@ -3196,6 +3215,9 @@ struct NlBlpModel {
       NlProbs& pr = b.pr;
       arma::vec local_shares(acc_s[tid].data(), n_s, false, true);
       local_shares.zeros();
+      double* ls = acc_s[tid].data();
+      double* lk = Kahan ? acc_k[tid].data() : nullptr;
+      if (Kahan) std::fill(lk, lk + n_s, 0.0);
       double* ac = acc_ac[tid].data();
       std::fill(ac, ac + static_cast<std::size_t>(stride) * J, 0.0);
       double* v = vbuf[tid].data();
@@ -3231,14 +3253,21 @@ struct NlBlpModel {
         const double w_i = weights[i];
         const int c = comp.of[alt[0] - 1];
         if (outside) {
-          if (Exp) {
+          if (Kahan) {
+            kahan_add(ls[J + c], lk[J + c],
+                      w_i * (Exp ? P0x : std::exp(pr.log_P_outside)));
+          } else if (Exp) {
             local_shares(J + c) += w_i * P0x;
           } else {
             local_shares(J + c) += w_i * std::exp(pr.log_P_outside);
           }
         }
         for (int a = 0; a < m_i; ++a) {
-          local_shares(alt[a] - 1) += w_i * P_i(a);
+          if (Kahan) {
+            kahan_add(ls[alt[a] - 1], lk[alt[a] - 1], w_i * P_i(a));
+          } else {
+            local_shares(alt[a] - 1) += w_i * P_i(a);
+          }
         }
         // the base: the outside option, or the component's reference
         const double P0 = outside ? (Exp ? P0x : std::exp(pr.log_P_outside)) : 0.0;
@@ -3306,10 +3335,14 @@ struct NlBlpModel {
       out.C1.set_size(J);
     }
     for (int j = 0; j < J; ++j) {
-      double s = 0.0, A = 0.0, C = 0.0, A1 = 0.0, C1 = 0.0;
+      double s = 0.0, A = 0.0, C = 0.0, A1 = 0.0, C1 = 0.0, sk = 0.0;
       const std::size_t o = static_cast<std::size_t>(stride) * j;
       for (int t = 0; t < T_used; ++t) {
-        s += acc_s[t][j];
+        if (Kahan) {
+          kahan_add(s, sk, acc_s[t][j] - acc_k[t][j]);
+        } else {
+          s += acc_s[t][j];
+        }
         A += acc_ac[t][o];
         C += acc_ac[t][o + 1];
         if (lam1) {
@@ -3317,6 +3350,7 @@ struct NlBlpModel {
           C1 += acc_ac[t][o + 3];
         }
       }
+      if (Kahan) s -= sk;
       out.s[j] = s / W;
       out.A[j] = A / W;
       out.C[j] = C / W;
@@ -3326,8 +3360,15 @@ struct NlBlpModel {
       }
     }
     for (int k = 0; k < comp.n; ++k) {
-      double s0 = 0.0;
-      for (int t = 0; t < T_used; ++t) s0 += acc_s[t][J + k];
+      double s0 = 0.0, sk = 0.0;
+      for (int t = 0; t < T_used; ++t) {
+        if (Kahan) {
+          kahan_add(s0, sk, acc_s[t][J + k] - acc_k[t][J + k]);
+        } else {
+          s0 += acc_s[t][J + k];
+        }
+      }
+      if (Kahan) s0 -= sk;
       out.s0[k] = s0 / W;
     }
   }
@@ -3395,17 +3436,20 @@ Rcpp::List nl_blp_solve(
     }
   }
 
-  const double W = shares_denominator(weights);
+  const bool kahan = blp_compensate(ctl, static_cast<double>(lay.N), situation_team(lay));
+  const bool kahan_w = blp_compensate_serial(ctl, static_cast<double>(lay.N));
+  const double W = kahan_w ? blp_weight_sum(weights) : shares_denominator(weights);
   const arma::vec Xb = X * beta;  // once: only delta changes across passes
 
   blp_check_start(delta, weights);
   const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
-                                            include_outside_option);
+                                            include_outside_option, kahan_w);
   const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option, J);
   arma::vec d = delta;
   if (!include_outside_option && J > 0) d -= delta[0];
   NlBlpModel model(lay, Xb, nest_idx.begin(), lambda, n_nests, weights, W,
                    include_outside_option, J, comp);
+  if (kahan) model.compensate();
   // The floor of the step's denominator in the nests with lambda > 1
   // (blp_engine.h): (1 + lambda) / (2 lambda) of the lambda = 1 diagonal.
   arma::vec floor_scale;
@@ -3430,5 +3474,6 @@ Rcpp::List nl_blp_solve(
                                   model.lam1 ? &floor_scale : nullptr);
   Rcpp::List out = blp_result(d, res, ctl, last);
   blp_exp_record(out, ctl, kept, model.xc);
+  blp_comp_record(out, ctl, kahan);
   return out;
 }

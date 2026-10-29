@@ -122,6 +122,13 @@ constexpr double BLP_CACHE_SHARE = 0.5;
 
 enum BlpMap { BLP_MAP_REDUCED = 0, BLP_MAP_PLAIN = 1, BLP_MAP_JACOBI = 2 };
 enum BlpPassKind { BLP_PASS_LOG = 0, BLP_PASS_EXP = 1 };
+enum BlpCompensate { BLP_COMP_OFF = 0, BLP_COMP_ON = 1, BLP_COMP_AUTO = 2 };
+
+// Compensated sums (BlpControl::compensate, "auto") above this many choice
+// situations per thread: a share summed over 2.5e7 situations on one thread
+// had a rounding floor of 1.7e-13 (BLP engine plan, Phase B), growing about
+// as N^0.7, so about 5e-14 at this count.
+constexpr double BLP_COMP_SITUATIONS = 4194304.0;  // 2^22
 
 struct BlpControl {
   int method = FP_SIMPLE;
@@ -149,7 +156,71 @@ struct BlpControl {
                                           // exp-space cache: most bytes
   arma::vec origin;         // tests: where the exp-space cache is formed first
                             // (empty: at the first evaluation)
+  int compensate = BLP_COMP_OFF;  // the share sums: plain, Kahan's, or Kahan's
+                                  // above BLP_COMP_SITUATIONS per thread
 };
+
+// ----------------------------------------------------------------------------
+// Compensated sums
+//
+// A pass adds each situation's weighted probabilities into its thread's share
+// accumulators, so a share sums N / T terms, and its rounding grows with
+// them: on one thread, near the default tol at 10^9 rows (BLP engine plan,
+// Phase B). With compensate, the passes add the shares (the outside options'
+// included) by Kahan's compensated summation, the threads' totals too, and
+// the inversion's own sums over the situations (the weights' total, the
+// components' weights) likewise, which leaves a share's error at a few
+// rounding units whatever N. The diagonal and the co-choices, which only scale
+// the steps, keep plain sums.
+// ----------------------------------------------------------------------------
+
+// x added to s, whose running compensation is c (Kahan 1965): the sum is s - c.
+// (A build with -ffast-math may fold the compensation away: the sum is then
+// the plain one.)
+inline void kahan_add(double& s, double& c, const double x) {
+  const double y = x - c;
+  const double t = s + y;
+  c = (t - s) - y;
+  s = t;
+}
+
+// Whether a pass over N situations on T threads compensates its share sums
+// (each thread's sum runs over its N / T situations).
+inline bool blp_compensate(const BlpControl& ctl, const double N, const int T) {
+  if (ctl.compensate == BLP_COMP_ON) return true;
+  return ctl.compensate == BLP_COMP_AUTO &&
+         N > BLP_COMP_SITUATIONS * static_cast<double>(std::max(T, 1));
+}
+
+// Whether the inversion's serial sums over the N situations (the weights'
+// total, the components' weights) are compensated. They run on one thread
+// whatever the passes', and with an outside option an error in the total
+// moves every share alike, a floor under the residual.
+inline bool blp_compensate_serial(const BlpControl& ctl, const double N) {
+  return blp_compensate(ctl, N, 1);
+}
+
+// The weights' total by compensated summation in two interleaved chains
+// (the dependent adds of one chain would cost four times the plain sum's),
+// with shares_denominator()'s check.
+inline double blp_weight_sum(const arma::vec& weights) {
+  double s1 = 0.0, c1 = 0.0, s2 = 0.0, c2 = 0.0;
+  const arma::uword n = weights.n_elem;
+  arma::uword i = 0;
+  for (; i + 1 < n; i += 2) {
+    kahan_add(s1, c1, weights[i]);
+    kahan_add(s2, c2, weights[i + 1]);
+  }
+  if (i < n) kahan_add(s1, c1, weights[i]);
+  double s = 0.0, c = 0.0;
+  kahan_add(s, c, s1 - c1);
+  kahan_add(s, c, s2 - c2);
+  s -= c;
+  if (s <= 0) {
+    Rcpp::stop("Error: Sum of weights must be positive.");
+  }
+  return s;
+}
 
 // Components of the situation-alternative graph through the situations of
 // positive weight, and what the checks need of them; every share is over the
@@ -170,7 +241,7 @@ struct BlpComponents {
 // listed twice counts its situation once), then each component's weight.
 inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
                                     const double W, const int J,
-                                    const bool outside) {
+                                    const bool outside, const bool kahan = false) {
   BlpComponents c;
   std::vector<int> parent(static_cast<std::size_t>(J));
   for (int j = 0; j < J; ++j) parent[j] = j;
@@ -225,9 +296,19 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
     ++c.size[c.of[j]];
   }
   c.mass.assign(static_cast<std::size_t>(c.n), 0.0);
+  std::vector<double> mass_c(kahan ? static_cast<std::size_t>(c.n) : 0, 0.0);
   for (choicer_off t = 0; t < lay.N; ++t) {
+    if (kahan && c.n == 1) break;  // (one component's weight is 1, set below)
     if (!(w[t] > 0)) continue;
-    c.mass[c.of[lay.alt[lay.row_off[t]] - 1]] += w[t];
+    if (kahan) {
+      const int k = c.of[lay.alt[lay.row_off[t]] - 1];
+      kahan_add(c.mass[k], mass_c[k], w[t]);
+    } else {
+      c.mass[c.of[lay.alt[lay.row_off[t]] - 1]] += w[t];
+    }
+  }
+  if (kahan) {
+    for (int k = 0; k < c.n; ++k) c.mass[k] -= mass_c[k];
   }
   for (int k = 0; k < c.n; ++k) c.mass[k] /= W;
   if (c.n == 1) c.mass[0] = 1.0;  // every situation of positive weight
@@ -508,6 +589,12 @@ inline arma::vec blp_origin(const BlpControl& ctl, const int J, const bool outsi
   return o;
 }
 
+// Whether the passes compensated their sums, on an internal entry point's
+// result (with a compensate setting other than "off").
+inline void blp_comp_record(Rcpp::List& out, const BlpControl& ctl, const bool kahan) {
+  if (ctl.compensate != BLP_COMP_OFF) out["compensated"] = kahan;
+}
+
 // The exp-space cache's record on an internal entry point's result.
 inline void blp_exp_record(Rcpp::List& out, const BlpControl& ctl, const bool kept,
                            const BlpExpCache& xc) {
@@ -774,6 +861,18 @@ inline BlpControl blp_control(const Rcpp::List& control) {
   }
   if (control.containsElementNamed("origin") && !Rf_isNull(control["origin"])) {
     c.origin = Rcpp::as<arma::vec>(control["origin"]);
+  }
+  if (control.containsElementNamed("compensate")) {
+    const std::string comp = Rcpp::as<std::string>(control["compensate"]);
+    if (comp == "off") {
+      c.compensate = BLP_COMP_OFF;
+    } else if (comp == "on") {
+      c.compensate = BLP_COMP_ON;
+    } else if (comp == "auto") {
+      c.compensate = BLP_COMP_AUTO;
+    } else {
+      Rcpp::stop("Internal error: unknown BLP compensate \"%s\".", comp);
+    }
   }
   return c;
 }

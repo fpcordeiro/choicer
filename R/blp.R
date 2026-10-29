@@ -453,6 +453,10 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'   call holds).
 #' @param origin Tests: a numeric vector of the J constants at which the
 #'   exp-space cache is first formed (\code{NULL}: the first evaluation).
+#' @param compensate The passes' share sums: \code{"off"} (plain sums),
+#'   \code{"on"} (Kahan's compensated sums, also for the weights' total and
+#'   the components' weights) or \code{"auto"} (compensated above 2^22
+#'   choice situations per thread; src/blp_engine.h).
 #' @returns A list for \code{*_blp_solve()}'s \code{control}.
 #' @noRd
 .blp_control <- function(tol = 1e-8, max_iter = 1000L, damping = 1,
@@ -460,7 +464,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
                          patience = NULL, window = NULL, keep_pass = FALSE,
                          restart_patience = 5L, restart_progress = 0.9,
                          restart_best = FALSE, pass = "log", cache_bytes = Inf,
-                         origin = NULL) {
+                         origin = NULL, compensate = "off") {
   tol <- .int64_to_double(tol, "`tol`")
   max_iter <- .int64_to_double(max_iter, "`max_iter`")
   if (!is.numeric(tol) || length(tol) != 1L || !is.finite(tol) || tol < 0) {
@@ -479,7 +483,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   }
   stopifnot(is.character(pass), length(pass) == 1L, pass %in% c("log", "exp"),
             is.numeric(cache_bytes), length(cache_bytes) == 1L,
-            is.null(origin) || is.numeric(origin))
+            is.null(origin) || is.numeric(origin), is.character(compensate),
+            length(compensate) == 1L, compensate %in% c("off", "on", "auto"))
   iteration <- if (method %in% c("anderson", "squarem")) method else "simple"
   if (is.null(map)) map <- if (identical(method, "original")) "plain" else "reduced"
   if (is.null(patience)) {
@@ -499,7 +504,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
        step_min = as.numeric(st$step_min), step_max = as.numeric(st$step_max),
        step_factor = as.numeric(st$step_factor), keep_pass = isTRUE(keep_pass),
        pass = pass, cache_bytes = as.numeric(cache_bytes),
-       origin = if (is.null(origin)) NULL else as.numeric(origin))
+       origin = if (is.null(origin)) NULL else as.numeric(origin),
+       compensate = compensate)
 }
 
 # Method "simple"'s stalls: this many accepted steps without a new best

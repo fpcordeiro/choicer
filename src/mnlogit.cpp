@@ -1216,7 +1216,7 @@ arma::vec mnl_predict_shares(
 // probabilities by stable_softmax_n(), then the shares in the statements of
 // mnl_predict_shares_internal(), so that they are its shares at the same
 // delta (bit for bit at one thread where the compiler fuses both statements
-// alike), and A_jj = sum w P_j (1 - P_j) and C_jb = sum w P_j P_b, b the
+// alike, and the sums are not compensated), and A_jj = sum w P_j (1 - P_j) and C_jb = sum w P_j P_b, b the
 // outside option or the situation's component's reference, in statements of
 // their own (a product shared with the shares' would change how GCC fuses
 // theirs). X beta is formed once per call and the threads' sums are added in
@@ -1246,6 +1246,8 @@ struct MnlBlpModel {
   BlpExpCache xc;                           // the exp-space cache's state
   std::unique_ptr<double[]> E, E0;          // its exponentials: each row's, and
                                             // each situation's outside option's
+  bool kahan = false;                       // compensated share sums
+  std::vector<std::vector<double>> acc_k;   // and acc_s's compensations
 
   MnlBlpModel(const ChoiceLayout& lay_, const arma::vec& Xb_, const arma::vec& w_,
               const double W_, const bool outside_, const int J_,
@@ -1295,10 +1297,27 @@ struct MnlBlpModel {
     xc.formed(delta0, scratch);
   }
 
+  // Compensate the share sums (blp_engine.h)
+  void compensate() {
+    kahan = true;
+    acc_k = thread_vectors<double>(static_cast<std::size_t>(J + comp.n),
+                                   static_cast<int>(work.size()));
+  }
+
   // One pass: the usual one (Exp false), storing the exp-space cache (Store),
   // or from the cache (Exp, its factors in xc.factor).
   template <bool Exp, bool Store>
   void sweep(const arma::vec& delta, BlpPass& out) {
+    if (kahan) {
+      sweep_k<Exp, Store, true>(delta, out);
+    } else {
+      sweep_k<Exp, Store, false>(delta, out);
+    }
+  }
+
+  // ... with the share sums compensated (Kahan) or plain
+  template <bool Exp, bool Store, bool Kahan>
+  void sweep_k(const arma::vec& delta, BlpPass& out) {
     const choicer_off N = lay.N;
     const int T = static_cast<int>(work.size());
     const int o = outside ? 1 : 0;
@@ -1324,6 +1343,9 @@ struct MnlBlpModel {
       MnlWork& wk = work[tid];
       arma::vec local_shares(acc_s[tid].data(), n_s, false, true);
       local_shares.zeros();
+      double* ls = acc_s[tid].data();
+      double* lk = Kahan ? acc_k[tid].data() : nullptr;
+      if (Kahan) std::fill(lk, lk + n_s, 0.0);
       double* ac = acc_ac[tid].data();
       std::fill(ac, ac + 2 * static_cast<std::size_t>(J), 0.0);
       int* slot_t = repeated ? slot[tid].data() : nullptr;
@@ -1360,7 +1382,11 @@ struct MnlBlpModel {
         const int c = comp.of[alt[0] - 1];
         double pb = 0.0;  // the base's probability
         if (outside) {
-          local_shares(J + c) += w_i * P_i[0];
+          if (Kahan) {
+            kahan_add(ls[J + c], lk[J + c], w_i * P_i[0]);
+          } else {
+            local_shares(J + c) += w_i * P_i[0];
+          }
           pb = P_i[0];
         } else {
           const int b = comp.ref[c] + 1;
@@ -1369,7 +1395,11 @@ struct MnlBlpModel {
           }
         }
         for (int a = 0; a < m; ++a) {
-          local_shares(alt[a] - 1) += w_i * P_i[o + a];
+          if (Kahan) {
+            kahan_add(ls[alt[a] - 1], lk[alt[a] - 1], w_i * P_i[o + a]);
+          } else {
+            local_shares(alt[a] - 1) += w_i * P_i[o + a];
+          }
         }
         if (!repeated) {
           for (int a = 0; a < m; ++a) {
@@ -1400,19 +1430,31 @@ struct MnlBlpModel {
       }
     }
     for (int j = 0; j < J; ++j) {
-      double s = 0.0, A = 0.0, C = 0.0;
+      double s = 0.0, A = 0.0, C = 0.0, sk = 0.0;
       for (int t = 0; t < T_used; ++t) {
-        s += acc_s[t][j];
+        if (Kahan) {
+          kahan_add(s, sk, acc_s[t][j] - acc_k[t][j]);
+        } else {
+          s += acc_s[t][j];
+        }
         A += acc_ac[t][2 * j];
         C += acc_ac[t][2 * j + 1];
       }
+      if (Kahan) s -= sk;
       out.s[j] = s / W;
       out.A[j] = A / W;
       out.C[j] = C / W;
     }
     for (int k = 0; k < comp.n; ++k) {
-      double s0 = 0.0;
-      for (int t = 0; t < T_used; ++t) s0 += acc_s[t][J + k];
+      double s0 = 0.0, sk = 0.0;
+      for (int t = 0; t < T_used; ++t) {
+        if (Kahan) {
+          kahan_add(s0, sk, acc_s[t][J + k] - acc_k[t][J + k]);
+        } else {
+          s0 += acc_s[t][J + k];
+        }
+      }
+      if (Kahan) s0 -= sk;
       out.s0[k] = s0 / W;
     }
   }
@@ -1431,7 +1473,8 @@ struct MnlBlpModel {
 //'   max_condition, restart_patience, restart_progress and restart_best,
 //'   SQUAREM's scheme, step_min, step_max and step_factor, keep_pass, and the
 //'   passes' arithmetic: pass ("log" or "exp"), cache_bytes and origin
-//'   (blp_engine.h's BlpExpCache).
+//'   (blp_engine.h's BlpExpCache), and compensate ("off", "on" or "auto": the
+//'   share sums by Kahan's compensated summation).
 //' @return List: delta (n x 1, as blp_contraction() returns it), code (0
 //'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
 //'   start), iterations, evaluations, backtracks, stalls, race (the evaluations
@@ -1442,7 +1485,8 @@ struct MnlBlpModel {
 //'   keep_pass, pass (s, A, C, s0 of the last evaluation); with pass "exp",
 //'   exp_kept (whether the cache was allocated), exp_evals (evaluations from
 //'   it), exp_forms (usual passes that formed it) and exp_floors (evaluations
-//'   from it that the floor sent to the usual pass).
+//'   from it that the floor sent to the usual pass); with compensate other
+//'   than "off", compensated (whether the passes compensated their sums).
 //' @noRd
 // [[Rcpp::export]]
 Rcpp::List mnl_blp_solve(
@@ -1472,16 +1516,19 @@ Rcpp::List mnl_blp_solve(
   }
   const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, delta,
                                                &weights);
-  const double W = shares_denominator(weights);
+  const bool kahan = blp_compensate(ctl, static_cast<double>(lay.N), situation_team(lay));
+  const bool kahan_w = blp_compensate_serial(ctl, static_cast<double>(lay.N));
+  const double W = kahan_w ? blp_weight_sum(weights) : shares_denominator(weights);
   const arma::vec Xb = X * beta;  // once: only delta changes across passes
 
   blp_check_start(delta, weights);
   const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
-                                            include_outside_option);
+                                            include_outside_option, kahan_w);
   const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option, J);
   arma::vec d = delta;
   if (!include_outside_option && J > 0) d -= delta[0];
   MnlBlpModel model(lay, Xb, weights, W, include_outside_option, J, comp);
+  if (kahan) model.compensate();
   bool kept = false;
   if (ctl.pass == BLP_PASS_EXP && !pb.free.empty() &&
       (ctl.max_evals > 1 || ctl.origin.n_elem > 0)) {
@@ -1495,6 +1542,7 @@ Rcpp::List mnl_blp_solve(
   const BlpResult res = blp_solve(model, comp, pb, d, ctl, &last);
   Rcpp::List out = blp_result(d, res, ctl, last);
   blp_exp_record(out, ctl, kept, model.xc);
+  blp_comp_record(out, ctl, kahan);
   return out;
 }
 

@@ -3539,7 +3539,8 @@ inline void mxl_pred_keep_gamma(MxlPredData& pd, const double cache_bytes) {
 // it), each draw's probabilities, then, as mxl_pred_shares() forms them, the
 // mean probabilities and the shares, so that they are its shares at the same
 // delta; and per draw A = P_j (1 - P_j) and the co-choice P_j P_b with the
-// base, averaged over the draws and weighted once per situation. passes
+// base, averaged over the draws and weighted once per situation (with
+// compensate, the share sums by Kahan's compensated summation). passes
 // counts the evaluations, and the scratch sets count the situations each one
 // read from the cache, so that reads == N (passes - 1) while it is kept.
 // ============================================================================
@@ -3555,6 +3556,8 @@ struct MxlBlpModel {
   std::vector<std::vector<int>> rows_ref;  // the reference's rows of the situation
   std::vector<std::vector<int>> slot, code;  // repeated codes (as MnlBlpModel's)
   double passes = 0;
+  bool kahan = false;  // compensated share sums
+  MxlPredAcc acc_k;    // and acc_s's compensations
 
   // The scratch's aux: the mean probabilities (m + 1), A's and C's per-draw
   // sums (m each), and, where codes repeat, a draw's totals (m).
@@ -3579,10 +3582,28 @@ struct MxlBlpModel {
     }
   }
 
+  // Compensate the share sums (blp_engine.h)
+  void compensate() {
+    kahan = true;
+    acc_k = mxl_pred_accumulators(scratch, static_cast<std::size_t>(J + comp.n),
+                                  "share inversion");
+  }
+
   void pass(const arma::vec& delta, BlpPass& out) {
+    if (kahan) {
+      pass_k<true>(delta, out);
+    } else {
+      pass_k<false>(delta, out);
+    }
+  }
+
+  // One pass, with the share sums compensated (Kahan) or plain
+  template <bool Kahan>
+  void pass_k(const arma::vec& delta, BlpPass& out) {
     pd.delta = delta;
     const std::size_t n_s = static_cast<std::size_t>(J + comp.n);
     mxl_pred_zero(acc_s, n_s);
+    if (Kahan) mxl_pred_zero(acc_k, n_s);
     mxl_pred_zero(acc_ac, 2 * static_cast<std::size_t>(J));
     const int S = pd.S;
     const bool outside = pd.include_outside_option;
@@ -3592,6 +3613,8 @@ struct MxlBlpModel {
 
     mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
       arma::vec local_shares(acc_s[sc.tid].get(), n_s, false, true);
+      double* ls = acc_s[sc.tid].get();
+      double* lk = Kahan ? acc_k[sc.tid].get() : nullptr;
       double* ac = acc_ac[sc.tid].get();
       const int m_i = mxl_pred_load(pd, t, sc);
       const int num_choices = m_i + o;
@@ -3666,10 +3689,18 @@ struct MxlBlpModel {
 
       // Accumulate shares by alternative
       if (outside) {
-        local_shares(J + c) += w_i * P_bar_i(0);
+        if (Kahan) {
+          kahan_add(ls[J + c], lk[J + c], w_i * P_bar_i(0));
+        } else {
+          local_shares(J + c) += w_i * P_bar_i(0);
+        }
       }
       for (int a = 0; a < m_i; ++a) {
-        local_shares(alt[a] - 1) += w_i * P_bar_i(a + o);
+        if (Kahan) {
+          kahan_add(ls[alt[a] - 1], lk[alt[a] - 1], w_i * P_bar_i(a + o));
+        } else {
+          local_shares(alt[a] - 1) += w_i * P_bar_i(a + o);
+        }
       }
       for (int k = 0; k < n_d; ++k) {
         const int j = repeated ? code_t[k] : alt[k] - 1;
@@ -3679,19 +3710,31 @@ struct MxlBlpModel {
     });
 
     for (int j = 0; j < J; ++j) {
-      double s = 0.0, A = 0.0, C = 0.0;
+      double s = 0.0, A = 0.0, C = 0.0, sk = 0.0;
       for (std::size_t q = 0; q < acc_s.size(); ++q) {
-        s += acc_s[q][j];
+        if (Kahan) {
+          kahan_add(s, sk, acc_s[q][j] - acc_k[q][j]);
+        } else {
+          s += acc_s[q][j];
+        }
         A += acc_ac[q][2 * j];
         C += acc_ac[q][2 * j + 1];
       }
+      if (Kahan) s -= sk;
       out.s[j] = s / W;
       out.A[j] = A / W;
       out.C[j] = C / W;
     }
     for (int k = 0; k < comp.n; ++k) {
-      double s0 = 0.0;
-      for (std::size_t q = 0; q < acc_s.size(); ++q) s0 += acc_s[q][J + k];
+      double s0 = 0.0, sk = 0.0;
+      for (std::size_t q = 0; q < acc_s.size(); ++q) {
+        if (Kahan) {
+          kahan_add(s0, sk, acc_s[q][J + k] - acc_k[q][J + k]);
+        } else {
+          s0 += acc_s[q][J + k];
+        }
+      }
+      if (Kahan) s0 -= sk;
       out.s0[k] = s0 / W;
     }
     pd.gamma_filled = pd.gamma_cache != nullptr;  // filled by the first pass
@@ -3807,10 +3850,14 @@ Rcpp::List mxl_blp_solve(
   mxl_pred_setup(pd, mu_final, L, delta_current, /*use_asc=*/true,
                  include_outside_option, eta_draws, gen_seed, gen_scramble,
                  gen_S);
-  const double weight_sum = shares_denominator(weights);
+  const bool kahan = blp_compensate(ctl, static_cast<double>(pd.lay.N),
+                                    kernel_team_threads(pd.lay.N));
+  const bool kahan_w = blp_compensate_serial(ctl, static_cast<double>(pd.lay.N));
+  const double weight_sum = kahan_w ? blp_weight_sum(weights) : shares_denominator(weights);
   const BlpComponents comp = blp_components(pd.lay, weights.memptr(), weight_sum,
-                                            J_inside, include_outside_option);
+                                            J_inside, include_outside_option, kahan_w);
   MxlBlpModel model(pd, weights, weight_sum, J_inside, comp);
+  if (kahan) model.compensate();
   arma::vec base(pd.lay.n_rows, arma::fill::none);
   mxl_pred_base(pd, base, beta);
 
@@ -3833,6 +3880,7 @@ Rcpp::List mxl_blp_solve(
     reads += static_cast<double>(sc.gamma_reads);
   }
   Rcpp::List out = blp_result(delta_current, res, ctl, last);
+  blp_comp_record(out, ctl, kahan);
   out["kept"] = pd.gamma_cache != nullptr;
   out["passes"] = model.passes;
   out["reads"] = reads;
