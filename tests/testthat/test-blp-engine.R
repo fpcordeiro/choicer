@@ -788,7 +788,7 @@ test_that("two threads agree with one to the tolerance", {
   ds <- stats::rnorm(10L)
   ds <- ds - ds[1L]
   S <- mnl_s(d, ds, FALSE)
-  for (method in c("simple", "anderson")) {
+  for (method in c("simple", "anderson", "squarem")) {
     set_omp_threads(1L)
     e1 <- blp_contraction(rep(0, 10L), S, d$X, eng_beta, d$alt, d$M, d$w,
                           tol = 1e-12, method = method)
@@ -988,6 +988,79 @@ test_that("Anderson's least squares drop the differences they cannot use", {
   expect_equal(as.numeric(r2$delta), ds2, tolerance = 1e-10)
 })
 
+test_that("SQUAREM recovers a known delta in each model and layout", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)  # (identical results at one thread)
+  d <- eng_design(1003L, 400L, 8L, 5L, K = 2L, border = 0.1, Kw = 2L)
+  nest <- rep(1:4, each = 2L)
+  lam <- c(0.5, 0.7, 0.9, 0.6)
+  eta <- get_halton_normals(20L, length(d$M), 2L)
+  th <- c(eng_beta, 0.3, -0.2, log(0.7), 0.2, log(0.5))
+  for (ioo in c(FALSE, TRUE)) {
+    set.seed(21L + ioo)
+    ds <- stats::rnorm(8L)
+    if (!ioo) ds <- ds - ds[1L]
+    S <- mnl_s(d, ds, ioo)
+    est <- blp_contraction(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
+                           tol = 1e-12, method = "squarem")
+    expect_equal(dim(est), c(8L, 1L))
+    expect_equal(as.numeric(est), ds, tolerance = 1e-9)
+    if (!ioo) expect_identical(est[1L], 0)
+    r <- choicer:::mnl_blp_solve(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
+                                 eng_ctl(tol = 1e-12, method = "squarem"))
+    expect_identical(r$code, 0L)
+    expect_lte(r$residual, 1e-12)
+    expect_identical(r$delta, est)
+    S <- nl_s(d, ds, ioo, nest, lam)
+    est <- nl_blp_contraction(rep(0, 8L), S, d$X, eng_beta, lam, d$alt, nest, d$M,
+                              d$w, ioo, tol = 1e-12, method = "squarem")
+    expect_equal(as.numeric(est), ds, tolerance = 1e-9)
+    S <- as.numeric(choicer:::mxl_predict_shares(
+      c(th, eng_free(ds, ioo)), d$X, d$W, d$alt, d$M, d$w, eta, c(0L, 1L), TRUE, TRUE,
+      TRUE, ioo))
+    est <- mxl_blp_contraction(rep(0, 8L), S, d$X, d$W, eng_beta, c(0.3, -0.2),
+                               c(log(0.7), 0.2, log(0.5)), d$alt, d$M, d$w, eta,
+                               c(0L, 1L), TRUE, TRUE, ioo, tol = 1e-12,
+                               method = "squarem")
+    expect_equal(as.numeric(est), ds, tolerance = 1e-9)
+  }
+})
+
+test_that("SQUAREM's cycle: unit steps are the plain iteration, longer ones save evaluations", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- eng_design(1016L, 600L, 12L, 4L, K = 3L, border = 0.05)
+  set.seed(61L)
+  ds <- stats::rnorm(12L)
+  ds <- ds - ds[1L]
+  S <- mnl_s(d, ds, FALSE)
+  run <- function(method, ...) {
+    choicer:::mnl_blp_solve(rep(0, 12L), S, d$X, eng_beta, d$alt, d$M, d$w, FALSE,
+                            eng_ctl(tol = 1e-10, max_iter = 5000L, method = method, ...))
+  }
+  # Bounds that stay at 1 (step_factor 1) make every extrapolation the double
+  # step x2 = G(G(x0)): each turn is a damped base step, the plain iteration
+  # without stalls, point for point
+  r1 <- run("squarem", settings = list(step_factor = 1))
+  rp <- run("simple", patience = 0L)
+  expect_identical(r1[c("delta", "code", "evaluations", "iterations", "race")],
+                   rp[c("delta", "code", "evaluations", "iterations", "race")])
+  expect_identical(r1$restarts, 0L)
+  # The default bounds grow while the extrapolations succeed: every scheme
+  # converges, and in fewer evaluations than the plain iteration (698, 752
+  # and 788 against 947 here; counts that another platform's rounding moves,
+  # so not compared on CRAN)
+  ev <- integer(3L)
+  for (sc in 1:3) {
+    r <- run("squarem", settings = list(scheme = sc))
+    expect_identical(r$code, 0L, label = paste("scheme", sc))
+    expect_equal(as.numeric(r$delta), ds, tolerance = 1e-8, label = paste("scheme", sc))
+    ev[sc] <- r$evaluations
+  }
+  skip_on_cran()
+  for (sc in 1:3) expect_lt(ev[sc], rp$evaluations, label = paste("scheme", sc))
+})
+
 test_that("the methods' settings are checked before any evaluation", {
   d <- eng_design(1017L, 100L, 4L, 4L)
   S <- mnl_s(d, c(0, 0.2, 0.1, -0.3), FALSE)
@@ -1014,6 +1087,29 @@ test_that("the methods' settings are checked before any evaluation", {
                  fixed = TRUE)
   }
   expect_error(bc(method = "anderson", control = "memory"), "must be a list")
+  expect_error(bc(method = "squarem", control = list(memory = 5L)),
+               "`control` takes `scheme`, `step_min`, `step_max` and `step_factor` with method \"squarem\"; it has `memory`",
+               fixed = TRUE)
+  for (sc in list(0L, 4L, 2.5, NA, "3", NULL)) {
+    expect_error(bc(method = "squarem", control = list(scheme = sc)),
+                 "`control$scheme` must be 1, 2 or 3", fixed = TRUE)
+  }
+  for (b in list(list(step_min = 0), list(step_min = -1), list(step_min = 2),
+                 list(step_max = Inf), list(step_max = NA_real_), list(step_min = "1"))) {
+    expect_error(bc(method = "squarem", control = b),
+                 "`control$step_min` and `control$step_max` must be finite numbers",
+                 fixed = TRUE)
+  }
+  for (f in list(0.5, Inf, NA_real_, c(2, 4))) {
+    expect_error(bc(method = "squarem", control = list(step_factor = f)),
+                 "`control$step_factor` must be a finite number of at least 1",
+                 fixed = TRUE)
+  }
+  expect_silent(bc(method = "squarem", control = list(scheme = 1L, step_max = 8)))
+  ctl <- eng_ctl(method = "squarem", settings = list(step_factor = 2))
+  expect_identical(ctl[c("iteration", "scheme", "step_min", "step_max", "step_factor")],
+                   list(iteration = "squarem", scheme = 3L, step_min = 1, step_max = 1,
+                        step_factor = 2))
   # the settings given, the others at their defaults
   expect_silent(e <- bc(method = "anderson", control = list(memory = 3L)))
   expect_silent(e <- bc(method = "anderson", control = list(max_condition = Inf)))

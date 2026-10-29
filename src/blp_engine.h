@@ -130,6 +130,10 @@ struct BlpControl {
   int restart_patience = 5;
   double restart_progress = 0.9;
   bool restart_best = false;
+  int scheme = 3;           // SQUAREM's settings (FpControl)
+  double step_min = 1.0;
+  double step_max = 1.0;
+  double step_factor = 4.0;
   bool keep_pass = false;   // tests: return the last pass
 };
 
@@ -519,6 +523,10 @@ inline FpControl blp_fp_control(const BlpControl& ctl) {
   fc.restart_patience = ctl.restart_patience;
   fc.restart_progress = ctl.restart_progress;
   fc.restart_best = ctl.restart_best;
+  fc.scheme = ctl.scheme;
+  fc.step_min = ctl.step_min;
+  fc.step_max = ctl.step_max;
+  fc.step_factor = ctl.step_factor;
   return fc;
 }
 
@@ -554,6 +562,8 @@ inline BlpControl blp_control(const Rcpp::List& control) {
     c.method = FP_SIMPLE;
   } else if (iteration == "anderson") {
     c.method = FP_ANDERSON;
+  } else if (iteration == "squarem") {
+    c.method = FP_SQUAREM;
   } else {
     Rcpp::stop("Internal error: unknown BLP iteration \"%s\".", iteration);
   }
@@ -577,6 +587,10 @@ inline BlpControl blp_control(const Rcpp::List& control) {
   c.restart_patience = Rcpp::as<int>(control["restart_patience"]);
   c.restart_progress = Rcpp::as<double>(control["restart_progress"]);
   c.restart_best = Rcpp::as<bool>(control["restart_best"]);
+  c.scheme = Rcpp::as<int>(control["scheme"]);
+  c.step_min = Rcpp::as<double>(control["step_min"]);
+  c.step_max = Rcpp::as<double>(control["step_max"]);
+  c.step_factor = Rcpp::as<double>(control["step_factor"]);
   c.keep_pass = Rcpp::as<bool>(control["keep_pass"]);
   return c;
 }

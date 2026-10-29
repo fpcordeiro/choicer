@@ -67,15 +67,20 @@ outside option's included; see Details). Default 1e-8.}
 
 \item{method}{The iteration: \code{"simple"} (the default), the two-level
 step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
-contraction; or \code{"anderson"}, Anderson acceleration of the
-two-level step.}
+contraction; \code{"anderson"}, Anderson acceleration of the two-level
+step; or \code{"squarem"}, SQUAREM on it.}
 
 \item{control}{A list of the method's settings. \code{"anderson"} takes
 \code{memory}, how many differences between successive iterates it keeps
 (a whole number from 1 to 100, cut to the number of free constants;
 default 10), and \code{max_condition}, the largest condition estimate it
-accepts for their least squares (at least 1; default \eqn{10^8}). The
-other methods take none.}
+accepts for their least squares (at least 1; default \eqn{10^8}).
+\code{"squarem"} takes \code{scheme}, its step length's formula (1, 2 or
+3; default 3), \code{step_min} and \code{step_max}, the step length's
+bounds at the start (positive; default 1 and 1), and
+\code{step_factor}, what the upper bound is multiplied by when the step
+length reaches it and divided by when such a step fails (at least 1;
+default 4): PyBLP's defaults. The other methods take none.}
 }
 \value{
 The constants, an n x 1 matrix (\eqn{J} rows); without an outside
