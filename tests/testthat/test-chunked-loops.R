@@ -51,12 +51,16 @@ chl_kernels <- function(d) {
     nl_dr = nl("nl_diversion_ratios_parallel", d$nest_idx, d$M, d$weights))
   if (d$blp) {
     # the contractions reuse their shares' per-thread buffers at every iteration
+    # (the step alone, whose path the sums' last bits do not move, as they can
+    # move Anderson acceleration's)
     target <- rep(1 / d$J, d$J)
     out$mnl_blp <- blp_contraction(rep(0, d$J), target, d$X, d$theta_mnl[seq_len(d$K)],
-                                   d$alt_idx, d$M, d$weights, tol = 1e-10)
+                                   d$alt_idx, d$M, d$weights, tol = 1e-10,
+                                   method = "simple")
     out$nl_blp <- nl_blp_contraction(rep(0, d$J), target, d$X, d$theta_nl[seq_len(d$K)],
                                      d$theta_nl[d$K + seq_len(d$J %/% 2L)], d$alt_idx,
-                                     d$nest_idx, d$M, d$weights, tol = 1e-10)
+                                     d$nest_idx, d$M, d$weights, tol = 1e-10,
+                                     method = "simple")
   }
   out
 }

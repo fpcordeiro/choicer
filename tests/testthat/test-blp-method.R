@@ -167,7 +167,7 @@ test_that("blp() labels its constants and records its convergence", {
                                   "residual", "tol", "method"))
     expect_true(cv$converged)
     expect_identical(cv$status, "converged")
-    expect_identical(cv$method, "simple")
+    expect_identical(cv$method, "anderson")
     expect_identical(cv$tol, 1e-8)
     expect_gte(cv$evaluations, 1L)
     expect_lte(cv$residual, 1e-8)
@@ -243,9 +243,11 @@ test_that("blp() checks its start, method and settings", {
   d <- blp(fit, target_shares = rev(S), delta_init = rep(0, 4L))
   expect_true(attr(d, "convergence")$converged)
   expect_error(blp(fit, target_shares = S, method = "newton"),
-               "must be \"simple\" \\(the two-level step of \\?blp_contraction\\), \"original\"")
-  expect_error(blp(fit, target_shares = S, control = list(m = 5)),
+               "must be \"anderson\" (the default: Anderson acceleration", fixed = TRUE)
+  expect_error(blp(fit, target_shares = S, method = "simple", control = list(m = 5)),
                "`control` takes no settings with method \"simple\" \\(it has `m`\\)")
+  expect_error(blp(fit, target_shares = S, control = list(m = 5)),
+               "`control` takes `memory` and `max_condition` with method \"anderson\"")
   expect_error(blp(fit, target_shares = S, method = "original", control = list(m = 5)),
                "`control` takes no settings with method \"original\"")
   expect_error(blp(fit, target_shares = S, method = "anderson", control = list(m = 5)),
@@ -264,8 +266,9 @@ test_that("blp() on a nested logit labels, damps and checks damping", {
   fit <- run_nestlogit(dt, "id", "alt", "choice", c("x1", "x2"), "nest",
                        control = list(maxeval = 50L))
   S <- as.numeric(predict(fit, type = "shares"))
-  d1 <- blp(fit, target_shares = rev(S))
-  d2 <- blp(fit, target_shares = rev(S), damping = 0.5)
+  # (the step alone, whose halved steps cost evaluations)
+  d1 <- blp(fit, target_shares = rev(S), method = "simple")
+  d2 <- blp(fit, target_shares = rev(S), damping = 0.5, method = "simple")
   expect_identical(rownames(d1), as.character(1:6))
   expect_equal(as.numeric(d2), as.numeric(d1), tolerance = 1e-6)
   expect_gt(attr(d2, "convergence")$evaluations, attr(d1, "convergence")$evaluations)

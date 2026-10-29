@@ -240,6 +240,7 @@ test_that("a nested logit's diagonal keeps its digits at lambda = 1e-12", {
 })
 
 test_that("each model recovers a known delta from zeros, in both layouts", {
+  # (the step alone; Anderson's and SQUAREM's legs on this design follow below)
   d <- eng_design(1003L, 400L, 8L, 5L, K = 2L, border = 0.1, Kw = 2L)
   nest <- rep(1:4, each = 2L)
   lam <- c(0.5, 0.7, 0.9, 0.6)
@@ -250,13 +251,13 @@ test_that("each model recovers a known delta from zeros, in both layouts", {
     if (!ioo) ds <- ds - ds[1L]
     S <- mnl_s(d, ds, ioo)
     est <- blp_contraction(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
-                           tol = 1e-12)
+                           tol = 1e-12, method = "simple")
     expect_equal(dim(est), c(8L, 1L))
     expect_equal(as.numeric(est), ds, tolerance = 1e-9)
     if (!ioo) expect_identical(est[1L], 0)
     S <- nl_s(d, ds, ioo, nest, lam)
     est <- nl_blp_contraction(rep(0, 8L), S, d$X, eng_beta, lam, d$alt, nest, d$M,
-                              d$w, ioo, tol = 1e-12)
+                              d$w, ioo, tol = 1e-12, method = "simple")
     expect_equal(as.numeric(est), ds, tolerance = 1e-9)
     for (rc in list(c(0L, 0L), c(0L, 1L))) {
       th <- c(eng_beta, 0.3, -0.2, log(0.7), 0.2, log(0.5))
@@ -266,7 +267,7 @@ test_that("each model recovers a known delta from zeros, in both layouts", {
       for (start in if (ioo) list(rep(0, 8L)) else list(rep(0, 8L), rep(0, 7L))) {
         est <- mxl_blp_contraction(start, S, d$X, d$W, eng_beta, c(0.3, -0.2),
                                    c(log(0.7), 0.2, log(0.5)), d$alt, d$M, d$w, eta,
-                                   rc, TRUE, TRUE, ioo, tol = 1e-12)
+                                   rc, TRUE, TRUE, ioo, tol = 1e-12, method = "simple")
         expect_equal(dim(est), c(8L, 1L))
         expect_equal(as.numeric(est), ds, tolerance = 1e-9)
       }
@@ -403,17 +404,18 @@ test_that("a stall shortens the steps without pulling a climb back", {
   step <- c(0, tau + (num - h * tau) / (at$A[-1L] / s + C / at$s[1L]))
   expect_gt(resid(trap + 1e-5 * step), resid(trap))
   expect_lt(resid(trap + 1e-3 * c(0, num)), resid(trap))  # Berry's step lowers it
-  # the three models' exports, from zeros (at tol 1e-8 the constants are
-  # within about 1e-7)
-  expect_equal(as.numeric(blp_contraction(rep(0, 4L), S, X, 1, alt, M, w)), ds,
-               tolerance = 1e-6)
+  # the three models' exports, from zeros, with the step and its stalls (at
+  # tol 1e-8 the constants are within about 1e-7)
+  expect_equal(as.numeric(blp_contraction(rep(0, 4L), S, X, 1, alt, M, w,
+                                          method = "simple")), ds, tolerance = 1e-6)
   expect_equal(as.numeric(nl_blp_contraction(rep(0, 4L), S, X, 1, c(1, 1), alt,
-                                             c(1L, 1L, 2L, 2L), M, w)), ds,
-               tolerance = 1e-6)
+                                             c(1L, 1L, 2L, 2L), M, w, method = "simple")),
+               ds, tolerance = 1e-6)
   eta <- array(stats::rnorm(20L), c(1L, 5L, 4L))
   expect_equal(as.numeric(mxl_blp_contraction(rep(0, 4L), S, X, matrix(0, 11L, 1L), 1,
                                               0, log(0.5), alt, M, w, eta, 0L, FALSE,
-                                              TRUE, FALSE)), ds, tolerance = 1e-6)
+                                              TRUE, FALSE, method = "simple")), ds,
+               tolerance = 1e-6)
   # a stall on the climb (one here, 199 evaluations), and no need of Berry's
   # contraction
   r <- choicer:::mnl_blp_solve(rep(0, 4L), S, X, 1, alt, M, w, FALSE, eng_ctl())
@@ -463,10 +465,11 @@ test_that("Berry's contraction joins an iteration that stops halving its residua
     expect_identical(rk$race, if (k > r$race) r$race else 0L)
   }
   # and the exports
-  expect_identical(blp_contraction(rep(0, 6L), S, X, 1, alt, M, w), r$delta)
+  expect_identical(blp_contraction(rep(0, 6L), S, X, 1, alt, M, w, method = "simple"),
+                   r$delta)
   eta <- array(stats::rnorm(15L), c(1L, 5L, 3L))
   d <- mxl_blp_contraction(rep(0, 6L), S, X, matrix(0, 9L, 1L), 1, 0, log(0.5), alt, M, w,
-                           eta, 0L, FALSE, TRUE, FALSE)
+                           eta, 0L, FALSE, TRUE, FALSE, method = "simple")
   expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
 })
 
@@ -548,11 +551,12 @@ test_that("Berry's contraction goes on again when the step stops halving its res
                                   eng_ctl(max_iter = k))
     expect_identical(c(rk$race, rk$resumes), c(r$race, if (k == 802L) 0L else 1L))
   }
-  expect_identical(blp_contraction(rep(0, 5L), S, X, 1, alt, M, w, max_iter = 200000L),
-                   r$delta)
+  expect_identical(blp_contraction(rep(0, 5L), S, X, 1, alt, M, w, max_iter = 200000L,
+                                   method = "simple"), r$delta)
   eta <- array(stats::rnorm(25L), c(1L, 5L, 5L))
   d <- mxl_blp_contraction(rep(0, 5L), S, X, matrix(0, 12L, 1L), 1, 0, log(0.5), alt, M,
-                           w, eta, 0L, FALSE, TRUE, FALSE, max_iter = 200000L)
+                           w, eta, 0L, FALSE, TRUE, FALSE, max_iter = 200000L,
+                           method = "simple")
   expect_equal(as.numeric(d), as.numeric(r$delta), tolerance = 1e-8)
 })
 
@@ -1067,15 +1071,22 @@ test_that("SQUAREM's cycle: unit steps are the plain iteration, longer ones save
 })
 
 test_that("the methods' settings are checked before any evaluation", {
+  on.exit(set_omp_threads(2L), add = TRUE)
   d <- eng_design(1017L, 100L, 4L, 4L)
   S <- mnl_s(d, c(0, 0.2, 0.1, -0.3), FALSE)
   bc <- function(...) blp_contraction(rep(0, 4L), S, d$X, eng_beta, d$alt, d$M, d$w, ...)
-  expect_error(bc(method = "newton"), "`method` must be \"simple\"")
+  expect_error(bc(method = "newton"), "`method` must be \"anderson\" (the default",
+               fixed = TRUE)
   expect_error(bc(method = NA_character_), "`method` must be")
   expect_error(bc(method = c("simple", "anderson")), "`method` must be")
-  expect_error(bc(control = list(memory = 5L)),
+  expect_error(bc(method = "simple", control = list(memory = 5L)),
                "`control` takes no settings with method \"simple\" (it has `memory`)",
                fixed = TRUE)
+  # the default is Anderson acceleration, and takes its settings (at one
+  # thread, where its path is the same from run to run)
+  set_omp_threads(1L)
+  expect_identical(bc(control = list(memory = 5L)),
+                   bc(method = "anderson", control = list(memory = 5L)))
   expect_error(bc(method = "anderson", control = list(m = 5L)),
                "`control` takes `memory` and `max_condition` with method \"anderson\"; it has `m`",
                fixed = TRUE)
@@ -1140,8 +1151,14 @@ test_that("the exports keep their signatures and return n x 1 matrices", {
                      "max_iter", "gen_seed", "gen_scramble", "gen_S", "method",
                      "control"))
   for (f in list(blp_contraction, nl_blp_contraction, mxl_blp_contraction)) {
-    expect_identical(formals(f)$method, "simple")
+    expect_identical(formals(f)$method, "anderson")
     expect_identical(formals(f)$control, quote(list()))
+  }
+  # blp()'s methods take the same defaults
+  for (cls in c("choicer_mnl", "choicer_nl", "choicer_mxl")) {
+    fm <- formals(utils::getS3method("blp", cls))
+    expect_identical(fm$method, "anderson", label = cls)
+    expect_identical(fm$control, quote(list()), label = cls)
   }
   expect_identical(formals(blp_contraction)$max_iter, 1000L)
   expect_identical(formals(nl_blp_contraction)$damping, 1)

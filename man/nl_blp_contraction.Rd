@@ -18,7 +18,7 @@ nl_blp_contraction(
   damping = 1,
   tol = 1e-08,
   max_iter = 1000L,
-  method = "simple",
+  method = "anderson",
   control = list()
 )
 }
@@ -65,10 +65,10 @@ outside option's included; see Details). Default 1e-8.}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
 
-\item{method}{The iteration: \code{"simple"} (the default), the two-level
-step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
-contraction; \code{"anderson"}, Anderson acceleration of the two-level
-step; or \code{"squarem"}, SQUAREM on it.}
+\item{method}{The iteration: \code{"anderson"} (the default), Anderson
+acceleration of the two-level step of Details; \code{"simple"}, that
+step alone; \code{"original"}, Berry, Levinsohn and Pakes's contraction;
+or \code{"squarem"}, SQUAREM on the step.}
 
 \item{control}{A list of the method's settings. \code{"anderson"} takes
 \code{memory}, how many differences between successive iterates it keeps

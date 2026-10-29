@@ -11,7 +11,7 @@
   tol = 1e-08,
   max_iter = 1000,
   keep_draws_bytes = 2^32,
-  method = "simple",
+  method = "anderson",
   control = list(),
   ...
 )
@@ -50,10 +50,10 @@ or batch jobs with memory limits), a budget above the memory actually
 free can end the R session rather than fall back: lower it, or use
 \code{0}, when memory is tight.}
 
-\item{method}{The solver: \code{"simple"} (the default),
-\code{"original"}, Berry, Levinsohn and Pakes's contraction,
-\code{"anderson"}, Anderson acceleration of \code{"simple"}, or
-\code{"squarem"}, SQUAREM on it (see \code{\link{blp}()}).}
+\item{method}{The solver: \code{"anderson"} (the default), Anderson
+acceleration of the two-level step; \code{"simple"}, that step alone;
+\code{"original"}, Berry, Levinsohn and Pakes's contraction; or
+\code{"squarem"}, SQUAREM on the step (see \code{\link{blp}()}).}
 
 \item{control}{A list of the method's settings: for \code{"anderson"},
 \code{memory} and \code{max_condition}; for \code{"squarem"},
