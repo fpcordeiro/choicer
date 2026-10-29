@@ -1222,6 +1222,12 @@ arma::vec mnl_predict_shares(
 // theirs). X beta is formed once per call and the threads' sums are added in
 // thread order. Where a situation lists a code twice, A and C take the
 // situation's total probability of each code (the derivative's exact terms).
+//
+// With the exp-space pass (blp_engine.h), the pass at an origin also keeps
+// each row's exponential exp(v - max) before the division (and each
+// situation's outside option's), and an evaluation near the origin forms the
+// probabilities as those exponentials times exp(delta_j - delta0_j), over
+// their sum, in the order of stable_softmax_n()'s sum and divisions.
 // ============================================================================
 struct MnlBlpModel {
   const ChoiceLayout& lay;
@@ -1237,12 +1243,15 @@ struct MnlBlpModel {
   std::vector<std::vector<int>> slot;       // repeated codes: alternative -> slot, or -1
   std::vector<std::vector<int>> code;       // and each slot's alternative
   std::vector<std::vector<double>> tot;     // and its probability
+  BlpExpCache xc;                           // the exp-space cache's state
+  std::unique_ptr<double[]> E, E0;          // its exponentials: each row's, and
+                                            // each situation's outside option's
 
   MnlBlpModel(const ChoiceLayout& lay_, const arma::vec& Xb_, const arma::vec& w_,
               const double W_, const bool outside_, const int J_,
               const BlpComponents& comp_)
       : lay(lay_), Xb(Xb_), weights(w_), W(W_), outside(outside_), J(J_), comp(comp_),
-        work(mnl_work(lay_, 0, situation_team(lay_))) {
+        work(mnl_work(lay_, 0, situation_team(lay_))), xc(J_, outside_) {
     const int T = static_cast<int>(work.size());
     acc_s = thread_vectors<double>(static_cast<std::size_t>(J + comp.n), T);
     acc_ac = thread_vectors<double>(2 * static_cast<std::size_t>(J), T);
@@ -1254,13 +1263,51 @@ struct MnlBlpModel {
     }
   }
 
+  // Keep the exp-space cache if its bytes (a double per row, and per
+  // situation with an outside option) are within budget and can be had.
+  bool keep_exp(const double budget) {
+    const double n = static_cast<double>(lay.n_rows) +
+                     (outside ? static_cast<double>(lay.N) : 0.0);
+    if (lay.n_rows <= 0 || !(sizeof(double) * n <= budget)) return false;
+    try {
+      E.reset(new double[static_cast<std::size_t>(lay.n_rows)]);
+      if (outside) E0.reset(new double[static_cast<std::size_t>(lay.N)]);
+    } catch (const std::bad_alloc&) {
+      E.reset();
+      E0.reset();
+      return false;
+    }
+    return true;
+  }
+
   void pass(const arma::vec& delta, BlpPass& out) {
+    if (E) {
+      blp_exp_pass(*this, xc, delta, out);
+    } else {
+      sweep<false, false>(delta, out);
+    }
+  }
+
+  // Form the exp-space cache at delta0 (tests: control$origin)
+  void form(const arma::vec& delta0) {
+    BlpPass scratch(J, comp.n);
+    sweep<false, true>(delta0, scratch);
+    xc.formed(delta0, scratch);
+  }
+
+  // One pass: the usual one (Exp false), storing the exp-space cache (Store),
+  // or from the cache (Exp, its factors in xc.factor).
+  template <bool Exp, bool Store>
+  void sweep(const arma::vec& delta, BlpPass& out) {
     const choicer_off N = lay.N;
     const int T = static_cast<int>(work.size());
     const int o = outside ? 1 : 0;
     const arma::uword n_s = static_cast<arma::uword>(J + comp.n);
     const double* d = delta.memptr();
     const double* xb = Xb.memptr();
+    double* e = E.get();
+    double* e0 = E0.get();
+    const double* fa = xc.factor.memptr();
     const bool repeated = comp.repeated;
     // the threads that ran: a smaller team than planned (OMP_DYNAMIC) leaves
     // the other buffers holding an earlier pass's sums
@@ -1290,9 +1337,24 @@ struct MnlBlpModel {
         const choicer_off r0 = lay.row_off[i];
         const int* alt = lay.alt + r0;
         double* v = wk.v;
-        if (outside) v[0] = 0.0;
-        for (int a = 0; a < m; ++a) v[o + a] = xb[r0 + a] + d[alt[a] - 1];
-        stable_softmax_n(v, wk.p, m + o);
+        if (Exp) {
+          double* p = wk.p;
+          if (outside) p[0] = e0[i];
+          const double* er = e + r0;
+          for (int a = 0; a < m; ++a) p[o + a] = er[a] * fa[alt[a] - 1];
+          softmax_normalize_n(p, m + o);
+        } else {
+          if (outside) v[0] = 0.0;
+          for (int a = 0; a < m; ++a) v[o + a] = xb[r0 + a] + d[alt[a] - 1];
+          if (Store) {
+            double* ek = wk.diff;  // the exponentials, the outside option's first
+            stable_softmax_keep_n(v, wk.p, m + o, ek);
+            std::copy(ek + o, ek + o + m, e + r0);
+            if (outside) e0[i] = ek[0];
+          } else {
+            stable_softmax_n(v, wk.p, m + o);
+          }
+        }
         const double* P_i = wk.p;
         const double w_i = weights[i];
         const int c = comp.of[alt[0] - 1];
@@ -1367,7 +1429,9 @@ struct MnlBlpModel {
 //' @param control List from .blp_control(): iteration, map, max_evals, tol,
 //'   damping, patience, window, Anderson acceleration's memory,
 //'   max_condition, restart_patience, restart_progress and restart_best,
-//'   SQUAREM's scheme, step_min, step_max and step_factor, and keep_pass.
+//'   SQUAREM's scheme, step_min, step_max and step_factor, keep_pass, and the
+//'   passes' arithmetic: pass ("log" or "exp"), cache_bytes and origin
+//'   (blp_engine.h's BlpExpCache).
 //' @return List: delta (n x 1, as blp_contraction() returns it), code (0
 //'   converged, 1 max_iter, 2 not finite after backtracking, 3 not finite at the
 //'   start), iterations, evaluations, backtracks, stalls, race (the evaluations
@@ -1375,7 +1439,10 @@ struct MnlBlpModel {
 //'   it went on after stopping as behind), restarts (Anderson acceleration's
 //'   restarts; SQUAREM's extrapolated points that failed),
 //'   berry (whether the point returned is its), residual, fallbacks; with
-//'   keep_pass, pass (s, A, C, s0 of the last evaluation).
+//'   keep_pass, pass (s, A, C, s0 of the last evaluation); with pass "exp",
+//'   exp_kept (whether the cache was allocated), exp_evals (evaluations from
+//'   it), exp_forms (usual passes that formed it) and exp_floors (evaluations
+//'   from it that the floor sent to the usual pass).
 //' @noRd
 // [[Rcpp::export]]
 Rcpp::List mnl_blp_solve(
@@ -1415,9 +1482,20 @@ Rcpp::List mnl_blp_solve(
   arma::vec d = delta;
   if (!include_outside_option && J > 0) d -= delta[0];
   MnlBlpModel model(lay, Xb, weights, W, include_outside_option, J, comp);
+  bool kept = false;
+  if (ctl.pass == BLP_PASS_EXP && !pb.free.empty() &&
+      (ctl.max_evals > 1 || ctl.origin.n_elem > 0)) {
+    // (the call holds the design and X beta)
+    const double held = sizeof(double) * (static_cast<double>(X.n_elem) +
+                                          static_cast<double>(Xb.n_elem));
+    kept = model.keep_exp(blp_cache_budget(ctl.cache_bytes, held));
+    if (kept && ctl.origin.n_elem > 0) model.form(blp_origin(ctl, J, include_outside_option));
+  }
   BlpPass last(J, comp.n);
   const BlpResult res = blp_solve(model, comp, pb, d, ctl, &last);
-  return blp_result(d, res, ctl, last);
+  Rcpp::List out = blp_result(d, res, ctl, last);
+  blp_exp_record(out, ctl, kept, model.xc);
+  return out;
 }
 
 // Add situation i's terms of the Hessian into the accumulator's upper

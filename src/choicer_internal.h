@@ -573,6 +573,39 @@ inline double stable_softmax_n(double* v, double* p, const int n) {
   return std::log(sum);
 }
 
+// stable_softmax_n() that also copies the exponentials, before the division,
+// into e: the share inversion's exp-space cache (blp_engine.h). The same
+// operations in the same order, so p is stable_softmax_n()'s bit for bit.
+inline void stable_softmax_keep_n(double* v, double* p, const int n, double* e) {
+  const double v_max = direct_max_n(v, n);
+  for (int i = 0; i < n; ++i) v[i] -= v_max;
+  for (int i = 0; i < n; ++i) p[i] = std::exp(v[i]);
+  for (int i = 0; i < n; ++i) e[i] = p[i];
+  double acc1 = 0.0, acc2 = 0.0;
+  int j;
+  for (j = 1; j < n; j += 2) {
+    acc1 += p[j - 1];
+    acc2 += p[j];
+  }
+  if (j - 1 < n) acc1 += p[j - 1];
+  const double sum = acc1 + acc2;
+  for (int i = 0; i < n; ++i) p[i] /= sum;
+}
+
+// The n >= 1 positive weights p divided by their sum, the sum and divisions
+// of stable_softmax_n(): the exp-space cache's probabilities.
+inline void softmax_normalize_n(double* p, const int n) {
+  double acc1 = 0.0, acc2 = 0.0;
+  int j;
+  for (j = 1; j < n; j += 2) {
+    acc1 += p[j - 1];
+    acc2 += p[j];
+  }
+  if (j - 1 < n) acc1 += p[j - 1];
+  const double sum = acc1 + acc2;
+  for (int i = 0; i < n; ++i) p[i] /= sum;
+}
+
 // logSumExp() of the n entries of x, with its handling of empty input, NaN
 // and infinities.
 inline double log_sum_exp_n(const double* x, const int n) {

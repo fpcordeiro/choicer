@@ -112,6 +112,23 @@ gb_run <- function(fn, args) {
        error = err, stdout = printed, args = forced)
 }
 
+# Phase C's settings of the share inversion's passes (.blp_control()'s pass,
+# and compensate from item C3 on) appended to the control list of every
+# solver call that expr makes. A build without them ignores them (its
+# solvers read the fields they know), so a baseline records its own passes
+# there, and the solver tier judges the build under test; a build without
+# .blp_control() (before the engine) runs the call as it is.
+gb_with_settings <- function(settings, expr) {
+  ns <- asNamespace("choicer")
+  if (!exists(".blp_control", envir = ns, inherits = FALSE)) return(expr)
+  orig <- get(".blp_control", envir = ns)
+  utils::assignInNamespace(".blp_control",
+                           function(...) utils::modifyList(orig(...), settings),
+                           ns = "choicer")
+  on.exit(utils::assignInNamespace(".blp_control", orig, ns = "choicer"), add = TRUE)
+  expr
+}
+
 # ---------------------------------------------------------------------------
 # The problem a call solves
 # ---------------------------------------------------------------------------
@@ -832,6 +849,10 @@ gb_design <- function(seed, N, J, m, K = 1L, border = 0, Kx = 2L, Kw = 0L) {
 # the default's tolerance)
 GB_ACCEL <- c("anderson", "squarem")
 
+# Phase C's passes, by leaf suffix: the exp-space pass and compensated share
+# sums (gb_with_settings())
+GB_PASSES <- list(exp = list(pass = "exp"), comp = list(compensate = "on"))
+
 run_blp <- function() {
   out <- list()
   beta <- c(0.8, -0.5)
@@ -872,6 +893,19 @@ run_blp <- function() {
         mnl(d, rep(0, d$J), S, ioo, tol = 1e-12), ref = ds, expect = "converged")
       out[[paste0(tag, "|known|far")]] <- golden_blp("blp_contraction",
         mnl(d, rep(c(4, -4), length.out = d$J), S, ioo), ref = ds, expect = "converged")
+      for (ps in names(GB_PASSES)) {
+        out[[paste0(tag, "|known|", ps)]] <- gb_with_settings(GB_PASSES[[ps]],
+          golden_blp("blp_contraction", mnl(d, rep(0, d$J), S, ioo), ref = ds,
+                     expect = "converged"))
+        out[[paste0(tag, "|known|tol12|anderson|", ps)]] <- gb_with_settings(
+          GB_PASSES[[ps]], golden_blp("blp_contraction",
+            mnl(d, rep(0, d$J), S, ioo, tol = 1e-12, method = "anderson"), ref = ds,
+            expect = "converged"))
+        out[[paste0(tag, "|known|far|anderson|", ps)]] <- gb_with_settings(
+          GB_PASSES[[ps]], golden_blp("blp_contraction",
+            mnl(d, rep(c(4, -4), length.out = d$J), S, ioo, method = "anderson"),
+            ref = ds, expect = "converged"))
+      }
       out[[paste0(tag, "|max_iter=0")]] <- golden_blp("blp_contraction",
         mnl(d, rep(0, d$J), S, ioo, max_iter = 0L), ref = FALSE, expect = "capped")
       out[[paste0(tag, "|max_iter=3")]] <- golden_blp("blp_contraction",
@@ -894,6 +928,22 @@ run_blp <- function() {
           expect_error = E_DELTA)
         out[[paste0(tag, "|underflow_start")]] <- golden_blp("blp_contraction",
           mnl(d, replace(rep(0, d$J), d$J, -1000), S, ioo), ref = FALSE)
+        for (ps in names(GB_PASSES)) {
+          dt <- ds; dt[d$J] <- -22
+          out[[paste0(tag, "|tiny|", ps)]] <- gb_with_settings(GB_PASSES[[ps]],
+            golden_blp("blp_contraction",
+                       mnl(d, rep(0, d$J), mnl_shares(d, dt, ioo), ioo, tol = 1e-12,
+                           method = "anderson"), ref = dt, expect = "converged"))
+          out[[paste0(tag, "|underflow_start|", ps)]] <- gb_with_settings(
+            GB_PASSES[[ps]], golden_blp("blp_contraction",
+              mnl(d, replace(rep(0, d$J), d$J, -1000), S, ioo), ref = FALSE))
+          # (a start whose shares are tiny but positive: the cache waits for
+          # passes without them)
+          out[[paste0(tag, "|small_start|", ps)]] <- gb_with_settings(
+            GB_PASSES[[ps]], golden_blp("blp_contraction",
+              mnl(d, replace(rep(0, d$J), d$J, -700), S, ioo, tol = 1e-12,
+                  method = "anderson"), ref = ds, expect = "converged"))
+        }
         out[[paste0(tag, "|tol_neg")]] <- golden_blp("blp_contraction",
           mnl(d, rep(0, d$J), S, ioo, tol = -1), ref = FALSE, expect = "error",
           expect_error = E_SCALAR)
@@ -946,6 +996,15 @@ run_blp <- function() {
     mnl(d2, rep(0, 8L), S2o, TRUE), ref = ds - 1, expect = "converged")
   out[["mnl|two_components|oo=1|max_iter=3"]] <- golden_blp("blp_contraction",
     mnl(d2, rep(0, 8L), S2o, TRUE, max_iter = 3L), ref = FALSE, expect = "capped")
+  for (ps in names(GB_PASSES)) {
+    out[[paste0("mnl|two_components|", ps)]] <- gb_with_settings(GB_PASSES[[ps]],
+      golden_blp("blp_contraction", mnl(d2, rep(0, 8L), S2, FALSE), ref = ds,
+                 expect = "converged"))
+    out[[paste0("mnl|two_components|oo=1|", ps)]] <- gb_with_settings(GB_PASSES[[ps]],
+      golden_blp("blp_contraction", mnl(d2, rep(0, 8L), S2o, TRUE, tol = 1e-12,
+                                        method = "anderson"),
+                 ref = ds - 1, expect = "converged"))
+  }
   # Repeated codes (a situation listing an alternative twice), both layouts
   dr <- designs$full
   r0 <- c(0L, cumsum(dr$M))
@@ -956,6 +1015,12 @@ run_blp <- function() {
     if (!ioo) ds <- ds - ds[1L]
     out[[sprintf("mnl|repeated|oo=%d", ioo)]] <- golden_blp("blp_contraction",
       mnl(dr, rep(0, dr$J), mnl_shares(dr, ds, ioo), ioo), ref = ds, expect = "converged")
+    for (ps in names(GB_PASSES)) {
+      out[[sprintf("mnl|repeated|oo=%d|%s", ioo, ps)]] <- gb_with_settings(
+        GB_PASSES[[ps]], golden_blp("blp_contraction",
+          mnl(dr, rep(0, dr$J), mnl_shares(dr, ds, ioo), ioo, tol = 1e-12,
+              method = "anderson"), ref = ds, expect = "converged"))
+    }
   }
   # An alternative's target above the weight of the situations offering it
   # (regional sets with a border: alternative 12 is offered by its region)
@@ -989,6 +1054,15 @@ run_blp <- function() {
                                               damping = damp), ref = ds,
                      expect = "converged")
       }
+      for (ps in names(GB_PASSES)) {
+        out[[sprintf("nl|oo=%d|lambda=%g|%s", ioo, lam, ps)]] <- gb_with_settings(
+          GB_PASSES[[ps]], golden_blp("nl_blp_contraction",
+            nl(rep(0, 9L), S, rep(lam, 3L), ioo), ref = ds, expect = "converged"))
+        out[[sprintf("nl|oo=%d|lambda=%g|tol12|anderson|%s", ioo, lam, ps)]] <-
+          gb_with_settings(GB_PASSES[[ps]], golden_blp("nl_blp_contraction",
+            nl(rep(0, 9L), S, rep(lam, 3L), ioo, tol = 1e-12, method = "anderson"),
+            ref = ds, expect = "converged"))
+      }
       if (lam == 0.3) {
         out[[sprintf("nl|oo=%d|max_iter=3", ioo)]] <- golden_blp("nl_blp_contraction",
           nl(rep(0, 9L), S, rep(lam, 3L), ioo, max_iter = 3L), ref = FALSE,
@@ -1018,6 +1092,15 @@ run_blp <- function() {
              lambda = dd$lam, alt_idx = d$alt_idx, nest_idx = nest6, M = d$M,
              weights = d$weights, include_outside_option = ioo),
         ref = ds, expect = "converged")
+      for (ps in names(GB_PASSES)) {
+        out[[sprintf("nl|%s|oo=%d|%s", dd$tag, ioo, ps)]] <- gb_with_settings(
+          GB_PASSES[[ps]], golden_blp("nl_blp_contraction",
+            list(delta = rep(0, 12L), target_shares = S, X = d$X, beta = beta,
+                 lambda = dd$lam, alt_idx = d$alt_idx, nest_idx = nest6, M = d$M,
+                 weights = d$weights, include_outside_option = ioo, tol = 1e-12,
+                 method = "anderson"),
+            ref = ds, expect = "converged"))
+      }
     }
   }
   S <- rep(1 / 9, 9L)
@@ -1063,6 +1146,12 @@ run_blp <- function() {
         tag <- sprintf("mxl|%s|%s|oo=%d", if (rc[2L]) "lognormal" else "normal", dr, ioo)
         out[[tag]] <- golden_blp("mxl_blp_contraction", args(rep(0, 6L)), ref = ds,
                                  expect = "converged")
+        for (ps in names(GB_PASSES)) {
+          out[[paste0(tag, "|tol12|anderson|", ps)]] <- gb_with_settings(GB_PASSES[[ps]],
+            golden_blp("mxl_blp_contraction",
+                       args(rep(0, 6L), tol = 1e-12, method = "anderson"), ref = ds,
+                       expect = "converged"))
+        }
         if (!ioo) {
           out[[paste0(tag, "|free")]] <- golden_blp("mxl_blp_contraction",
             args(rep(0, 5L)), ref = ds, expect = "converged")
@@ -1234,6 +1323,12 @@ run_blp <- function() {
             list(fit, target_shares = S, method = am, tol = 1e-12), ref = ds,
             expect = "converged")
         }
+        for (ps in names(GB_PASSES)) {
+          out[[paste0(tag, "|known|tol12|anderson|", ps)]] <- gb_with_settings(
+            GB_PASSES[[ps]], golden_blp("blp",
+              list(fit, target_shares = S, method = "anderson", tol = 1e-12), ref = ds,
+              expect = "converged"))
+        }
         tg <- as.numeric(predict(fit, type = "shares"))
         out[[paste0(tag, "|symmetrized")]] <- golden_blp("blp",
           list(fit, target_shares = (tg + rev(tg)) / 2))
@@ -1269,6 +1364,10 @@ run_blp <- function() {
               list(fit, target_shares = S, damping = 0.6, method = am), ref = ds,
               expect = "converged")
           }
+          out[[paste0(tag, "|damping|anderson|exp")]] <- gb_with_settings(
+            GB_PASSES$exp, golden_blp("blp",
+              list(fit, target_shares = S, damping = 0.6, method = "anderson"), ref = ds,
+              expect = "converged"))
         }
       }
     }
@@ -1321,6 +1420,18 @@ run_blp <- function() {
           list(fit, target_shares = S, method = am, tol = 1e-12), ref = ds,
           expect = "converged")
       }
+      dd <- fit[["data"]]
+      gamma_b <- 8 * fit$draws_info$K_w * fit$draws_info$S * length(dd$M)
+      exp_b <- 8 * fit$draws_info$S * (length(dd$alt_idx) + ioo * length(dd$M))
+      for (kb in c(0, gamma_b, gamma_b + exp_b / 2, Inf)) {
+        out[[sprintf("%s|keep=%g|anderson|exp", tag, kb)]] <- gb_with_settings(
+          GB_PASSES$exp, golden_blp("blp",
+            list(fit, target_shares = S, keep_draws_bytes = kb, method = "anderson",
+                 tol = 1e-12), ref = ds, expect = "converged"))
+      }
+      out[[paste0(tag, "|tol12|anderson|comp")]] <- gb_with_settings(GB_PASSES$comp,
+        golden_blp("blp", list(fit, target_shares = S, method = "anderson", tol = 1e-12),
+                   ref = ds, expect = "converged"))
       # kept draws are the values each evaluation would form
       out[[paste0(tag, "|same_keep")]] <- identical(
         as.numeric(out[[paste0(tag, "|keep=0")]]$value),

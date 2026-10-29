@@ -6,7 +6,7 @@
 #     model=<mnl|nl|mxl> regime=<claims|census|census20k|small> U=<units> \
 #     methods=simple,original,anderson,squarem threads=1,11 reps=3 \
 #     [mode=time|mem] [tol=1e-8] [max_iter=1000] [S=20] [nests=50] [ioo=0] \
-#     [shift=0.5] [start=fit|zero] [seed=1] [Kx=10] [out=<file.rds>]
+#     [shift=0.5] [start=fit|zero] [seed=1] [Kx=10] [pass=log|exp] [out=<file.rds>]
 #
 # Data: gen_regime()'s design read as a cross-section of choice situations, as
 # in bench_mnl_nl.R: X (Kx columns) and the generator's constants; the nested
@@ -29,6 +29,10 @@
 # once under the malloc shim (heap blocks, bytes and peak live heap; see
 # make_rmc.sh). Methods a build lacks (releases before Phase B have no
 # "anderson" or "squarem") record an error instead of running another.
+# pass=exp evaluates from the exp-space cache (Phase C; .blp_control(pass =));
+# a build without that setting runs its own passes, and its rows say so
+# (pass "log"); exp_kept says whether a model's pass kept the cache (NA: the
+# model's pass has no exp-space form in this build).
 source(file.path(dirname(normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE),
   value = TRUE)))), "scale_common.R"))
 lib <- load_choicer()
@@ -53,19 +57,23 @@ shift <- as.numeric(get_opt("shift", "0.5"))
 start_at <- get_opt("start", "fit")
 seed <- as.numeric(get_opt("seed", "1"))
 Kx <- as.integer(get_opt("Kx", "10"))
+pass <- get_opt("pass", "log")
 out <- get_opt("out", file.path(scale_output("blp"),
                                 sprintf("%s_%s_%s_U%d_%s.rds", tag, model, regime, U, mode)))
 stopifnot(model %in% c("mnl", "nl", "mxl"), mode %in% c("time", "mem"),
-          start_at %in% c("fit", "zero"))
+          start_at %in% c("fit", "zero"), pass %in% c("log", "exp"))
+# (a build without the setting runs its own passes)
+if (!"pass" %in% names(formals(ns$.blp_control))) pass <- "log"
+
 if (mode == "mem" && !shim_loaded()) stop("mode=mem needs the malloc shim (output/Rmc with MC_SHIM set)")
 if (mode == "time" && shim_loaded()) stop("mode=time must run without the shim")
 dir.create(dirname(out), showWarnings = FALSE, recursive = TRUE)
 
-cat(sprintf("== %s %s %s | %s U=%d Kx=%d%s%s | methods %s | threads %s | tol %g | load %s\n",
+cat(sprintf("== %s %s %s | %s U=%d Kx=%d%s%s | methods %s | threads %s | tol %g | pass %s | load %s\n",
             tag, model, mode, regime, U, Kx,
             switch(model, nl = sprintf(" nests=%d", n_nests), mxl = sprintf(" S=%d", S), ""),
             if (ioo) " outside option" else "", paste(methods, collapse = ","),
-            paste(threads, collapse = ","), tol, loadavg()))
+            paste(threads, collapse = ","), tol, pass, loadavg()))
 
 K_w <- if (model == "mxl") 3L else 1L
 t_gen <- system.time(g <- gen_regime(regime, U, seed = seed, K_x = Kx, K_w = K_w))[["elapsed"]]
@@ -110,7 +118,11 @@ has_method <- function(m) {
     (exists(".BLP_SETTINGS", envir = ns) && m %in% names(get(".BLP_SETTINGS", envir = ns)))
 }
 solve_blp <- function(m) {
-  ctl <- ns$.blp_control(tol, max_iter, method = m)
+  ctl <- if (pass == "log") {
+    ns$.blp_control(tol, max_iter, method = m)
+  } else {
+    ns$.blp_control(tol, max_iter, method = m, pass = pass)
+  }
   switch(model,
     mnl = ns$mnl_blp_solve(start, target, d$X, beta, d$alt_idx, d$M, d$weights, ioo, ctl),
     nl = ns$nl_blp_solve(start, target, d$X, beta, lambda_full, d$alt_idx, nest_idx, d$M,
@@ -128,12 +140,15 @@ delta_err <- function(delta) {
 rows_out <- list()
 add_row <- function(...) rows_out[[length(rows_out) + 1L]] <<- data.frame(
   tag = tag, model = model, regime = regime, U = U, N = N, rows = rows, J = J, S = S,
-  ioo = ioo, tol = tol, max_iter = max_iter, start = start_at, ..., load = loadavg(),
+  ioo = ioo, tol = tol, max_iter = max_iter, start = start_at, pass = pass, ...,
+  load = loadavg(),
   stringsAsFactors = FALSE)
 record <- function(m, nt, rep, sec, r, a = NULL) {
   add_row(method = m, threads = nt, rep = rep, sec = sec,
           code = r$code, evals = r$evaluations, iterations = r$iterations,
           race = r$race %||% NA_integer_, restarts = r$restarts %||% NA_integer_,
+          exp_kept = r$exp_kept %||% NA, exp_evals = r$exp_evals %||% NA_real_,
+          exp_forms = r$exp_forms %||% NA_real_, exp_floors = r$exp_floors %||% NA_real_,
           residual = r$residual, err = delta_err(r$delta), sec_per_eval = sec / r$evaluations,
           n_alloc = if (is.null(a)) NA_real_ else a[["n_alloc"]],
           peak_live = if (is.null(a)) NA_real_ else a[["peak_live"]], error = "")
@@ -142,7 +157,9 @@ for (m in methods) {
   if (!has_method(m)) {
     add_row(method = m, threads = NA_integer_, rep = NA_integer_, sec = NA_real_, code = NA_integer_,
             evals = NA_integer_, iterations = NA_integer_, race = NA_integer_,
-            restarts = NA_integer_, residual = NA_real_, err = NA_real_, sec_per_eval = NA_real_,
+            restarts = NA_integer_, exp_kept = NA, exp_evals = NA_real_,
+            exp_forms = NA_real_, exp_floors = NA_real_,
+            residual = NA_real_, err = NA_real_, sec_per_eval = NA_real_,
             n_alloc = NA_real_, peak_live = NA_real_, error = "method not in this build")
     cat(sprintf("  %-9s not in this build\n", m))
     next
