@@ -43,7 +43,8 @@ gb_fun <- function(fn, args) {
 # main's defaults, "simple" at tol 1e-8, pinned where a call leaves them out
 # (by name or position) and the function takes them, so that a leaf runs the
 # same iteration on main and on a build whose defaults differ: Phase B made
-# "anderson" the default, which the accelerated leaves (GB_ACCEL) name. The
+# "anderson" at tol 1e-12 the default; the accelerated leaves (GB_ACCEL) name
+# their method, their tol pinned as the others' unless they set it. The
 # arguments are forced first, so that what forming them raises is the call's;
 # a call whose function cannot be found is left as it is, to fail as itself.
 gb_pin_defaults <- function(fn, args) {
@@ -827,7 +828,8 @@ gb_design <- function(seed, N, J, m, K = 1L, border = 0, Kx = 2L, Kw = 0L) {
 # ---------------------------------------------------------------------------
 
 # The accelerated methods of Phase B, each run on the fits' designs by name
-# ("anderson", the default since Phase B, among them)
+# ("anderson", the default since Phase B, among them; their |tol12| leaves run
+# the default's tolerance)
 GB_ACCEL <- c("anderson", "squarem")
 
 run_blp <- function() {

@@ -110,7 +110,7 @@ test_that("method = \"original\" is Berry, Levinsohn and Pakes's contraction", {
     fit <- bm_mnl_fit(outside)
     # (far from the fitted shares, about 1/4 each)
     S <- if (outside) c(0.3, 0.25, 0.2, 0.15, 0.1) else c(0.4, 0.3, 0.2, 0.1)
-    d <- blp(fit, target_shares = S, method = "original")
+    d <- blp(fit, target_shares = S, method = "original", tol = 1e-8)
     pm <- fit$param_map
     start <- if (outside) fit$coefficients[pm$asc] else c(0, fit$coefficients[pm$asc])
     # the engine's plain map: delta + log S - log s(delta), normalized
@@ -168,9 +168,9 @@ test_that("blp() labels its constants and records its convergence", {
     expect_true(cv$converged)
     expect_identical(cv$status, "converged")
     expect_identical(cv$method, "anderson")
-    expect_identical(cv$tol, 1e-8)
+    expect_identical(cv$tol, 1e-12)
     expect_gte(cv$evaluations, 1L)
-    expect_lte(cv$residual, 1e-8)
+    expect_lte(cv$residual, 1e-12)
     # the same constants as the export's
     pm <- fit$param_map
     start <- if (outside) fit$coefficients[pm$asc] else c(0, fit$coefficients[pm$asc])

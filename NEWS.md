@@ -136,17 +136,18 @@ as `method = "original"`.
   nested logits with lambda above 1 in a median 0.67 of the step's
   evaluations, never more. From 10 far starts in a market of four regions it
   needed 27 to 36 evaluations, the step 3,143 to 3,655. On the 5,985 small
-  hard designs (the 2,995 above and 2,990 more drawn alike) it failed on 163,
-  85 and 62 at 1,000, 20,000 and 200,000 evaluations, the step on 590, 236
-  and 122, and where both converged it needed a median 0.45 of the step's
-  evaluations (90th percentile 1.14). Where the targets lie within working
-  precision of what the data can attain, the constants are not identified to
-  that precision (conditioning above 10^7), and the extrapolation can stop
-  farther from the constants the targets came from than the step does, its
-  shares still within `tol`. It is the default of `blp()` and the exported
-  functions: on simulated claims-, census- and small-scale data (up to 10^7
-  rows; the mixed logit's 10^6, with 20 draws) it converged everywhere, in
-  0.25 to 1.03 times the step's time at one and eleven threads.
+  hard designs (the 2,995 above and 2,990 more drawn alike), at tol 1e-8, it
+  failed on 163, 85 and 62 at 1,000, 20,000 and 200,000 evaluations, the step
+  on 590, 236 and 122, and where both converged it needed a median 0.45 of
+  the step's evaluations (90th percentile 1.14). Where the targets lie within
+  working precision of what the data can attain, the constants are not
+  identified to that precision (conditioning above 10^7), and the
+  extrapolation can stop farther from the constants the targets came from
+  than the step does, its shares still within `tol`. It is the default of
+  `blp()` and the exported functions: on simulated claims-, census- and
+  small-scale data (up to 10^7 rows; the mixed logit's 10^6, with 20 draws),
+  at tol 1e-8, it converged everywhere, in 0.25 to 1.03 times the step's time
+  at one and eleven threads.
 - **SQUAREM.** `method = "squarem"` extrapolates the step by SQUAREM (Varadhan
   and Roland 2008), the default of PyBLP (Conlon and Gortmaker 2020), with its
   settings in `control` (`scheme` 3; `step_min` and `step_max` 1 at first,
@@ -157,17 +158,26 @@ as `method = "original"`.
   121 simulated designs it converged on every one, in medians of 17, 14.5 and
   29 evaluations (multinomial, nested and mixed logits), never more than the
   step's; from the 10 far starts it needed 1,311 to 1,466 evaluations; and
-  on the 5,985 small hard designs it failed on 630, 295 and 199 at 1,000,
-  20,000 and 200,000 evaluations, more often than the step (590, 236 and
-  122), above all on nested logits. With these bounds it never takes a step
-  shorter than two plain ones, so it cannot damp a step that oscillates within
-  a nest, as Anderson's least squares can.
+  on the 5,985 small hard designs, at tol 1e-8, it failed on 630, 295 and 199
+  at 1,000, 20,000 and 200,000 evaluations, more often than the step (590,
+  236 and 122), above all on nested logits. With these bounds it never takes
+  a step shorter than two plain ones, so it cannot damp a step that
+  oscillates within a nest, as Anderson's least squares can.
 - **Stopping rule.** The iteration stops at the first evaluation whose
   largest absolute log-share residual is at most `tol` (relative to the
   reference of each group without an outside option; with one, each group's
   outside share included), and returns that point. The contraction stopped
   when the largest change in the constants fell below `tol`, which left the
   outside share unchecked, and returned one more step, never evaluated.
+  `tol` now defaults to 1e-12, where it was 1e-8 on the change in the
+  constants. Under the default method that takes a quarter to a half more
+  evaluations than 1e-8, and never more than the step alone needed for 1e-8,
+  on the 121 simulated designs and the claims-, census- and small-scale data
+  alike; the constants' error falls with it, to about 1e-12 times the
+  conditioning of the share equations. Rounding in the sums of the shares
+  over choice situations sets a floor under the residual: on one thread
+  about 2e-13 at 10^8 rows (an inversion there converged at 1e-12 in six
+  evaluations) and near 1e-12 at 10^9; with more threads it is lower.
   `max_iter` counts evaluations of the shares (0 returns the start).
 - **Not converging warns.** A call that stops without meeting `tol` returns
   the evaluated point of smallest residual and warns with class
@@ -229,10 +239,10 @@ as `method = "original"`.
   up (the groups of alternatives, the checks) takes about half an evaluation
   at one thread and two to three at eleven (0.3 s at 10^8 rows). Fewer
   evaluations more than make up for it.
-- **The exported functions** keep their arguments, defaults, layouts of
-  `delta` and n x 1 results; they are now R functions over the engine, and
-  gain `method` (by default `"anderson"`) and `control` as their last
-  arguments.
+- **The exported functions** keep their arguments, layouts of `delta` and
+  n x 1 results, and their defaults except `tol`'s (now 1e-12); they are now
+  R functions over the engine, and gain `method` (by default `"anderson"`)
+  and `control` as their last arguments.
   `mxl_blp_contraction()` converts an integer or logical cube of draws to
   double, where it read such a cube from a temporary copy that R could free
   while it was read.
