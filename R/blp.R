@@ -37,10 +37,10 @@
 #'   residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 #'   outside option's included; see Details). Default 1e-8.
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The iteration: \code{"simple"} (the default), the two-level
-#'   step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
-#'   contraction; \code{"anderson"}, Anderson acceleration of the two-level
-#'   step; or \code{"squarem"}, SQUAREM on it.
+#' @param method The iteration: \code{"anderson"} (the default), Anderson
+#'   acceleration of the two-level step of Details; \code{"simple"}, that
+#'   step alone; \code{"original"}, Berry, Levinsohn and Pakes's contraction;
+#'   or \code{"squarem"}, SQUAREM on the step.
 #' @param control A list of the method's settings. \code{"anderson"} takes
 #'   \code{memory}, how many differences between successive iterates it keeps
 #'   (a whole number from 1 to 100, cut to the number of free constants;
@@ -59,9 +59,11 @@
 #'   alternative's group. (The alternatives that share choice situations,
 #'   directly or through others, form a connected component, whose constants
 #'   the shares identify only up to a common level, so its smallest code's
-#'   constant is held at its start.) Each iteration evaluates the shares once
-#'   and takes a step in two parts. First a common shift \eqn{\tau} of the
-#'   group's free constants, to which each \eqn{\rho_j} responds at the rate
+#'   constant is held at its start.) The default, \code{method = "anderson"},
+#'   extrapolates the step below, which \code{method = "simple"} takes alone.
+#'   Each iteration evaluates the shares once and takes a step in two parts.
+#'   First a common shift \eqn{\tau} of the group's free constants, to which
+#'   each \eqn{\rho_j} responds at the rate
 #'   \eqn{-h_j}, \eqn{h_j = C_{jb}/s_j + \sum_k C_{kb}/s_b} exactly, where
 #'   \eqn{C_{jb} = \sum_i w_i P_{ij} P_{ib} / \sum_i w_i} is the share-weighted
 #'   co-choice of \eqn{j} and the base; \eqn{\tau} solves
@@ -76,8 +78,9 @@
 #'   constant by its own residual, \eqn{r_j} (without an outside option
 #'   \eqn{r_j - r_b}, the reference held). A step is at most 5 log units long,
 #'   or \eqn{|\rho_j|} where that is longer; a step whose shares are not finite
-#'   is halved, up to ten times. An iteration whose best residual has not
-#'   improved for 30 iterations (a stall) halves its later steps; it returns
+#'   is halved, up to ten times. Under \code{"simple"}, an iteration whose
+#'   best residual has not improved for 30 iterations (a stall) halves its
+#'   later steps; it returns
 #'   to its best point only when its residual at the stall exceeds twice the
 #'   best (it diverges), once per best point, and otherwise goes on from where
 #'   it is, each such stall doubling the iterations the next one waits for,
@@ -98,7 +101,7 @@
 #'   whole choice set of some choice situations so far down that the
 #'   residual barely responds to their common level; the contraction's step
 #'   is never amplified. So wherever the contraction converges in \eqn{E}
-#'   evaluations, this converges within \eqn{T + 4E}, and within
+#'   evaluations, the step converges within \eqn{T + 4E}, and within
 #'   \eqn{T + 2E} where the contraction halves its best residual within every
 #'   100 of its evaluations, \eqn{T} being the evaluations before the
 #'   contraction joined; the bound leaves out the step's halvings after the
@@ -125,7 +128,7 @@
 #'   shares are not finite. Where a component's outside share underflows,
 #'   it takes the step above unextrapolated until the share returns. It
 #'   races Berry, Levinsohn and Pakes's
-#'   contraction as the default does, with the same windows; each of its
+#'   contraction as the step does, with the same windows; each of its
 #'   iterations takes one evaluation of the shares besides the trial points
 #'   whose shares are not finite, which the bound leaves out as it leaves out
 #'   the step's halvings, so the same bound holds.
@@ -214,7 +217,7 @@
 #' @export
 blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
                             include_outside_option = FALSE, tol = 1e-8,
-                            max_iter = 1000L, method = "simple",
+                            max_iter = 1000L, method = "anderson",
                             control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings)
@@ -291,8 +294,8 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
 nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
                                nest_idx, M, weights,
                                include_outside_option = FALSE, damping = 1.0,
-                               tol = 1e-8, max_iter = 1000L, method = "simple",
-                               control = list()) {
+                               tol = 1e-8, max_iter = 1000L,
+                               method = "anderson", control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, damping, method = m$method,
                       settings = m$settings)
@@ -382,7 +385,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
                                 include_outside_option = FALSE, tol = 1e-8,
                                 max_iter = 1000L, gen_seed = -1L,
                                 gen_scramble = 1L, gen_S = 0L,
-                                method = "simple", control = list()) {
+                                method = "anderson", control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings)
   # The kernels read a cube of doubles in place; a cube of another type would
@@ -407,8 +410,11 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'   \code{"original"} (Berry, Levinsohn and Pakes's contraction),
 #'   \code{"anderson"} (Anderson acceleration of the two-level step) or
 #'   \code{"squarem"} (SQUAREM on it), the last two racing the contraction as
-#'   \code{"simple"} does. The first two run the engine's simple iteration
-#'   (\code{iteration}) and differ in the map, the stalls and the race.
+#'   \code{"simple"} does. (This default, \code{"simple"}, is the internal
+#'   callers' and the tests'; the exports and blp(), whose default is
+#'   \code{"anderson"}, pass theirs.) The first two run the engine's simple
+#'   iteration (\code{iteration}) and differ in the map, the stalls and the
+#'   race.
 #' @param settings The method's settings, checked (\code{.blp_method()});
 #'   the defaults of \code{.BLP_SETTINGS} for those not given.
 #' @param map The base map, by default the method's: \code{"reduced"} (the
@@ -647,10 +653,10 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 .blp_method <- function(method, control) {
   if (!is.character(method) || length(method) != 1L || is.na(method) ||
       !method %in% names(.BLP_SETTINGS)) {
-    stop("`method` must be \"simple\" (the two-level step of ?blp_contraction), ",
-         "\"original\" (Berry, Levinsohn and Pakes's contraction), ",
-         "\"anderson\" (Anderson acceleration of the two-level step) or ",
-         "\"squarem\" (SQUAREM on it).", call. = FALSE)
+    stop("`method` must be \"anderson\" (the default: Anderson acceleration of ",
+         "the two-level step of ?blp_contraction), \"simple\" (that step alone), ",
+         "\"original\" (Berry, Levinsohn and Pakes's contraction) or \"squarem\" ",
+         "(SQUAREM on the step).", call. = FALSE)
   }
   if (!is.list(control) || is.object(control)) {
     stop("`control` must be a list of the method's settings.", call. = FALSE)
@@ -743,7 +749,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'   row names and the attribute "convergence" (.blp_convergence()).
 #' @noRd
 .blp_common <- function(object, target_shares, delta_init, tol, max_iter,
-                        damping = 1, method = "simple", control = list(),
+                        damping = 1, method = "anderson", control = list(),
                         free_ok = FALSE, solve) {
   if (is.null(object[["data"]])) {
     stop("blp() requires stored data. Refit with keep_data = TRUE.")

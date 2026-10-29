@@ -25,7 +25,7 @@ mxl_blp_contraction(
   gen_seed = -1L,
   gen_scramble = 1L,
   gen_S = 0L,
-  method = "simple",
+  method = "anderson",
   control = list()
 )
 }
@@ -90,10 +90,10 @@ contraction). Other values are an error.}
 \item{gen_S}{Integer number of draws per individual, used only when
 \code{gen_seed >= 0}.}
 
-\item{method}{The iteration: \code{"simple"} (the default), the two-level
-step of Details; \code{"original"}, Berry, Levinsohn and Pakes's
-contraction; \code{"anderson"}, Anderson acceleration of the two-level
-step; or \code{"squarem"}, SQUAREM on it.}
+\item{method}{The iteration: \code{"anderson"} (the default), Anderson
+acceleration of the two-level step of Details; \code{"simple"}, that
+step alone; \code{"original"}, Berry, Levinsohn and Pakes's contraction;
+or \code{"squarem"}, SQUAREM on the step.}
 
 \item{control}{A list of the method's settings. \code{"anderson"} takes
 \code{memory}, how many differences between successive iterates it keeps

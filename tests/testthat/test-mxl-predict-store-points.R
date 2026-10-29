@@ -324,7 +324,8 @@ test_that("draw codes and draw metadata are checked", {
 
 # The share inversion's solver (mxl_blp_solve()) on `d`, the draws formed on
 # the fly by `gen`, kept within `budget` bytes, and mxl_blp_contraction(),
-# which keeps nothing
+# which keeps nothing (both with the step alone, named: at two threads the
+# sums' last bits can move Anderson acceleration's path, not the step's)
 mxc_blp_kept <- function(d, gen, budget, max_iter = 1000L) {
   K_w <- d$K_w
   target <- as.numeric(mxc_call("shares", d))
@@ -335,9 +336,11 @@ mxc_blp_kept <- function(d, gen, budget, max_iter = 1000L) {
                d$rc_dist, rc_correlation = TRUE, rc_mean = TRUE,
                include_outside_option = d$ioo)
   list(formed = do.call(mxl_blp_contraction,
-                        c(args, list(tol = 1e-8, max_iter = max_iter), gen)),
+                        c(args, list(tol = 1e-8, max_iter = max_iter,
+                                     method = "simple"), gen)),
        kept = do.call(choicer:::mxl_blp_solve,
-                      c(args, list(control = choicer:::.blp_control(1e-8, max_iter)),
+                      c(args, list(control = choicer:::.blp_control(
+                        1e-8, max_iter, method = "simple")),
                         gen, cache_bytes = budget)))
 }
 
@@ -410,14 +413,16 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
                      if (b[[2]]) d$N * (r$kept$passes - 1) else 0, label = lab)
     expect_identical(r$kept$delta, r$formed)
   }
-  # A cube is read at every pass, not copied
+  # A cube is read at every pass, not copied (the solver at the export's
+  # defaults, as mxc_call() runs it)
   K_w <- d$K_w
   target <- as.numeric(mxc_call("shares", d))
+  fm <- formals(mxl_blp_contraction)
   r <- choicer:::mxl_blp_solve(
     rep(0, d$J), target, d$X, d$W, d$theta[1:2], d$theta[2L + seq_len(K_w)],
     d$theta[2L + K_w + seq_len(K_w * (K_w + 1L) / 2L)], d$alt_idx, d$M,
     d$weights, d$eta, d$rc_dist, TRUE, TRUE, d$ioo,
-    choicer:::.blp_control(1e-8, 1000L), -1L, 1L, 0L, Inf)
+    choicer:::.blp_control(fm$tol, fm$max_iter, method = fm$method), -1L, 1L, 0L, Inf)
   expect_false(r$kept)
   expect_identical(r$reads, 0)
   expect_identical(r$delta, mxc_call("blp", d))

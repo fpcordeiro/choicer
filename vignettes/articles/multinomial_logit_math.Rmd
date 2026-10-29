@@ -519,7 +519,7 @@ C_{jb} = -\frac{\partial \hat{s}_b}{\partial \delta_j}
 $$
 
 a part with a dominant diagonal, $A_{jj}/\hat{s}_j$, plus a term common to every row, the
-response of the base's share. The default step, `method = "simple"`, treats the two in
+response of the base's share. The step, `method = "simple"`, treats the two in
 turn. A common shift $\tau$ of the component's free constants moves each $\rho_j$ by
 $-h_j \tau$ to first order, where $h_j = C_{jb}/\hat{s}_j + \sum_k C_{kb}/\hat{s}_b$
 exactly (the share Jacobian is symmetric and its rows sum to zero), and $\tau$ solves
@@ -567,15 +567,15 @@ iterations at a time to halve its own best residual, and whenever it fails to, t
 contraction goes on from where it stopped: the step can also carry the constants of
 alternatives that make up the whole choice set of some choice situations so far down that
 the residual barely responds to their common level, and then make no progress at all.
-Where the contraction converges in $E$ evaluations, the method converges within $T + 4E$,
+Where the contraction converges in $E$ evaluations, the step converges within $T + 4E$,
 and within $T + 2E$ where the contraction halves its best residual within every 100 of
 its evaluations, $T$ being the evaluations before the contraction joined; the bound
 leaves out the step's halvings after the contraction joined and any 200 iterations in
 which the step alone halved its best residual. Berry's contraction itself, as `method =
 "original"`, takes only the halving of steps whose shares are not finite.
 
-`method = "anderson"` accelerates the same step, Anderson acceleration of type II (Walker
-and Ni 2011). Write $f(\delta)$ for the step at $\delta$, and $\Delta X$ and $\Delta F$
+`method = "anderson"`, the default, accelerates the same step, Anderson acceleration of
+type II (Walker and Ni 2011). Write $f(\delta)$ for the step at $\delta$, and $\Delta X$ and $\Delta F$
 for the last $m$ differences (`memory`, default 10, cut to the number of free constants)
 between successive iterates and between their steps, newest first. Each iteration solves
 the least squares
@@ -636,9 +636,9 @@ turns included), and Berry's contraction failed on 22; where both converged, the
 needed a median 0.16 of Berry's evaluations. On 999 small designs drawn to be hard (3 to
 6 alternatives in 2 to 8 choice situations of random sizes, single-alternative ones
 included; covariates and constants integers in $[-10, 10]$ and $[-3, 3]$; half with an
-outside option), at the default tolerance and 1,000 evaluations, the method failed on 103
+outside option), at the default tolerance and 1,000 evaluations, the step failed on 103
 and Berry's contraction on 592, never where the contraction converged; where both
-converged, the method needed a median 0.12 of the contraction's evaluations.
+converged, the step needed a median 0.12 of the contraction's evaluations.
 
 With `method = "anderson"` the same 121 designs converged in medians of 13, 12 and 16.5
 evaluations for the multinomial, nested and mixed logits (32, 18.5 and 174 with
@@ -647,7 +647,8 @@ four regions from 10 far starts in 27 to 36 evaluations, where `"simple"` needed
 to 3,655. On the 999 small hard designs above and 999 more drawn alike it failed on 61,
 29 and 20 at 1,000, 20,000 and 200,000 evaluations, against 210, 80 and 39 for
 `"simple"`, and needed a median 0.45 to 0.48 of `"simple"`'s evaluations where both
-converged.
+converged. On simulated claims-, census- and small-scale data (up to $10^7$ rows) it took
+0.25 to 1.03 times `"simple"`'s time, which made it the default.
 
 ### 7.4 Stopping Rule and Result
 

@@ -1348,19 +1348,19 @@ diversion_ratios <- function(object, ...) UseMethod("diversion_ratios")
 #'   first, when the model has one), finite, positive, and summing to 1
 #'   within \code{sqrt(.Machine$double.eps)}. They start from the fitted
 #'   constants (zeros for a model fitted without them) unless
-#'   \code{delta_init} is given. \code{method = "simple"} (the default) is the
-#'   two-level step of \code{\link{blp_contraction}()}: a common shift of the
-#'   constants, then the rest of each residual over the exact diagonal of its
-#'   derivative. \code{method = "original"} is the contraction of Berry,
-#'   Levinsohn and Pakes (1995, eq. 6.8),
+#'   \code{delta_init} is given. \code{method = "anderson"}, the default,
+#'   accelerates the two-level step of \code{\link{blp_contraction}()} by
+#'   Anderson acceleration, its settings in \code{control}: \code{memory},
+#'   how many differences between successive iterates it keeps (default 10),
+#'   and \code{max_condition} (default \eqn{10^8}). \code{method = "simple"}
+#'   takes that step alone: a common shift of the constants, then the rest of
+#'   each residual over the exact diagonal of its derivative.
+#'   \code{method = "original"} is the contraction of Berry, Levinsohn and
+#'   Pakes (1995, eq. 6.8),
 #'   \eqn{\delta \leftarrow \delta + \log S - \log s(\delta)}, normalized as
 #'   the step is (the outside option's utility 0, or each group's reference
 #'   held) and, for the nested logit, multiplied by \code{damping}.
-#'   \code{method = "anderson"} accelerates the two-level step (Anderson
-#'   acceleration; see \code{\link{blp_contraction}()}), its settings in
-#'   \code{control}: \code{memory}, how many differences between successive
-#'   iterates it keeps (default 10), and \code{max_condition} (default
-#'   \eqn{10^8}). \code{method = "squarem"} extrapolates it by SQUAREM,
+#'   \code{method = "squarem"} extrapolates the step by SQUAREM,
 #'   PyBLP's default (settings \code{scheme}, \code{step_min},
 #'   \code{step_max} and \code{step_factor}; PyBLP's defaults 3, 1, 1 and 4).
 #'   Every method runs under the same checks, stopping rule, evaluation
@@ -1495,10 +1495,10 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The solver: \code{"simple"} (the default),
-#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction,
-#'   \code{"anderson"}, Anderson acceleration of \code{"simple"}, or
-#'   \code{"squarem"}, SQUAREM on it (see \code{\link{blp}()}).
+#' @param method The solver: \code{"anderson"} (the default), Anderson
+#'   acceleration of the two-level step; \code{"simple"}, that step alone;
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction; or
+#'   \code{"squarem"}, SQUAREM on the step (see \code{\link{blp}()}).
 #' @param control A list of the method's settings: for \code{"anderson"},
 #'   \code{memory} and \code{max_condition}; for \code{"squarem"},
 #'   \code{scheme}, \code{step_min}, \code{step_max} and \code{step_factor}
@@ -1519,7 +1519,7 @@ diversion_ratios.choicer_mnl <- function(object, ...) {
 #' }
 #' @export
 blp.choicer_mnl <- function(object, target_shares, delta_init = NULL,
-                            tol = 1e-8, max_iter = 1000, method = "simple",
+                            tol = 1e-8, max_iter = 1000, method = "anderson",
                             control = list(), ...) {
   .blp_common(object, target_shares, delta_init, tol, max_iter, method = method,
               control = control, solve = function(start, target, ctl) {
@@ -1706,10 +1706,10 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   or batch jobs with memory limits), a budget above the memory actually
 #'   free can end the R session rather than fall back: lower it, or use
 #'   \code{0}, when memory is tight.
-#' @param method The solver: \code{"simple"} (the default),
-#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction,
-#'   \code{"anderson"}, Anderson acceleration of \code{"simple"}, or
-#'   \code{"squarem"}, SQUAREM on it (see \code{\link{blp}()}).
+#' @param method The solver: \code{"anderson"} (the default), Anderson
+#'   acceleration of the two-level step; \code{"simple"}, that step alone;
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction; or
+#'   \code{"squarem"}, SQUAREM on the step (see \code{\link{blp}()}).
 #' @param control A list of the method's settings: for \code{"anderson"},
 #'   \code{memory} and \code{max_condition}; for \code{"squarem"},
 #'   \code{scheme}, \code{step_min}, \code{step_max} and \code{step_factor}
@@ -1742,7 +1742,7 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #' @export
 blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
                             tol = 1e-8, max_iter = 1000,
-                            keep_draws_bytes = 2^32, method = "simple",
+                            keep_draws_bytes = 2^32, method = "anderson",
                             control = list(), ...) {
   keep_draws_bytes <- .int64_to_double(keep_draws_bytes, "keep_draws_bytes")
   if (!is.numeric(keep_draws_bytes) || length(keep_draws_bytes) != 1L ||
@@ -1977,10 +1977,10 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @param tol Convergence tolerance on the largest absolute log-share
 #'   residual (default 1e-8; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
-#' @param method The solver: \code{"simple"} (the default),
-#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction,
-#'   \code{"anderson"}, Anderson acceleration of \code{"simple"}, or
-#'   \code{"squarem"}, SQUAREM on it (see \code{\link{blp}()}).
+#' @param method The solver: \code{"anderson"} (the default), Anderson
+#'   acceleration of the two-level step; \code{"simple"}, that step alone;
+#'   \code{"original"}, Berry, Levinsohn and Pakes's contraction; or
+#'   \code{"squarem"}, SQUAREM on the step (see \code{\link{blp}()}).
 #' @param control A list of the method's settings: for \code{"anderson"},
 #'   \code{memory} and \code{max_condition}; for \code{"squarem"},
 #'   \code{scheme}, \code{step_min}, \code{step_max} and \code{step_factor}
@@ -2003,7 +2003,7 @@ diversion_ratios.choicer_nl <- function(object, ...) {
 #' @export
 blp.choicer_nl <- function(object, target_shares, delta_init = NULL,
                            damping = 1, tol = 1e-8, max_iter = 1000,
-                           method = "simple", control = list(), ...) {
+                           method = "anderson", control = list(), ...) {
   .blp_common(object, target_shares, delta_init, tol, max_iter, damping = damping,
               method = method, control = control,
               solve = function(start, target, ctl) {

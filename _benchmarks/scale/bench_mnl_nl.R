@@ -140,14 +140,23 @@ acc_arg <- function(f) {
 # The inversion's target: the shares at theta (attainable, unlike uniform
 # shares on regional choice sets, which the engine's checks stop)
 blp_target <- if ("blp" %in% what) as.numeric(do.call(kern("predict_shares"), p_args(d$weights)))
+# (the step alone where the build has methods, so that builds before and
+# after Phase B, whose default is Anderson acceleration, time the same pass)
+blp_method <- if ("method" %in% names(formals(ns$blp_contraction))) {
+  list(method = "simple")
+} else {
+  list()
+}
 call_blp <- function() {
   # (it stops at max_iter: the engine warns, builds before 0.3.0 printed)
   utils::capture.output(r <- suppressWarnings(if (model == "nl") {
-    ns$nl_blp_contraction(rep(0, J), blp_target, d$X, beta, lambda_full, d$alt_idx, nest_idx,
-                          d$M, d$weights, ioo, tol = 0, max_iter = blp_iter)
+    do.call(ns$nl_blp_contraction, c(list(rep(0, J), blp_target, d$X, beta, lambda_full,
+                                          d$alt_idx, nest_idx, d$M, d$weights, ioo,
+                                          tol = 0, max_iter = blp_iter), blp_method))
   } else {
-    ns$blp_contraction(rep(0, J), blp_target, d$X, beta, d$alt_idx, d$M, d$weights, ioo,
-                       tol = 0, max_iter = blp_iter)
+    do.call(ns$blp_contraction, c(list(rep(0, J), blp_target, d$X, beta, d$alt_idx, d$M,
+                                       d$weights, ioo, tol = 0, max_iter = blp_iter),
+                                  blp_method))
   }))
   r
 }

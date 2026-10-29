@@ -7,11 +7,11 @@
 model's market shares equal target shares (Berry 1994), with one engine in
 place of three copies of Berry's contraction. The solution is the same; the
 iteration that reaches it, its stopping rule and its handling of inputs that
-have no solution are new, so results move within the tolerance. The
-contraction remains available, under the engine's rules, as
-`blp(method = "original")`, and the new step accelerated as
-`method = "anderson"` (Anderson acceleration) and `method = "squarem"`
-(SQUAREM).
+have no solution are new, so results move within the tolerance. The default,
+`method = "anderson"`, accelerates the new step by Anderson acceleration;
+`method = "simple"` takes the step alone, `method = "squarem"` accelerates it
+by SQUAREM, and the contraction remains available, under the engine's rules,
+as `method = "original"`.
 
 - **The step.** The iteration solves for the free constants at which each
   log-share residual against a base, r_j - r_b (r = log S - log s), is zero;
@@ -54,15 +54,16 @@ contraction remains available, under the engine's rules, as
   0.52.
 - **Safeguards.** A step is at most 5 log units long, or as long as its
   residual against the base, |r_j - r_b|, where that is longer. An
-  evaluation whose shares are not finite halves the step. An iteration whose
-  best residual has not improved for 30 iterations (a stall) halves its later
-  steps. Where its residual at the stall is more than twice the best (it
-  diverges), it first returns to its best point, once per best point;
-  otherwise it goes on from where it is, and each such stall doubles the
-  iterations the next one waits for, so that constants climbing back from
-  where their shares barely respond are not pulled back. Two more safeguards
-  apply in nests with lambda above 1, whose nest-mates are complements where
-  the nest's choice probability is below 1 - 1 / lambda. An alternative whose
+  evaluation whose shares are not finite halves the step. Under `"simple"`,
+  an iteration whose best residual has not improved for 30 iterations (a
+  stall) halves its later steps. Where its residual at the stall is more than
+  twice the best (it diverges), it first returns to its best point, once per
+  best point; otherwise it goes on from where it is, and each such stall
+  doubles the iterations the next one waits for, so that constants climbing
+  back from where their shares barely respond are not pulled back. Two more
+  safeguards apply in nests with lambda above 1, whose nest-mates are
+  complements where the nest's choice probability is below 1 - 1 / lambda.
+  An alternative whose
   co-choice with the reference is negative divides by at least 1. The
   step's divisor is at least (1 + lambda) / (2 lambda) times the one the
   same probabilities give with lambda = 1, where the exact one would
@@ -71,7 +72,7 @@ contraction remains available, under the engine's rules, as
   on all, in a median 0.32 of the contraction's evaluations and never more
   (with an outside option the contraction needed 129 to 170 evaluations, the
   step 9 to 70). `damping`, for the nested logit, now multiplies the step and
-  must lie in (0, 1]; with the default step, small lambda no longer needs it
+  must lie in (0, 1]; with the step, small lambda no longer needs it
   (`method = "original"` still may).
 - **Berry's contraction as a fallback.** The step can amplify the small
   residual of an alternative that nearly owns its choice situations into a
@@ -87,7 +88,7 @@ contraction remains available, under the engine's rules, as
   residual while the step's best is lower; the step then has 200 iterations
   at a time to halve its own best residual, and whenever it fails to, the
   contraction goes on from where it stopped. Where the contraction converges
-  in E evaluations, the default converges within T + 4E, and within T + 2E
+  in E evaluations, the step converges within T + 4E, and within T + 2E
   where the contraction halves its best residual within every 100 of its
   evaluations, T being the evaluations before the contraction joined; the
   bound leaves out the step's halvings after the contraction joined and any
@@ -100,13 +101,13 @@ contraction remains available, under the engine's rules, as
   single-alternative ones included; integer covariates and constants in
   [-10, 10] and [-3, 3], the mixed logit's random-coefficient covariate in
   [-3, 3]; half with an outside option; the three models, lambda from 0.2 to
-  2), at the default tolerance and 1,000 evaluations, the default failed on
-  296 and the contraction on 1,742, the default on only one where the
-  contraction converged (a nested logit that the contraction needed 770
-  evaluations for); where both converged, the default needed about a tenth
-  of the contraction's evaluations. With 200,000 evaluations the default
-  failed on 73, 15 of them designs that the contraction solved, in 97,115 to
-  177,800 evaluations, where T + 4E exceeds the budget. The contraction's
+  2), at tol 1e-8 and 1,000 evaluations, the step failed on 296 and the
+  contraction on 1,742, the step on only one where the contraction converged
+  (a nested logit that the contraction needed 770 evaluations for); where
+  both converged, the step needed about a tenth of the contraction's
+  evaluations. With 200,000 evaluations the step failed on 73, 15 of them
+  designs that the contraction solved, in 97,115 to 177,800 evaluations,
+  where T + 4E exceeds the budget. The contraction's
   turns cost evaluations where the step is slow but gets there: 1.07 to 1.20
   times the step's own from 10 far starts in a segmented market, and 1.06 to
   1.34 times on the four of the 240 that took more than 3,000 (3,607 to
@@ -127,22 +128,25 @@ contraction remains available, under the engine's rules, as
   best, since the way to the solution can climb through larger residuals
   first; restarting from its best point every time failed on four to five
   times as many of the small designs above. It races the contraction as the
-  default does, so the bound T + 4E holds (its trial points whose shares are
+  step does, so the bound T + 4E holds (its trial points whose shares are
   not finite left out, as the step's halvings are). On the 121 simulated
   designs above it converged on every one, in medians of 13, 12 and 16.5
-  evaluations of the shares (multinomial, nested and mixed logits; the default
-  32, 18.5 and 174), never more than 1.25 times the default's; on the 80
-  nested logits with lambda above 1 in a median 0.67 of the default's
+  evaluations of the shares (multinomial, nested and mixed logits; the step
+  alone 32, 18.5 and 174), never more than 1.25 times the step's; on the 80
+  nested logits with lambda above 1 in a median 0.67 of the step's
   evaluations, never more. From 10 far starts in a market of four regions it
-  needed 27 to 36 evaluations, the default 3,143 to 3,655. On the 5,985 small
+  needed 27 to 36 evaluations, the step 3,143 to 3,655. On the 5,985 small
   hard designs (the 2,995 above and 2,990 more drawn alike) it failed on 163,
-  85 and 62 at 1,000, 20,000 and 200,000 evaluations, the default on 590, 236
-  and 122, and where both converged it needed a median 0.45 of the default's
+  85 and 62 at 1,000, 20,000 and 200,000 evaluations, the step on 590, 236
+  and 122, and where both converged it needed a median 0.45 of the step's
   evaluations (90th percentile 1.14). Where the targets lie within working
   precision of what the data can attain, the constants are not identified to
   that precision (conditioning above 10^7), and the extrapolation can stop
-  farther from the constants the targets came from than the default does, its
-  shares still within `tol`. `"simple"` remains the default.
+  farther from the constants the targets came from than the step does, its
+  shares still within `tol`. It is the default of `blp()` and the exported
+  functions: on simulated claims-, census- and small-scale data (up to 10^7
+  rows; the mixed logit's 10^6, with 20 draws) it converged everywhere, in
+  0.25 to 1.03 times the step's time at one and eleven threads.
 - **SQUAREM.** `method = "squarem"` extrapolates the step by SQUAREM (Varadhan
   and Roland 2008), the default of PyBLP (Conlon and Gortmaker 2020), with its
   settings in `control` (`scheme` 3; `step_min` and `step_max` 1 at first,
@@ -152,9 +156,9 @@ contraction remains available, under the engine's rules, as
   for comparison with PyBLP and the literature rather than as a default: on the
   121 simulated designs it converged on every one, in medians of 17, 14.5 and
   29 evaluations (multinomial, nested and mixed logits), never more than the
-  default's; from the 10 far starts it needed 1,311 to 1,466 evaluations; and
+  step's; from the 10 far starts it needed 1,311 to 1,466 evaluations; and
   on the 5,985 small hard designs it failed on 630, 295 and 199 at 1,000,
-  20,000 and 200,000 evaluations, more often than the default (590, 236 and
+  20,000 and 200,000 evaluations, more often than the step (590, 236 and
   122), above all on nested logits. With these bounds it never takes a step
   shorter than two plain ones, so it cannot damp a step that oscillates within
   a nest, as Anderson's least squares can.
@@ -200,15 +204,16 @@ contraction remains available, under the engine's rules, as
   before a mixed logit forms its draws): one share per alternative, the
   outside option's first, finite, positive and summing to 1. It checks
   `delta_init` the same way, and gains `method` and `control`.
-  `method = "simple"`, the default, is the step above; `"anderson"` and
-  `"squarem"` its accelerations, whose settings go in `control`; `"original"`
+  `method = "anderson"`, the default, accelerates the step above, which
+  `"simple"` takes alone, and `"squarem"` accelerates it by SQUAREM (the
+  accelerations' settings go in `control`); `"original"`
   is the contraction of Berry, Levinsohn and Pakes (1995, eq. 6.8),
   delta + log S - log s(delta), normalized as the step is and, for the
   nested logit, multiplied by `damping`. All share the checks, the stopping
   rule, the evaluation budget, the warning, the point returned and the
   halving of a step whose shares are not finite (the accelerations first
   fall back where an extrapolated point's are not); the step's stalls belong
-  to the default, its cap to the step that the accelerations extrapolate
+  to `"simple"`, its cap to the step that the accelerations extrapolate
   too, and the race with the contraction to all three. Its result keeps its
   n x 1 shape and gains the inside alternatives' labels as row names and a
   `"convergence"` attribute: the
@@ -226,7 +231,8 @@ contraction remains available, under the engine's rules, as
   evaluations more than make up for it.
 - **The exported functions** keep their arguments, defaults, layouts of
   `delta` and n x 1 results; they are now R functions over the engine, and
-  gain `method` and `control` as their last arguments.
+  gain `method` (by default `"anderson"`) and `control` as their last
+  arguments.
   `mxl_blp_contraction()` converts an integer or logical cube of draws to
   double, where it read such a cube from a temporary copy that R could free
   while it was read.

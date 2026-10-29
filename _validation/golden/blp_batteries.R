@@ -40,6 +40,23 @@ gb_fun <- function(fn, args) {
   get(fn, envir = asNamespace("choicer"))
 }
 
+# main's defaults, "simple" at tol 1e-8, pinned where a call leaves them out
+# (by name or position) and the function takes them, so that a leaf runs the
+# same iteration on main and on a build whose defaults differ: Phase B made
+# "anderson" the default, which the accelerated leaves (GB_ACCEL) name. The
+# arguments are forced first, so that what forming them raises is the call's;
+# a call whose function cannot be found is left as it is, to fail as itself.
+gb_pin_defaults <- function(fn, args) {
+  force(args)
+  f <- tryCatch(gb_fun(fn, args), error = function(e) NULL)
+  if (is.null(f)) return(args)
+  fm <- names(formals(f))
+  given <- names(as.list(match.call(f, as.call(c(list(as.name(fn)), args))))[-1L])
+  if (!"tol" %in% given && "tol" %in% fm) args$tol <- 1e-8
+  if (!"method" %in% given && "method" %in% fm) args$method <- "simple"
+  args
+}
+
 # The call's arguments by name, with the function's defaults for the others
 # (evaluated where the function would evaluate them).
 gb_args <- function(fn, args) {
@@ -62,7 +79,8 @@ gb_args <- function(fn, args) {
 # printed lines of a call, made by name (do.call() with a string, so that a
 # fit's stored call never holds a closure), and its arguments: they are
 # forced here, once, so that what forming them raises is the call's (and NULL
-# comes back for them when that fails).
+# comes back for them when that fails), and main's defaults pinned where the
+# call leaves them out (gb_pin_defaults()).
 gb_run <- function(fn, args) {
   warns <- character()
   conv_warn <- NULL
@@ -72,7 +90,7 @@ gb_run <- function(fn, args) {
   forced <- NULL
   printed <- utils::capture.output(val <- tryCatch(
     withCallingHandlers({
-      forced <- args
+      forced <- gb_pin_defaults(fn, args)
       do.call(fn, forced)
     },
       warning = function(w) {
@@ -808,7 +826,8 @@ gb_design <- function(seed, N, J, m, K = 1L, border = 0, Kx = 2L, Kw = 0L) {
 # The battery
 # ---------------------------------------------------------------------------
 
-# The accelerated methods of Phase B, each run on the fits' designs
+# The accelerated methods of Phase B, each run on the fits' designs by name
+# ("anderson", the default since Phase B, among them)
 GB_ACCEL <- c("anderson", "squarem")
 
 run_blp <- function() {
@@ -1160,10 +1179,10 @@ run_blp <- function() {
 
   # -- blp() on fits ----------------------------------------------------------
   # (method = "original", Berry, Levinsohn and Pakes's contraction under the
-  # engine's rules, is main's contraction: main's blp() takes the argument in
-  # its dots. The accelerated methods (Phase B) go through blp() only: a
-  # baseline's blp() stops on a method it does not know, which the tier
-  # accepts, while its exports have no method argument at all, and the
+  # engine's rules, is main's contraction: main's blp() methods take `method`,
+  # "simple" or "original". The accelerated methods (Phase B) go through blp()
+  # only: a baseline's blp() stops on a method it does not know, which the
+  # tier accepts, while its exports have no method argument at all, and the
   # harness could not record the call's problem there)
   for (ioo in c(FALSE, TRUE)) {
     s <- data.table::as.data.table(simulate_mnl_data(

@@ -40,19 +40,19 @@ one-column matrix of one share per alternative (the outside option's
 first, when the model has one), finite, positive, and summing to 1
 within \code{sqrt(.Machine$double.eps)}. They start from the fitted
 constants (zeros for a model fitted without them) unless
-\code{delta_init} is given. \code{method = "simple"} (the default) is the
-two-level step of \code{\link{blp_contraction}()}: a common shift of the
-constants, then the rest of each residual over the exact diagonal of its
-derivative. \code{method = "original"} is the contraction of Berry,
-Levinsohn and Pakes (1995, eq. 6.8),
+\code{delta_init} is given. \code{method = "anderson"}, the default,
+accelerates the two-level step of \code{\link{blp_contraction}()} by
+Anderson acceleration, its settings in \code{control}: \code{memory},
+how many differences between successive iterates it keeps (default 10),
+and \code{max_condition} (default \eqn{10^8}). \code{method = "simple"}
+takes that step alone: a common shift of the constants, then the rest of
+each residual over the exact diagonal of its derivative.
+\code{method = "original"} is the contraction of Berry, Levinsohn and
+Pakes (1995, eq. 6.8),
 \eqn{\delta \leftarrow \delta + \log S - \log s(\delta)}, normalized as
 the step is (the outside option's utility 0, or each group's reference
 held) and, for the nested logit, multiplied by \code{damping}.
-\code{method = "anderson"} accelerates the two-level step (Anderson
-acceleration; see \code{\link{blp_contraction}()}), its settings in
-\code{control}: \code{memory}, how many differences between successive
-iterates it keeps (default 10), and \code{max_condition} (default
-\eqn{10^8}). \code{method = "squarem"} extrapolates it by SQUAREM,
+\code{method = "squarem"} extrapolates the step by SQUAREM,
 PyBLP's default (settings \code{scheme}, \code{step_min},
 \code{step_max} and \code{step_factor}; PyBLP's defaults 3, 1, 1 and 4).
 Every method runs under the same checks, stopping rule, evaluation
