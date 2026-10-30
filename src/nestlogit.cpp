@@ -3462,7 +3462,7 @@ Rcpp::List nl_blp_solve(
   }
   bool kept = false;
   if (ctl.pass == BLP_PASS_EXP && !pb.free.empty() &&
-      (ctl.max_evals > 1 || ctl.origin.n_elem > 0)) {
+      (ctl.max_evals > 1 || (ctl.origin.n_elem > 0 && ctl.max_evals > 0))) {
     // (the call holds the design and X beta)
     const double held = sizeof(double) * (static_cast<double>(X.n_elem) +
                                           static_cast<double>(Xb.n_elem));

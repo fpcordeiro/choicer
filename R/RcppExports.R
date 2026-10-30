@@ -1340,16 +1340,20 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' (a finite start, finite and non-negative weights, the targets' sums and
 #' bounds), then the solver. When the draws are formed on the fly
 #' (gen_seed >= 0), all situations' Gamma = L eta take at most cache_bytes
-#' bytes (8 K_w S N) and the solver may evaluate the shares twice or more,
-#' they are kept from the first evaluation on instead of formed at every
-#' one; the result is the same.
+#' bytes (8 K_w S N) and the solver may evaluate the shares twice or more
+#' (or forms the exp-space cache at a test origin), they are kept from the
+#' first evaluation on instead of formed at every one; the result is the
+#' same.
 #'
 #' @inheritParams mxl_blp_contraction
 #' @param control List from .blp_control().
 #' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
 #' @return As mnl_blp_solve(), plus kept (whether the cache was allocated),
-#'   passes (the evaluations of the shares) and reads (the situations those
-#'   evaluations read from the cache).
+#'   passes (the passes over the situations) and reads (the situations those
+#'   passes read Gamma from the cache); with pass "exp", also exp_prefix (the
+#'   situations whose exponentials are kept, within what Gamma leaves of
+#'   cache_bytes and control's cache_bytes) and exp_reads (the situations
+#'   the passes from them served: exp_prefix (exp_evals + exp_floors)).
 #' @noRd
 mxl_blp_solve <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes) {
     .Call(`_choicer_mxl_blp_solve`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes)

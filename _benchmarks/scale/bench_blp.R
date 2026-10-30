@@ -154,6 +154,8 @@ record <- function(m, nt, rep, sec, r, a = NULL) {
           race = r$race %||% NA_integer_, restarts = r$restarts %||% NA_integer_,
           exp_kept = r$exp_kept %||% NA, exp_evals = r$exp_evals %||% NA_real_,
           exp_forms = r$exp_forms %||% NA_real_, exp_floors = r$exp_floors %||% NA_real_,
+          exp_prefix = r$exp_prefix %||% NA_real_, exp_reads = r$exp_reads %||% NA_real_,
+          passes = r$passes %||% NA_real_, reads = r$reads %||% NA_real_,
           residual = r$residual, err = delta_err(r$delta), sec_per_eval = sec / r$evaluations,
           n_alloc = if (is.null(a)) NA_real_ else a[["n_alloc"]],
           peak_live = if (is.null(a)) NA_real_ else a[["peak_live"]], error = "")
@@ -163,7 +165,8 @@ for (m in methods) {
     add_row(method = m, threads = NA_integer_, rep = NA_integer_, sec = NA_real_, code = NA_integer_,
             evals = NA_integer_, iterations = NA_integer_, race = NA_integer_,
             restarts = NA_integer_, exp_kept = NA, exp_evals = NA_real_,
-            exp_forms = NA_real_, exp_floors = NA_real_,
+            exp_forms = NA_real_, exp_floors = NA_real_, exp_prefix = NA_real_,
+            exp_reads = NA_real_, passes = NA_real_, reads = NA_real_,
             residual = NA_real_, err = NA_real_, sec_per_eval = NA_real_,
             n_alloc = NA_real_, peak_live = NA_real_, error = "method not in this build")
     cat(sprintf("  %-9s not in this build\n", m))
