@@ -500,6 +500,81 @@ test_that("\"auto\" compensates the sums above 2^22 situations per thread", {
   expect_false(run("auto")$compensated)  # (2^21 + 1 situations per thread)
 })
 
+test_that("compensated sums bound each target by its group's weight", {
+  # One situation of weight 1, then 2^16 of weight 2^-56, every one offering
+  # alternatives 1 and 2: plain sums lose the small weights (1 + 2^-56 rounds
+  # to 1) and compensated sums keep them (1 + 2^-40). The targets are
+  # attained at the start; an offer weight summed plainly over the
+  # compensated total (1 - 2^-40 of it) fell below alternative 1's (PR #58's
+  # review). The offer weights now share the total's compensation and order,
+  # so alternative 1's bound is its group's weight exactly, whatever the
+  # weights' common scale.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  n <- 2^16 + 1
+  alt <- rep(1:2, n)
+  M <- rep(2L, n)
+  X <- matrix(0, 2 * n, 1L)
+  S <- c(1 - 5e-13, 5e-13)
+  d0 <- c(0, log(S[2] / S[1]))
+  ctl <- xp_ctl(1e-8, 1L, compensate = "on")
+  for (s in c(1, 1.3)) {
+    w <- s * c(1, rep(2^-56, n - 1))
+    lab <- sprintf("scale %g", s)
+    r <- choicer:::mnl_blp_solve(d0, S, X, 0, alt, M, w, FALSE, ctl)
+    expect_identical(r$code, 0L, label = lab)
+    r <- choicer:::nl_blp_solve(d0, S, X, 0, 1, alt, c(1L, 1L), M, w, FALSE, ctl)
+    expect_identical(r$code, 0L, label = lab)
+    r <- choicer:::mxl_blp_solve(d0, S, X, matrix(0, 2 * n, 1L), 0, 0, 0, alt, M, w,
+                                 array(0, c(1L, 0L, 0L)), 0L, FALSE, FALSE, FALSE, ctl,
+                                 1L, 1L, 2L, 0)
+    expect_identical(r$code, 0L, label = lab)
+    # with an outside option, its share and alternative 2's below 2^-40
+    So <- c(3e-13, 1 - 6e-13, 3e-13)
+    r <- choicer:::mnl_blp_solve(log(So[-1L] / So[1L]), So, X, 0, alt, M, w, TRUE, ctl)
+    expect_identical(r$code, 0L, label = lab)
+  }
+  # and a second group, alternatives 3 and 4 in one situation of weight 1:
+  # alternative 1's bound is its group's weight over the total
+  alt2 <- c(alt, 3:4)
+  w2 <- c(1, rep(2^-56, n - 1), 1)
+  mA <- (1 + 2^-40) / (2 + 2^-40)
+  S2 <- c(mA * S, (1 - mA) / 2, (1 - mA) / 2)
+  r <- choicer:::mnl_blp_solve(c(d0, 0, 0), S2, rbind(X, 0, 0), 0, alt2, c(M, 2L), w2,
+                               FALSE, ctl)
+  expect_identical(r$code, 0L)
+})
+
+test_that("blp() and the exports accept targets near a bound above 2^22 situations", {
+  skip_on_cran()  # (eight million rows)
+  # PR #58's review: alternatives 1 and 2 offered in every one of 2^22 + 1
+  # situations, so each offer bound is 1 exactly; the targets are attained
+  # at the start. With weights 1.3 the plain offer weight over the
+  # compensated total was 0.99999999992, below alternative 1's target.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  N <- 2^22 + 1
+  S <- c(1 - 7e-11, 7e-11)
+  X <- matrix(0, 2 * N, 1L)
+  alt <- rep(1:2, N)
+  M <- rep(2L, N)
+  d0 <- c(0, log(S[2] / S[1]))
+  for (wv in c(1.3, 1)) {
+    w <- rep(wv, N)
+    lab <- sprintf("weights %g", wv)
+    expect_equal(as.numeric(blp_contraction(d0, S, X, 0, alt, M, w, tol = 1e-8,
+                                            max_iter = 1L)), d0, label = lab)
+    expect_equal(as.numeric(nl_blp_contraction(d0, S, X, 0, 1, alt, c(1L, 1L), M, w,
+                                               tol = 1e-8, max_iter = 1L)), d0,
+                 label = lab)
+    expect_equal(as.numeric(mxl_blp_contraction(d0, S, X, matrix(0, 2 * N, 1L), 0, 0, 0,
+                                                alt, M, w, array(0, c(1L, 0L, 0L)), 0L,
+                                                FALSE, FALSE, tol = 1e-8, max_iter = 1L,
+                                                gen_seed = 1L, gen_scramble = 1L,
+                                                gen_S = 2L)), d0, label = lab)
+  }
+})
+
 test_that("compensated sums keep the components' weights exact", {
   skip_on_cran()  # (two million rows)
   on.exit(set_omp_threads(2L), add = TRUE)
