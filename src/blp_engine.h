@@ -193,9 +193,11 @@ inline bool blp_compensate(const BlpControl& ctl, const double N, const int T) {
 }
 
 // Whether the inversion's serial sums over the N situations (the weights'
-// total, the components' weights) are compensated. They run on one thread
-// whatever the passes', and with an outside option an error in the total
-// moves every share alike, a floor under the residual.
+// total, the components' weights, and the targets' bounds: the weights of
+// the situations offering each alternative, and offering it alone) are
+// compensated. They run on one thread whatever the passes', and with an
+// outside option an error in the total moves every share alike, a floor
+// under the residual.
 inline bool blp_compensate_serial(const BlpControl& ctl, const double N) {
   return blp_compensate(ctl, N, 1);
 }
@@ -239,6 +241,13 @@ struct BlpComponents {
 // One serial pass over the rows: union-find over the alternatives (each set's
 // root its smallest code), each alternative's offer and captive weight (a code
 // listed twice counts its situation once), then each component's weight.
+// Compensated (kahan), the offer and captive weights are too, and each is
+// taken as a share of its component's weight summed in the same order (the
+// total of positive weights for a single component): an alternative that
+// every situation of its component offers then bounds its target by the
+// component's weight exactly, as the plain sums, added in one order, do. (A
+// plain offer weight over a compensated total fell below a target that its
+// constants attain.)
 inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
                                     const double W, const int J,
                                     const bool outside, const bool kahan = false) {
@@ -254,10 +263,14 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
   };
   std::vector<double> offer(static_cast<std::size_t>(J), 0.0),
       captive(static_cast<std::size_t>(J), 0.0);
+  const std::size_t J_k = kahan ? static_cast<std::size_t>(J) : 0;
+  std::vector<double> offer_c(J_k, 0.0), captive_c(J_k, 0.0);
+  double total = 0.0, total_c = 0.0;  // (compensated: the positive weights)
   std::vector<choicer_off> seen(static_cast<std::size_t>(J), -1);
   for (choicer_off t = 0; t < lay.N; ++t) {
     const double wt = w[t];
     if (!(wt > 0)) continue;  // a situation without weight neither offers nor links
+    if (kahan) kahan_add(total, total_c, wt);
     const int* alt = lay.alt + lay.row_off[t];
     const int m = lay.m(t);
     const int a0 = alt[0] - 1;
@@ -269,7 +282,11 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
         continue;
       }
       seen[a] = t;
-      offer[a] += wt;
+      if (kahan) {
+        kahan_add(offer[a], offer_c[a], wt);
+      } else {
+        offer[a] += wt;
+      }
       if (a != a0) {
         alone = false;
         const int ra = find(a), r0 = find(a0);
@@ -280,7 +297,20 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
         }
       }
     }
-    if (!outside && alone) captive[a0] += wt;
+    if (!outside && alone) {
+      if (kahan) {
+        kahan_add(captive[a0], captive_c[a0], wt);
+      } else {
+        captive[a0] += wt;
+      }
+    }
+  }
+  if (kahan) {
+    for (int j = 0; j < J; ++j) {
+      offer[j] -= offer_c[j];
+      captive[j] -= captive_c[j];
+    }
+    total -= total_c;
   }
   c.of.assign(static_cast<std::size_t>(J), -1);
   for (int j = 0; j < J; ++j) {
@@ -310,13 +340,22 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
   if (kahan) {
     for (int k = 0; k < c.n; ++k) c.mass[k] -= mass_c[k];
   }
+  // (compensated: each component's weight as its offer weights were summed)
+  std::vector<double> raw;
+  if (kahan) raw = c.n == 1 ? std::vector<double>{total} : c.mass;
   for (int k = 0; k < c.n; ++k) c.mass[k] /= W;
   if (c.n == 1) c.mass[0] = 1.0;  // every situation of positive weight
   c.offer.resize(static_cast<std::size_t>(J));
   c.captive.resize(static_cast<std::size_t>(J));
   for (int j = 0; j < J; ++j) {
-    c.offer[j] = offer[j] / W;
-    c.captive[j] = captive[j] / W;
+    const int k = c.of[j];
+    if (kahan && k >= 0) {
+      c.offer[j] = c.mass[k] * (offer[j] / raw[k]);
+      c.captive[j] = c.mass[k] * (captive[j] / raw[k]);
+    } else {
+      c.offer[j] = offer[j] / W;
+      c.captive[j] = captive[j] / W;
+    }
   }
   return c;
 }

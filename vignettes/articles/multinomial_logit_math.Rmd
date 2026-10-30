@@ -716,10 +716,10 @@ a floor under the residual that grows with the situations each thread adds: on o
 thread, with four alternatives in every situation, about $10^{-14}$ at $2^{22}$ situations
 (about 4.2 million; $7 \times 10^{-14}$ with an outside option) and $1.7 \times 10^{-13}$ at
 $2.5 \times 10^7$ ($10^8$ rows). Above $2^{22}$ situations per thread the sums are
-compensated (Kahan's summation; so are the weights' total and each component's weight
-above $2^{22}$ situations in all), which brings the floor to the precision of a double,
-$2.2 \times 10^{-16}$ or less at both sizes, for up to 14% more time per evaluation on the
-exp-space pass and 2.5–4% on the usual pass.
+compensated (Kahan's summation; so are the weights' total, each component's weight and
+the weights that bound the targets, §7.2, above $2^{22}$ situations in all), which brings
+the floor to the precision of a double, $2.2 \times 10^{-16}$ or less at both sizes, for up
+to 14% more time per evaluation on the exp-space pass and 2.5–4% on the usual pass.
 
 *Code reference: [src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h)
 (the components, the checks, the step and the stopping rule),

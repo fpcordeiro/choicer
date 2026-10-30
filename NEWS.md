@@ -282,20 +282,24 @@ as `method = "original"`.
   evaluates afresh, as before.
 - **Compensated sums.** Above 2^22 (about 4.2 million) choice situations per
   thread, each evaluation now adds the shares over situations by Kahan's
-  compensated summation, and above 2^22 situations the weights' total and
-  each group's weight too. Plain sums leave a floor under the residual that
-  grows with the situations each thread adds: for the multinomial logit with
-  four alternatives in every situation, on one thread, 9.4e-15 at 2^22
+  compensated summation, and above 2^22 situations the weights' total, each
+  group's weight and the weights that bound each target (of the situations
+  that offer an alternative, and that offer it alone) too, the bounds taken
+  against their group's weight summed in the same order: an alternative
+  offered in every situation of its group stays bounded by that weight
+  exactly, as with plain sums. Plain sums leave a floor under the residual
+  that grows with the situations each thread adds: for the multinomial logit
+  with four alternatives in every situation, on one thread, 9.4e-15 at 2^22
   situations (7.0e-14 with an outside option) and 1.7e-13 at 2.5 x 10^7, or
   10^8 rows (2.4e-13 with an outside option). Compensated, it is 2.2e-16 or
-  less at both sizes. At 10^8 rows an inversion at tol 1e-12 then stopped at
-  a residual of 8.9e-16 instead of 1.2e-13 without an outside option (the
+  less at both sizes. At 10^8 rows an inversion at tol 1e-12 then stopped at a
+  residual of 8.9e-16 instead of 1.2e-13 without an outside option (the
   constants' error 1.0e-15 instead of 1.6e-13), and with one at 1.6e-13
-  instead of 4.3e-13 (the error 2.8e-13 against 2.4e-13: no gain at that
-  tol), in the same six evaluations. An evaluation took up to 14% more time
-  on the exp-space pass and 2.5-4% more on the usual pass (minima of four to
-  six runs alternated in one process, one thread, other jobs on the
-  machine). Below the threshold the sums are as before.
+  instead of 4.3e-13 (the error 2.8e-13 against 2.4e-13: no gain at that tol),
+  in the same six evaluations. An evaluation took up to 14% more time on the
+  exp-space pass and 2.5-4% more on the usual pass (minima of four to six runs
+  alternated in one process, one thread, other jobs on the machine). Below the
+  threshold the sums are as before.
 - **The exported functions** keep their arguments, layouts of `delta` and
   n x 1 results, and their defaults except `tol`'s (now 1e-12); they are now
   R functions over the engine, and gain `method` (by default `"anderson"`)

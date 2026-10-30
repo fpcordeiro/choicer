@@ -497,9 +497,10 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' @param origin Tests: a numeric vector of the J constants at which the
 #'   exp-space cache is first formed (\code{NULL}: the first evaluation).
 #' @param compensate The passes' share sums: \code{"off"} (plain sums),
-#'   \code{"on"} (Kahan's compensated sums, also for the weights' total and
-#'   the components' weights) or \code{"auto"} (compensated above 2^22
-#'   choice situations per thread; src/blp_engine.h). (This default,
+#'   \code{"on"} (Kahan's compensated sums, also for the weights' total, the
+#'   components' weights and the targets' bounds) or \code{"auto"}
+#'   (compensated above 2^22 choice situations per thread;
+#'   src/blp_engine.h). (This default,
 #'   \code{"off"}, is the internal callers' and the tests'; the exports and
 #'   blp() pass \code{.BLP_COMPENSATE}, \code{"auto"}.)
 #' @returns A list for \code{*_blp_solve()}'s \code{control}.
