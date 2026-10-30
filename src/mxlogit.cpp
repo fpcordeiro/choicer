@@ -3533,7 +3533,8 @@ inline void mxl_pred_keep_gamma(MxlPredData& pd, const double cache_bytes) {
 // ============================================================================
 // The share inversion's model (blp_engine.h)
 //
-// One pass per evaluation of the shares, on the prediction family's machinery:
+// One pass per evaluation of the shares (two where the exp-space cache's floor
+// sends an evaluation to the usual pass), on the prediction family's machinery:
 // each situation loaded by mxl_pred_load() (the constants added to its base
 // utilities there; Gamma from blp()'s cache once the first pass has filled
 // it), each draw's probabilities, then, as mxl_pred_shares() forms them, the
@@ -3541,8 +3542,17 @@ inline void mxl_pred_keep_gamma(MxlPredData& pd, const double cache_bytes) {
 // delta; and per draw A = P_j (1 - P_j) and the co-choice P_j P_b with the
 // base, averaged over the draws and weighted once per situation (with
 // compensate, the share sums by Kahan's compensated summation). passes
-// counts the evaluations, and the scratch sets count the situations each one
-// read from the cache, so that reads == N (passes - 1) while it is kept.
+// counts the passes over the situations, and the scratch sets count the
+// situations each one read Gamma from blp()'s cache, so that reads == N
+// (passes - 1) while it is kept.
+//
+// With the exp-space pass (blp_engine.h), the situations of a prefix, as many
+// as the budget holds, also keep each draw's exponentials exp(v - max) from
+// the pass at an origin (m S per situation, at row_off[t] S, and S of the
+// outside option's, at t S), and an evaluation near the origin forms their
+// probabilities from them: no draws, Gamma, W_t Gamma or exponentials there.
+// Its passes serve the prefix's situations, counted in exp_reads, so that
+// reads + exp_reads == N (passes - 1) while Gamma is kept for all.
 // ============================================================================
 struct MxlBlpModel {
   MxlPredData& pd;
@@ -3558,17 +3568,23 @@ struct MxlBlpModel {
   double passes = 0;
   bool kahan = false;  // compensated share sums
   MxlPredAcc acc_k;    // and acc_s's compensations
+  BlpExpCache xc;                   // the exp-space cache's state
+  std::unique_ptr<double[]> E, E0;  // its exponentials (rows, outside option)
+  mxl_off prefix = 0;               // situations [0, prefix) keep them
+  double exp_reads = 0;             // situations its passes served
 
   // The scratch's aux: the mean probabilities (m + 1), A's and C's per-draw
-  // sums (m each), and, where codes repeat, a draw's totals (m).
+  // sums (m each), where codes repeat a draw's totals (m), and the
+  // exponentials a pass keeps (m + 1).
   static std::size_t aux_len(const ChoiceLayout& lay) {
-    return 4 * static_cast<std::size_t>(lay.max_m) + 1;
+    return 5 * static_cast<std::size_t>(lay.max_m) + 2;
   }
 
   MxlBlpModel(MxlPredData& pd_, const arma::vec& w_, const double W_, const int J_,
               const BlpComponents& comp_)
       : pd(pd_), weights(w_), W(W_), J(J_), comp(comp_),
-        scratch(mxl_pred_scratch(pd_, kernel_team_threads(pd_.lay.N), aux_len(pd_.lay))) {
+        scratch(mxl_pred_scratch(pd_, kernel_team_threads(pd_.lay.N), aux_len(pd_.lay))),
+        xc(J_, pd_.include_outside_option) {
     acc_s = mxl_pred_accumulators(scratch, static_cast<std::size_t>(J + comp.n),
                                   "share inversion");
     acc_ac = mxl_pred_accumulators(scratch, 2 * static_cast<std::size_t>(J),
@@ -3582,6 +3598,46 @@ struct MxlBlpModel {
     }
   }
 
+  // Keep the exp-space cache for the longest prefix of situations whose
+  // exponentials, S (m_t + 1) doubles each with an outside option and S m_t
+  // without, fit within budget bytes, if any do and can be had.
+  bool keep_exp(const double budget) {
+    const ChoiceLayout& lay = pd.lay;
+    const double S = static_cast<double>(pd.S);
+    const double o = pd.include_outside_option ? 1.0 : 0.0;
+    if (!(budget > 0) || lay.N <= 0 || pd.S <= 0) return false;
+    // (doubles per draw: row_off[t] + o t, increasing in t; at most N)
+    const double room = budget / (sizeof(double) * S);
+    mxl_off lo = 0, hi = lay.N;
+    while (lo < hi) {
+      const mxl_off mid = lo + (hi - lo + 1) / 2;
+      if (static_cast<double>(lay.row_off[mid]) + o * static_cast<double>(mid) <= room) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (lo <= 0) return false;
+    const std::size_t Ss = static_cast<std::size_t>(pd.S);
+    try {
+      E.reset(new double[static_cast<std::size_t>(lay.row_off[lo]) * Ss]);
+      if (o > 0) E0.reset(new double[static_cast<std::size_t>(lo) * Ss]);
+    } catch (const std::bad_alloc&) {
+      E.reset();
+      E0.reset();
+      return false;
+    }
+    prefix = lo;
+    return true;
+  }
+
+  // Form the exp-space cache at delta0 (tests: control$origin)
+  void form(const arma::vec& delta0) {
+    BlpPass scratch_pass(J, comp.n);
+    sweep<false, true>(delta0, scratch_pass);
+    xc.formed(delta0, scratch_pass);
+  }
+
   // Compensate the share sums (blp_engine.h)
   void compensate() {
     kahan = true;
@@ -3590,16 +3646,27 @@ struct MxlBlpModel {
   }
 
   void pass(const arma::vec& delta, BlpPass& out) {
-    if (kahan) {
-      pass_k<true>(delta, out);
+    if (E) {
+      blp_exp_pass(*this, xc, delta, out);
     } else {
-      pass_k<false>(delta, out);
+      sweep<false, false>(delta, out);
     }
   }
 
-  // One pass, with the share sums compensated (Kahan) or plain
-  template <bool Kahan>
-  void pass_k(const arma::vec& delta, BlpPass& out) {
+  // One pass: the usual one (Exp false), storing the exp-space cache of the
+  // prefix (Store), or from it there (Exp, its factors in xc.factor)
+  template <bool Exp, bool Store>
+  void sweep(const arma::vec& delta, BlpPass& out) {
+    if (kahan) {
+      sweep_k<Exp, Store, true>(delta, out);
+    } else {
+      sweep_k<Exp, Store, false>(delta, out);
+    }
+  }
+
+  // ... with the share sums compensated (Kahan) or plain
+  template <bool Exp, bool Store, bool Kahan>
+  void sweep_k(const arma::vec& delta, BlpPass& out) {
     pd.delta = delta;
     const std::size_t n_s = static_cast<std::size_t>(J + comp.n);
     mxl_pred_zero(acc_s, n_s);
@@ -3610,13 +3677,27 @@ struct MxlBlpModel {
     const int o = outside ? 1 : 0;
     const bool repeated = comp.repeated;
     const std::size_t m_max = static_cast<std::size_t>(pd.lay.max_m);
+    const std::size_t Ss = static_cast<std::size_t>(S);
+    const double* fa = xc.factor.memptr();
+    double* e = E.get();
+    double* e0 = E0.get();
+    const mxl_off pre = prefix;
 
     mxl_pred_run(pd, scratch, [&](const mxl_off t, MxlPredScratch& sc) {
       arma::vec local_shares(acc_s[sc.tid].get(), n_s, false, true);
       double* ls = acc_s[sc.tid].get();
       double* lk = Kahan ? acc_k[sc.tid].get() : nullptr;
       double* ac = acc_ac[sc.tid].get();
-      const int m_i = mxl_pred_load(pd, t, sc);
+      // the situation keeps its exponentials (a pass from or storing the cache)
+      const bool cached = (Exp || Store) && t < pre;
+      int m_i;
+      if (Exp && cached) {
+        m_i = pd.lay.m(t);
+      } else {
+        m_i = mxl_pred_load(pd, t, sc);
+      }
+      double* et = cached ? e + static_cast<std::size_t>(pd.lay.row_off[t]) * Ss : nullptr;
+      double* e0t = cached && e0 ? e0 + static_cast<std::size_t>(t) * Ss : nullptr;
       const int num_choices = m_i + o;
       const double w_i = weights[t];
       const int* alt = pd.lay.alt + pd.lay.row_off[t];
@@ -3627,6 +3708,11 @@ struct MxlBlpModel {
       double* A_bar = sc.aux.get() + (m_max + 1);
       double* C_bar = A_bar + m_max;
       double* tot = C_bar + m_max;
+      double* ek = tot + m_max;  // a draw's exponentials, the outside option's
+                                 // first (from the cache: the rows' factors)
+      if (Exp && cached) {
+        for (int a = 0; a < m_i; ++a) ek[a] = fa[alt[a] - 1];
+      }
       P_bar_i.zeros();
       const int c = comp.of[alt[0] - 1];
       int* rr = rows_ref[sc.tid].data();
@@ -3659,10 +3745,23 @@ struct MxlBlpModel {
 
       // Accumulate probabilities over draws
       for (int s = 0; s < S; ++s) {
-        const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m_i;
-        if (o) v[0] = 0.0;
-        for (int a = 0; a < m_i; ++a) v[o + a] = bu[a] + wg[a];
-        stable_softmax_n(v, p, num_choices);
+        if (Exp && cached) {
+          const double* es = et + static_cast<std::size_t>(s) * m_i;
+          if (o) p[0] = e0t[s];
+          for (int a = 0; a < m_i; ++a) p[o + a] = es[a] * ek[a];
+          softmax_normalize_n(p, num_choices);
+        } else {
+          const double* wg = sc.WGamma.get() + static_cast<std::size_t>(s) * m_i;
+          if (o) v[0] = 0.0;
+          for (int a = 0; a < m_i; ++a) v[o + a] = bu[a] + wg[a];
+          if (Store && cached) {
+            stable_softmax_keep_n(v, p, num_choices, ek);
+            std::copy(ek + o, ek + o + m_i, et + static_cast<std::size_t>(s) * m_i);
+            if (o) e0t[s] = ek[0];
+          } else {
+            stable_softmax_n(v, p, num_choices);
+          }
+        }
         for (int j = 0; j < num_choices; ++j) P_bar_i[j] += p[j];
         double pb = 0.0;
         if (outside) {
@@ -3739,6 +3838,7 @@ struct MxlBlpModel {
     }
     pd.gamma_filled = pd.gamma_cache != nullptr;  // filled by the first pass
     ++passes;
+    if (Exp) exp_reads += static_cast<double>(pre);
   }
 };
 
@@ -3750,16 +3850,20 @@ struct MxlBlpModel {
 //' (a finite start, finite and non-negative weights, the targets' sums and
 //' bounds), then the solver. When the draws are formed on the fly
 //' (gen_seed >= 0), all situations' Gamma = L eta take at most cache_bytes
-//' bytes (8 K_w S N) and the solver may evaluate the shares twice or more,
-//' they are kept from the first evaluation on instead of formed at every
-//' one; the result is the same.
+//' bytes (8 K_w S N) and the solver may evaluate the shares twice or more
+//' (or forms the exp-space cache at a test origin), they are kept from the
+//' first evaluation on instead of formed at every one; the result is the
+//' same.
 //'
 //' @inheritParams mxl_blp_contraction
 //' @param control List from .blp_control().
 //' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
 //' @return As mnl_blp_solve(), plus kept (whether the cache was allocated),
-//'   passes (the evaluations of the shares) and reads (the situations those
-//'   evaluations read from the cache).
+//'   passes (the passes over the situations) and reads (the situations those
+//'   passes read Gamma from the cache); with pass "exp", also exp_prefix (the
+//'   situations whose exponentials are kept, within what Gamma leaves of
+//'   cache_bytes and control's cache_bytes) and exp_reads (the situations
+//'   the passes from them served: exp_prefix (exp_evals + exp_floors)).
 //' @noRd
 // [[Rcpp::export]]
 Rcpp::List mxl_blp_solve(
@@ -3871,7 +3975,33 @@ Rcpp::List mxl_blp_solve(
   const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option,
                                     J_inside);
   if (!include_outside_option) delta_current -= delta_current(0);
-  if (ctl.max_evals > 1 && !pb.free.empty()) mxl_pred_keep_gamma(pd, cache_bytes);
+  const bool reuse = (ctl.max_evals > 1 || (ctl.pass == BLP_PASS_EXP &&
+                                             ctl.origin.n_elem > 0 && ctl.max_evals > 0)) &&
+                     !pb.free.empty();
+  if (reuse) mxl_pred_keep_gamma(pd, cache_bytes);
+  // The exp-space cache from what Gamma leaves of the budget (Gamma first:
+  // its bytes save the most per pass), where re-forming it does not form the
+  // draws again (Gamma kept, or a cube in memory)
+  bool kept_exp = false;
+  if (ctl.pass == BLP_PASS_EXP && reuse && (pd.gamma_cache || !pd.draws.generate)) {
+    const double gamma_bytes = pd.gamma_cache
+        ? sizeof(double) * static_cast<double>(K_w) * pd.S * static_cast<double>(pd.lay.N)
+        : 0.0;
+    // (the call holds the designs, the base utilities, and Gamma or the cube)
+    const double held =
+        sizeof(double) * (static_cast<double>(X.n_elem) + static_cast<double>(W.n_elem) +
+                          static_cast<double>(pd.lay.n_rows) +
+                          (pd.draws.generate ? 0.0 : static_cast<double>(eta_draws.n_elem))) +
+        gamma_bytes;
+    // (control's cache_bytes, Inf unless a test sets it, caps it too)
+    const double room = cache_bytes - gamma_bytes;
+    const double budget = !(room > 0) || !(ctl.cache_bytes > 0) ? 0.0
+                          : std::min(room, ctl.cache_bytes);
+    kept_exp = model.keep_exp(blp_cache_budget(budget, held));
+    if (kept_exp && ctl.origin.n_elem > 0) {
+      model.form(blp_origin(ctl, J_inside, include_outside_option));
+    }
+  }
   BlpPass last(J_inside, comp.n);
   const BlpResult res = blp_solve(model, comp, pb, delta_current, ctl, &last);
 
@@ -3884,6 +4014,11 @@ Rcpp::List mxl_blp_solve(
   out["kept"] = pd.gamma_cache != nullptr;
   out["passes"] = model.passes;
   out["reads"] = reads;
+  blp_exp_record(out, ctl, kept_exp, model.xc);
+  if (ctl.pass == BLP_PASS_EXP) {
+    out["exp_prefix"] = static_cast<double>(model.prefix);
+    out["exp_reads"] = model.exp_reads;
+  }
   return out;
 }
 

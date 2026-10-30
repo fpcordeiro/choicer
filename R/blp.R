@@ -446,11 +446,12 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' @param pass The passes' arithmetic: \code{"log"}, each probability
 #'   exponentiated at every evaluation, or \code{"exp"}, from exponentials
 #'   kept at an origin and scaled by exp(delta - delta0) near it
-#'   (\code{BlpExpCache}, src/blp_engine.h). The multinomial and nested
-#'   logits' passes have it; the mixed logit runs its usual pass.
+#'   (\code{BlpExpCache}, src/blp_engine.h); the mixed logit keeps them
+#'   for as many situations as its budget holds, after Gamma.
 #' @param cache_bytes The most bytes the multinomial and nested logits'
 #'   exp-space cache may take (capped by half the memory limit less what the
-#'   call holds).
+#'   call holds); the mixed logit's budget is its solver's \code{cache_bytes}
+#'   (\code{keep_draws_bytes}), shared with Gamma.
 #' @param origin Tests: a numeric vector of the J constants at which the
 #'   exp-space cache is first formed (\code{NULL}: the first evaluation).
 #' @param compensate The passes' share sums: \code{"off"} (plain sums),

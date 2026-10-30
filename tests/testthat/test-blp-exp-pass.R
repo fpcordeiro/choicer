@@ -606,3 +606,216 @@ test_that("the mixed logit's compensated sums keep its draws and its prediction"
     expect_identical(rk$reads, length(d$M) * (rk$passes - 1), label = lab)
   }
 })
+
+# -- The mixed logit's exp-space cache ------------------------------------------
+
+xp_mxl_design <- function(seed, N, J, m) {
+  d <- xp_design(seed, N, J, m)
+  set.seed(seed + 1L)
+  d$W <- matrix(stats::rnorm(2L * length(d$alt)), ncol = 2L)
+  d
+}
+xp_mu <- c(0.3, -0.2)
+xp_Lp <- c(log(0.7), 0.2, log(0.5))
+# draws formed on the fly (seeded) or a cube in memory
+xp_draws <- function(N, S = 12L) {
+  list(generate = list(eta = array(0, c(2L, 0L, 0L)), gen_seed = 5L, gen_scramble = 1L,
+                       gen_S = S),
+       cube = list(eta = get_halton_normals(S, N, 2L), gen_seed = -1L, gen_scramble = 1L,
+                   gen_S = 0L))
+}
+xp_mxl_s <- function(d, delta, ioo, g) {
+  as.numeric(choicer:::mxl_predict_shares(
+    c(xp_beta, xp_mu, xp_Lp, xp_free(delta, ioo)), d$X, d$W, d$alt, d$M, d$w, g$eta,
+    c(0L, 0L), TRUE, TRUE, TRUE, ioo, g$gen_seed, g$gen_scramble, g$gen_S))
+}
+xp_mxl <- function(d, start, S, ioo, g, ctl, budget) {
+  choicer:::mxl_blp_solve(start, S, d$X, d$W, xp_beta, xp_mu, xp_Lp, d$alt, d$M, d$w,
+                          g$eta, c(0L, 0L), TRUE, TRUE, ioo, ctl, g$gen_seed,
+                          g$gen_scramble, g$gen_S, budget)
+}
+
+test_that("a mixed logit's evaluation from the cache gives the prediction kernel's shares", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_mxl_design(2301L, 160L, 6L, 4L)
+  N <- length(d$M)
+  n <- length(d$alt)
+  for (gn in c("generate", "cube")) {
+    g <- xp_draws(N)[[gn]]
+    S_ <- 12
+    gamma_b <- if (gn == "generate") 8 * 2 * S_ * N else 0
+    for (ioo in c(FALSE, TRUE)) {
+      exp_b <- 8 * S_ * (n + ioo * N)
+      set.seed(61L + ioo)
+      ds <- xp_norm(stats::rnorm(6L), ioo)
+      d1 <- xp_norm(ds + stats::rnorm(6L, 0, 0.3), ioo)
+      S <- xp_mxl_s(d, xp_norm(stats::rnorm(6L), ioo), ioo, g)
+      s1 <- xp_mxl_s(d, d1, ioo, g)
+      rl <- xp_mxl(d, d1, S, ioo, g, xp_ctl(max_iter = 1L, keep_pass = TRUE), 0)
+      for (bu in c("all", "half")) {
+        budget <- if (bu == "all") Inf else gamma_b + exp_b / 2
+        lab <- sprintf("%s, ioo %d, %s", gn, ioo, bu)
+        rx <- xp_mxl(d, d1, S, ioo, g,
+                     xp_ctl(max_iter = 1L, keep_pass = TRUE, pass = "exp", origin = ds),
+                     budget)
+        expect_true(rx$exp_kept, label = lab)
+        expect_identical(c(rx$exp_evals, rx$exp_forms, rx$exp_floors), c(1, 1, 0),
+                         label = lab)
+        if (bu == "all") {
+          expect_identical(rx$exp_prefix, as.numeric(N), label = lab)
+        } else {
+          expect_gt(rx$exp_prefix, 0)
+          expect_lt(rx$exp_prefix, N)
+        }
+        expect_identical(rx$exp_reads, rx$exp_prefix, label = lab)
+        px <- xp_pass(rx)
+        expect_equal(px$s, if (ioo) s1[-1L] else s1, tolerance = 1e-14, label = lab)
+        if (ioo) expect_equal(px$s0, s1[1L], tolerance = 1e-14, label = lab)
+        pl <- xp_pass(rl)
+        expect_equal(px$A, pl$A, tolerance = 1e-13, label = lab)
+        expect_equal(px$C, pl$C, tolerance = 1e-13, label = lab)
+      }
+    }
+  }
+})
+
+test_that("the mixed logit's exp-space pass solves as its usual pass does", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_mxl_design(2302L, 200L, 6L, 4L)
+  N <- length(d$M)
+  g <- xp_draws(N)$generate
+  for (ioo in c(FALSE, TRUE)) {
+    ds <- xp_norm(c(0, 0.6, -0.4, 0.9, 0.2, -0.7), ioo)
+    S <- xp_mxl_s(d, ds, ioo, g)
+    for (method in c("simple", "anderson")) {
+      lab <- sprintf("%s, ioo %d", method, ioo)
+      rl <- xp_mxl(d, rep(0, 6L), S, ioo, g, xp_ctl(1e-12, 1000L, method = method), Inf)
+      rx <- xp_mxl(d, rep(0, 6L), S, ioo, g,
+                   xp_ctl(1e-12, 1000L, method = method, pass = "exp"), Inf)
+      expect_identical(rx$code, 0L, label = lab)
+      expect_equal(as.numeric(rx$delta), ds, tolerance = 1e-10, label = lab)
+      expect_equal(as.numeric(rx$delta), as.numeric(rl$delta), tolerance = 1e-11,
+                   label = lab)
+      expect_gt(rx$exp_evals, 0)
+      # every situation of every pass after the first is served by a cache
+      expect_true(rx$kept, label = lab)
+      expect_identical(rx$reads + rx$exp_reads, N * (rx$passes - 1), label = lab)
+      expect_identical(rx$exp_reads, rx$exp_prefix * (rx$exp_evals + rx$exp_floors),
+                       label = lab)
+    }
+  }
+  skip_if_not(isTRUE(thread_info()$openmp_enabled))
+  set_omp_threads(2L)
+  S <- xp_mxl_s(d, ds, TRUE, g)
+  r2 <- xp_mxl(d, rep(0, 6L), S, TRUE, g, xp_ctl(1e-12, 1000L, method = "anderson",
+                                                    pass = "exp"), Inf)
+  expect_equal(as.numeric(r2$delta), ds, tolerance = 1e-10, label = "two threads")
+  expect_gt(r2$exp_evals, 0)
+  expect_identical(r2$reads + r2$exp_reads, N * (r2$passes - 1), label = "two threads")
+})
+
+test_that("a mixed logit's evaluation beyond the span, or below its floor, is the usual pass", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_mxl_design(2304L, 120L, 5L, 3L)
+  N <- length(d$M)
+  g <- xp_draws(N)$generate
+  ds <- c(0, 0.3, -0.2, 0.5, 0.1)
+  S <- xp_mxl_s(d, ds, FALSE, g)
+  one <- function(d1, origin) {
+    list(x = xp_mxl(d, d1, S, FALSE, g, xp_ctl(max_iter = 1L, keep_pass = TRUE,
+                                                 pass = "exp", origin = origin), Inf),
+         l = xp_mxl(d, d1, S, FALSE, g, xp_ctl(max_iter = 1L, keep_pass = TRUE), Inf))
+  }
+  # beyond the span: the cache formed at the origin, then the usual pass at d1
+  r <- one(replace(ds, 3L, ds[3L] + 51), ds)
+  expect_identical(c(r$x$exp_evals, r$x$exp_forms), c(0, 2))
+  expect_identical(xp_pass(r$x), xp_pass(r$l))
+  expect_identical(r$x$passes, 2)
+  expect_identical(r$x$reads + r$x$exp_reads, N * (r$x$passes - 1))
+  # below the floor at d1 (above it at the origin): the evaluation from the
+  # cache, then the usual pass (the random coefficients' tails lift the share
+  # some e^12 above the logit's, hence the deeper constants)
+  d0 <- replace(ds, 5L, -575)
+  d1 <- replace(ds, 5L, -624)
+  expect_gt(xp_mxl_s(d, d0, FALSE, g)[5L], xp_floor(50))
+  expect_lt(xp_mxl_s(d, d1, FALSE, g)[5L], xp_floor(49))
+  r <- one(d1, d0)
+  expect_identical(c(r$x$exp_evals, r$x$exp_forms, r$x$exp_floors), c(0, 2, 1))
+  expect_identical(xp_pass(r$x), xp_pass(r$l))
+  expect_identical(r$x$passes, 3)
+  expect_identical(r$x$reads + r$x$exp_reads, N * (r$x$passes - 1))
+})
+
+test_that("the mixed logit's exp-space cache takes what Gamma leaves of the budget", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_mxl_design(2303L, 120L, 5L, 3L)
+  N <- length(d$M)
+  n <- length(d$alt)
+  g <- xp_draws(N)$generate
+  gamma_b <- 8 * 2 * 12 * N
+  S <- xp_mxl_s(d, c(0, 0.3, -0.2, 0.5, 0.1), FALSE, g)
+  rl <- xp_mxl(d, rep(0, 5L), S, FALSE, g, xp_ctl(1e-10, 1000L), Inf)
+  for (b in list(list(0, FALSE, FALSE), list(NaN, FALSE, FALSE),
+                 list(gamma_b, TRUE, FALSE), list(gamma_b + 8 * 12 * 2, TRUE, FALSE),
+                 list(gamma_b + 8 * 12 * 3, TRUE, TRUE),
+                 list(gamma_b + 8 * 12 * n, TRUE, TRUE), list(Inf, TRUE, TRUE))) {
+    lab <- format(b[[1]])
+    rx <- xp_mxl(d, rep(0, 5L), S, FALSE, g, xp_ctl(1e-10, 1000L, pass = "exp"), b[[1]])
+    expect_identical(rx$kept, b[[2]], label = lab)
+    expect_identical(rx$exp_kept, b[[3]], label = lab)
+    if (!rx$exp_kept) {
+      expect_identical(rx$exp_prefix, 0, label = lab)
+      expect_identical(rx$exp_reads, 0, label = lab)
+      expect_identical(rx$delta, rl$delta, label = lab)
+    }
+  }
+  # the longest prefix the budget holds, in both layouts (three rows per
+  # situation, twelve draws, and one outside option's value per draw)
+  for (ioo in c(FALSE, TRUE)) {
+    So <- xp_mxl_s(d, xp_norm(c(0, 0.3, -0.2, 0.5, 0.1), ioo), ioo, g)
+    per <- 8 * 12 * (3 + ioo)
+    for (b in list(c(per, 1), c(N * per - 1, N - 1), c(N * per, N))) {
+      rx <- xp_mxl(d, rep(0, 5L), So, ioo, g, xp_ctl(1e-10, 1000L, pass = "exp"),
+                   gamma_b + b[1L])
+      expect_identical(rx$exp_prefix, b[2L], label = sprintf("ioo %d, %g", ioo, b[1L]))
+    }
+    # control's cache_bytes caps it too
+    rx <- xp_mxl(d, rep(0, 5L), So, ioo, g,
+                 xp_ctl(1e-10, 1000L, pass = "exp", cache_bytes = 0), Inf)
+    expect_false(rx$exp_kept, label = sprintf("ioo %d", ioo))
+  }
+  # a budget the cap leaves no room under keeps Gamma (within the budget, as
+  # before) and no exponentials
+  old <- options(choicer.max_memory = 1e4)
+  on.exit(options(old), add = TRUE)
+  rx <- xp_mxl(d, rep(0, 5L), S, FALSE, g, xp_ctl(1e-10, 1000L, pass = "exp"), Inf)
+  options(old)
+  expect_true(rx$kept)
+  expect_false(rx$exp_kept)
+})
+
+test_that("a cube's partial prefix solves with compensated sums", {
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  d <- xp_mxl_design(2305L, 200L, 6L, 4L)
+  N <- length(d$M)
+  g <- xp_draws(N)$cube
+  ds <- c(0, 0.6, -0.4, 0.9, 0.2, -0.7)
+  S <- xp_mxl_s(d, ds, FALSE, g)
+  rl <- xp_mxl(d, rep(0, 6L), S, FALSE, g, xp_ctl(1e-12, 1000L, method = "anderson"), Inf)
+  rx <- xp_mxl(d, rep(0, 6L), S, FALSE, g,
+               xp_ctl(1e-12, 1000L, method = "anderson", pass = "exp", compensate = "on"),
+               8 * 12 * length(d$alt) / 2)
+  expect_identical(rx$code, 0L)
+  expect_true(rx$compensated)
+  expect_false(rx$kept)  # (a cube is read in place)
+  expect_gt(rx$exp_prefix, 0)
+  expect_lt(rx$exp_prefix, N)
+  expect_gt(rx$exp_evals, 0)
+  expect_equal(as.numeric(rx$delta), as.numeric(rl$delta), tolerance = 1e-11)
+  expect_identical(rx$exp_reads, rx$exp_prefix * (rx$exp_evals + rx$exp_floors))
+})
