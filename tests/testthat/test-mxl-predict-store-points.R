@@ -414,7 +414,8 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
     expect_identical(r$kept$delta, r$formed)
   }
   # A cube is read at every pass, not copied (the solver at the export's
-  # defaults, as mxc_call() runs it)
+  # method and tol, as mxc_call() runs it; its pass is the usual one, which
+  # is the export's too, since a budget of 0 keeps nothing)
   K_w <- d$K_w
   target <- as.numeric(mxc_call("shares", d))
   fm <- formals(mxl_blp_contraction)
@@ -428,14 +429,17 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
   expect_identical(r$delta, mxc_call("blp", d))
 
   # blp() passes keep_draws_bytes, by default 4 GiB; a counterfactual target
-  # makes it iterate
+  # makes it iterate. What the draws leave keeps every situation's
+  # exponentials, which the later passes read in their place (exp_reads),
+  # and the constants move only by rounding
   real <- choicer:::mxl_blp_solve
   seen <- NULL
   spy <- function(...) {
     r <- real(...)
     seen <<- rbind(seen, data.frame(budget = list(...)$cache_bytes,
-                                    kept = r$kept, passes = r$passes,
-                                    reads = r$reads))
+                                    kept = r$kept, exp_kept = r$exp_kept,
+                                    passes = r$passes, reads = r$reads,
+                                    exp_reads = r$exp_reads))
     r
   }
   for (draws in c("store", "generate")) {
@@ -447,15 +451,17 @@ test_that("blp() keeps the draws within keep_draws_bytes, and only on the fly", 
     with_mocked_bindings(
       {
         delta <- blp(fit, target_shares = target)
-        expect_identical(blp(fit, target_shares = target, keep_draws_bytes = 0),
-                         delta)
+        expect_equal(as.numeric(blp(fit, target_shares = target, keep_draws_bytes = 0)),
+                     as.numeric(delta), tolerance = 1e-10)
       },
       mxl_blp_solve = spy)
     expect_identical(seen$budget, c(2^32, 0), label = draws)
     expect_identical(seen$kept, c(TRUE, FALSE), label = draws)
-    expect_identical(seen$passes[1], seen$passes[2])
+    expect_identical(seen$exp_kept, c(TRUE, FALSE), label = draws)
     expect_gt(seen$passes[1], 2)
-    expect_identical(seen$reads, c(N * (seen$passes[1] - 1), 0), label = draws)
+    expect_gt(seen$exp_reads[1], 0)
+    expect_identical(seen$reads + seen$exp_reads, c(N * (seen$passes[1] - 1), 0),
+                     label = draws)
   }
   # An integer64 budget is read as its value, not its bits
   skip_if_not_installed("bit64")

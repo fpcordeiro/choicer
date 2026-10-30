@@ -126,12 +126,14 @@ P_{ijr}(1 - P_{ijr}) / \sum_i w_i} and \eqn{C_{jb} = \sum_i w_i S^{-1}
 \sum_r P_{ijr} P_{ibr} / \sum_i w_i}.
 }
 \details{
-With \code{gen_seed >= 0} the draws are formed again at every
-evaluation of the shares. \code{\link{blp}()} on a fitted model runs the
-same inversion but keeps them across evaluations within its
-\code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}). See
-\code{\link{blp_contraction}()} for the iteration, its stopping rule and
-its checks.
+Nothing is kept across evaluations of the shares: with
+\code{gen_seed >= 0} the draws are formed again at every evaluation, and
+every evaluation exponentiates every row afresh. \code{\link{blp}()} on a
+fitted model runs the same inversion but keeps the draws, and then the
+exponentials of as many choice situations as fit, across evaluations
+within its \code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}).
+See \code{\link{blp_contraction}()} for the iteration, its stopping rule
+and its checks.
 }
 \examples{
 \donttest{

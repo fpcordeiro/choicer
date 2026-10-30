@@ -232,13 +232,52 @@ as `method = "original"`.
 - **Cost per evaluation.** Each evaluation of the shares also forms the
   step's derivatives. On simulated claims- and census-style designs (8.7 and
   9.8 million rows; the mixed logit's 1.4 and 1.5 million, with 20 draws), an
-  evaluation took about 4% longer than an iteration of the contraction at one
+  evaluation made afresh (as every one was before the next item) took about
+  4% longer than an iteration of the contraction at one
   thread and 20-28% less at eleven for the multinomial logit, about 30% and
   20% longer for the nested logit, and 3-7% longer for the mixed logit
   (minima of three runs alternated with the previous code). Setting a call
   up (the groups of alternatives, the checks) takes about half an evaluation
   at one thread and two to three at eleven (0.3 s at 10^8 rows). Fewer
   evaluations more than make up for it.
+- **Evaluations from kept exponentials.** After the first evaluation, the
+  shares are now read from exponentials kept across evaluations wherever those
+  allow it. The first keeps those of every row's utility at its constants
+  delta0, scaled within each choice situation (within each of its nests for
+  the nested logit, and for each draw for the mixed logit); a later one
+  multiplies them by exp(delta_j - delta0_j) (the nested logit by exp((delta_j
+  - delta0_j) / lambda), with one logarithm and one exponential per offered
+  nest), one exponential per alternative in place of one per row (of three per
+  row for the nested logit). Where a constant has moved more than 50 log units
+  from delta0 (50 times its nest's lambda for the nested logit), or a share
+  falls below about 1e-248 at that largest distance, an evaluation
+  exponentiates afresh and keeps its exponentials in their place. The shares
+  agree with those computed afresh to within rounding, so results move as two
+  solutions within the tolerance differ (by about tol times the conditioning
+  of the share equations). On simulated claims-, census- and small-scale data
+  (8.7, 9.8 and 10 million rows, the census design also with 17,000 constants;
+  the mixed logit's about 1 million rows, with 20 draws, and 100 on the census
+  design), an evaluation took 0.40 to 0.59 times as long as one made afresh
+  for the multinomial logit, 0.51 to 0.64 for the nested logit and 0.27 to
+  0.36 for the mixed logit, at one and five threads (minima of three runs
+  alternated with the previous code). Full inversions of the census design at
+  tol 1e-12, by Anderson acceleration or the step alone, took the same
+  evaluations, at one thread in 0.40 to 0.42, 0.53 to 0.59 and 0.26 to 0.30
+  times the time; with other jobs on the machine, such ratios moved by about
+  0.05 between runs. At lambda = 0.02 the nested logit made 3 of an
+  inversion's 39 evaluations afresh, at 0.05 and 0.2 one. The multinomial and
+  nested logits' kept values take one double per row (the multinomial logit's
+  also one per choice situation with an outside option), at most half the
+  memory limit (`options(choicer.max_memory = )`, else the physical memory)
+  less what the call holds; where they do not fit, every evaluation is made
+  afresh, as before. Where they would keep exponentials, `blp()` and the
+  multinomial and nested logits' exports now read that limit, and so stop on a
+  malformed `choicer.max_memory`, as the estimation routines do. `blp()` on a
+  mixed logit keeps the exponentials for as many choice situations as fit
+  within `keep_draws_bytes` after the draws (8 S bytes per row), so the budget
+  can now move the returned constants as two solutions within the tolerance
+  differ; `mxl_blp_contraction()`, which keeps nothing across evaluations,
+  evaluates afresh, as before.
 - **The exported functions** keep their arguments, layouts of `delta` and
   n x 1 results, and their defaults except `tol`'s (now 1e-12); they are now
   R functions over the engine, and gain `method` (by default `"anderson"`)
@@ -549,11 +588,13 @@ designs of their own, described where they appear.
   coefficients they build the cube, as before. `blp()` gains
   `keep_draws_bytes` (default 2^32 bytes, 4 GiB): when the draws of all choice
   situations fit, its contraction forms them once and reuses them at every
-  iteration, leaving the deltas as they were (on the claims-style panel at 85
-  million rows, whose 3.6 GB of draws fit the default, each evaluation of the
-  shares took 5.2 s instead of 6.4 s with stored draws and 5.6 s instead of
-  7.0 s with generated ones, in single runs, two alternated ones for the
-  stored draws); the memory is taken per call, and a budget above the memory
+  iteration, which by itself leaves the deltas as they were (on the
+  claims-style panel at 85 million rows, whose 3.6 GB of draws fit the
+  default, each evaluation of the shares took 5.2 s instead of 6.4 s with
+  stored draws and 5.6 s instead of 7.0 s with generated ones, in single
+  runs, two alternated ones for the stored draws); what the draws leave of
+  the budget now keeps exponentials of the utilities ("Share inversion",
+  above). The memory is taken per call, and a budget above the memory
   actually free can end the R session. The exported `mxl_blp_contraction()`
   accepts `gen_scramble = 2` for these draws, and now rejects codes other than
   0, 1 and 2, which it treated as 0. Given the same draws, the prediction

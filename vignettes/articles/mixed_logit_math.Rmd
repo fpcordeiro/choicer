@@ -1844,8 +1844,19 @@ $\Gamma_i = L\eta_i$, with its log-normal rows exponentiated, from the first eva
 the shares on, when the draws are formed on the fly (stored draws with up to 128 random
 coefficients, or generated ones), the $N$ blocks take at most `keep_draws_bytes`
 ($8K_wSN$ bytes; 4 GiB by default) and the allocation succeeds; otherwise every evaluation
-forms them again. The kept blocks are the values each evaluation would compute, so the
-shares, and the returned $\delta$, are the same either way. The exported
+forms them again. The kept blocks are the values each evaluation would compute, so by
+themselves they leave the shares, and the returned $\delta$, as they are. What they leave
+of `keep_draws_bytes` (all of it where the draws are read from a cube) keeps, as in the
+logit (§7.6 of the [multinomial logit article](multinomial_logit_math.html)), each draw's
+exponentials of the utilities at an evaluation's $\delta^0$, shifted by the draw's
+largest, for as many choice situations as fit ($8S$ bytes per row, and per situation with
+an outside option) within half the memory limit less what the call holds. A later
+evaluation at $\delta$ forms those situations' $P_{ij}^s$ as the kept values times
+$a_j = \exp(\delta_j - \delta^0_j)$ over their sum, without the draws, $\Gamma_i$,
+$W_i\Gamma_i$ or any exponential; with every situation kept, an evaluation takes about a
+third of the time. These probabilities agree with those formed afresh to within rounding,
+so the budget can move the returned $\delta$ as two solutions within `tol` differ (by
+about `tol` times the conditioning). The exported
 `mxl_blp_contraction()` keeps nothing.
 
 *Code reference: `MxlBlpModel` and `mxl_blp_solve()` in

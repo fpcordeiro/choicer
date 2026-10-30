@@ -1691,17 +1691,32 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   residual (default 1e-12; see \code{\link{blp_contraction}()}).
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param keep_draws_bytes Most memory, in bytes, that the inversion may use
-#'   to keep the draws across its iterations; it does not change the returned
-#'   delta. When the draws are formed on the fly and those of all \eqn{N}
-#'   choice situations take at most this much (\eqn{8 K_w S N} bytes for
-#'   \eqn{K_w} random coefficients and \eqn{S} draws), the first evaluation of
-#'   the shares forms them and the later iterations reuse them, which saves up
-#'   to about a quarter of each iteration on large designs; above it, every
-#'   iteration forms them again. The default, \code{2^32} (4 GiB), covers up to
-#'   about 1.8 million choice situations at \eqn{K_w = 3} and \eqn{S = 100};
-#'   \code{0} never keeps the draws, and \code{Inf} keeps them whenever they
-#'   are formed on the fly and can be allocated. The memory is taken per
-#'   call, on top of the fit's data (parallel workers each take their own).
+#'   to keep, across its iterations, the draws and then the exponentials of
+#'   the choice situations' utilities. Situations read from kept exponentials
+#'   round differently, so the budget can move the returned delta as two
+#'   solutions within \code{tol} differ (by about \code{tol} times the
+#'   conditioning of the share equations; see \code{\link{blp_contraction}()}).
+#'   When the draws are formed on the fly
+#'   and those of all \eqn{N} choice situations take at most this much
+#'   (\eqn{8 K_w S N} bytes for \eqn{K_w} random coefficients and \eqn{S}
+#'   draws), the first evaluation of the shares forms them and the later
+#'   iterations reuse them, which saves up to about a quarter of each
+#'   iteration on large designs; above it, every iteration forms them again,
+#'   and nothing else is kept. What the draws leave (all of it where they are
+#'   read from a cube) keeps the exponentials of the first choice situations'
+#'   utilities at each draw, \eqn{8 S} bytes per row (and per choice
+#'   situation with an outside option), for as many situations as fit within
+#'   it and within half the memory limit less what the call holds (see
+#'   \code{\link{set_num_threads}}). The later iterations read those
+#'   situations' probabilities from them (see \code{\link{blp_contraction}()})
+#'   without forming draws or exponentials: with every situation kept, an
+#'   iteration takes about a third of the time. The default, \code{2^32}
+#'   (4 GiB), covers the draws of up to about 1.8 million choice situations
+#'   at \eqn{K_w = 3} and \eqn{S = 100}; \code{0} keeps nothing, and
+#'   \code{Inf} keeps the draws whenever they are formed on the fly and can
+#'   be allocated, and the exponentials up to that half of the memory limit.
+#'   The memory is taken per call, on top of the fit's data (parallel workers
+#'   each take their own).
 #'   Where memory is committed only when used (Linux, macOS, and containers
 #'   or batch jobs with memory limits), a budget above the memory actually
 #'   free can end the R session rather than fall back: lower it, or use
@@ -1719,10 +1734,13 @@ diversion_ratios.choicer_mxl <- function(object, wrt_var,
 #'   draws as \code{predict()} (for a cross-sectional fit, the estimation
 #'   draws; a panel fit's estimation draws are per decision maker), formed on
 #'   the fly, in parallel, and kept across iterations within
-#'   \code{keep_draws_bytes}. With stored draws (\code{draws = "store"}) they
-#'   are the points of the cube \code{\link{get_halton_normals}} would build,
-#'   formed without it; with more than 128 random coefficients, the cube
-#'   itself, read at every iteration (and nothing more is kept).
+#'   \code{keep_draws_bytes}, as are, within what they leave, the
+#'   exponentials of as many choice situations as fit. With stored draws
+#'   (\code{draws = "store"}) they are the points of the cube
+#'   \code{\link{get_halton_normals}} would build, formed without it; with
+#'   more than 128 random coefficients, the cube itself, read at every
+#'   iteration (the exponentials are still kept, within
+#'   \code{keep_draws_bytes}).
 #' @returns The constants, an n x 1 matrix (see \code{\link{blp}()}).
 #' @examples
 #' \donttest{
@@ -1748,7 +1766,7 @@ blp.choicer_mxl <- function(object, target_shares, delta_init = NULL,
   if (!is.numeric(keep_draws_bytes) || length(keep_draws_bytes) != 1L ||
       is.na(keep_draws_bytes) || keep_draws_bytes < 0) {
     stop("`keep_draws_bytes` must be a single non-negative number of bytes ",
-         "(0 never keeps the draws).", call. = FALSE)
+         "(0 keeps nothing).", call. = FALSE)
   }
   .blp_common(object, target_shares, delta_init, tol, max_iter, method = method,
               control = control, free_ok = TRUE,

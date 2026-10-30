@@ -171,6 +171,36 @@
 #'   evaluations and residual) and returns the evaluated point of smallest
 #'   residual (the start when \code{max_iter = 0}).
 #'
+#'   After the first evaluation, the shares are read from exponentials kept
+#'   across evaluations wherever those allow it. The first keeps the
+#'   exponentials of every row's utility at its constants \eqn{\delta^0},
+#'   scaled within each choice situation (within each of its nests for the
+#'   nested logit, and for each draw for the mixed logit); a later one
+#'   multiplies them by \eqn{\exp(\delta_j - \delta^0_j)} (for the nested
+#'   logit by \eqn{\exp((\delta_j - \delta^0_j)/\lambda_g)}, with one logarithm
+#'   and one exponential per offered nest), one exponential per alternative
+#'   in place of one per row: 0.4 to 0.65 of the time of an evaluation afresh
+#'   (about a third for the mixed logit, in \code{\link{blp}()}). Where a
+#'   constant has moved more than 50 log units from \eqn{\delta^0} (for the
+#'   nested logit, 50 times its nest's dissimilarity), or a share falls so low
+#'   (below about \eqn{10^{-248}} at the largest distance) that utilities
+#'   which underflowed when they were kept could matter, the evaluation
+#'   exponentiates every row afresh and keeps its exponentials in their
+#'   place. The shares are those of an evaluation afresh to within rounding,
+#'   so the iteration's path, and the returned \eqn{\delta}, can move as two
+#'   solutions within \code{tol} differ (by about \code{tol} times the
+#'   conditioning, above). The multinomial and nested logits' kept values
+#'   take one double per row (the multinomial logit's also one per choice
+#'   situation with an outside option), within half the memory limit (see
+#'   \code{\link{set_num_threads}}) less what the call already holds; where
+#'   they do not fit, every evaluation is made afresh. Reading the limit, a
+#'   malformed \code{options(choicer.max_memory = )} stops the call, as it
+#'   stops the estimation routines. \code{mxl_blp_contraction()} keeps nothing
+#'   across evaluations; \code{\link{blp}()} on a mixed logit keeps the
+#'   exponentials of as many choice situations as fit within its
+#'   \code{keep_draws_bytes} after the draws (see
+#'   \code{\link{blp.choicer_mxl}}).
+#'
 #'   Before any evaluation it checks that the targets can be met: every
 #'   alternative is offered in a choice situation of positive weight; the
 #'   targets of each component add up to the weight of its situations (to 1
@@ -225,7 +255,8 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
                             max_iter = 1000L, method = "anderson",
                             control = list()) {
   m <- .blp_method(method, control)
-  ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings)
+  ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings,
+                      pass = .BLP_PASS)
   res <- mnl_blp_solve(delta, target_shares, X, beta, alt_idx, M, weights,
                        include_outside_option, ctl)
   .blp_unconverged(res, ctl, "blp_contraction()")
@@ -303,7 +334,7 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
                                method = "anderson", control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, damping, method = m$method,
-                      settings = m$settings)
+                      settings = m$settings, pass = .BLP_PASS)
   res <- nl_blp_solve(delta, target_shares, X, beta, lambda, alt_idx, nest_idx,
                       M, weights, include_outside_option, ctl)
   .blp_unconverged(res, ctl, "nl_blp_contraction()")
@@ -355,12 +386,14 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
 #'   contraction). Other values are an error.
 #' @param gen_S Integer number of draws per individual, used only when
 #'   \code{gen_seed >= 0}.
-#' @details With \code{gen_seed >= 0} the draws are formed again at every
-#'   evaluation of the shares. \code{\link{blp}()} on a fitted model runs the
-#'   same inversion but keeps them across evaluations within its
-#'   \code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}). See
-#'   \code{\link{blp_contraction}()} for the iteration, its stopping rule and
-#'   its checks.
+#' @details Nothing is kept across evaluations of the shares: with
+#'   \code{gen_seed >= 0} the draws are formed again at every evaluation, and
+#'   every evaluation exponentiates every row afresh. \code{\link{blp}()} on a
+#'   fitted model runs the same inversion but keeps the draws, and then the
+#'   exponentials of as many choice situations as fit, across evaluations
+#'   within its \code{keep_draws_bytes} (see \code{\link{blp.choicer_mxl}}).
+#'   See \code{\link{blp_contraction}()} for the iteration, its stopping rule
+#'   and its checks.
 #' @returns The constants, an n x 1 matrix (\eqn{J} rows); without an outside
 #'   option the first is 0.
 #' @seealso \code{\link{blp}()}, \code{\link{blp_contraction}()}
@@ -392,7 +425,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
                                 gen_scramble = 1L, gen_S = 0L,
                                 method = "anderson", control = list()) {
   m <- .blp_method(method, control)
-  ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings)
+  ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings,
+                      pass = .BLP_PASS)
   # The kernels read a cube of doubles in place; a cube of another type would
   # be read from a temporary that R may free during the call
   if (is.integer(eta_draws) || is.logical(eta_draws)) {
@@ -447,7 +481,9 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #'   exponentiated at every evaluation, or \code{"exp"}, from exponentials
 #'   kept at an origin and scaled by exp(delta - delta0) near it
 #'   (\code{BlpExpCache}, src/blp_engine.h); the mixed logit keeps them
-#'   for as many situations as its budget holds, after Gamma.
+#'   for as many situations as its budget holds, after Gamma. (This default,
+#'   \code{"log"}, is the internal callers' and the tests'; the exports and
+#'   blp() pass \code{.BLP_PASS}, \code{"exp"}.)
 #' @param cache_bytes The most bytes the multinomial and nested logits'
 #'   exp-space cache may take (capped by half the memory limit less what the
 #'   call holds); the mixed logit's budget is its solver's \code{cache_bytes}
@@ -532,6 +568,10 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   simple = list(), original = list(),
   anderson = list(memory = 10L, max_condition = 1e8),
   squarem = list(scheme = 3L, step_min = 1, step_max = 1, step_factor = 4))
+
+# The passes' arithmetic of blp() and the exports (.blp_control()'s pass):
+# the shares from exponentials kept across evaluations (STOP C, 2026-10-29)
+.BLP_PASS <- "exp"
 
 # The solver's statuses, by code (src/fixed_point.h)
 .BLP_STATUS <- c("converged", "max_iter", "non_finite", "non_finite_start")
@@ -789,7 +829,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   start <- .blp_delta_init(object, delta_init, J, outside, free_ok)
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, damping, method = m$method,
-                      settings = m$settings)
+                      settings = m$settings, pass = .BLP_PASS)
   res <- solve(start, target, ctl)
   .blp_unconverged(res, ctl, "blp()")
   out <- res$delta

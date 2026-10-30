@@ -683,6 +683,34 @@ iterations, the evaluations and the residual.
    evaluations, residual, `tol` and method), there whether or not the iteration
    converged. The exported functions return the bare matrix.
 
+### 7.6 Evaluating the Shares
+
+After the first evaluation, the probabilities are read from exponentials kept across
+evaluations wherever those allow it. The first, at $\delta^0$, keeps for each row
+$e_{ij} = \exp(x_{ij}'\beta + \delta^0_j - c_i)$, where $c_i$ is the largest utility in
+situation $i$ (with an outside option, its 0 included, so that $e_{i0} = \exp(-c_i) \le 1$
+is kept too). An evaluation at $\delta$ then forms
+
+$$
+P_{ij}(\delta) = \frac{e_{ij}\, a_j}{e_{i0} + \sum_k e_{ik}\, a_k},
+\qquad
+a_j = \exp(\delta_j - \delta^0_j),
+$$
+
+($e_{i0} = 0$ without an outside option): $J$ exponentials per evaluation in place of one
+per row, which takes 0.4 to 0.6 of the time. A row whose exponential underflowed when it was
+kept can carry at most $2^{-1022} e^{2d}$ into a share, where
+$d = \max_j |\delta_j - \delta^0_j|$. So an evaluation at $d > 50$, or one at which some
+share falls below $2^{53} \cdot 2^{-1022} e^{2d}$ (at most about $10^{-248}$),
+exponentiates every row afresh at $\delta$ and keeps those exponentials in place of the
+old ones; one at a $\delta$ that is not finite exponentiates afresh and leaves the kept
+values as they were. The probabilities agree with those computed afresh to within
+rounding, so the iteration's path, and the returned $\delta$, can move as two solutions
+within `tol` differ (by about `tol` times the conditioning, §7.4). The kept values take one
+double per row (and one per situation with an outside option), within half the memory
+limit (`options(choicer.max_memory = )`, else the physical memory) less what the call
+holds; where they do not fit, every evaluation exponentiates afresh.
+
 *Code reference: [src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h)
 (the components, the checks, the step and the stopping rule),
 [src/fixed_point.h](https://github.com/fpcordeiro/choicer/blob/main/src/fixed_point.h)

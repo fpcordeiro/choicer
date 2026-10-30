@@ -147,6 +147,11 @@ blp_method <- if ("method" %in% names(formals(ns$blp_contraction))) {
 } else {
   list()
 }
+# (and the usual pass where the build's exports pass the exp pass, so that
+# builds before and after Phase C time the same evaluations)
+if (exists(".BLP_PASS", envir = ns, inherits = FALSE)) {
+  utils::assignInNamespace(".BLP_PASS", "log", ns = "choicer")
+}
 call_blp <- function() {
   # (it stops at max_iter: the engine warns, builds before 0.3.0 printed)
   utils::capture.output(r <- suppressWarnings(if (model == "nl") {
