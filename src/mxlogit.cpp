@@ -660,6 +660,28 @@ inline void mxl_unit_score(const MxlUnitData& ud, MxlUnitScratch& sc,
   }
 }
 
+// Add likelihood unit u's terms to a thread's sums: w_u (lse - log S), its
+// weighted simulated log-likelihood, and w_u s_u. The gradient kernel's pass
+// (with and without the OPG diagonal) and mxl_delta_hessian_parallel(),
+// which return the same objective and gradient bit for bit at one thread,
+// add them here, out of line, so that the loop around them cannot change how
+// a compiler rounds them. GCC can leave a multiply-add unfused where it would
+// carry a sum around a loop (--param avoid-fma-max-bits, which some of its
+// tunings set), unless a call or another multiply-add in the same basic
+// block cancels that. Written in each loop, the log-likelihood's sum shared
+// its block with the call that adds w_u s_u in the gradient kernel's pass
+// and was fused, while in the constants' kernel GCC moved it into the loop's
+// last block, where the `continue` paths join, and left it unfused: on
+// GitHub's Ubuntu 26.04 runners (GCC 15 with FMA) the two objectives
+// differed by an ulp or two.
+static CHOICER_NOINLINE void mxl_unit_add(double& loglik, arma::vec& grad,
+                                          const double w_u, const double lse,
+                                          const double log_S,
+                                          const arma::vec& s_u) {
+  loglik += w_u * (lse - log_S);
+  grad += w_u * s_u;
+}
+
 // The gradient kernel's pass over the likelihood units: the weighted sums of
 // their simulated log-likelihoods and scores and, with OpgDiag, the diagonal
 // of the BHHH matrix, sum_u w_u s_u o s_u. Each of its terms is formed as
@@ -699,8 +721,7 @@ static void mxl_gradient_pass(const MxlUnitData& ud, const arma::vec& weights,
 
       // ell_u = lse - log(S); unit weight = weight of its first situation
       const double w_u = weights[lay.unit_first(u)];
-      local_loglik += w_u * (lse - log_S);
-      local_grad += w_u * s_u;
+      mxl_unit_add(local_loglik, local_grad, w_u, lse, log_S, s_u);
       if (OpgDiag) {
         // The terms w_u s_uk^2 in the score's place, then added
         for (arma::uword k = 0; k < s_u.n_elem; ++k) {
@@ -1768,8 +1789,7 @@ Rcpp::List mxl_delta_hessian_parallel(
       const double lse = mxl_unit_simulate(ud, sc, true);
       mxl_unit_score(ud, sc, s_u);
       const double w_u = weights[lay.unit_first(u)];
-      local_loglik += w_u * (lse - log_S);
-      local_grad += w_u * s_u;
+      mxl_unit_add(local_loglik, local_grad, w_u, lse, log_S, s_u);
       // A unit whose utilities overflowed has no block (the objective is not
       // finite, which the caller sees); a non-finite weight spoils the block
       if (!std::isfinite(lse)) continue;
