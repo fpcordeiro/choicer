@@ -3,11 +3,20 @@
 #
 # On pull_request the site is BUILT but not deployed, so reference/article
 # index gaps in _pkgdown.yml fail the PR check without touching the Pages
-# deployment environment.
+# deployment environment. Pull requests build it only when they change the
+# paths below. Articles (vignettes/articles) are outside R CMD check, so a code
+# change that breaks one fails the build on main instead, where every push
+# builds and deploys the site.
 on:
   push:
     branches: [main, master]
   pull_request:
+    paths:
+      - 'man/**'
+      - 'vignettes/**'
+      - '_pkgdown.yml'
+      - 'pkgdown/**'
+      - '.github/workflows/pkgdown.yaml'
   workflow_dispatch:
 
 name: pkgdown.yaml

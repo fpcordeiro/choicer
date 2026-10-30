@@ -1,9 +1,15 @@
 # Workflow derived from https://github.com/r-lib/actions/tree/v2/examples
 # Need help debugging build failures? Start at https://github.com/r-lib/actions#where-to-find-help
+#
+# Every pull request and push to main runs Windows and Ubuntu with R release,
+# and the GCC 16 flavor below, which is also the R-devel check. macOS and R
+# oldrel-1 run weekly and on demand (R-CMD-check-weekly.yaml); before a
+# release, run both workflows by hand.
 on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
 
 name: R-CMD-check.yaml
 
@@ -19,11 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          - {os: macos-latest,   r: 'release'}
           - {os: windows-latest, r: 'release'}
-          - {os: ubuntu-latest,   r: 'devel', http-user-agent: 'release'}
           - {os: ubuntu-latest,   r: 'release'}
-          - {os: ubuntu-latest,   r: 'oldrel-1'}
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -52,13 +55,14 @@ jobs:
 
 
   # GCC 16 check flavor. CRAN's r-devel-linux-x86_64-{fedora,debian}-gcc run
-  # GCC 16, which the matrix above does not cover: ubuntu-latest ships GCC
-  # 13/14 and macOS uses clang, all of which set _OPENMP below 202011 and so
-  # never exercise the OpenMP 5.1 deprecation diagnostics. choicer 0.2.0 was
-  # put into WARN by exactly that gap. `error_on = "warning"` is what makes
-  # this job useful: rcmdcheck surfaces install-step "significant warnings"
-  # (compiler warnings) and fails the job on them, rather than passing with a
-  # WARNING the way the check itself would.
+  # GCC 16, which the matrix above does not cover (GCC 14 in Rtools on
+  # Windows, GCC 15 on Ubuntu 26.04). GCC 16 sets _OPENMP to 202111 and emits
+  # the OpenMP 5.1 deprecation diagnostics; choicer 0.2.0 was put into WARN by
+  # exactly that gap. The image's R is R-devel, so this job is also the
+  # R-devel check. `error_on = "warning"` is what makes this job useful:
+  # rcmdcheck surfaces install-step "significant warnings" (compiler warnings)
+  # and fails the job on them, rather than passing with a WARNING the way the
+  # check itself would.
   gcc16:
     runs-on: ubuntu-latest
 
