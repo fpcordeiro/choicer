@@ -3379,8 +3379,9 @@ struct NlBlpModel {
 //' The engine behind nl_blp_contraction() and blp() (blp_engine.h): the
 //' input checks of nl_blp_contraction(), in their order, every dissimilarity
 //' positive and finite right after lambda's length, then the share
-//' inversion's own (a finite start, finite and non-negative weights, the
-//' targets' sums and bounds), then the solver. damping comes in control.
+//' inversion's own (a finite start, finite and non-negative weights with a
+//' finite sum, the targets' sums and bounds), then the solver. damping comes
+//' in control.
 //'
 //' @inheritParams nl_blp_contraction
 //' @param control List from .blp_control().

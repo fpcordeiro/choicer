@@ -523,6 +523,7 @@ gb_expect_error_ <- function(fn, a) {
   }
   if (!all(is.finite(start))) return("delta must be finite")
   if (!isTRUE(all(w >= 0 & is.finite(w)))) return("weights must be finite and non-negative")
+  if (!is.finite(sum(w))) return("weights must sum to a finite number")
   cp <- gb_components(alt, M, w, J)
   if (!all(cp$offered)) {
     nowhere <- which(!cp$offered)

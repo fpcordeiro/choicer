@@ -238,6 +238,15 @@ struct BlpComponents {
   bool repeated = false;       // a situation lists a code twice
 };
 
+// A sum of the weights must be finite: the weights, each finite (checked
+// before), can overflow when added.
+inline void blp_check_weight_sum(const double s) {
+  if (!std::isfinite(s)) {
+    Rcpp::stop("weights must sum to a finite number; their sum overflows. Divide "
+               "them by a common factor: the shares do not depend on it.");
+  }
+}
+
 // One serial pass over the rows: union-find over the alternatives (each set's
 // root its smallest code), each alternative's offer and captive weight (a code
 // listed twice counts its situation once), then each component's weight.
@@ -247,10 +256,15 @@ struct BlpComponents {
 // every situation of its component offers then bounds its target by the
 // component's weight exactly, as the plain sums, added in one order, do. (A
 // plain offer weight over a compensated total fell below a target that its
-// constants attain.)
+// constants attain.) The weights, checked finite and non-negative before
+// (blp_check_start()), must also give finite sums; which alternatives a
+// component holds follows the situations that offer them, never a sum's
+// value (a compensated sum that overflowed was NaN, and a component index
+// of -1 followed).
 inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
                                     const double W, const int J,
                                     const bool outside, const bool kahan = false) {
+  blp_check_weight_sum(W);
   BlpComponents c;
   std::vector<int> parent(static_cast<std::size_t>(J));
   for (int j = 0; j < J; ++j) parent[j] = j;
@@ -311,10 +325,15 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
       captive[j] -= captive_c[j];
     }
     total -= total_c;
+    blp_check_weight_sum(total);
+  }
+  for (int j = 0; j < J; ++j) {
+    blp_check_weight_sum(offer[j]);
+    blp_check_weight_sum(captive[j]);
   }
   c.of.assign(static_cast<std::size_t>(J), -1);
   for (int j = 0; j < J; ++j) {
-    if (!(offer[j] > 0)) continue;
+    if (seen[j] < 0) continue;  // offered in no situation of positive weight
     const int root = find(j);
     if (root == j) {
       c.ref.push_back(j);
@@ -337,8 +356,9 @@ inline BlpComponents blp_components(const ChoiceLayout& lay, const double* w,
       c.mass[c.of[lay.alt[lay.row_off[t]] - 1]] += w[t];
     }
   }
-  if (kahan) {
-    for (int k = 0; k < c.n; ++k) c.mass[k] -= mass_c[k];
+  for (int k = 0; k < c.n; ++k) {
+    if (kahan) c.mass[k] -= mass_c[k];
+    blp_check_weight_sum(c.mass[k]);
   }
   // (compensated: each component's weight as its offer weights were summed)
   std::vector<double> raw;

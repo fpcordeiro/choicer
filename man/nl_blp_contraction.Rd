@@ -49,7 +49,7 @@ indexing.}
 \item{M}{N x 1 vector with number of alternatives for each individual.}
 
 \item{weights}{N x 1 vector with weights for each observation (finite and
-non-negative).}
+non-negative, with a finite sum).}
 
 \item{include_outside_option}{Whether there is an outside option, with
 utility normalized to 0 and dissimilarity 1.}

@@ -575,6 +575,75 @@ test_that("blp() and the exports accept targets near a bound above 2^22 situatio
   }
 })
 
+test_that("weights that are not finite, or whose sum is not, are errors", {
+  # PR #58's second review: compensated, the offer weights summed an infinite
+  # weight, or finite weights whose sum overflows, to NaN; such alternatives
+  # fell in no component, whose weights were then indexed at -1 (a
+  # segfault). The mixed logit checked its weights only after that.
+  # (Two situations offering alternatives 1 and 2; then two offering 1 and 2
+  # and two offering 3 and 4, where one group's weights overflow beside a
+  # group of finite weights, or of none.)
+  designs <- list(list(alt = rep(1:2, 2L), M = c(2L, 2L)),
+                  list(alt = c(rep(1:2, 2L), rep(3:4, 2L)), M = rep(2L, 4L)))
+  solve <- function(m, d, w, ioo, ctl) {
+    J <- max(d$alt)
+    n <- length(d$alt)
+    S <- rep(1 / (J + ioo), J + ioo)
+    X <- matrix(0, n, 1L)
+    switch(m,
+      mnl = choicer:::mnl_blp_solve(rep(0, J), S, X, 0, d$alt, d$M, w, ioo, ctl),
+      nl = choicer:::nl_blp_solve(rep(0, J), S, X, 0, 1, d$alt, rep(1L, J), d$M, w,
+                                  ioo, ctl),
+      mxl = choicer:::mxl_blp_solve(rep(0, J), S, X, matrix(0, n, 1L), 0, 0, 0, d$alt,
+                                    d$M, w, array(0, c(1L, 0L, 0L)), 0L, FALSE, FALSE,
+                                    ioo, ctl, 1L, 1L, 2L, 0))
+  }
+  not_finite <- "weights must be finite and non-negative"
+  overflow <- "weights must sum to a finite number"
+  cases <- list(list(d = 1L, w = c(Inf, 1), msg = not_finite),
+                list(d = 1L, w = c(1e308, 1e308), msg = overflow),
+                list(d = 2L, w = c(1e308, 1e308, 1, 1), msg = overflow),
+                list(d = 2L, w = c(1, 1, 1e308, 1e308), msg = overflow),
+                list(d = 2L, w = c(0, 0, 1e308, 1e308), msg = overflow))
+  for (comp in c("on", "off")) {
+    ctl <- xp_ctl(1e-8, 1L, compensate = comp)
+    for (ioo in c(FALSE, TRUE)) {
+      for (m in c("mnl", "nl", "mxl")) {
+        for (k in seq_along(cases)) {
+          cs <- cases[[k]]
+          lab <- sprintf("%s, case %d, compensate = \"%s\", outside option %s", m, k,
+                         comp, ioo)
+          expect_error(solve(m, designs[[cs$d]], cs$w, ioo, ctl), cs$msg, label = lab)
+        }
+      }
+    }
+  }
+})
+
+test_that("the exports stop on such weights above 2^22 situations", {
+  skip_on_cran()  # (eight million rows)
+  # The review's reproducers, through the exports: above 2^22 situations
+  # their serial sums are compensated, whatever the threads
+  N <- 2^22 + 1
+  S <- c(0.5, 0.5)
+  X <- matrix(0, 2 * N, 1L)
+  alt <- rep(1:2, N)
+  M <- rep(2L, N)
+  big <- c(1e308, 1e308, rep(1, N - 2))
+  expect_error(blp_contraction(c(0, 0), S, X, 0, alt, M, big, max_iter = 1L),
+               "weights must sum to a finite number")
+  expect_error(nl_blp_contraction(c(0, 0), S, X, 0, 1, alt, c(1L, 1L), M, big,
+                                  max_iter = 1L),
+               "weights must sum to a finite number")
+  mxl <- function(w) {
+    mxl_blp_contraction(c(0, 0), S, X, matrix(0, 2 * N, 1L), 0, 0, 0, alt, M, w,
+                        array(0, c(1L, 0L, 0L)), 0L, FALSE, FALSE, max_iter = 1L,
+                        gen_seed = 1L, gen_scramble = 1L, gen_S = 2L)
+  }
+  expect_error(mxl(c(Inf, rep(1, N - 1))), "weights must be finite and non-negative")
+  expect_error(mxl(big), "weights must sum to a finite number")
+})
+
 test_that("compensated sums keep the components' weights exact", {
   skip_on_cran()  # (two million rows)
   on.exit(set_omp_threads(2L), add = TRUE)

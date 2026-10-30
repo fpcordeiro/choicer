@@ -1464,8 +1464,8 @@ struct MnlBlpModel {
 //'
 //' The engine behind blp_contraction() and blp() (blp_engine.h): the input
 //' checks of blp_contraction(), in their order, then the share inversion's own
-//' (a finite start, finite and non-negative weights, the targets' sums and
-//' bounds), then the solver.
+//' (a finite start, finite and non-negative weights with a finite sum, the
+//' targets' sums and bounds), then the solver.
 //'
 //' @inheritParams blp_contraction
 //' @param control List from .blp_control(): iteration, map, max_evals, tol,

@@ -30,7 +30,7 @@
 #'   choice set; 1-based indexing.
 #' @param M N x 1 vector with number of alternatives for each individual.
 #' @param weights N x 1 vector with weights for each observation (finite and
-#'   non-negative).
+#'   non-negative, with a finite sum).
 #' @param include_outside_option Whether there is an outside option, with
 #'   utility normalized to 0 (its rows are not in the data).
 #' @param tol Convergence tolerance on the largest absolute log-share
@@ -371,7 +371,8 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
 #' @param alt_idx sum(M) x 1 vector with indices of alternatives; 1-based
 #'   indexing
 #' @param M N x 1 vector with number of alternatives for each individual
-#' @param weights N x 1 vector with weights for each observation
+#' @param weights N x 1 vector with weights for each observation (finite and
+#'   non-negative, with a finite sum)
 #' @param eta_draws Array with draws, K_w x S x N (an integer or logical array
 #'   is converted to double first)
 #' @param rc_dist K_w vector indicating distribution (0=normal, 1=log-normal)

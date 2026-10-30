@@ -205,13 +205,13 @@ as `method = "original"`.
   weight of the situations that offer its alternative, or, without an
   outside option, not above the weight of those that offer it alone. These
   conditions are necessary, not sufficient. Also errors now: a start or
-  weights that are not finite, negative weights, a nested logit's lambda that
-  is not positive and finite, a negative or missing `tol`, a `max_iter` that
-  is not a whole number, and a mixed logit's target share that is not
-  positive (the outside option's included), which stopped it only after an
-  evaluation of the shares. Such inputs gave NaN, constants that drifted
-  without converging, or, with lambda of 0 or below, shares without
-  meaning.
+  weights that are not finite, negative weights, weights whose sum
+  overflows, a nested logit's lambda that is not positive and finite, a
+  negative or missing `tol`, a `max_iter` that is not a whole number, and a
+  mixed logit's target share that is not positive (the outside option's
+  included), which stopped it only after an evaluation of the shares. Such
+  inputs gave NaN, constants that drifted without converging, or, with
+  lambda of 0 or below, shares without meaning.
 - **`blp()`** checks its targets in R before the model's solver runs (and so
   before a mixed logit forms its draws): one share per alternative, the
   outside option's first, finite, positive and summing to 1. It checks
