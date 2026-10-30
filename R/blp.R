@@ -37,10 +37,15 @@
 #'   residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 #'   outside option's included; see Details). Default 1e-12. Rounding in the
 #'   sums of the shares over choice situations sets a floor under the
-#'   residual that grows with their number: on one thread about
-#'   \eqn{2 \times 10^{-13}} at \eqn{10^8} rows and near \eqn{10^{-12}} at
-#'   \eqn{10^9} (lower with more threads). Where it reaches \code{tol}, raise
-#'   \code{tol}.
+#'   residual that grows with the situations each thread adds: at
+#'   \eqn{2^{22}} (about 4.2 million) situations of four alternatives on one
+#'   thread, about \eqn{10^{-14}}, and \eqn{7 \times 10^{-14}} with an outside
+#'   option. Above that the sums are compensated (Kahan's summation), which
+#'   brings the floor to the precision of a double: \eqn{2 \times 10^{-16}} or
+#'   less at \eqn{10^8} rows on one thread, where plain sums left
+#'   \eqn{2 \times 10^{-13}}. A \code{tol} below the floor cannot be met. (The
+#'   shares of \code{predict()} keep plain sums, so a residual recomputed from
+#'   them keeps their floor.)
 #' @param max_iter The most evaluations of the shares (default 1000).
 #' @param method The iteration: \code{"anderson"} (the default), Anderson
 #'   acceleration of the two-level step of Details; \code{"simple"}, that
@@ -256,7 +261,7 @@ blp_contraction <- function(delta, target_shares, X, beta, alt_idx, M, weights,
                             control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings,
-                      pass = .BLP_PASS)
+                      pass = .BLP_PASS, compensate = .BLP_COMPENSATE)
   res <- mnl_blp_solve(delta, target_shares, X, beta, alt_idx, M, weights,
                        include_outside_option, ctl)
   .blp_unconverged(res, ctl, "blp_contraction()")
@@ -334,7 +339,8 @@ nl_blp_contraction <- function(delta, target_shares, X, beta, lambda, alt_idx,
                                method = "anderson", control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, damping, method = m$method,
-                      settings = m$settings, pass = .BLP_PASS)
+                      settings = m$settings, pass = .BLP_PASS,
+                      compensate = .BLP_COMPENSATE)
   res <- nl_blp_solve(delta, target_shares, X, beta, lambda, alt_idx, nest_idx,
                       M, weights, include_outside_option, ctl)
   .blp_unconverged(res, ctl, "nl_blp_contraction()")
@@ -426,7 +432,7 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
                                 method = "anderson", control = list()) {
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, method = m$method, settings = m$settings,
-                      pass = .BLP_PASS)
+                      pass = .BLP_PASS, compensate = .BLP_COMPENSATE)
   # The kernels read a cube of doubles in place; a cube of another type would
   # be read from a temporary that R may free during the call
   if (is.integer(eta_draws) || is.logical(eta_draws)) {
@@ -493,7 +499,9 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 #' @param compensate The passes' share sums: \code{"off"} (plain sums),
 #'   \code{"on"} (Kahan's compensated sums, also for the weights' total and
 #'   the components' weights) or \code{"auto"} (compensated above 2^22
-#'   choice situations per thread; src/blp_engine.h).
+#'   choice situations per thread; src/blp_engine.h). (This default,
+#'   \code{"off"}, is the internal callers' and the tests'; the exports and
+#'   blp() pass \code{.BLP_COMPENSATE}, \code{"auto"}.)
 #' @returns A list for \code{*_blp_solve()}'s \code{control}.
 #' @noRd
 .blp_control <- function(tol = 1e-8, max_iter = 1000L, damping = 1,
@@ -572,6 +580,10 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
 # The passes' arithmetic of blp() and the exports (.blp_control()'s pass):
 # the shares from exponentials kept across evaluations (STOP C, 2026-10-29)
 .BLP_PASS <- "exp"
+
+# And their sums over choice situations (.blp_control()'s compensate):
+# compensated above 2^22 situations per thread (STOP C)
+.BLP_COMPENSATE <- "auto"
 
 # The solver's statuses, by code (src/fixed_point.h)
 .BLP_STATUS <- c("converged", "max_iter", "non_finite", "non_finite_start")
@@ -829,7 +841,8 @@ mxl_blp_contraction <- function(delta, target_shares, X, W, beta, mu, L_params,
   start <- .blp_delta_init(object, delta_init, J, outside, free_ok)
   m <- .blp_method(method, control)
   ctl <- .blp_control(tol, max_iter, damping, method = m$method,
-                      settings = m$settings, pass = .BLP_PASS)
+                      settings = m$settings, pass = .BLP_PASS,
+                      compensate = .BLP_COMPENSATE)
   res <- solve(start, target, ctl)
   .blp_unconverged(res, ctl, "blp()")
   out <- res$delta

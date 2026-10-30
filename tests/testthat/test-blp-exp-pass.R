@@ -480,6 +480,26 @@ test_that("compensated share sums keep the small terms a plain sum drops", {
   expect_identical(xp_pass(ra), xp_pass(rp))
 })
 
+test_that("\"auto\" compensates the sums above 2^22 situations per thread", {
+  skip_on_cran()  # (eight million rows)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  N <- 2^22 + 1
+  alt <- rep(1:2, N)
+  M <- rep(2L, N)
+  X <- matrix(0, length(alt), 1L)
+  w <- rep(1, N)
+  run <- function(comp) {
+    choicer:::mnl_blp_solve(c(0, 0), c(0.5, 0.5), X, 1, alt, M, w, FALSE,
+                            xp_ctl(max_iter = 1L, compensate = comp))
+  }
+  set_omp_threads(1L)
+  expect_true(run("auto")$compensated)
+  ti <- thread_info()
+  skip_if_not(isTRUE(ti$openmp_enabled) && isTRUE(ti$omp_get_thread_limit >= 2L))
+  set_omp_threads(2L)
+  expect_false(run("auto")$compensated)  # (2^21 + 1 situations per thread)
+})
+
 test_that("compensated sums keep the components' weights exact", {
   skip_on_cran()  # (two million rows)
   on.exit(set_omp_threads(2L), add = TRUE)
