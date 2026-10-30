@@ -278,17 +278,19 @@ test_that("blp() on a nested logit labels, damps and checks damping", {
 })
 
 test_that("blp() and the exports evaluate the shares from kept exponentials", {
-  # the pass blp() and the exports hand the models' solvers, and whether its
-  # evaluations read kept exponentials (all but the mixed logit's export,
-  # which keeps nothing); the internal callers' default stays the usual pass
-  expect_identical(choicer:::.blp_control()$pass, "log")
+  # the pass and sums blp() and the exports hand the models' solvers, and
+  # whether their evaluations read kept exponentials (all but the mixed
+  # logit's export, which keeps nothing); the internal callers' defaults stay
+  # the usual pass and plain sums
+  expect_identical(choicer:::.blp_control()[c("pass", "compensate")],
+                   list(pass = "log", compensate = "off"))
   seen <- character()
   read <- logical()
   spy <- function(real) {
     force(real)
     function(...) {
       ctl <- Filter(function(a) is.list(a) && !is.null(a$pass), list(...))[[1L]]
-      seen <<- c(seen, ctl$pass)
+      seen <<- c(seen, paste(ctl$pass, ctl$compensate))
       r <- real(...)
       read <<- c(read, isTRUE(r$exp_kept) && r$exp_evals > 0)
       r
@@ -313,7 +315,7 @@ test_that("blp() and the exports evaluate the shares from kept exponentials", {
     mxl_blp_contraction(rep(0, 4L), S, X, matrix(0, 12L, 1L), 1, 0, log(0.5), alt, M,
                         w, eta, 0L, FALSE, TRUE, FALSE)
   }, mxl_blp_solve = spy(choicer:::mxl_blp_solve))
-  expect_identical(seen, rep("exp", 6L))
+  expect_identical(seen, rep("exp auto", 6L))
   expect_identical(read, c(TRUE, TRUE, TRUE, TRUE, TRUE, FALSE))
 })
 

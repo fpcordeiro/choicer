@@ -175,9 +175,11 @@ as `method = "original"`.
   on the 121 simulated designs and the claims-, census- and small-scale data
   alike; the constants' error falls with it, to about 1e-12 times the
   conditioning of the share equations. Rounding in the sums of the shares
-  over choice situations sets a floor under the residual: on one thread
-  about 2e-13 at 10^8 rows (an inversion there converged at 1e-12 in six
-  evaluations) and near 1e-12 at 10^9; with more threads it is lower.
+  over choice situations sets a floor under the residual that grows with the
+  situations each thread adds: in plain sums, about 2e-13 at 10^8 rows on
+  one thread (an inversion there converged at 1e-12 in six evaluations) and
+  near 1e-12 at 10^9. Above 2^22 situations per thread the sums are now
+  compensated, which brings it to about 2e-16 ("Compensated sums", below).
   `max_iter` counts evaluations of the shares (0 returns the start).
 - **Not converging warns.** A call that stops without meeting `tol` returns
   the evaluated point of smallest residual and warns with class
@@ -278,6 +280,22 @@ as `method = "original"`.
   can now move the returned constants as two solutions within the tolerance
   differ; `mxl_blp_contraction()`, which keeps nothing across evaluations,
   evaluates afresh, as before.
+- **Compensated sums.** Above 2^22 (about 4.2 million) choice situations per
+  thread, each evaluation now adds the shares over situations by Kahan's
+  compensated summation, and above 2^22 situations the weights' total and
+  each group's weight too. Plain sums leave a floor under the residual that
+  grows with the situations each thread adds: for the multinomial logit with
+  four alternatives in every situation, on one thread, 9.4e-15 at 2^22
+  situations (7.0e-14 with an outside option) and 1.7e-13 at 2.5 x 10^7, or
+  10^8 rows (2.4e-13 with an outside option). Compensated, it is 2.2e-16 or
+  less at both sizes. At 10^8 rows an inversion at tol 1e-12 then stopped at
+  a residual of 8.9e-16 instead of 1.2e-13 without an outside option (the
+  constants' error 1.0e-15 instead of 1.6e-13), and with one at 1.6e-13
+  instead of 4.3e-13 (the error 2.8e-13 against 2.4e-13: no gain at that
+  tol), in the same six evaluations. An evaluation took up to 14% more time
+  on the exp-space pass and 2.5-4% more on the usual pass (minima of four to
+  six runs alternated in one process, one thread, other jobs on the
+  machine). Below the threshold the sums are as before.
 - **The exported functions** keep their arguments, layouts of `delta` and
   n x 1 results, and their defaults except `tol`'s (now 1e-12); they are now
   R functions over the engine, and gain `method` (by default `"anderson"`)

@@ -72,10 +72,15 @@ is converted to double first)}
 residual \eqn{|\log S_j - \log s_j(\delta)|} over the alternatives (the
 outside option's included; see Details). Default 1e-12. Rounding in the
 sums of the shares over choice situations sets a floor under the
-residual that grows with their number: on one thread about
-\eqn{2 \times 10^{-13}} at \eqn{10^8} rows and near \eqn{10^{-12}} at
-\eqn{10^9} (lower with more threads). Where it reaches \code{tol}, raise
-\code{tol}.}
+residual that grows with the situations each thread adds: at
+\eqn{2^{22}} (about 4.2 million) situations of four alternatives on one
+thread, about \eqn{10^{-14}}, and \eqn{7 \times 10^{-14}} with an outside
+option. Above that the sums are compensated (Kahan's summation), which
+brings the floor to the precision of a double: \eqn{2 \times 10^{-16}} or
+less at \eqn{10^8} rows on one thread, where plain sums left
+\eqn{2 \times 10^{-13}}. A \code{tol} below the floor cannot be met. (The
+shares of \code{predict()} keep plain sums, so a residual recomputed from
+them keeps their floor.)}
 
 \item{max_iter}{The most evaluations of the shares (default 1000).}
 

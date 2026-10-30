@@ -147,10 +147,14 @@ blp_method <- if ("method" %in% names(formals(ns$blp_contraction))) {
 } else {
   list()
 }
-# (and the usual pass where the build's exports pass the exp pass, so that
-# builds before and after Phase C time the same evaluations)
+# (and the usual pass with plain sums where the build's exports pass the exp
+# pass and compensated sums, so that builds before and after Phase C time the
+# same evaluations)
 if (exists(".BLP_PASS", envir = ns, inherits = FALSE)) {
   utils::assignInNamespace(".BLP_PASS", "log", ns = "choicer")
+}
+if (exists(".BLP_COMPENSATE", envir = ns, inherits = FALSE)) {
+  utils::assignInNamespace(".BLP_COMPENSATE", "off", ns = "choicer")
 }
 call_blp <- function() {
   # (it stops at max_iter: the engine warns, builds before 0.3.0 printed)
