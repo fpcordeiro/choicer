@@ -780,13 +780,15 @@ test_that("mixed logit cluster labels are checked before any draws are built", {
 # --- The constants' block of the information --------------------------------
 # mxl_delta_hessian_parallel() gives the profile likelihood's inner Newton
 # solve, in one pass, the objective and the gradient (the gradient kernel's,
-# bit for bit at one thread) and the information's block on the free
-# constants, which must be the full Hessian's ASC rows and columns to
-# rounding (BLAS on a sub-block): over every cell of the many-alternative
-# designs (the normalized reference, the outside option, panels, a repeated
-# alternative, the reference never offered, trailing constants that no row
-# carries, situations with the reference only), on-the-fly draws, units split
-# into draw batches, weights that vary or vanish, an alternative-level W, two
+# bit for bit at one thread: both kernels add a unit's terms in
+# mxl_unit_add(), out of line, so the loop around them cannot change how they
+# are rounded) and the information's block on the free constants, which must
+# be the full Hessian's ASC rows and columns to rounding (BLAS on a
+# sub-block): over every cell of the many-alternative designs (the
+# normalized reference, the outside option, panels, a repeated alternative,
+# the reference never offered, trailing constants that no row carries,
+# situations with the reference only), on-the-fly draws, units split into
+# draw batches, weights that vary or vanish, an alternative-level W, two
 # threads and the shared accumulator.
 
 cdx_asc <- function(fx) seq.int(cdx_delta_start(fx), length(fx$theta))
