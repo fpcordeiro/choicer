@@ -3847,12 +3847,12 @@ struct MxlBlpModel {
 //' The engine behind mxl_blp_contraction() and blp() (blp_engine.h): the
 //' input checks of mxl_blp_contraction(), in their order, the target's
 //' positivity (every entry, before any pass), then the share inversion's own
-//' (a finite start, finite and non-negative weights, the targets' sums and
-//' bounds), then the solver. When the draws are formed on the fly
-//' (gen_seed >= 0), all situations' Gamma = L eta take at most cache_bytes
-//' bytes (8 K_w S N) and the solver may evaluate the shares twice or more
-//' (or forms the exp-space cache at a test origin), they are kept from the
-//' first evaluation on instead of formed at every one; the result is the
+//' (a finite start, finite and non-negative weights with a finite sum, the
+//' targets' sums and bounds), then the solver. When the draws are formed on
+//' the fly (gen_seed >= 0), all situations' Gamma = L eta take at most
+//' cache_bytes bytes (8 K_w S N) and the solver may evaluate the shares twice
+//' or more (or forms the exp-space cache at a test origin), they are kept from
+//' the first evaluation on instead of formed at every one; the result is the
 //' same.
 //'
 //' @inheritParams mxl_blp_contraction
@@ -3958,20 +3958,21 @@ Rcpp::List mxl_blp_solve(
                                     kernel_team_threads(pd.lay.N));
   const bool kahan_w = blp_compensate_serial(ctl, static_cast<double>(pd.lay.N));
   const double weight_sum = kahan_w ? blp_weight_sum(weights) : shares_denominator(weights);
-  const BlpComponents comp = blp_components(pd.lay, weights.memptr(), weight_sum,
-                                            J_inside, include_outside_option, kahan_w);
-  MxlBlpModel model(pd, weights, weight_sum, J_inside, comp);
-  if (kahan) model.compensate();
   arma::vec base(pd.lay.n_rows, arma::fill::none);
   mxl_pred_base(pd, base, beta);
 
-  // The targets, before any pass (every entry, the outside option's too)
+  // The targets, before any pass (every entry, the outside option's too),
+  // then the start and the weights, before the components sum the weights
   for (arma::uword k = 0; k < target_shares.n_elem; ++k) {
     if (!(target_shares[k] > 0)) {
       Rcpp::stop("Target shares contains non-positive entries; cannot take logarithm.");
     }
   }
   blp_check_start(delta_current, weights);
+  const BlpComponents comp = blp_components(pd.lay, weights.memptr(), weight_sum,
+                                            J_inside, include_outside_option, kahan_w);
+  MxlBlpModel model(pd, weights, weight_sum, J_inside, comp);
+  if (kahan) model.compensate();
   const BlpProblem pb = blp_problem(comp, target_shares, include_outside_option,
                                     J_inside);
   if (!include_outside_option) delta_current -= delta_current(0);

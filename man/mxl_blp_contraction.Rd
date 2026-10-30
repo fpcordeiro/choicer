@@ -54,7 +54,8 @@ indexing}
 
 \item{M}{N x 1 vector with number of alternatives for each individual}
 
-\item{weights}{N x 1 vector with weights for each observation}
+\item{weights}{N x 1 vector with weights for each observation (finite and
+non-negative, with a finite sum)}
 
 \item{eta_draws}{Array with draws, K_w x S x N (an integer or logical array
 is converted to double first)}

@@ -630,8 +630,8 @@ mnl_predict_shares <- function(theta, X, alt_idx, M, weights, use_asc = TRUE, in
 #'
 #' The engine behind blp_contraction() and blp() (blp_engine.h): the input
 #' checks of blp_contraction(), in their order, then the share inversion's own
-#' (a finite start, finite and non-negative weights, the targets' sums and
-#' bounds), then the solver.
+#' (a finite start, finite and non-negative weights with a finite sum, the
+#' targets' sums and bounds), then the solver.
 #'
 #' @inheritParams blp_contraction
 #' @param control List from .blp_control(): iteration, map, max_evals, tol,
@@ -1337,12 +1337,12 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' The engine behind mxl_blp_contraction() and blp() (blp_engine.h): the
 #' input checks of mxl_blp_contraction(), in their order, the target's
 #' positivity (every entry, before any pass), then the share inversion's own
-#' (a finite start, finite and non-negative weights, the targets' sums and
-#' bounds), then the solver. When the draws are formed on the fly
-#' (gen_seed >= 0), all situations' Gamma = L eta take at most cache_bytes
-#' bytes (8 K_w S N) and the solver may evaluate the shares twice or more
-#' (or forms the exp-space cache at a test origin), they are kept from the
-#' first evaluation on instead of formed at every one; the result is the
+#' (a finite start, finite and non-negative weights with a finite sum, the
+#' targets' sums and bounds), then the solver. When the draws are formed on
+#' the fly (gen_seed >= 0), all situations' Gamma = L eta take at most
+#' cache_bytes bytes (8 K_w S N) and the solver may evaluate the shares twice
+#' or more (or forms the exp-space cache at a test origin), they are kept from
+#' the first evaluation on instead of formed at every one; the result is the
 #' same.
 #'
 #' @inheritParams mxl_blp_contraction
@@ -1777,8 +1777,9 @@ nl_diversion_ratios_parallel <- function(theta, X, alt_idx, nest_idx, M, weights
 #' The engine behind nl_blp_contraction() and blp() (blp_engine.h): the
 #' input checks of nl_blp_contraction(), in their order, every dissimilarity
 #' positive and finite right after lambda's length, then the share
-#' inversion's own (a finite start, finite and non-negative weights, the
-#' targets' sums and bounds), then the solver. damping comes in control.
+#' inversion's own (a finite start, finite and non-negative weights with a
+#' finite sum, the targets' sums and bounds), then the solver. damping comes
+#' in control.
 #'
 #' @inheritParams nl_blp_contraction
 #' @param control List from .blp_control().
