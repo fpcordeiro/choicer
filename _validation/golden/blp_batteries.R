@@ -58,6 +58,27 @@ gb_pin_defaults <- function(fn, args) {
   args
 }
 
+# main's passes, the usual (log) pass with plain sums, pinned where the call's
+# Phase C settings (gb_with_settings(), the leaves of GB_PASSES) leave them
+# out, as gb_pin_defaults() pins main's method and tol: STOP C made the exp
+# pass the default of blp() and the exports. A build without the settings
+# ignores them (its solvers read the fields they know), and one without
+# .blp_control() (before the engine) runs the call as it is.
+GB_MAIN_PASSES <- list(pass = "log", compensate = "off")
+gb_settings <- new.env(parent = emptyenv())
+gb_settings$active <- list()
+gb_pin_passes <- function(expr) {
+  ns <- asNamespace("choicer")
+  if (!exists(".blp_control", envir = ns, inherits = FALSE)) return(expr)
+  orig <- get(".blp_control", envir = ns)
+  pins <- utils::modifyList(GB_MAIN_PASSES, gb_settings$active)
+  utils::assignInNamespace(".blp_control",
+                           function(...) utils::modifyList(orig(...), pins),
+                           ns = "choicer")
+  on.exit(utils::assignInNamespace(".blp_control", orig, ns = "choicer"), add = TRUE)
+  expr
+}
+
 # The call's arguments by name, with the function's defaults for the others
 # (evaluated where the function would evaluate them).
 gb_args <- function(fn, args) {
@@ -81,7 +102,7 @@ gb_args <- function(fn, args) {
 # fit's stored call never holds a closure), and its arguments: they are
 # forced here, once, so that what forming them raises is the call's (and NULL
 # comes back for them when that fails), and main's defaults pinned where the
-# call leaves them out (gb_pin_defaults()).
+# call leaves them out (gb_pin_defaults(), gb_pin_passes()).
 gb_run <- function(fn, args) {
   warns <- character()
   conv_warn <- NULL
@@ -92,7 +113,7 @@ gb_run <- function(fn, args) {
   printed <- utils::capture.output(val <- tryCatch(
     withCallingHandlers({
       forced <- gb_pin_defaults(fn, args)
-      do.call(fn, forced)
+      gb_pin_passes(do.call(fn, forced))
     },
       warning = function(w) {
         warns <<- c(warns, paste(class(w)[1L], conditionMessage(w), sep = " | "))
@@ -114,18 +135,24 @@ gb_run <- function(fn, args) {
 
 # Phase C's settings of the share inversion's passes (.blp_control()'s pass,
 # and compensate from item C3 on) appended to the control list of every
-# solver call that expr makes. A build without them ignores them (its
-# solvers read the fields they know), so a baseline records its own passes
-# there, and the solver tier judges the build under test; a build without
+# solver call that expr makes, and recorded for gb_pin_passes(), which pins
+# main's passes around them. A build without them ignores them (its solvers
+# read the fields they know), so a baseline records its own passes there,
+# and the solver tier judges the build under test; a build without
 # .blp_control() (before the engine) runs the call as it is.
 gb_with_settings <- function(settings, expr) {
   ns <- asNamespace("choicer")
   if (!exists(".blp_control", envir = ns, inherits = FALSE)) return(expr)
   orig <- get(".blp_control", envir = ns)
+  active <- gb_settings$active
+  on.exit({
+    utils::assignInNamespace(".blp_control", orig, ns = "choicer")
+    gb_settings$active <- active
+  }, add = TRUE)
+  gb_settings$active <- utils::modifyList(active, settings)
   utils::assignInNamespace(".blp_control",
                            function(...) utils::modifyList(orig(...), settings),
                            ns = "choicer")
-  on.exit(utils::assignInNamespace(".blp_control", orig, ns = "choicer"), add = TRUE)
   expr
 }
 

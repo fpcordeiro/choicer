@@ -200,6 +200,36 @@ condition's \code{convergence} element holds the status, iterations,
 evaluations and residual) and returns the evaluated point of smallest
 residual (the start when \code{max_iter = 0}).
 
+After the first evaluation, the shares are read from exponentials kept
+across evaluations wherever those allow it. The first keeps the
+exponentials of every row's utility at its constants \eqn{\delta^0},
+scaled within each choice situation (within each of its nests for the
+nested logit, and for each draw for the mixed logit); a later one
+multiplies them by \eqn{\exp(\delta_j - \delta^0_j)} (for the nested
+logit by \eqn{\exp((\delta_j - \delta^0_j)/\lambda_g)}, with one logarithm
+and one exponential per offered nest), one exponential per alternative
+in place of one per row: 0.4 to 0.65 of the time of an evaluation afresh
+(about a third for the mixed logit, in \code{\link{blp}()}). Where a
+constant has moved more than 50 log units from \eqn{\delta^0} (for the
+nested logit, 50 times its nest's dissimilarity), or a share falls so low
+(below about \eqn{10^{-248}} at the largest distance) that utilities
+which underflowed when they were kept could matter, the evaluation
+exponentiates every row afresh and keeps its exponentials in their
+place. The shares are those of an evaluation afresh to within rounding,
+so the iteration's path, and the returned \eqn{\delta}, can move as two
+solutions within \code{tol} differ (by about \code{tol} times the
+conditioning, above). The multinomial and nested logits' kept values
+take one double per row (the multinomial logit's also one per choice
+situation with an outside option), within half the memory limit (see
+\code{\link{set_num_threads}}) less what the call already holds; where
+they do not fit, every evaluation is made afresh. Reading the limit, a
+malformed \code{options(choicer.max_memory = )} stops the call, as it
+stops the estimation routines. \code{mxl_blp_contraction()} keeps nothing
+across evaluations; \code{\link{blp}()} on a mixed logit keeps the
+exponentials of as many choice situations as fit within its
+\code{keep_draws_bytes} after the draws (see
+\code{\link{blp.choicer_mxl}}).
+
 Before any evaluation it checks that the targets can be met: every
 alternative is offered in a choice situation of positive weight; the
 targets of each component add up to the weight of its situations (to 1

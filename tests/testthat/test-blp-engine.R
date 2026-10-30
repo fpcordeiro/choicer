@@ -465,9 +465,11 @@ test_that("Berry's contraction joins an iteration that stops halving its residua
     expect_true(all(is.finite(rk$delta)))
     expect_identical(rk$race, if (k > r$race) r$race else 0L)
   }
-  # and the exports (at the solver's tol)
+  # and the exports (at the solver's tol, with their pass)
+  rx <- choicer:::mnl_blp_solve(rep(0, 6L), S, X, 1, alt, M, w, FALSE, eng_ctl(pass = "exp"))
+  expect_identical(rx$race, r$race)
   expect_identical(blp_contraction(rep(0, 6L), S, X, 1, alt, M, w, tol = 1e-8,
-                                   method = "simple"), r$delta)
+                                   method = "simple"), rx$delta)
   eta <- array(stats::rnorm(15L), c(1L, 5L, 3L))
   d <- mxl_blp_contraction(rep(0, 6L), S, X, matrix(0, 9L, 1L), 1, 0, log(0.5), alt, M, w,
                            eta, 0L, FALSE, TRUE, FALSE, tol = 1e-8, method = "simple")
@@ -520,9 +522,13 @@ test_that("Berry's contraction goes on again when the step stops halving its res
   expect_gte(r$resumes, 1L)
   expect_lte(r$evaluations, r$race + 4L * rb$evaluations)
   expect_identical(r$delta, rb$delta)
+  # and the export (at the solver's tol, with its pass)
+  rx <- choicer:::nl_blp_solve(rep(0, 5L), S, X, 1, lam, alt, nest, M, w, FALSE,
+                               eng_ctl(max_iter = 30000L, pass = "exp"))
+  expect_identical(rx$code, 0L)
   expect_identical(nl_blp_contraction(rep(0, 5L), S, X, 1, lam, alt, nest, M, w,
                                       tol = 1e-8, max_iter = 30000L, method = "simple"),
-                   r$delta)
+                   rx$delta)
   # A logit from a sweep of small hard designs, whose first situation offers
   # only 2 and 3: the step's best residual stays at 0.0027 for over 46,000
   # evaluations while their constants come back down from about 2.6 too high
@@ -553,8 +559,11 @@ test_that("Berry's contraction goes on again when the step stops halving its res
                                   eng_ctl(max_iter = k))
     expect_identical(c(rk$race, rk$resumes), c(r$race, if (k == 802L) 0L else 1L))
   }
+  rx <- choicer:::mnl_blp_solve(rep(0, 5L), S, X, 1, alt, M, w, FALSE,
+                                eng_ctl(max_iter = 200000L, pass = "exp"))
+  expect_identical(rx$code, 0L)
   expect_identical(blp_contraction(rep(0, 5L), S, X, 1, alt, M, w, tol = 1e-8,
-                                   max_iter = 200000L, method = "simple"), r$delta)
+                                   max_iter = 200000L, method = "simple"), rx$delta)
   eta <- array(stats::rnorm(25L), c(1L, 5L, 5L))
   d <- mxl_blp_contraction(rep(0, 5L), S, X, matrix(0, 12L, 1L), 1, 0, log(0.5), alt, M,
                            w, eta, 0L, FALSE, TRUE, FALSE, tol = 1e-8, max_iter = 200000L,
@@ -829,7 +838,7 @@ test_that("Anderson acceleration recovers a known delta in each model and layout
     expect_equal(as.numeric(est), ds, tolerance = 1e-9)
     if (!ioo) expect_identical(est[1L], 0)
     r <- choicer:::mnl_blp_solve(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
-                                 eng_ctl(tol = 1e-12, method = "anderson"))
+                                 eng_ctl(tol = 1e-12, method = "anderson", pass = "exp"))
     expect_identical(r$code, 0L)
     expect_identical(r$race, 0L)
     expect_lte(r$residual, 1e-12)
@@ -1018,7 +1027,7 @@ test_that("SQUAREM recovers a known delta in each model and layout", {
     expect_equal(as.numeric(est), ds, tolerance = 1e-9)
     if (!ioo) expect_identical(est[1L], 0)
     r <- choicer:::mnl_blp_solve(rep(0, 8L), S, d$X, eng_beta, d$alt, d$M, d$w, ioo,
-                                 eng_ctl(tol = 1e-12, method = "squarem"))
+                                 eng_ctl(tol = 1e-12, method = "squarem", pass = "exp"))
     expect_identical(r$code, 0L)
     expect_lte(r$residual, 1e-12)
     expect_identical(r$delta, est)

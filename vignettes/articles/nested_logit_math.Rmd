@@ -1234,6 +1234,25 @@ the outside option's first.
 
 **Note on the `lambda` argument.** `nl_blp_contraction` expects a *full* length-$n_{\text{nests}}$ vector where singleton nests have their entry set to 1, every entry positive and finite. This differs from the estimated parameter block $\lambda$ in $\theta$, which contains only non-singleton entries. The caller is responsible for expanding the estimated lambdas into the full vector before invoking the inversion.
 
+#### 6.4.5 Evaluating the shares
+
+As in the logit (§7.6 of the [multinomial logit article](multinomial_logit_math.html)),
+after the first evaluation the probabilities are read from exponentials kept across
+evaluations wherever those allow it, here within each nest. The first, at $\delta^0$, keeps
+$e_{ij} = \exp((x_{ij}'\beta + \delta^0_j)/\lambda_g - c_{ig})$ for alternative $j$ in
+nest $g$, where $c_{ig}$ is the largest of these scaled utilities in nest $g$ of
+situation $i$: one shift per situation would not do, since at $\lambda_g = 0.02$ a nest
+15 utility units below the best would underflow (750 scaled units down) while its
+probability is still about $3 \times 10^{-7}$. An evaluation at $\delta$ forms $u_{ij} = e_{ij} b_j$ with
+$b_j = \exp((\delta_j - \delta^0_j)/\lambda_g)$, each offered nest's inclusive value from
+$\log \sum_{k \in g} u_{ik}$ (one logarithm per nest), the nests' probabilities from
+those (one exponential per nest) and $P(j \mid g) = u_{ij} / \sum_{k \in g} u_{ik}$:
+three exponentials per row fewer than afresh. The distance is
+$d = \max_j |\delta_j - \delta^0_j| / \lambda_{g(j)}$, what $b_j$ exponentiates, with
+the logit's bound of 50 and its floor, so small dissimilarities make an evaluation afresh
+more often: at $\lambda_g = 0.02$, 3 of the 39 evaluations of an inversion of
+census-style data, which took 0.68 of the time.
+
 *Code reference: `NlBlpModel` and `nl_blp_solve()` in [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp), over [src/blp_engine.h](https://github.com/fpcordeiro/choicer/blob/main/src/blp_engine.h).*
 
 ### 6.5 Willingness to Pay

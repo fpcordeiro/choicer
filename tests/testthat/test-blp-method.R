@@ -113,11 +113,13 @@ test_that("method = \"original\" is Berry, Levinsohn and Pakes's contraction", {
     d <- blp(fit, target_shares = S, method = "original", tol = 1e-8)
     pm <- fit$param_map
     start <- if (outside) fit$coefficients[pm$asc] else c(0, fit$coefficients[pm$asc])
-    # the engine's plain map: delta + log S - log s(delta), normalized
+    # the engine's plain map: delta + log S - log s(delta), normalized (with
+    # blp()'s pass)
     r <- choicer:::mnl_blp_solve(as.numeric(start), S, fit$data$X,
                                  fit$coefficients[pm$beta], fit$data$alt_idx, fit$data$M,
                                  fit$data$weights, outside,
-                                 choicer:::.blp_control(map = "plain", patience = 0L))
+                                 choicer:::.blp_control(map = "plain", patience = 0L,
+                                                        pass = "exp"))
     expect_identical(as.numeric(d), as.numeric(r$delta))
     expect_identical(attr(d, "convergence")$evaluations, r$evaluations)
     # one step from the start, by hand: two evaluations return the better of
@@ -275,7 +277,47 @@ test_that("blp() on a nested logit labels, damps and checks damping", {
   expect_error(blp(fit, target_shares = S, damping = 0), "`damping` must be a single")
 })
 
-test_that("blp() on a mixed logit: a free start, and kept draws change nothing", {
+test_that("blp() and the exports evaluate the shares from kept exponentials", {
+  # the pass blp() and the exports hand the models' solvers, and whether its
+  # evaluations read kept exponentials (all but the mixed logit's export,
+  # which keeps nothing); the internal callers' default stays the usual pass
+  expect_identical(choicer:::.blp_control()$pass, "log")
+  seen <- character()
+  read <- logical()
+  spy <- function(real) {
+    force(real)
+    function(...) {
+      ctl <- Filter(function(a) is.list(a) && !is.null(a$pass), list(...))[[1L]]
+      seen <<- c(seen, ctl$pass)
+      r <- real(...)
+      read <<- c(read, isTRUE(r$exp_kept) && r$exp_evals > 0)
+      r
+    }
+  }
+  X <- matrix(bm_repro_x)
+  alt <- rep(1:4, 3L)
+  M <- rep(4L, 3L)
+  w <- rep(1, 3L)
+  S <- as.numeric(choicer:::mnl_predict_shares(c(1, 1, 1, 1), X, alt, M, w))
+  eta <- array(stats::rnorm(15L), c(1L, 5L, 3L))
+  with_mocked_bindings({
+    blp(bm_repro_fit("mnl"), target_shares = S)
+    blp_contraction(rep(0, 4L), S, X, 1, alt, M, w)
+  }, mnl_blp_solve = spy(choicer:::mnl_blp_solve))
+  with_mocked_bindings({
+    blp(bm_repro_fit("nl"), target_shares = S)
+    nl_blp_contraction(rep(0, 4L), S, X, 1, c(1, 1), alt, c(1L, 1L, 2L, 2L), M, w)
+  }, nl_blp_solve = spy(choicer:::nl_blp_solve))
+  with_mocked_bindings({
+    blp(bm_repro_fit("mxl"), target_shares = S)
+    mxl_blp_contraction(rep(0, 4L), S, X, matrix(0, 12L, 1L), 1, 0, log(0.5), alt, M,
+                        w, eta, 0L, FALSE, TRUE, FALSE)
+  }, mxl_blp_solve = spy(choicer:::mxl_blp_solve))
+  expect_identical(seen, rep("exp", 6L))
+  expect_identical(read, c(TRUE, TRUE, TRUE, TRUE, TRUE, FALSE))
+})
+
+test_that("blp() on a mixed logit: a free start, and what its budget keeps", {
   # (bit for bit at one thread: above it, sums over situations combine in a
   # varying order)
   on.exit(set_omp_threads(2L), add = TRUE)
@@ -287,8 +329,15 @@ test_that("blp() on a mixed logit: a free start, and kept draws change nothing",
     control = list(maxeval = 30L)))
   S <- as.numeric(predict(fit, type = "shares"))
   d0 <- blp(fit, target_shares = rev(S), keep_draws_bytes = 0)
+  # the draws alone (8 K_w S N bytes) change nothing
+  dG <- blp(fit, target_shares = rev(S),
+            keep_draws_bytes = 8 * 2 * 10 * length(fit$data$M))
+  expect_identical(dG, d0)
+  # every situation's exponentials too: the shares agree to rounding, and
+  # the constants to about tol
   dInf <- blp(fit, target_shares = rev(S), keep_draws_bytes = Inf)
-  expect_identical(d0, dInf)
+  expect_equal(as.numeric(dInf), as.numeric(d0), tolerance = 1e-10)
+  expect_true(attr(dInf, "convergence")$converged)
   expect_identical(rownames(d0), as.character(1:3))
   expect_true(attr(d0, "convergence")$converged)
   # without an outside option the start may omit the first constant's zero

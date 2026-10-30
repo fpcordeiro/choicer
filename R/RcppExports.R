@@ -1909,7 +1909,13 @@ get_num_threads <- function() {
 #'   option is unset, there is no check.
 #'   `options(choicer.max_memory = <bytes>)` sets the limit instead, for a
 #'   container or a cluster job with less memory than the machine, and `Inf`
-#'   lifts the check.
+#'   lifts the check. The share inversion ([blp()] and the expert functions)
+#'   keeps exponentials of the utilities across its iterations only within
+#'   half of that limit, less the memory the call already holds (the mixed
+#'   logit's for as many choice situations as fit), and evaluates the shares
+#'   it does not cover without them; where there is no limit (`Inf`, or a
+#'   physical memory that cannot be read), only the mixed logit's
+#'   `keep_draws_bytes` bounds them.
 #'
 #' @param n_threads Positive integer number of threads.
 #' @return Invisibly returns `NULL`.

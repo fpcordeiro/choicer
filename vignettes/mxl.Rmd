@@ -115,7 +115,8 @@ have enough independent clusters for its asymptotics.
 > memory with the machine's total physical memory and stop with the number of
 > threads that fits (`?set_num_threads`; `options(choicer.max_memory = )` sets
 > the limit for a container or a batch job). `blp()` keeps up to
-> `keep_draws_bytes` of draws across its iterations (4 GiB by default); on
+> `keep_draws_bytes` of draws, and then of exponentials of the utilities,
+> across its iterations (4 GiB by default); on
 > Linux and macOS a budget above the free memory can end the R session. With
 > many alternatives, see
 > [Many alternatives](#many-alternatives-constants-convergence-and-standard-errors)
