@@ -476,6 +476,34 @@ optimizer's seconds, its solves and the first one included, as in
 \code{fit$optimizer$elapsed_time} without a polish). Failed solves after
 the optimizer's best point, and a failed solve at its solution, are
 reported in the warning and appended to \code{fit$message}.
+With \code{concentrate_out_asc = "blp"}, \code{fit$share_targets}
+holds the targets: \code{source} (\code{"sample"}, \code{"supplied"}
+or \code{"wesml"}), \code{shares} (each inside alternative's target
+within its market, named by label), \code{market} (each inside
+alternative's market, the markets numbered by their smallest codes),
+\code{market_weight} (each market's weight), \code{vcov}
+(\code{target_vcov} in the alternatives' order, or \code{NULL}), and
+the share inversion's \code{engine} targets, the free constants'
+target \code{counts} and each likelihood unit's market
+(\code{unit_market}); it is \code{NULL} on other fits. Its
+\code{fit$optimizer$concentration} records \code{method},
+\code{evaluations}, \code{solves} and \code{failed} as the profile
+likelihood's do, \code{inner_iterations} (evaluations of the shares),
+\code{jacobians} (passes of the share Jacobian, one per solve whose
+share inversion converged), \code{max_residual} (the largest log-share
+residual of a converged solve) and \code{residual} (at the estimate),
+\code{lambda} (\eqn{C_\delta^{-1} g_\delta}{C_d^(-1) g_d} at the
+estimate, by constant, \eqn{C_\delta}{C_d} the Jacobian of the weighted
+predicted counts in the constants and
+\eqn{g_\delta}{g_d} the gradient of the negated log-likelihood in the
+constants: the derivative of the negated log-likelihood with respect to
+each free constant's target count, positive where the micro data would
+put that alternative's share below its target), \code{decrement}
+(\eqn{g^\top \tilde I^{-1} g / 2}{g' It^(-1) g / 2} over the mean
+weight, \eqn{g}{g} the total gradient in \eqn{\theta_c}{theta_c} and
+\eqn{\tilde I}{It} the curvature along the share constraint, from the
+fit's variance: the BHHH matrix's under \code{se_method = "bhhh"}, and the
+decrement \code{NA} without a variance) and \code{elapsed_time}.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.
@@ -647,6 +675,88 @@ coordinates needing 46 to 224 evaluations of the joint problem;
 \code{polish = "newton"} certifies either.
 }
 
+\section{Share-matching constants (concentrate_out_asc = "blp")}{
+
+\code{concentrate_out_asc = "blp"} holds the constants at the solution of
+the share equations and maximizes the likelihood over the other parameters
+\eqn{\theta_c}{theta_c} given them (Train and Winston 2007): at every
+\eqn{\theta_c}{theta_c}, the constants \eqn{\delta(\theta_c)}{delta(theta_c)}
+(unique where a solution exists, Berry 1994) make each inside
+alternative's predicted share in its market equal its target, the
+predicted share averaging the probabilities over the weighted
+sample and over each decision maker's own estimation draws with equal
+weights (unconditional shares, not the posterior-weighted counts of
+\code{"profile_likelihood"}). It is a different estimator from maximum
+likelihood. It coincides with it in the logit with the sample's shares as
+targets, and with the maximum-likelihood fit's own predicted shares on its
+estimation draws as targets; with external shares known more precisely
+than the sample's it
+can estimate the constants more precisely than maximum likelihood.
+
+The targets (\code{target_shares}) are each inside alternative's share
+within its market, a market being a group of alternatives that share
+choice situations (most data have one): with an outside option a market's
+outside share is one minus its inside targets; without one, a market's
+targets sum to one, and data with more than one market are an error, the
+groups' constants having no common level. By default the targets are the
+sample's own weighted shares, which the fit then reproduces, or, for a
+choice-based sample (\code{\link{wesml_weights}}), its population shares
+\code{Q}, taken as exact. The targets are checked before the draws by the
+share inversion's rules (each alternative offered in some situation of
+positive weight; each target below the weight of the situations that offer
+it and, without an outside option, above that of the situations that offer
+it alone; each market's outside share positive). The sample's own shares
+must be attainable, checked on the exact chosen counts: an alternative
+never chosen, or chosen wherever it is offered, a market where no one
+chooses the outside option, or, without one, an alternative chosen only
+where it is offered alone, is an error (class
+\code{choicer_unbounded_constants}). The constants may not be bounded,
+\code{polish} must be \code{"none"} (a Newton phase on the likelihood
+would move the estimate to maximum likelihood's), and
+\code{concentrate_control}'s \code{max_dense} (10,000) bounds their count.
+
+At each point the optimizer tries, the share inversion of \code{\link{blp}}
+runs on the estimation draws to a log-share residual of
+\code{tol_shares}, from the best point's constants advanced along the
+implicit function's tangent; the optimizer's gradient adds the
+implicit-function term, from one dense factorization of the share
+Jacobian, and its objective is corrected to second order in the inner
+solve's error (\code{fit$loglik} is the log-likelihood at the estimate). A
+solve that does not converge is an overflow to the optimizer. One at the
+start values stops the fit (an error inside that solve is reported as
+itself); ones after the optimizer's best point, or at its solution, make
+the fit warn. Both conditions have class \code{choicer_blp_unconverged}.
+On the census- and claims-style designs of the profile likelihood's study
+a fit took about as long as the profile likelihood's, half (census) to
+two-thirds (claims) of it in the passes of the share Jacobian.
+
+The standard errors are the share-constrained estimator's, for every
+\code{se_method}: the stacked equations of the score projected along the
+share constraint and the share residuals, including the targets' sampling
+error (the sample's: under \code{"hessian"} and \code{"bhhh"} the model's
+variance of the chosen counts; \code{target_vcov} for supplied
+targets, for shares from \eqn{n} independent choices in a market
+\eqn{(\mathrm{diag}(s) - s s^\top)/n}{(diag(s) - s s')/n} on its block, not
+its diagonal alone). Every type assumes correctly specified choice
+probabilities; \code{"sandwich"} and \code{"cluster"} relax the
+information equality (sampling weights, dependence within clusters), and
+with targets other than the sample's over several markets each decision
+maker, and each cluster, must lie in one market. In a Monte Carlo
+(\code{vignette("mxl")}) exact targets cut the constants' standard
+deviations to about half of maximum likelihood's, while targets estimated
+from as many choices as the sample's made them noisier and moved the other
+parameters toward zero (the largest bias 0.29 standard deviations, 0.13
+with exact targets), the intervals still covering; fewer choices bias them
+more.
+\code{logLik()}, AIC and BIC are the likelihood at the constrained
+estimate (likelihood-ratio tests between such fits are not
+\eqn{\chi^2}{chi-squared}), \code{\link{conditional_tastes}}'s identities
+do not hold, and \code{predict(type = "shares")} and \code{\link{blp}}
+reproduce the targets (as shares of the whole sample,
+\code{fit$share_targets$engine}) and the constants only on a
+cross-section.
+}
+
 \section{Column names}{
 
 No column the model uses (the id, alternative, choice, covariate, weight,
@@ -692,6 +802,13 @@ summary(fit)
 Revelt, D. and Train, K. (1998). Mixed logit with repeated
 choices: households' choices of appliance efficiency level.
 \emph{Review of Economics and Statistics} 80(4), 647-657.
+
+Train, K. E. and Winston, C. (2007). Vehicle choice behavior and the
+declining market share of U.S. automakers. \emph{International Economic
+Review} 48(4), 1469-1496.
+
+Berry, S. (1994). Estimating discrete-choice models of product
+differentiation. \emph{RAND Journal of Economics} 25(2), 242-262.
 }
 \seealso{
 \code{\link{conditional_tastes}}, \code{\link{run_hmnlogit}} (the

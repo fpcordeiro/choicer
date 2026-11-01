@@ -1466,7 +1466,7 @@ probabilities averaged over the draws with the weight of the draw given their ch
 the multinomial logit, without draws, this is the familiar property that the fitted shares
 match the observed ones. With random coefficients it is not BLP's share matching (§8),
 which equates the unconditional shares, with $\omega_{ns}$ replaced by $1/S$, to the observed
-ones: a different estimator, reserved as `concentrate_out_asc = "blp"` and not implemented.
+ones: a different estimator, `concentrate_out_asc = "blp"` (§5.9).
 $j$ runs over the free constants (the outside option's or the base alternative's is
 normalized).
 
@@ -1587,6 +1587,242 @@ not find.
 `run_mxlogit()`, [R/mxlogit_utils.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_utils.R);
 `mxl_delta_hessian_parallel()` in
 [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp).*
+
+### 5.9 Matching Aggregate Shares
+
+`run_mxlogit(concentrate_out_asc = "blp")` is a different estimator of the same model: the
+constants are held at the values at which the model's market shares equal target shares, and
+the other parameters maximize the likelihood given them. With $\bar P_{ntj} = \frac1S
+\sum_s P^s_{ntj}$ the probability averaged over the decision maker's own estimation draws
+(each draw weighted $1/S$, not by the posterior weight $\omega_{ns}$ of §2.6 that §5.8's
+condition uses), the predicted share of inside alternative $j$ in market $m$ is
+
+$$
+s_{mj}(\theta_c, \delta) = \frac{1}{w_{(m)}} \sum_{(n,t) \in m} w_n\, \bar
+P_{ntj}(\theta_c, \delta), \qquad w_{(m)} = \sum_{(n,t) \in m} w_n,
+$$
+
+a market being a group of alternatives that share choice situations, directly or through
+others (the components of the share inversion, §8; one in most data), and $(n,t) \in m$
+its choice situations. The constants $\delta(\theta_c)$ solve $s_{mj}(\theta_c, \delta) =
+S^*_{mj}$ for every free constant: for each $\theta_c$ the solution, where one exists, is
+unique (Berry 1994), and smooth in $\theta_c$. The estimator is
+
+$$
+\hat\theta_c = \arg\max_{\theta_c}\, \ell\bigl(\theta_c, \delta(\theta_c)\bigr), \qquad
+\hat\delta = \delta(\hat\theta_c).
+$$
+
+Train and Winston (2007, §3) estimated the mixed logit of new-vehicle choice this way, with
+the constants recomputed by BLP's contraction at every trial value of the other parameters
+so that the shares averaged over their sample equal national market shares; Berry,
+Levinsohn and Pakes (2004) and Petrin (2002) instead combine moments of the micro data with
+the share constraint by GMM. Imbens and Lancaster (1994) give the theory of aggregate
+information in micro estimation.
+
+**The targets.** `target_shares` gives external shares $S^*_{mj}$, each inside alternative's
+share within its market (BLP's $s_{jt}$, $t$ their market); with an outside option a
+market's outside share is one minus its inside targets. By default the targets are the
+sample's own weighted shares, $S^*_{mj} = \sum_{(n,t) \in m} w_n \mathbf 1\{y_{nt} = j\} /
+w_{(m)}$: the fitted model then reproduces them exactly, a calibration of the constants. A
+choice-based sample's population shares $Q$ (§9), when its provenance carries them, are the
+default targets of a WESML fit, taken as exact: under choice-based sampling the weighted
+sample shares equal $Q$ only by construction of the weights, and the chosen counts are fixed
+by the strata. The predicted shares are the weighted sample's, so the weights must make each
+market's sample represent the population its targets describe. With an outside option that
+population includes the outside choices, so samples of buyers only (as in Berry, Levinsohn
+and Pakes 2004) are outside this option's scope; without one, the model is the choice among
+buyers, fitted to buyers' shares, as in Train and Winston (2007, §2.1).
+
+**Where it is maximum likelihood.** Two cases make the estimators coincide, and the tests
+pin both.
+
+* *The logit with the sample's shares.* Without random coefficients $\bar P = P = P^s$ and
+  $\omega_{ns} = 1/S$, so the share equations are the constants' first-order conditions
+  (§5.8), and $\hat\theta = \hat\theta_{ML}$.
+* *The ML fit's own shares as targets.* Let $\ell^*(\theta_c) = \max_\delta \ell(\theta_c,
+  \delta)$ be the profile of §5.8. For any $\theta_c$, $\ell(\theta_c, \delta(\theta_c))
+  \le \ell^*(\theta_c) \le \ell^*(\hat\theta_{c,ML}) = \ell(\hat\theta_{ML})$, and with
+  $S^*$ the ML fit's predicted shares on its estimation draws $\delta(\hat\theta_{c,ML}) =
+  \hat\delta_{ML}$, so the last bound is attained: $\hat\theta_{ML}$ is the global
+  constrained maximum, for any heterogeneity, panel or not.
+
+Otherwise the estimators differ. With the sample's own shares the share-constrained
+estimator is asymptotically at least as variable as ML, which is efficient among estimators
+that use the sample alone. With external shares known exactly it
+can be more precise, since the targets carry information the sample does not: in the
+Monte Carlo below its constants' standard deviations are 0.51 to 0.60 of ML's. It is not the
+efficient use of external shares: it gives the share equations infinite weight while they
+carry the sample's covariate noise. The efficient combination stacks the two sources'
+likelihoods or moments (Imbens and Lancaster 1994; Grieco, Murry, Pinkse and Sagl 2025).
+
+**The inner solve.** At each $\theta_c$ the optimizer tries, the share inversion of §8 runs
+on the estimation draws: each situation integrates over its decision maker's draws (the
+draws of the panel likelihood, cube slice $n$ or the Halton block the kernels form for $n$),
+Anderson acceleration, exponentials kept across evaluations and compensated sums at scale,
+to a largest log-share residual of `tol_shares` ($10^{-12}$; Dubé, Fox and Su 2012). It
+starts from the best point's constants advanced along the tangent $\delta_{best} +
+D_{best}(\theta_c - \theta_{c,best})$, $D = \partial\delta / \partial\theta_c^\top$ (below):
+4 to 6 evaluations of the shares per solve in the Monte Carlo below (5.0 to 5.6 on three
+datasets of its cross-section design, against 6.8 to 7.1 from the best point's constants
+alone), and 17 and 9.5 on the census- and claims-style data of the last paragraph. A solve
+that does not converge within `max_iter` (1000) evaluations is the overflow sentinel to the
+optimizer (§5.4), as in §5.8; the first, at the start values, from the targets' log ratios
+$\log(S^*_j/S^*_0)$ (or a supplied `theta_init`'s constants) with four times the budget,
+stops the fit where it fails (class `choicer_blp_unconverged`).
+
+**The objective and its gradient.** The envelope theorem does not apply: at
+$\delta(\theta_c)$ the gradient of $-\ell$ in the constants, $g_\delta$ (§5.8), is not zero.
+With $g_c$ its gradient in $\theta_c$ and $C =
+\partial(\sum_{n,t} w_n \bar P_{nt}) / \partial(\theta_c, \delta)^\top$ the Jacobian of the
+predicted counts (its blocks $C_c$ and $C_\delta$ on the free constants), the implicit
+function theorem gives $D = -C_\delta^{-1} C_c$, and
+
+$$
+\nabla_{\theta_c} \bigl[-\ell(\theta_c, \delta(\theta_c))\bigr] = g_c + D^\top g_\delta =
+g_c - C_c^\top \lambda, \qquad C_\delta \lambda = g_\delta:
+$$
+
+one solve with $C_\delta$ (symmetric positive definite on the free constants). Per draw,
+$\partial P^s_{nt} / \partial\psi^\top$ is the constants' rows of the logit's information
+$\sum_a P_a z_a z_a^\top - \bar z \bar z^\top$, $z_a = \partial V_a / \partial\psi$: $P_j$
+on the diagonal, $-P_j P_k$ off it and $P_j (z_{cj} - \bar z_c)$ against $\theta_c$. So $C$
+is the constants' rows of the complete-information part of §4.5's assembly (Identities B
+and C, without Identity A's missing information or second derivatives of utility), every
+draw weighted $1/S$. `mxl_blp_jacobian_parallel()` forms it in the gradient's pass, at the
+cost of 2.2 to 3.5 gradient passes (one thread, 20,000 situations, $S = 100$). An inner
+error $e = \tilde\delta - \delta(\theta_c)$ moves
+$-\ell$ by $g_\delta^\top e$, a first-order error the optimizer would see as noise; the
+objective it is given is instead
+
+$$
+f(\theta_c) = -\ell(\theta_c, \tilde\delta) - \lambda^\top \bigl(\textstyle\sum_{n,t} w_n
+\bar P_{nt}(\tilde\delta) - c^*\bigr),
+$$
+
+with $c^*$ the target counts: the residual's term cancels $g_\delta^\top e$ to first order,
+so the error is $O(\|e\|^2)$. At `tol_shares` = $10^{-12}$ both errors are at the
+objective's rounding; at $10^{-8}$ the correction took the largest error over ten warm
+starts from $3 \times 10^{-8}$ to $10^{-11}$, on one dataset of the Monte Carlo's
+cross-section design.
+
+**The variance.** With $\bar g_n = (\bar g_{c,n}, \bar g_{\delta,n})$ decision maker $n$'s
+score of $\ell$ (§4.5), the estimate solves the stacked equations $\sum_n w_n m_n = 0$,
+$m_n = \bar g_{c,n} + D^\top \bar g_{\delta,n}$ (the score projected along the
+constraint; the gradients of $-\ell$ above are $g = -\sum_n w_n \bar g_n$), and $\sum_n w_n
+c_n = 0$, $c_n = \sum_t (\bar P_{nt} - y_{nt})$ for the sample's shares or $\sum_t (\bar
+P_{nt} - S^*_{m(n)})$ for supplied targets. With $\mathcal I$ the information,
+$\tilde{\mathcal I} = [I\ D^\top]\, \mathcal I\, [I;\ D]$ (the curvature along the
+constraint) and $R = (\mathcal I_{c\delta} + D^\top \mathcal I_{\delta\delta})
+C_\delta^{-1}$,
+
+$$
+\hat\theta_c - \theta_c^0 \approx \tilde{\mathcal I}^{-1} \sum_n w_n (m_n + R c_n), \qquad
+\hat\delta - \delta^0 \approx D(\hat\theta_c - \theta_c^0) - C_\delta^{-1} \sum_n w_n c_n,
+$$
+
+and with $\Omega$ the variance of the stacked sums,
+
+$$
+V_c = \tilde{\mathcal I}^{-1} \bigl(\Omega_{11} + R\,\Omega_{21} + \Omega_{12} R^\top + R\,
+\Omega_{cc} R^\top\bigr) \tilde{\mathcal I}^{-1}.
+$$
+
+$D$'s own sampling error does not enter to first order: it multiplies the constants' score,
+whose mean is zero at the truth.
+
+| `se_method` | $\mathcal I$ | $\Omega_{11}$, $\Omega_{12}$ | $\Omega_{cc}$, sample shares | $\Omega_{cc}$, supplied |
+|---|---|---|---|---|
+| `"hessian"` | negated Hessian | $\tilde{\mathcal I}$, 0 | $C_\delta + K$ | $\sum_n w_n c_n c_n^\top$ |
+| `"bhhh"` | BHHH | $\tilde{\mathcal I}$, 0 | $C_\delta + K$ | $\sum_n w_n c_n c_n^\top$ |
+| `"sandwich"` | negated Hessian | blocks of $\sum_n w_n^2 v_n v_n^\top$, $v_n = (m_n, c_n)$ | its $cc$ block | its $cc$ block |
+| `"cluster"` | negated Hessian | blocks of $\sum_g v_g v_g^\top$, $v_g = \sum_{n \in g} w_n v_n$ | its $cc$ block | its $cc$ block |
+
+Under the model, $\Omega_{12} = 0$ ($E[\bar g_n c_n^\top] = -C_n^\top$, and $[I\ D^\top]
+C^\top = 0$) and a decision maker's chosen counts vary by $C_{\delta,n} + K_n$, $K_n =
+\mathrm{Cov}_s(\sum_t P^s_{nt})$ (the law of total variance over the equally weighted
+draws); supplied targets' $c_n$ vary only through the covariates. Targets estimated from an
+independent sample add $\mathrm{diag}(w_{(m(j))}) V_S \mathrm{diag}(w_{(m(j))})$ to
+$\Omega_{cc}$, with $V_S$ = `target_vcov` and $w_{(m(j))}$ free constant $j$'s market weight
+(for shares from $N^*_m$ independent choices in market $m$, $V_S = (\mathrm{diag}(S^*_m) -
+S^*_m S^{*\top}_m)/N^*_m$ on its block: a diagonal $V_S$ drops the covariances the shares'
+adding up imposes, and overstates the variance of the market's total inside share, so of the
+constants' common level). In the logit with the sample's shares, $c_n = -\bar g_{\delta,n}$
+and $R = 0$, and $\tilde{\mathcal I}$ is §5.8's Schur complement $\mathcal S$: `"hessian"`
+(where $\Omega_{cc} = C_\delta + K = \mathcal I_{\delta\delta}$), `"sandwich"` and
+`"cluster"` return ML's variances. All four types assume correctly specified probabilities:
+`"sandwich"` and `"cluster"` relax the information equality (sampling weights, dependence),
+not the model. Under misspecification the constants' expected score is not zero, and two
+terms omitted here become first order: $\sum_j E[\bar g_{\delta j}]\, \partial^2 \delta_j /
+\partial\theta_c \partial\theta_c^\top$ in the bread and $D$'s sampling error in the meat.
+Simulation noise in the share equations is omitted too, as maximum simulated likelihood
+omits its own.
+
+**What the fit records.** `fit$share_targets` holds the targets and their source;
+`fit$optimizer$concentration` the outer and inner work, the residuals, $\hat\lambda =
+C_\delta^{-1} g_\delta$ at the estimate (the derivative of $-\ell$ with respect to each free
+constant's target count: positive where the micro data would put that alternative's share
+below its target) and the outer certificate
+$\frac12 \nabla^\top \tilde{\mathcal I}^{-1} \nabla$ over the mean weight. `logLik()`, AIC
+and BIC are the likelihood at the constrained estimate, and a likelihood-ratio test between
+such fits is not $\chi^2$. `conditional_tastes()`'s identities rest on the scores of $\mu$
+and $\Sigma$ being zero, which they are not here. `predict(type = "shares")` and `blp(fit,
+targets)` reproduce the targets, as shares of the whole sample (`fit$share_targets$engine`),
+and $\hat\delta$ only in a cross-section: a panel's
+predictions integrate per situation, the estimator per decision maker.
+
+**A Monte Carlo.** `_validation/blp_concentration_mc.R` simulates four designs of 2,000
+choice situations among ten alternatives, each situation offering a random subset of at
+least half of them (of its market's): a cross-section with an outside option; 500 decision
+makers with four situations each, with an outside option; a cross-section without one; and
+two markets of five alternatives, with an outside option and targets within each. Utility is
+$x_1 + (-1 + e_{1n}) w_1 + (0.5 + 0.7 e_{2n}) w_2 + \delta_j + \varepsilon_{ntj}$, with $x_1
+\sim N(0, 1)$, $w_k \sim N(0, 1.5^2)$, $e_{kn} \sim N(0, 1)$ and $\delta$ evenly spaced from
+$-1$ to $1$, and every fit uses $S = 100$ draws. Each of 1,000 replications per design fits
+ML (certified by Newton steps) and this estimator with the sample's shares, with the
+population's exact shares, and with shares estimated from $10N$ and $N$ choices per market
+($N$ = 2,000 divided by the number of markets), their multinomial covariance as
+`target_vcov`. Over the four designs:
+
+| targets | constants' SD / ML's | $\theta_c$'s SD / ML's | 95% coverage | largest bias / SD, $\theta_c$ |
+|---|---|---|---|---|
+| (ML itself) | 1 | 1 | 0.946–0.954 | 0.05–0.10 |
+| the sample's shares | 1.02–1.05 | 1.00 | 0.944–0.956 | 0.06–0.10 |
+| exact shares | 0.51–0.60 | 0.99–1.00 | 0.945–0.951 | 0.07–0.13 |
+| shares from $10N$ choices | 0.60–0.70 | 0.99–1.00 | 0.945–0.953 | 0.08–0.15 |
+| shares from $N$ choices | 1.15–1.31 | 0.99–1.00 | 0.941–0.954 | 0.16–0.29 |
+
+Coverage is the Hessian form's. The SD ratios and coverage average over $\theta_c$'s
+parameters or over the constants; the bias column is the largest over $\theta_c$'s, each
+with a Monte Carlo standard error of about 0.03. Every inner solve converged, and every
+fit's outer decrement was below $3 \times 10^{-12}$ (one optimizer stop carried nloptr's
+generic failure code, at a decrement of $2.5 \times 10^{-14}$). Averaged over each group's
+parameters, the mean standard error was within 2.3% of the estimates' standard deviation for
+every estimator, ML's included, and the sandwich covered as the Hessian form did. Exact
+shares roughly halve the constants' standard deviations and shares from ten times the
+sample's choices cut them by a third, while $\theta_c$ stays as precise as under ML; shares
+from as many choices as the sample's make the constants noisier than ML's. Noisy targets
+bias $\theta_c$ toward zero, coefficients and standard deviations alike, by an amount that
+grows with the targets' variance: in the panel, beyond exact targets' bias, by 0.16 standard
+deviations for $w_1$'s mean with shares from $N$ choices and by 0.02 with $10N$. That costs
+the intervals at most a point of coverage.
+
+**Cost.** On the census- and claims-style designs of `_benchmarks/scale/` (`fit_study.R`,
+cell `blp_lbfgs`: the sample's shares, no outside option, correlated coefficients, $S =
+50$, 11 threads), a fit took about as long as the profile likelihood of §5.8: 16 s against
+16 s on 20,000 students in 24,560 situations with 2,511 constants (the joint fit 4.4 s),
+and 26 s against 23 s on 1,500 patients in 17,339 situations with 499 constants (the joint
+fit 14 s). It took 21 and 46 outer evaluations, each one share inversion and one pass of the
+share Jacobian, and the passes took about half the time on census and two-thirds on
+claims.
+
+*Code reference: `.mxl_blp_solver()`, `.mxl_blp_setup()`, `.blp_resolve_targets()`,
+`.blp_vcov()` and `.blp_fit_vcov()` in
+[R/mxlogit_blp.R](https://github.com/fpcordeiro/choicer/blob/main/R/mxlogit_blp.R);
+`mxl_blp_jacobian_parallel()`, `mxl_blp_meat_parallel()`, `blp_check_targets()` and
+`mxl_blp_solve()` in
+[src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp);
+`spd_solve()` in [src/newton.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/newton.cpp).*
 
 ---
 
@@ -1858,6 +2094,14 @@ third of the time. These probabilities agree with those formed afresh to within 
 so the budget can move the returned $\delta$ as two solutions within `tol` differ (by
 about `tol` times the conditioning). The exported
 `mxl_blp_contraction()` keeps nothing.
+
+**On the estimation draws.** `blp()` and the exports draw one block per choice situation,
+the prediction's draws. Given each decision maker's number of situations (`Ti`, internal),
+each situation instead reads its decision maker's block, cube slice $n$ or the Halton block
+the estimation kernels form for $n$, so that the shares integrate over the panel
+likelihood's own draws: `concentrate_out_asc = "blp"` solves its share equations so
+(§5.9). The Gamma cache stays per situation, a decision maker's held once for each of its
+situations within the budget.
 
 *Code reference: `MxlBlpModel` and `mxl_blp_solve()` in
 [src/mxlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mxlogit.cpp), over
@@ -2197,6 +2441,13 @@ return `NA` and are dropped from the population summary.
 - Train, K., & Weeks, M. (2005). Discrete choice models in preference space and willingness-to-pay space. In R. Scarpa & A. Alberini (Eds.), *Applications of Simulation Methods in Environmental and Resource Economics* (pp. 1-16). Springer.
 - McFadden, D., & Train, K. (2000). Mixed MNL models for discrete response. *Journal of Applied Econometrics*, 15(5), 447-470.
 - Berry, S., Levinsohn, J., & Pakes, A. (1995). Automobile prices in market equilibrium. *Econometrica*, 63(4), 841-890.
+- Berry, S. (1994). Estimating discrete-choice models of product differentiation. *RAND Journal of Economics*, 25(2), 242-262.
+- Berry, S., Levinsohn, J., & Pakes, A. (2004). Differentiated products demand systems from a combination of micro and macro data: the new car market. *Journal of Political Economy*, 112(1), 68-105.
+- Petrin, A. (2002). Quantifying the benefits of new products: the case of the minivan. *Journal of Political Economy*, 110(4), 705-729.
+- Train, K. E., & Winston, C. (2007). Vehicle choice behavior and the declining market share of U.S. automakers. *International Economic Review*, 48(4), 1469-1496.
+- Imbens, G. W., & Lancaster, T. (1994). Combining micro and macro data in microeconometric models. *Review of Economic Studies*, 61(4), 655-680.
+- Dubé, J.-P., Fox, J. T., & Su, C.-L. (2012). Improving the numerical performance of static and dynamic aggregate discrete choice random coefficients demand estimation. *Econometrica*, 80(5), 2231-2267.
+- Grieco, P. L. E., Murry, C., Pinkse, J., & Sagl, S. (2025). Optimal estimation of discrete choice demand models with consumer and product data. NBER Working Paper 33397.
 - Bhat, C. R. (2003). Simulation estimation of mixed discrete choice models using randomized and scrambled Halton sequences. *Transportation Research Part B*, 37(9), 837-855.
 - Gouriéroux, C., & Monfort, A. (1996). *Simulation-Based Econometric Methods*. Oxford University Press.
 - Hajivassiliou, V. A., & Ruud, P. A. (1994). Classical estimation methods for LDV models using simulation. In R. F. Engle & D. L. McFadden (Eds.), *Handbook of Econometrics*, Vol. 4 (pp. 2383-2441). North-Holland.

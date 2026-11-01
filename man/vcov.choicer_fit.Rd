@@ -81,6 +81,11 @@ With \code{person_col} the scores are per decision maker, so
 labels must then nest decision makers (be constant within each), and
 \code{type = "cluster"} adds something only for coarser groups such as
 households or markets.
+
+For a mixed logit fitted with \code{concentrate_out_asc = "blp"}, every
+\code{type} is the share-constrained estimator's variance, with the same
+meaning of the types (\code{\link{run_mxlogit}}, "Share-matching
+constants").
 }
 \examples{
 \donttest{

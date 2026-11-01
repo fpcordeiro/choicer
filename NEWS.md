@@ -308,6 +308,75 @@ as `method = "original"`.
   double, where it read such a cube from a temporary copy that R could free
   while it was read.
 
+## Share-matching constants
+
+`run_mxlogit(concentrate_out_asc = "blp")` estimates the mixed logit with its
+constants held at the solution of the share equations: at every value of the
+other parameters, the constants make the model's market shares equal target
+shares, the probabilities averaged over the estimation draws (each draw
+weighted 1/S, a panel's draws per decision maker) and over the weighted
+sample. The other parameters then maximize the likelihood given those
+constants (Train and Winston 2007). It is a different estimator from maximum
+likelihood, with its own standard errors. Until now `"blp"` was reserved, and
+stopped.
+
+- **Targets**, checked before any draw by the share inversion's own rules, and
+  the sample's shares market by market on the exact chosen counts:
+  - The sample's own weighted shares, by default: the fit reproduces them.
+  - `target_shares`: external shares, each inside alternative's share within
+    its market (a group of alternatives that share choice situations), named
+    by label or in the alternatives' order, or `blp()`'s convention for one
+    market, the outside option's share first. `target_vcov` gives their
+    sampling covariance, in the same order or by its row and column names.
+  - A choice-based sample's population shares Q (from `wesml_weights()` or
+    `sample_by_choice()`), taken as exact.
+- **Where it is maximum likelihood.** In the logit with the sample's shares,
+  and with the ML fit's own predicted shares on its estimation draws as
+  targets, for any heterogeneity (the tests reproduce the ML estimates within
+  the optimizers' tolerance).
+- **Precision.** In a Monte Carlo of 1,000 replications in each of four
+  designs (`_validation/blp_concentration_mc.R`; §5.9 of the math article),
+  exact shares cut the constants' standard deviations to 0.51-0.60 of ML's,
+  and shares estimated from ten times the sample's choices to 0.60-0.70, the
+  other parameters as precise as under ML. Shares from as many choices as the
+  sample's made the constants noisier (1.15-1.31 of ML's) and moved the other
+  parameters toward zero, by up to 0.16 standard deviations beyond the bias
+  with exact shares (the largest bias 0.29; 0.13 with exact shares, at most
+  0.10 under ML); fewer choices bias them more. With the Hessian and the
+  sandwich standard errors, the 95% intervals covered 94.1-95.6% for every
+  target, ML's 94.6-95.4%.
+- **The inner solve** is the share inversion of `blp()` on the estimation
+  draws (Anderson acceleration, exponentials kept, compensated sums at scale)
+  to a log-share residual of 1e-12, warm-started along the implicit function's
+  tangent. The outer gradient carries the implicit-function term, from one
+  dense factorization of the share Jacobian, which the likelihood's gradient
+  pass forms (at most `max_dense`, 10,000, constants). The objective the
+  optimizer sees is corrected to second order in the inner error; `fit$loglik`
+  is the log-likelihood at the estimate.
+- **Standard errors.** Every `se_method` gives the share-constrained
+  estimator's variance, that of the stacked equations (the score projected
+  along the share constraint, and the share residuals). It includes the
+  targets' sampling error: the sample's (under `"hessian"` and `"bhhh"`, the
+  model's variance of the chosen counts) or the supplied targets'
+  (`target_vcov`). It assumes correctly specified choice probabilities;
+  `"sandwich"` and `"cluster"` relax the information equality.
+- **Records.** `fit$share_targets` holds the targets and their source.
+  `fit$optimizer$concentration` holds the inner work and residuals, `lambda`
+  (the derivative of the negated log-likelihood with respect to each target
+  count: positive where the micro data would put the share below its target),
+  and the outer certificate. `summary()` labels the fit.
+- **Scope.** The log-likelihood is that at the constrained estimate:
+  likelihood-ratio tests between such fits are not chi-squared, and
+  `conditional_tastes()`'s identities do not hold. `predict(type = "shares")`
+  and `blp()` reproduce the targets (as shares of the whole sample,
+  `fit$share_targets$engine`) only on a cross-section.
+- **Cost.** On the scale benchmarks' census- and claims-style designs (20,000
+  students, 1,500 patients) at 11 threads, a fit took about as long as the
+  profile likelihood's: 16 s against 16 s on census-style data with 2,511
+  constants (the joint fit 4.4 s), and 26 s against 23 s on claims-style data
+  with 499 constants (the joint fit 14 s). The share Jacobian's passes took
+  half to two-thirds of the time.
+
 ## Population-scale mixed logit
 
 This release reworks the mixed logit for the data it is most needed on:
@@ -471,10 +540,10 @@ designs of their own, described where they appear.
   equal to its predicted count, each decision maker's probabilities averaged
   over the draws with the weight of the draw given their choices. That is not
   BLP's share matching, which equates unconditional shares and defines another
-  estimator (`"blp"` is reserved for it, and stops). The profile's maximizer
-  is the joint one, and the standard errors come from the full information at
-  the estimates, so the estimation of the constants enters the other
-  parameters' standard errors; treating the constants as known would
+  estimator (`"blp"`, under "Share-matching constants"). The profile's
+  maximizer is the joint one, and the standard errors come from the full
+  information at the estimates, so the estimation of the constants enters the
+  other parameters' standard errors; treating the constants as known would
   understate them (at the true parameters of a census-style design, to 45% of
   the correct standard error for a covariate that varies mostly between
   alternatives, and to 91% for an alternative x decision-maker interaction).

@@ -375,7 +375,7 @@ random coefficient's mean, of its own once the constants are in: that mean effec
 the constants (a random coefficient on the trait keeps its spread, identified as above, as
 with `random_var_cols` and `rc_mean = FALSE`), and recovering it takes a second step, a
 projection of the estimated constants on the traits, with instruments where a trait is
-endogenous. Three practical questions follow; §5.6 to §5.8 of the
+endogenous. Four practical questions follow; §5.6 to §5.9 of the
 [math companion](https://fpcordeiro.github.io/choicer/articles/mixed_logit_math.html) give
 the details, and [Which standard errors, and when](inference.html) the variance routes.
 
@@ -445,6 +445,58 @@ cbind(full = fit_joint$se[other],
 set_num_threads(2)
 ```
 
+**Can the constants match aggregate shares?** Often the market shares are known better than
+any sample can estimate them: registry counts of enrollment or admissions, national sales.
+`concentrate_out_asc = "blp"` holds the constants where the model's shares equal such
+targets, and maximizes the likelihood over the other parameters given them (Train and
+Winston 2007):
+$$
+\frac{1}{w_{(m)}} \sum_{(n,t) \in m} w_n \frac1S \sum_s P^s_{ntj} = S^*_{mj},
+$$
+with $(n,t) \in m$ market $m$'s choice situations and $w_{(m)}$ their weight: each decision
+maker's probabilities averaged over the draws with *equal* weights, the unconditional
+shares that BLP match, where the profile likelihood's condition above weighs the draws by
+$\omega_{ns}$. `target_shares` gives each inside alternative's share within its market (by
+default the sample's own shares, which the fit then reproduces), and `target_vcov` their
+sampling covariance. It is a different estimator. With the sample's own shares it cannot be
+more precise than maximum likelihood in large samples; with external shares its constants
+can be much more precise, since the targets carry information the sample does not. In a
+Monte Carlo of four designs (§5.9 of the math companion), exact shares cut the constants'
+standard deviations to 0.51–0.60 of maximum likelihood's, and shares estimated from ten
+times the sample's choices to 0.60–0.70, with the other parameters as precise as under
+maximum likelihood and the 95% intervals covering 94–96% of the time. Shares estimated from
+as many choices as the sample's made the constants noisier than maximum likelihood's, and
+moved the other parameters toward zero (the largest bias 0.29 standard deviations, against
+0.13 with exact shares); fewer choices bias them more. The standard errors include the
+targets' sampling error, and assume the model correctly specified. Fed the
+maximum-likelihood fit's own predicted shares on its estimation draws, the estimator
+returns the maximum-likelihood estimates:
+
+```{r blp-constants}
+set_num_threads(1)
+# the ML fit's shares on its estimation draws (a cross-section with stored
+# draws): every alternative's, in order, the base alternative 0's first
+s_ml <- predict(fit_joint, type = "shares")
+fit_blp <- run_mxlogit(
+  data = sim_j$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+  covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"), S = 50L,
+  concentrate_out_asc = "blp", target_shares = as.numeric(s_ml)
+)
+max(abs(coef(fit_blp) - coef(fit_joint)) / fit_joint$se)
+# the sample's own shares instead: a different estimate (in maximum
+# likelihood's standard errors), and the constants' standard errors against
+# maximum likelihood's
+fit_blp_sample <- run_mxlogit(
+  data = sim_j$data, id_col = "id", alt_col = "alt", choice_col = "choice",
+  covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"), S = 50L,
+  concentrate_out_asc = "blp"
+)
+max(abs(coef(fit_blp_sample) - coef(fit_joint)) / fit_joint$se)
+range(fit_blp_sample$se[fit_blp_sample$param_map$asc] /
+        fit_joint$se[fit_joint$param_map$asc])
+set_num_threads(2)
+```
+
 ## A research checklist
 
 For a reportable `run_mxlogit()` application:
@@ -482,7 +534,9 @@ For a reportable `run_mxlogit()` application:
 8. With many alternatives, certify the optimizer's stop with `polish = "newton"`
    and report standard errors from the full information, which accounts for the
    constants' estimation; `concentrate_out_asc = "profile_likelihood"` gives the
-   same estimator, at a higher cost.
+   same estimator, at a higher cost. Where aggregate shares are known better
+   than the sample's, `concentrate_out_asc = "blp"` pins the constants to them:
+   another estimator, reported as such.
 
 Bounded/censored mixing distributions, WTP-space estimation, and latent-class
 logit can be useful alternative modeling strategies, but they are **not
@@ -511,3 +565,7 @@ Train, K. and Weeks, M. (2005). Discrete choice models in preference space
 and willingness-to-pay space. In R. Scarpa and A. Alberini (Eds.),
 *Applications of Simulation Methods in Environmental and Resource Economics*.
 Springer.
+
+Train, K. E. and Winston, C. (2007). Vehicle choice behavior and the declining
+market share of U.S. automakers. *International Economic Review*, 48(4),
+1469-1496.

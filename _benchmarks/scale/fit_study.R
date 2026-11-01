@@ -23,12 +23,21 @@
 #   k<K>_<newton|bhhh>  L-BFGS stopped after K evaluations, then the polish
 #   profile_lbfgs     concentrate_out_asc = "profile_likelihood"
 #   profile_newton    the same + polish = "newton"
-# Each cell saves <dir>/<regime>_<U>_<cell>.rds: times, the kernels' calls,
+#   blp_lbfgs         concentrate_out_asc = "blp" (the sample's shares as
+#                     targets: a different estimator, so its distance from
+#                     the reference is the estimators', not the optimizer's)
+# Each cell saves <dir>/<regime>_<U>_<cell>.rds: times, the kernels' calls
+# (with "blp": the share inversion's solves, the share Jacobian's passes, the
+# meat kernel's and spd_solve()'s dense solves),
 # the Newton and BHHH decrements at the endpoint and the gradient there (from
 # the kernels, not counted), and the estimates and standard errors. costs
 # times each kernel pass at the reference estimates (medians over rounds);
 # table compares each cell with its design's reference and, with costs=,
-# models each cell's time as its calls times those medians.
+# models each cell's time as its calls times those medians. The model covers
+# the likelihood's kernels and the Cholesky factorizations, not "blp"'s share
+# inversions, Jacobian passes and dense solves, so a blp cell's modeled time
+# is too low; and the table's inner column counts Newton steps for the profile
+# cells but evaluations of the shares for "blp".
 source(file.path(dirname(normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE),
   value = TRUE)))), "scale_common.R"))
 cmd <- commandArgs(TRUE)[1]
@@ -128,13 +137,17 @@ if (identical(cmd, "fit")) {
                                polish_control = list(max_iter = if (grepl("newton", cell)) 50L else 100L)),
     profile_lbfgs = list(concentrate_out_asc = "profile_likelihood"),
     profile_newton = list(concentrate_out_asc = "profile_likelihood", polish = "newton"),
+    blp_lbfgs = list(concentrate_out_asc = "blp"),
     stop("unknown cell ", cell))
 
   # Count the kernels' calls during the fit; newton_step() is the Cholesky
-  calls <- c(gradient = 0L, hessian = 0L, bhhh = 0L, meat = 0L, delta = 0L, cholesky = 0L)
+  calls <- c(gradient = 0L, hessian = 0L, bhhh = 0L, meat = 0L, delta = 0L, cholesky = 0L,
+             shares = 0L, jacobian = 0L, blp_meat = 0L, spd = 0L)
   kern <- c(mxl_loglik_gradient_parallel = "gradient", mxl_hessian_parallel = "hessian",
             mxl_bhhh_parallel = "bhhh", mxl_cluster_meat_parallel = "meat",
-            mxl_delta_hessian_parallel = "delta", newton_step = "cholesky")
+            mxl_delta_hessian_parallel = "delta", newton_step = "cholesky",
+            mxl_blp_solve = "shares", mxl_blp_jacobian_parallel = "jacobian",
+            mxl_blp_meat_parallel = "blp_meat", spd_solve = "spd")
   kern <- kern[names(kern) %in% ls(ns, all.names = TRUE)]
   for (k in names(kern)) {
     suppressMessages(trace(k, tracer = bquote(calls[[.(kern[[k]])]] <<- calls[[.(kern[[k]])]] + 1L),
@@ -240,14 +253,15 @@ if (identical(cmd, "fit")) {
       dec_newton = x$decrement_newton, dec_bhhh = x$decrement_bhhh,
       dcoef_se = if (is.null(r)) NA_real_ else max(abs(x$coef - r$coef) / r$se, na.rm = TRUE),
       gradient = n[["gradient"]], hessian = n[["hessian"]], bhhh = n[["bhhh"]], delta = n[["delta"]],
-      cholesky = n[["cholesky"]],
+      cholesky = n[["cholesky"]], shares = num(n["shares"][[1]]),
+      jacobian = num(n["jacobian"][[1]]),
       inner = if (is.null(x$concentration)) NA_integer_ else x$concentration$inner_iterations,
       load = paste(x$load_start, "->", x$load_end), stringsAsFactors = FALSE)
   })
   t <- do.call(rbind, rows)
   ord <- c("reference", "lbfgs", "lbfgs_newton", "lbfgs_bhhh",
            paste0("k", rep(c(25, 50, 100, 200), each = 2), c("_newton", "_bhhh")),
-           "profile_lbfgs", "profile_newton")
+           "profile_lbfgs", "profile_newton", "blp_lbfgs")
   t <- t[order(t$design, match(t$cell, ord)), ]
   op <- options(width = 250)
   print(format(t, digits = 3), row.names = FALSE)

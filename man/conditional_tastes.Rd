@@ -81,7 +81,10 @@ unresolved (\code{residual}) should sum to about one. These are numerical
 checks, not specification tests: for normal random coefficients with free
 means, both identities are the likelihood's first-order conditions for
 \eqn{\mu} and \eqn{\Sigma}, so they hold at a converged maximum whatever
-the true taste distribution. A departure points to too few draws
+the true taste distribution (not at a fit with
+\code{concentrate_out_asc = "blp"}, whose estimate sets the scores to zero
+along the share constraint, not \eqn{\mu}'s and \eqn{\Sigma}'s own). A
+departure points to too few draws
 \code{S} or an unconverged \eqn{\hat\theta}; when a random coefficient's
 mean is fixed at zero (\code{rc_mean = FALSE} and no fixed coefficient on
 the same variable), a \code{mean_cond} far from zero can also flag that
