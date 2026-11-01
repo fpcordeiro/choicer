@@ -2752,6 +2752,384 @@ Rcpp::NumericMatrix mxl_cluster_meat_parallel(
   return acc.result;
 }
 
+// ============================================================================
+// The share-matching constants' meats
+//
+// The variance of run_mxlogit(concentrate_out_asc = "blp") (.blp_vcov())
+// stacks, per likelihood unit u, the projected score m_u = s_c,u + D' s_d,u
+// (D = d delta / d theta_c', J_d x K_c, the constants' implicit derivative)
+// and the unit's share residuals on the free constants: c_u = sum_{t in u}
+// (Pbar_t - y_t) for the sample's own shares, or, for supplied targets, the
+// part on the unit's own alternatives, sum_{t in u} Pbar_t, of sum_{t in u}
+// (Pbar_t - s*_m(t)) (Pbar_t the situation's probabilities averaged over its
+// unit's draws with equal weights 1/S; R adds the dense part,
+// .blp_meat_correct()). v_u = (m_u, c_u) has the compact layout of the unit's
+// score (its K_c continuous entries, then its slots), so the BHHH kernel's
+// accumulation and the cluster meat's take it in the score's place.
+// ============================================================================
+
+// The loaded and simulated unit's v_u in its compact block (K_c + a
+// entries): its score (mxl_unit_score_local()) with D' s_d,u added to the
+// continuous entries (from Dt = D', K_c x J_d, a constant's column
+// contiguous), then each slot's share residual, the sum over the slot's rows
+// of Pbar - y, or Pbar alone for supplied targets. Pbar - y is the mean over
+// the draws of -DiffW = P - y when the unit is one draw batch (DiffW then
+// holds every draw); otherwise each situation's probabilities are formed
+// again at every draw. `pb` holds one situation's rows' Pbar - y.
+inline void mxl_blp_unit_vec(const MxlUnitData& ud, MxlUnitScratch& sc,
+                             const MxlUnitMap& mp, const arma::mat& Dt,
+                             const bool supplied, arma::vec& v,
+                             std::vector<double>& pb) {
+  const MxlLayout& lay = ud.lay;
+  const int K_c = ud.par.idx_delta_start;
+  const int S = ud.S;
+  const double inv_S = 1.0 / static_cast<double>(S);
+  const int o = ud.include_outside_option ? 1 : 0;
+  mxl_unit_score_local(ud, sc, mp, v);
+  for (int k = 0; k < mp.a; ++k) {
+    const double sd = v[K_c + k];
+    const double* dj = Dt.colptr(static_cast<arma::uword>(mp.delta[k]));
+    for (int c = 0; c < K_c; ++c) v[c] += dj[c] * sd;
+    v[K_c + k] = 0.0;
+  }
+  for (mxl_off t = sc.t0; t < sc.t1; ++t) {
+    const int m_t = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
+    const mxl_off first = lay.row_off[t] - sc.r0;  // first row in the unit
+    const int chosen = lay.chosen(t);               // slot in P (0: outside)
+    if (static_cast<int>(pb.size()) < m_t) pb.resize(static_cast<std::size_t>(m_t));
+    std::fill(pb.begin(), pb.begin() + m_t, 0.0);
+    if (sc.nb == 1) {
+      for (int s = 0; s < S; ++s) {
+        const double* dw = sc.DiffW.colptr(static_cast<arma::uword>(s)) + first;
+        for (int a = 0; a < m_t; ++a) pb[a] += dw[a];
+      }
+      for (int a = 0; a < m_t; ++a) pb[a] = -(pb[a] * inv_S);
+    } else {
+      mxl_situation_wgamma(sc, first, m_t);
+      for (int s = 0; s < S; ++s) {
+        mxl_situation_probs(ud, sc, t, s);
+        for (int a = 0; a < m_t; ++a) pb[a] += sc.P[o + a];
+      }
+      for (int a = 0; a < m_t; ++a) {
+        pb[a] = pb[a] * inv_S - ((o + a) == chosen ? 1.0 : 0.0);
+      }
+    }
+    for (int a = 0; a < m_t; ++a) {
+      const int k = mp.row_slot[first + a];
+      if (k < 0) continue;
+      v[K_c + k] += supplied ? pb[a] + ((o + a) == chosen ? 1.0 : 0.0) : pb[a];
+    }
+  }
+}
+
+//' The share-matching constants' meat (internal)
+//'
+//' For the variance of run_mxlogit(concentrate_out_asc = "blp")
+//' (.blp_vcov()): per likelihood unit u, v_u = (m_u, c_u), the projected
+//' score m_u = s_c,u + D' s_d,u and the unit's share residuals c_u on its
+//' free constants (sum over its situations of Pbar_t - y_t for the sample's
+//' shares, of Pbar_t for supplied targets, Pbar_t averaged over the unit's
+//' draws with weights 1/S). Without \code{cluster}, sum_u w_u v_u v_u', as
+//' mxl_bhhh_parallel() adds its scores (R passes the squared weights for the
+//' sandwich); with it, sum_g v_g v_g', v_g = sum_{u in g} w_u v_u, as
+//' mxl_cluster_meat_parallel() forms it. With \code{alpha}, also the sums
+//' sum_u alpha_u m_u per market (the unit's \code{market}) and sum_u alpha_u
+//' c_u (one vector over the free constants: a unit's situations lie in one
+//' market, and markets share no alternatives), from which .blp_meat_correct()
+//' adds the dense part of supplied targets' residuals.
+//' Takes mxl_cluster_meat_parallel()'s arguments; \code{use_asc} must be TRUE.
+//' @param D The constants' implicit derivative, J_d x K_c.
+//' @param supplied Whether the targets are supplied (c_u without the choices).
+//' @param cluster NULL, or one code per likelihood unit, 1..G.
+//' @param alpha NULL, or one weight per likelihood unit.
+//' @param market With \code{alpha}: one code per likelihood unit, 1..M.
+//' @returns List: \code{meat} (n_params x n_params); with \code{alpha},
+//'   \code{A_c} (K_c x M) and \code{A_d} (J_d).
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List mxl_blp_meat_parallel(
+    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
+    const Rcpp::IntegerVector &M, const arma::vec &weights,
+    const arma::cube &eta_draws, const arma::uvec &rc_dist,
+    const arma::mat &D, const bool supplied,
+    const bool rc_correlation = true, const bool rc_mean = false,
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const Rcpp::Nullable<Rcpp::IntegerVector> cluster = R_NilValue,
+    const Rcpp::Nullable<Rcpp::NumericVector> alpha = R_NilValue,
+    const Rcpp::Nullable<Rcpp::IntegerVector> market = R_NilValue,
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0) {
+  if (!use_asc) {
+    Rcpp::stop("mxl_blp_meat_parallel() needs the constants (use_asc = TRUE).");
+  }
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_blp_meat_parallel");
+  const MxlLayout& lay = ud.lay;
+  const int n_params = ud.n_params;
+  const int K_c = ud.par.idx_delta_start;
+  const int J_d = n_params - K_c;
+  const mxl_off U = lay.U;
+  if (static_cast<int>(D.n_rows) != J_d || static_cast<int>(D.n_cols) != K_c) {
+    Rcpp::stop("D must be %d x %d (free constants x continuous parameters); "
+               "it is %d x %d.", J_d, K_c, static_cast<int>(D.n_rows),
+               static_cast<int>(D.n_cols));
+  }
+  // The per-market sums' weights and markets
+  const bool sums = alpha.isNotNull();
+  Rcpp::NumericVector alpha_v;
+  Rcpp::IntegerVector market_v;
+  int n_mk = 0;
+  if (sums) {
+    alpha_v = Rcpp::NumericVector(alpha);
+    if (market.isNull()) Rcpp::stop("market is needed with alpha.");
+    market_v = Rcpp::IntegerVector(market);
+    if (static_cast<mxl_off>(alpha_v.size()) != U ||
+        static_cast<mxl_off>(market_v.size()) != U) {
+      Rcpp::stop("alpha and market must have one entry per likelihood unit (%d).", U);
+    }
+    for (mxl_off u = 0; u < U; ++u) {
+      if (market_v[u] < 1) {  // NA_INTEGER is negative
+        Rcpp::stop("market codes must be positive integers (unit %d has %s).",
+                   u + 1, market_v[u] == NA_INTEGER ? "NA" : std::to_string(market_v[u]));
+      }
+      n_mk = std::max(n_mk, market_v[u]);
+    }
+  }
+  // The cluster codes, as mxl_cluster_meat_parallel() reads them
+  const bool clustered = cluster.isNotNull();
+  Rcpp::IntegerVector cl_v;
+  int G = 0;
+  if (clustered) {
+    cl_v = Rcpp::IntegerVector(cluster);
+    if (static_cast<mxl_off>(cl_v.size()) != U) {
+      Rcpp::stop("cluster length (%d) does not match the number of likelihood "
+                 "units (%d).", cl_v.size(), U);
+    }
+    for (mxl_off u = 0; u < U; ++u) {
+      if (cl_v[u] < 1) {
+        Rcpp::stop("cluster codes must be positive integers (unit %d has %s).",
+                   u + 1, cl_v[u] == NA_INTEGER ? "NA" : std::to_string(cl_v[u]));
+      }
+      G = std::max(G, cl_v[u]);
+    }
+  }
+
+  // Per thread: the scratch, the slot map, v_u and (robust) the update's
+  // column, a situation's Pbar - y, W_t and W_t Gamma (units in batches),
+  // the per-market sums with their padding and, clustered, the cluster sums
+  // as the cluster meat counts them. Shared: the result, D', the per-market
+  // sums' result and, clustered, the sort's arrays.
+  const int n_threads = kernel_team_threads(U);
+  const double m_t = static_cast<double>(lay.max_m);
+  const double n_sums = sums ? static_cast<double>(K_c) * n_mk + J_d : 0.0;
+  kernel_check_memory(
+      "share-matching meat", n_threads,
+      ud.scratch_bytes() + mxl_map_bytes(ud) +
+          sizeof(double) * (2.0 * n_params + 16.0 + m_t +
+                            m_t * (ud.S + ud.W.n_cols) +
+                            (sums ? n_sums + 32.0 : 0.0)) +
+          (clustered ? 9.0 * ClusterSum::bytes(n_params) : 0.0),
+      [&](const int t) {
+        return sym_acc_need(n_params, K_c, t, acc_bytes) +
+               sizeof(double) * (static_cast<double>(K_c) * J_d + n_sums) +
+               (clustered ? 8.0 * (static_cast<double>(U) + 2.0 * G + 4.0 * t + 2.0)
+                          : 0.0);
+      });
+
+  // The R results first (an R allocation that fails jumps past C++
+  // destructors), then D' and the C++ buffers
+  Rcpp::NumericMatrix A_c(sums ? K_c : 0, sums ? n_mk : 0);
+  Rcpp::NumericVector A_d(sums ? J_d : 0);
+  SymAcc acc(n_params, n_threads, K_c, "share-matching meat", acc_bytes);
+  const arma::mat Dt = D.t();
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, K_c);
+  std::vector<std::vector<double>> cols;
+  if (!clustered) {
+    cols = thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
+  }
+  std::vector<std::vector<double>> A_c_t, A_d_t;
+  if (sums) {
+    A_c_t = thread_vectors<double>(static_cast<std::size_t>(K_c) * n_mk, n_threads);
+    A_d_t = thread_vectors<double>(static_cast<std::size_t>(J_d), n_threads);
+  }
+  // A unit's v_u, and its part of the per-market sums
+  const double* alpha_p = sums ? alpha_v.begin() : nullptr;
+  const int* market_p = sums ? market_v.begin() : nullptr;
+  auto unit_vec = [&](const mxl_off u, MxlUnitScratch& sc, MxlUnitMap& mp,
+                      arma::vec& v, std::vector<double>& pbar, const int tid) {
+    mxl_unit_load(ud, u, sc, 2);
+    mxl_unit_simulate(ud, sc, true);
+    mxl_unit_map(ud, sc, mp);
+    mxl_blp_unit_vec(ud, sc, mp, Dt, supplied, v, pbar);
+    if (sums) {
+      const double a_u = alpha_p[u];
+      double* ac = A_c_t[tid].data() + static_cast<std::size_t>(K_c) * (market_p[u] - 1);
+      for (int c = 0; c < K_c; ++c) ac[c] += a_u * v[c];
+      double* ad = A_d_t[tid].data();
+      for (int k = 0; k < mp.a; ++k) ad[mp.delta[k]] += a_u * v[K_c + k];
+    }
+  };
+
+  if (!clustered) {
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+    {
+      const int tid = kernel_thread_num();
+      MxlUnitMap& mp = *maps[tid];
+      double* acc_t = acc.base(tid);
+      double* col = cols[tid].data();
+      MxlUnitScratch sc;
+      arma::vec v;
+      std::vector<double> pbar;
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+      for (mxl_off u = 0; u < U; ++u) {
+        unit_vec(u, sc, mp, v, pbar, tid);
+        const double w_u = weights[lay.unit_first(u)];
+        // As mxl_bhhh_parallel() adds a unit's score: over the compact
+        // block, or over every entry for a non-finite weight or vector
+        if (unit_finite(w_u, v.memptr(), static_cast<int>(v.n_elem))) {
+          switch (acc.mode()) {
+            case SymMode::Single:
+              bhhh_add<SymMode::Single>(acc, acc_t, mp, K_c, v, w_u, col);
+              break;
+            case SymMode::Triangles:
+              bhhh_add<SymMode::Triangles>(acc, acc_t, mp, K_c, v, w_u, col);
+              break;
+            default:
+              bhhh_add<SymMode::Shared>(acc, acc_t, mp, K_c, v, w_u, col);
+          }
+        } else {
+          switch (acc.mode()) {
+            case SymMode::Single:
+              bhhh_add_dense<SymMode::Single>(acc, acc_t, mp, K_c, v, w_u, col);
+              break;
+            case SymMode::Triangles:
+              bhhh_add_dense<SymMode::Triangles>(acc, acc_t, mp, K_c, v, w_u, col);
+              break;
+            default:
+              bhhh_add_dense<SymMode::Shared>(acc, acc_t, mp, K_c, v, w_u, col);
+          }
+        }
+        mxl_unit_map_clear(mp);
+      }
+    }
+  } else {
+    // mxl_cluster_meat_parallel()'s sort, chunks and cluster sums, with v_u
+    // in the score's place
+    const int* cl = cl_v.begin();
+    std::vector<mxl_off> off(static_cast<std::size_t>(G) + 1, 0);
+    for (mxl_off u = 0; u < U; ++u) ++off[cl[u]];
+    for (mxl_off g = 1; g <= G; ++g) off[g] += off[g - 1];
+    std::vector<mxl_off> order(static_cast<std::size_t>(U));
+    {
+      std::vector<mxl_off> next(off.begin(), off.end() - 1);
+      for (mxl_off u = 0; u < U; ++u) order[next[cl[u] - 1]++] = u;
+    }
+    const mxl_off n_chunks = std::max<mxl_off>(
+        1, std::min<mxl_off>(U, 4 * static_cast<mxl_off>(n_threads)));
+    std::vector<mxl_off> chunk(static_cast<std::size_t>(n_chunks) + 1, U);
+    {
+      const double total = static_cast<double>(lay.n_rows);
+      double cum = 0.0;
+      mxl_off c = 1;
+      chunk[0] = 0;
+      for (mxl_off p = 0; p < U && c < n_chunks; ++p) {
+        const mxl_off u = order[p];
+        cum += static_cast<double>(lay.row_off[lay.unit_first(u + 1)] -
+                                   lay.row_off[lay.unit_first(u)]);
+        if (cum >= total * static_cast<double>(c) / static_cast<double>(n_chunks)) {
+          chunk[c++] = p + 1;
+        }
+      }
+      for (; c < n_chunks; ++c) chunk[c] = U;
+    }
+    std::vector<ClusterSum> csums;
+    csums.reserve(n_threads);
+    for (int i = 0; i < n_threads; ++i) csums.emplace_back(n_params);
+    std::vector<ClusterSum> cut;  // chunk c: 2 c (head), 2 c + 1 (tail)
+    cut.reserve(static_cast<std::size_t>(2 * n_chunks));
+    for (mxl_off i = 0; i < 2 * n_chunks; ++i) cut.emplace_back(n_params);
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+    {
+      const int tid = kernel_thread_num();
+      MxlUnitMap& mp = *maps[tid];
+      ClusterSum& cs = csums[tid];
+      double* acc_t = acc.base(tid);
+      MxlUnitScratch sc;
+      arma::vec v;
+      std::vector<double> pbar;
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+      for (mxl_off c = 0; c < n_chunks; ++c) {
+        const mxl_off p0 = chunk[c], p1 = chunk[c + 1];
+        for (mxl_off p = p0; p < p1; ++p) {
+          const mxl_off u = order[p];
+          const int g = cl[u];
+          if (p == p0 || cl[order[p - 1]] != g) cs.start(g, K_c);
+          unit_vec(u, sc, mp, v, pbar, tid);
+          cs.add(mp, K_c, v, weights[lay.unit_first(u)]);
+          mxl_unit_map_clear(mp);
+          if (p + 1 == p1 || cl[order[p + 1]] != g) {
+            const bool head = off[g - 1] < p0;
+            const bool tail = off[g] > p1;
+            if (!head && !tail) {
+              cs.update(acc, acc_t);
+              cs.clear();
+            } else {
+              cs.hand_to(cut[2 * c + (head ? 0 : 1)]);
+            }
+          }
+        }
+      }
+    }
+    ClusterSum& cs = csums[0];
+    int g_open = 0;
+    for (mxl_off c = 0; c < n_chunks; ++c) {
+      for (int k = 0; k < 2; ++k) {
+        ClusterSum& part = cut[2 * c + k];
+        if (!part.used) continue;
+        if (part.g != g_open) {
+          if (g_open > 0) {
+            cs.update(acc, acc.base(0), true);
+            cs.clear();
+          }
+          cs.start(part.g, K_c);
+          g_open = part.g;
+        }
+        cs.merge(part);
+      }
+    }
+    if (g_open > 0) cs.update(acc, acc.base(0), true);
+  }
+
+  acc.finish(false);
+  Rcpp::List out = Rcpp::List::create(Rcpp::Named("meat") = acc.result);
+  if (sums) {
+    // the threads' sums (thread_vectors() pads each), added in thread order
+    const std::size_t n_ac = static_cast<std::size_t>(K_c) * n_mk;
+    for (int i = 0; i < n_threads; ++i) {
+      for (std::size_t k = 0; k < n_ac; ++k) A_c[k] += A_c_t[i][k];
+      for (int j = 0; j < J_d; ++j) A_d[j] += A_d_t[i][j];
+    }
+    out["A_c"] = A_c;
+    out["A_d"] = A_d;
+  }
+  return out;
+}
+
 // Conditional tastes of each likelihood unit (internal).
 //
 // Simulated mean and standard deviation of the random coefficients given the

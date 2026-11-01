@@ -131,3 +131,85 @@ run_pf_jac <- function() {
   out[["pf_jac|panel|residuals"]] <- rec(pnl, eta_p, theta_of(pnl)[-(3:4)])
   out
 }
+
+# pf_meat: mxl_blp_meat_parallel(), the share-matching constants' meat (the
+#   units' projected scores and share residuals; robust, by cluster, and for
+#   supplied targets with the per-market sums, also by cluster), with D from
+#   the share Jacobian at theta, on a cross-section with the outside option,
+#   the base normalization, a panel, log-normal correlated coefficients with
+#   rc_mean, an alternative-level W, in draw batches and on draws formed on
+#   the fly. Class D against the steps before it (a new kernel); pinned for
+#   the later steps.
+run_pf_meat <- function() {
+  out <- list()
+  ns <- asNamespace("choicer")
+  kern <- get0("mxl_blp_meat_parallel", envir = ns)
+  if (is.null(kern)) {
+    out[["pf_meat|absent"]] <- p2_val(stop("no mxl_blp_meat_parallel()"))
+    return(out)
+  }
+  jac <- get("mxl_blp_jacobian_parallel", envir = ns)
+  theta_of <- function(inp, n_head = 4L) {
+    J <- nrow(inp$alt_mapping) - 1L
+    set.seed(194)
+    c(c(0.5, -0.4, log(0.9), log(0.6), 0.2, -0.1, log(0.7))[seq_len(n_head)],
+      stats::rnorm(J, sd = 0.5))
+  }
+  # gen: the generator's arguments, for both kernels; spec: rc_dist, corr,
+  # mean and the continuous parameters' count
+  rec <- function(inp, eta, supplied = FALSE, weights = inp$weights, gen = list(),
+                  spec = list(rc_dist = c(0L, 0L), corr = FALSE, mean = FALSE, K_c = 4L),
+                  th = theta_of(inp, spec$K_c), ...) {
+    p2_val({
+      j <- do.call(jac, c(list(th, inp$X, inp$W, inp$alt_idx, inp$choice_idx, inp$M,
+                               inp$weights, eta, spec$rc_dist, spec$corr, spec$mean,
+                               TRUE, inp$include_outside_option), gen,
+                          list(Ti = inp$Ti)))
+      di <- spec$K_c + seq_len(length(th) - spec$K_c)
+      D <- -solve(j$jacobian[di, di], j$jacobian[di, seq_len(spec$K_c)])
+      do.call(kern, c(list(th, inp$X, inp$W, inp$alt_idx, inp$choice_idx, inp$M,
+                           weights, eta, spec$rc_dist, D, supplied, spec$corr,
+                           spec$mean, TRUE, inp$include_outside_option), gen,
+                      list(Ti = inp$Ti, ...)))
+    })
+  }
+  x <- p5b_prep(p5b_sim(184L))
+  eta_x <- get_halton_normals(15L, length(x$M), 2L)
+  N <- length(x$M)
+  out[["pf_meat|cross|robust"]] <- rec(x, eta_x, weights = x$weights^2)
+  out[["pf_meat|cross|cluster"]] <- rec(x, eta_x, cluster = rep(1:7, length.out = N))
+  out[["pf_meat|cross|supplied"]] <- rec(x, eta_x, TRUE, alpha = x$weights,
+                                         market = rep(1L, N))
+  out[["pf_meat|cross|batches"]] <- rec(x, eta_x, weights = x$weights^2,
+                                        draw_batch = 4L)
+  # log-normal second coefficient, correlated, with rc_mean
+  ln <- list(rc_dist = c(0L, 1L), corr = TRUE, mean = TRUE, K_c = 7L)
+  out[["pf_meat|cross|lognormal"]] <- rec(x, eta_x, spec = ln, weights = x$weights^2)
+  xa <- x
+  set.seed(195)
+  xa$W <- matrix(stats::rnorm(2L * (nrow(x$alt_mapping) - 1L)), ncol = 2L)
+  out[["pf_meat|cross|alt_W"]] <- rec(xa, eta_x, weights = x$weights^2)
+  b <- p5b_prep(p5b_sim(182L, outside = FALSE), outside = FALSE)
+  out[["pf_meat|base"]] <- rec(b, get_halton_normals(15L, length(b$M), 2L),
+                               weights = b$weights^2)
+  pnl <- p5b_prep(p5b_sim(185L, N = 80L, T = 3L), person_col = "pid")
+  eta_p <- get_halton_normals(15L, length(pnl$Ti), 2L)
+  U <- length(pnl$Ti)
+  w_u <- pnl$weights[c(0L, cumsum(pnl$Ti))[seq_len(U)] + 1L]
+  cl_p <- rep(1:5, length.out = U)
+  out[["pf_meat|panel|robust"]] <- rec(pnl, eta_p, weights = pnl$weights^2)
+  out[["pf_meat|panel|cluster"]] <- rec(pnl, eta_p, cluster = cl_p)
+  out[["pf_meat|panel|supplied"]] <- rec(pnl, eta_p, TRUE, alpha = w_u^2 * pnl$Ti,
+                                         market = rep(1L, U))
+  # by cluster with the per-market sums: kappa_g w_u
+  kap <- tapply(w_u * pnl$Ti, cl_p, sum)[cl_p] * w_u
+  out[["pf_meat|panel|supplied_cluster"]] <- rec(pnl, eta_p, TRUE, cluster = cl_p,
+                                                 alpha = as.numeric(kap),
+                                                 market = rep(1L, U))
+  out[["pf_meat|panel|batches"]] <- rec(pnl, eta_p, TRUE, alpha = w_u^2 * pnl$Ti,
+                                        market = rep(1L, U), draw_batch = 4L)
+  out[["pf_meat|panel|generate"]] <- rec(pnl, array(0, dim = c(2L, 0L, 0L)),
+                                         gen = list(gen_seed = 3L, gen_scramble = 1L,
+                                                    gen_S = 15L))
+  out
+}
