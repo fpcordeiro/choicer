@@ -1174,6 +1174,34 @@ mxl_cluster_meat_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weigh
     .Call(`_choicer_mxl_cluster_meat_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, cluster, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
+#' The share-matching constants' meat (internal)
+#'
+#' For the variance of run_mxlogit(concentrate_out_asc = "blp")
+#' (.blp_vcov()): per likelihood unit u, v_u = (m_u, c_u), the projected
+#' score m_u = s_c,u + D' s_d,u and the unit's share residuals c_u on its
+#' free constants (sum over its situations of Pbar_t - y_t for the sample's
+#' shares, of Pbar_t for supplied targets, Pbar_t averaged over the unit's
+#' draws with weights 1/S). Without \code{cluster}, sum_u w_u v_u v_u', as
+#' mxl_bhhh_parallel() adds its scores (R passes the squared weights for the
+#' sandwich); with it, sum_g v_g v_g', v_g = sum_{u in g} w_u v_u, as
+#' mxl_cluster_meat_parallel() forms it. With \code{alpha}, also the sums
+#' sum_u alpha_u m_u per market (the unit's \code{market}) and sum_u alpha_u
+#' c_u (one vector over the free constants: a unit's situations lie in one
+#' market, and markets share no alternatives), from which .blp_meat_correct()
+#' adds the dense part of supplied targets' residuals.
+#' Takes mxl_cluster_meat_parallel()'s arguments; \code{use_asc} must be TRUE.
+#' @param D The constants' implicit derivative, J_d x K_c.
+#' @param supplied Whether the targets are supplied (c_u without the choices).
+#' @param cluster NULL, or one code per likelihood unit, 1..G.
+#' @param alpha NULL, or one weight per likelihood unit.
+#' @param market With \code{alpha}: one code per likelihood unit, 1..M.
+#' @returns List: \code{meat} (n_params x n_params); with \code{alpha},
+#'   \code{A_c} (K_c x M) and \code{A_d} (J_d).
+#' @noRd
+mxl_blp_meat_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, D, supplied, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, cluster = NULL, alpha = NULL, market = NULL, draw_batch = 0L, acc_bytes = 2147483648.0) {
+    .Call(`_choicer_mxl_blp_meat_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, D, supplied, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, cluster, alpha, market, draw_batch, acc_bytes)
+}
+
 mxl_conditional_tastes_parallel <- function(theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L) {
     .Call(`_choicer_mxl_conditional_tastes_parallel`, theta, X, W, alt_idx, choice_idx, M, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch)
 }

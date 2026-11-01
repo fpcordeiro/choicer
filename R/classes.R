@@ -1727,8 +1727,17 @@ invert_hessian <- function(hess) {
 #' @param A Square matrix.
 #' @returns Numeric vector of scales.
 #' @noRd
-.jacobi_scale <- function(A) {
-  d <- diag(A)
+.jacobi_scale <- function(A) .jacobi_scale_of(diag(A))
+
+#' Jacobi equilibration scale from a diagonal
+#'
+#' `.jacobi_scale()`'s scales from the diagonal itself, for a block of a
+#' larger matrix that need not be copied out (`spd_solve()`'s `offset`).
+#'
+#' @param d The diagonal.
+#' @returns Numeric vector of scales.
+#' @noRd
+.jacobi_scale_of <- function(d) {
   ok <- is.finite(d) & d != 0
   D <- rep(1, length(d))
   D[ok] <- 2^round(-0.5 * log2(abs(d[ok])))
