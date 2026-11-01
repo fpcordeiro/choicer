@@ -545,6 +545,8 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
     ),
     class = "summary.choicer_mxl"
   )
+  # concentrate_out_asc = "blp": the targets' source (absent otherwise)
+  out$share_targets <- object$share_targets$source
   .summary_variance_error(out, object)
 }
 
@@ -974,6 +976,13 @@ print_se_weighting <- function(x) {
         } else {
           paste("refit with keep_data = TRUE for", retry, "to compute them\n")
         })
+  }
+  if (!is.null(x$share_targets)) {
+    cat("Constants: share-constrained (concentrate_out_asc = \"blp\"; targets: ",
+        switch(x$share_targets, sample = "the sample's shares",
+               wesml = "the choice-based sample's Q", "supplied"),
+        "), and the standard errors are the share-constrained estimator's\n",
+        sep = "")
   }
   if (!is.null(x$weighting)) {
     # Backward-compat: when weights_applied is absent (older fits) treat as applied.

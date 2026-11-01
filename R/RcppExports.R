@@ -1425,6 +1425,30 @@ mxl_blp_solve <- function(delta, target_shares, X, W, beta, mu, L_params, alt_id
     .Call(`_choicer_mxl_blp_solve`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes, Ti)
 }
 
+#' The share inversion's markets and its checks of targets (internal)
+#'
+#' For run_mxlogit(concentrate_out_asc = "blp"), before the draws: the
+#' components of the graph of choice situations and alternatives through the
+#' situations of positive weight (blp_components(), as the share inversion
+#' forms them: a market is a component, and no situation offers alternatives
+#' of two) and, with targets, blp_problem()'s checks of them, which stop with
+#' the share inversion's messages. One serial pass over the rows; no draws.
+#' @param alt_idx,M,weights As the share inversion takes them.
+#' @param J The inside alternatives (the constants' count).
+#' @param include_outside_option Whether there is an outside option.
+#' @param target_shares NULL, or the targets as the share inversion takes
+#'   them: J inside shares of the total weight, after the outside option's
+#'   when there is one.
+#' @returns List: \code{market} (each inside alternative's market, 1 to
+#'   the markets' count, numbered by their smallest codes; NA for an
+#'   alternative offered in no situation of positive weight), \code{mass}
+#'   (each market's share of the total weight, 1 for a single market) and
+#'   \code{weight} (the total weight).
+#' @noRd
+blp_check_targets <- function(alt_idx, M, weights, J, include_outside_option, target_shares = NULL) {
+    .Call(`_choicer_blp_check_targets`, alt_idx, M, weights, J, include_outside_option, target_shares)
+}
+
 #' Compute aggregate elasticities for mixed logit model
 #'
 #' Computes the aggregate elasticity matrix (weighted average of individual

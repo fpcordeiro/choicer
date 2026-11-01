@@ -107,6 +107,10 @@ new_choicer_mnl <- function(call, coefficients, loglik,
 #' @param param_scale,param_shift Named numeric vectors (m, c) of the map from
 #'   the optimizer's coordinates to the parameters, theta = m * theta_t + c:
 #'   1s and 0s without scaling.
+#' @param share_targets For `concentrate_out_asc = "blp"`, the targets
+#'   (`.blp_resolve_targets()`'s list), which select the share-constrained
+#'   estimator's variance; NULL otherwise, and then the fit has no such
+#'   field.
 #' @returns A choicer_mxl object (S3 class)
 #' @noRd
 new_choicer_mxl <- function(call, coefficients, loglik,
@@ -123,8 +127,9 @@ new_choicer_mxl <- function(call, coefficients, loglik,
                             sX = NULL, sW = NULL,
                             choice_sampling = NULL,
                             n_persons = NULL,
-                            param_scale = NULL, param_shift = NULL) {
-  structure(
+                            param_scale = NULL, param_shift = NULL,
+                            share_targets = NULL) {
+  obj <- structure(
     list(
       call = call,
       model = "mxl",
@@ -159,6 +164,9 @@ new_choicer_mxl <- function(call, coefficients, loglik,
     ),
     class = c("choicer_mxl", "choicer_fit")
   )
+  # concentrate_out_asc = "blp" only, so that other fits keep their fields
+  if (!is.null(share_targets)) obj$share_targets <- share_targets
+  obj
 }
 
 #' Construct a choicer_nl object
@@ -403,6 +411,9 @@ ensure_vcov <- function(object) {
   } else if (identical(se_method, "cluster")) {
     # cluster = NULL routes to the stored, already-aligned fit-time labels.
     .assemble_score_vcov(object, type = "cluster")
+  } else if (!is.null(object[["share_targets"]])) {
+    # concentrate_out_asc = "blp": the share-constrained estimator's
+    .assemble_score_vcov(object, type = se_method)
   } else {
     invert_hessian(compute_hessian(object))
   }
@@ -1280,23 +1291,34 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 
 # --- The profile likelihood of the constants (concentrate_out_asc) -----------
 
-#' Settings of the profile likelihood's inner solve
+#' Settings of the constants' inner solve
 #'
 #' `concentrate_control` of `run_mxlogit()`: a named list whose entries
-#' replace the defaults, `max_iter` (25, a whole number >= 1: Newton steps per
-#' inner solve; the first solve, from a cold start, may take four times as
-#' many), `tol_residual` (1e-10: the solve stops when every constant's score,
-#' and the reference's, is below it relative to its weighted chosen count plus
-#' the mean weight), `tol_decrement` (1e-12: or when the Newton decrement over
-#' the mean weight is) and `max_dense` (10000: the most constants whose block
-#' is factored densely). A NULL entry keeps the default.
+#' replace the method's defaults. A NULL entry keeps the default.
+#' * The profile likelihood (and `"none"`, which checks the same names):
+#'   `max_iter` (25, a whole number >= 1: Newton steps per inner solve; the
+#'   first solve, from a cold start, may take four times as many),
+#'   `tol_residual` (1e-10: the solve stops when every constant's score, and
+#'   the reference's, is below it relative to its weighted chosen count plus
+#'   the mean weight), `tol_decrement` (1e-12: or when the Newton decrement
+#'   over the mean weight is) and `max_dense` (10000: the most constants
+#'   whose block is factored densely).
+#' * `"blp"`: `max_iter` (1000 evaluations of the shares per solve; the
+#'   first may take four times as many), `tol_shares` (1e-12: the share
+#'   inversion's largest absolute log-share residual) and `max_dense` (10000:
+#'   the most constants whose share Jacobian is factored densely).
 #'
 #' @param control A named list, or NULL.
+#' @param method `concentrate_out_asc`.
 #' @returns The complete settings.
 #' @noRd
-.concentrate_control <- function(control) {
-  ctl <- list(max_iter = 25L, tol_residual = 1e-10, tol_decrement = 1e-12,
-              max_dense = 10000L)
+.concentrate_control <- function(control, method = "profile_likelihood") {
+  ctl <- if (identical(method, "blp")) {
+    list(max_iter = 1000L, tol_shares = 1e-12, max_dense = 10000L)
+  } else {
+    list(max_iter = 25L, tol_residual = 1e-10, tol_decrement = 1e-12,
+         max_dense = 10000L)
+  }
   if (is.null(control)) return(ctl)
   if (!is.list(control)) stop("`concentrate_control` must be a list.", call. = FALSE)
   nms <- names(control)
@@ -1323,7 +1345,7 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
     }
     ctl[[nm]] <- as.integer(m)
   }
-  for (nm in c("tol_residual", "tol_decrement")) {
+  for (nm in intersect(c("tol_residual", "tol_decrement", "tol_shares"), names(ctl))) {
     v <- ctl[[nm]]
     if (!is.numeric(v) || length(v) != 1L || !is.finite(v) || v <= 0) {
       stop("`concentrate_control$", nm, "` must be a positive number.", call. = FALSE)
@@ -1355,14 +1377,19 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #'   the gradient not the profile's. Such solves are counted, in all and
 #'   since the best point last improved: early ones are the line search's
 #'   ordinary backtracking, late ones may have stopped the optimizer.
+#' * The solve gets the best point's whole record, whose `extra` (a solve's
+#'   own output, kept with the best point) may advance its start: the
+#'   share-matching constants' tangent, delta_best + D_best (theta_c -
+#'   theta_c,best).
 #'
-#' @param solve Function(theta_c, delta0) returning `list(converged, value,
-#'   delta, gradient, iterations, passes, residual, decrement)`: the negated
-#'   joint log-likelihood at the solution, the constants there, and the full
-#'   gradient there.
+#' @param solve Function(theta_c, delta0, best) returning `list(converged,
+#'   value, delta, gradient, iterations, passes, residual, decrement)`, and
+#'   optionally `extra`: the objective at the solution (the negated joint
+#'   log-likelihood, or what stands for it), the constants there, and the
+#'   full gradient there.
 #' @param c_idx Positions of theta_c in the full parameter vector.
 #' @param start The solved start: `list(theta_c, value, delta, gradient,
-#'   residual, decrement)`.
+#'   residual, decrement)`, and optionally `extra`.
 #' @returns List: `f`, the objective of theta_c returning `list(objective,
 #'   gradient, overflow)`; `state`, an environment holding `best` and the
 #'   counts (`evaluations`, `solves`, `failed`, `failed_late` (since the best
@@ -1390,7 +1417,7 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
       return(list(objective = b$value, gradient = b$gradient[c_idx],
                   overflow = FALSE))
     }
-    s <- solve(theta_c, b$delta)
+    s <- solve(theta_c, b$delta, b)
     st$solves <- st$solves + 1L
     st$inner_iterations <- st$inner_iterations + s$iterations
     st$passes <- st$passes + s$passes
@@ -1405,7 +1432,7 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
     if (s$value < b$value) {
       st$best <- list(theta_c = theta_c, value = s$value, delta = s$delta,
                       gradient = s$gradient, residual = s$residual,
-                      decrement = s$decrement)
+                      decrement = s$decrement, extra = s$extra)
       st$failed_late <- 0L
       st$error <- NULL
     }
@@ -2214,6 +2241,11 @@ compute_scores <- function(object) {
   if (!object$model %in% c("mnl", "mxl", "nl")) {
     stop("Score-based standard errors are implemented for multinomial (MNL), ",
          "mixed (MXL) and nested (NL) logit only.")
+  }
+  # concentrate_out_asc = "blp": the share-constrained estimator's variance,
+  # every type (.blp_fit_vcov())
+  if (!is.null(object[["share_targets"]])) {
+    return(.blp_fit_vcov(object, type, cluster, gp, what))
   }
 
   if (identical(type, "hessian")) {

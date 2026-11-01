@@ -341,9 +341,22 @@ test_that("the profile's other inputs are checked before the draws", {
                  "`theta_init` must be finite.", fixed = TRUE)
   }
   expect_identical(n_draws, 0L)
-  # the reserved method and the settings, before the data are read
-  expect_error(run_mxlogit(data = "not data", concentrate_out_asc = "blp"),
-               "\"blp\" is reserved", fixed = TRUE)
+  # each method's settings, and the share targets of "blp" only, before the
+  # data are read
+  expect_error(run_mxlogit(data = "not data", concentrate_out_asc = "blp",
+                           concentrate_control = list(tol_residual = 1e-8)),
+               "Unknown `concentrate_control` setting(s): tol_residual. Valid: max_iter, tol_shares, max_dense.",
+               fixed = TRUE)
+  expect_error(run_mxlogit(data = "not data", concentrate_control = list(tol_shares = 1)),
+               "Unknown `concentrate_control` setting(s): tol_shares", fixed = TRUE)
+  expect_error(run_mxlogit(data = "not data", concentrate_out_asc = "blp",
+                           concentrate_control = list(tol_shares = 0)),
+               "`concentrate_control$tol_shares` must be a positive number.",
+               fixed = TRUE)
+  expect_error(run_mxlogit(data = "not data", target_shares = c(0.5, 0.5)),
+               "`target_shares` and `target_vcov` are the targets of", fixed = TRUE)
+  expect_identical(.concentrate_control(NULL, "blp"),
+                   list(max_iter = 1000L, tol_shares = 1e-12, max_dense = 10000L))
   expect_error(run_mxlogit(data = "not data",
                            concentrate_control = list(max_iter = 0L)),
                "`concentrate_control$max_iter` must be a whole number >= 1.",

@@ -1070,6 +1070,22 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// blp_check_targets
+Rcpp::List blp_check_targets(const Rcpp::IntegerVector& alt_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const int J, const bool include_outside_option, const Rcpp::Nullable<Rcpp::NumericVector> target_shares);
+RcppExport SEXP _choicer_blp_check_targets(SEXP alt_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP JSEXP, SEXP include_outside_optionSEXP, SEXP target_sharesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type alt_idx(alt_idxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type M(MSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type weights(weightsSEXP);
+    Rcpp::traits::input_parameter< const int >::type J(JSEXP);
+    Rcpp::traits::input_parameter< const bool >::type include_outside_option(include_outside_optionSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::Nullable<Rcpp::NumericVector> >::type target_shares(target_sharesSEXP);
+    rcpp_result_gen = Rcpp::wrap(blp_check_targets(alt_idx, M, weights, J, include_outside_option, target_shares));
+    return rcpp_result_gen;
+END_RCPP
+}
 // mxl_elasticities_parallel
 Rcpp::NumericMatrix mxl_elasticities_parallel(const arma::vec& theta, const arma::mat& X, const arma::mat& W, const Rcpp::IntegerVector& alt_idx, SEXP choice_idx, const Rcpp::IntegerVector& M, const arma::vec& weights, const arma::cube& eta_draws, const arma::uvec& rc_dist, const int elast_var_idx, const bool is_random_coef, const bool rc_correlation, const bool rc_mean, const bool use_asc, const bool include_outside_option, const int gen_seed, const int gen_scramble, const int gen_S, const double acc_bytes);
 RcppExport SEXP _choicer_mxl_elasticities_parallel(SEXP thetaSEXP, SEXP XSEXP, SEXP WSEXP, SEXP alt_idxSEXP, SEXP choice_idxSEXP, SEXP MSEXP, SEXP weightsSEXP, SEXP eta_drawsSEXP, SEXP rc_distSEXP, SEXP elast_var_idxSEXP, SEXP is_random_coefSEXP, SEXP rc_correlationSEXP, SEXP rc_meanSEXP, SEXP use_ascSEXP, SEXP include_outside_optionSEXP, SEXP gen_seedSEXP, SEXP gen_scrambleSEXP, SEXP gen_SSEXP, SEXP acc_bytesSEXP) {
@@ -1476,6 +1492,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_mxl_predict_shares", (DL_FUNC) &_choicer_mxl_predict_shares, 15},
     {"_choicer_mxl_diversion_ratios_parallel", (DL_FUNC) &_choicer_mxl_diversion_ratios_parallel, 18},
     {"_choicer_mxl_blp_solve", (DL_FUNC) &_choicer_mxl_blp_solve, 21},
+    {"_choicer_blp_check_targets", (DL_FUNC) &_choicer_blp_check_targets, 6},
     {"_choicer_mxl_elasticities_parallel", (DL_FUNC) &_choicer_mxl_elasticities_parallel, 19},
     {"_choicer_nl_loglik_gradient_parallel", (DL_FUNC) &_choicer_nl_loglik_gradient_parallel, 10},
     {"_choicer_nl_bhhh_parallel", (DL_FUNC) &_choicer_nl_bhhh_parallel, 10},
