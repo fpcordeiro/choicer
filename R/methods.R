@@ -386,18 +386,15 @@ build_coef_table <- function(estimates, se, param_names) {
 #'   hit rate) for the summary footer. Involves an in-sample prediction pass
 #'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
 #' @param print_asc Which alternative-specific constants (ASCs) to print:
-#'   a non-negative integer scalar prints the first that many (default `20L`);
-#'   `TRUE` prints all and `FALSE` prints none. A character vector selects
-#'   alternative labels (not coefficient names); a numeric vector of length
-#'   greater than one selects integer row positions in the full coefficient
-#'   table, including non-ASC rows when counting positions. Every selected
-#'   position must be an ASC row. Whole numbers such as `10` are accepted.
-#'   Empty character or integer vectors select none; duplicates are ignored.
-#'   Rows retain their table order, and all non-ASC rows are printed.
-#'   Only printing is limited: the returned object retains every row.
-#'   A notice reports the numbers shown and hidden when ASCs are omitted.
-#'   For hierarchical Bayes summaries, selection refers to the quality ladder
-#'   (`delta` and `xi`), whose row positions start at one.
+#'   a non-negative whole number prints the first that many (default `20L`),
+#'   `TRUE` prints all and `FALSE` none. A character vector selects ASCs by
+#'   their alternatives' labels as `as.character()` writes them, not by
+#'   coefficient names, so integer-coded alternatives are selected with
+#'   `c("3", "5")`; an empty vector selects none. Rows keep their table
+#'   order, every other row is printed, and a notice reports how many ASCs
+#'   are shown and hidden. Only printing is limited: the returned object
+#'   keeps every row. For hierarchical Bayes summaries the ASCs are the
+#'   alternative effects (`delta` and `xi`).
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mnl object (list with coefficients table and
 #'   metadata, including a `gof` element with goodness-of-fit measures from
@@ -474,7 +471,8 @@ summary.choicer_mnl <- function(object, gof = TRUE, print_asc = 20L, ...) {
 #' }
 #' @export
 print.summary.choicer_mnl <- function(x, print_asc = x$print_asc %||% 20L, ...) {
-  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc,
+                                strict = !missing(print_asc))
   cat(model_display_name(x$model), "model\n\n")
   print_coef_table(x$coefficients[selection$rows, , drop = FALSE])
   .print_asc_note(selection)
@@ -607,7 +605,8 @@ summary.choicer_mxl <- function(object, gof = TRUE, print_asc = 20L, ...) {
 #' }
 #' @export
 print.summary.choicer_mxl <- function(x, print_asc = x$print_asc %||% 20L, ...) {
-  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc,
+                                strict = !missing(print_asc))
   cat(model_display_name(x$model), "model\n\n")
   print_coef_table(x$coefficients[selection$rows, , drop = FALSE])
   .print_asc_note(selection)
@@ -715,7 +714,8 @@ summary.choicer_nl <- function(object, gof = TRUE, print_asc = 20L, ...) {
 #' }
 #' @export
 print.summary.choicer_nl <- function(x, print_asc = x$print_asc %||% 20L, ...) {
-  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc,
+                                strict = !missing(print_asc))
   cat(model_display_name(x$model), "model\n\n")
   print_coef_table(x$coefficients[selection$rows, , drop = FALSE])
   .print_asc_note(selection)
@@ -960,7 +960,8 @@ print_bayes_coef_table <- function(coef_table, prob) {
 #' }
 #' @export
 print.summary.choicer_mnp <- function(x, print_asc = x$print_asc %||% 20L, ...) {
-  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc,
+                                strict = !missing(print_asc))
   cat(model_display_name(x$model), "model\n\n")
   print_bayes_coef_table(x$coefficients[selection$rows, , drop = FALSE], x$prob)
   .print_asc_note(selection)
@@ -1076,6 +1077,51 @@ print_footer <- function(x) {
   }
   if (!is.na(x$convergence)) {
     cat("Convergence:", x$convergence, "(", x$message, ")\n")
+  }
+}
+
+#' Rows of a table to print under `print_asc`
+#'
+#' `asc` holds the constants' rows of a table of `n` rows, named by their
+#' alternatives' labels (`NA` where unknown). Returns the rows to print in
+#' table order, every other row included, and the numbers of constants shown
+#' and hidden. A count takes the first constants, labels select by name; a
+#' selection stored with a table (`strict = FALSE`) skips labels whose rows
+#' a subset dropped, where one passed to `print()` must name constants in it.
+#' @noRd
+.select_asc_rows <- function(n, asc, print_asc, strict = TRUE) {
+  ok <- !is.object(print_asc) && is.null(dim(print_asc)) && !anyNA(print_asc)
+  if (ok && is.logical(print_asc) && length(print_asc) == 1L) {
+    selected <- if (print_asc) asc else integer()
+  } else if (ok && is.numeric(print_asc) && length(print_asc) != 1L) {
+    stop("`print_asc` takes one count; to select alternatives, pass their ",
+         "labels as character, e.g. `print_asc = c(\"3\", \"5\")`.",
+         call. = FALSE)
+  } else if (ok && is.numeric(print_asc) && print_asc >= 0 &&
+             is.finite(print_asc) && print_asc == trunc(print_asc)) {
+    selected <- asc[seq_len(min(print_asc, length(asc)))]
+  } else if (ok && is.character(print_asc)) {
+    unknown <- setdiff(print_asc, names(asc))
+    if (strict && length(unknown)) {
+      stop("`print_asc` contains labels without an ASC in this table: ",
+           paste(unknown, collapse = ", "), ".", call. = FALSE)
+    }
+    selected <- asc[names(asc) %in% print_asc]
+  } else {
+    stop("`print_asc` must be TRUE, FALSE, a non-negative whole number, or a ",
+         "character vector of alternative labels.", call. = FALSE)
+  }
+  rows <- seq_len(n)
+  list(rows = rows[!rows %in% asc | rows %in% selected],
+       shown = length(selected), hidden = length(asc) - length(selected))
+}
+
+#' Report the constants a table's print left out
+#' @noRd
+.print_asc_note <- function(selection) {
+  if (selection$hidden > 0L) {
+    cat(sprintf("ASCs: %d shown, %d hidden (print output truncated).\n",
+                selection$shown, selection$hidden))
   }
 }
 
@@ -2212,7 +2258,8 @@ summary.choicer_hb <- function(object, prob = 0.95, print_asc = 20L, ...) {
 #' @returns The object invisibly.
 #' @export
 print.summary.choicer_hb <- function(x, print_asc = x$print_asc %||% 20L, ...) {
-  selection <- .select_asc_rows(nrow(x$delta), x$asc, print_asc)
+  selection <- .select_asc_rows(nrow(x$delta), x$asc, print_asc,
+                                strict = !missing(print_asc))
   cat(model_display_name(x$model), "model\n\n")
   cat("Population coefficients b (posterior):\n")
   print_bayes_coef_table(x$coefficients, x$prob)

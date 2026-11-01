@@ -55,17 +55,16 @@ test_that("frequentist summaries limit only ASC printing and retain all estimate
   }
 })
 
-test_that("labels and full-table positions select ASCs in existing order", {
+test_that("labels select ASCs in table order and a number is a count", {
   fit <- asc_print_fit(labels = c("car", "train", "bus", "ferry"))
   s <- summary(fit, gof = FALSE, print_asc = c("ferry", "car", "car"))
   lines <- asc_lines(s)
   expect_length(lines, 2L)
   expect_match(lines[1], "constant_car")
   expect_match(lines[2], "constant_ferry")
-  expect_identical(lines, asc_lines(s, print_asc = c(5L, 2L, 5L)))
   expect_match(asc_output(s), "2 shown, 2 hidden")
   expect_length(asc_lines(s, print_asc = "train"), 1L)
-  for (selector in list(0L, FALSE, integer(), character())) {
+  for (selector in list(0L, FALSE, character())) {
     expect_length(asc_lines(s, print_asc = selector), 0L)
   }
   for (selector in list(4L, 50L, 1e20, TRUE)) {
@@ -73,6 +72,10 @@ test_that("labels and full-table positions select ASCs in existing order", {
     expect_false(grepl("hidden", asc_output(s, print_asc = selector)))
   }
   expect_identical(asc_lines(s, print_asc = 2), asc_lines(s, print_asc = 2L))
+  # Several numbers read like alternative codes: point to labels instead
+  expect_error(print(s, print_asc = c(2L, 4L)), "labels as character")
+  expect_error(summary(fit, gof = FALSE, print_asc = integer()),
+               "labels as character")
 })
 
 test_that("real fit labels exclude the reference with and without an outside option", {
@@ -99,8 +102,8 @@ test_that("invalid ASC selectors fail clearly at construction and printing", {
   s <- summary(fit, gof = FALSE)
   rt <- recovery_table(fit, asc_print_truth(fit))
   invalid <- list(-1L, 1.5, NA, NA_integer_, NA_character_, Inf, NaN,
-                  c(TRUE, FALSE), logical(), c(2, 3.5), c(0L, 2L),
-                  c(1L, 2L), c(2L, 99L), "unknown", "constant_alt01",
+                  c(TRUE, FALSE), logical(), integer(), c(3L, 5L), c(2, 3.5),
+                  c(0L, 2L), c(1L, 2L), c(2L, 99L), "unknown", "constant_alt01",
                   "base", list(2L), NULL, factor("alt01"), matrix(1L), 1+1i)
   for (selector in invalid) {
     expect_error(summary(fit, gof = FALSE, print_asc = selector), "print_asc")
@@ -113,7 +116,7 @@ test_that("invalid ASC selectors fail clearly at construction and printing", {
 
 test_that("empty ASC blocks and ASC-only coefficient tables print cleanly", {
   fit <- asc_print_fit(labels = character())
-  for (selector in list(20L, TRUE, FALSE, character(), integer())) {
+  for (selector in list(20L, TRUE, FALSE, character())) {
     s <- summary(fit, gof = FALSE, print_asc = selector)
     expect_match(asc_output(s), "ASC_covariate")
     expect_false(grepl("hidden", asc_output(s)))
@@ -138,8 +141,10 @@ test_that("recovery selectors respect missing truth blocks, subsetting and print
   expect_match(asc_output(rt), "2 shown, 23 hidden")
   expect_match(asc_output(rt), "lambda_A")
   expect_equal(nrow(rt), 27L)
-  expect_equal(asc_lines(rt, print_asc = c(27L, 3L)),
-               asc_lines(rt, print_asc = c("alt25", "alt01")))
+  lines <- asc_lines(rt, print_asc = c("alt25", "alt01"))
+  expect_length(lines, 2L)
+  expect_match(lines[1], "constant_alt01")
+  expect_match(lines[2], "constant_alt25")
   # A low data.table print limit must not silently undo print_asc = TRUE.
   old_options <- options(datatable.print.nrows = 2L, datatable.print.topn = 1L)
   on.exit(options(old_options), add = TRUE)
@@ -149,9 +154,51 @@ test_that("recovery selectors respect missing truth blocks, subsetting and print
   reordered <- rt[c(27L, 3L, 1L)]
   expect_match(asc_output(reordered, print_asc = "alt25"), "constant_alt25")
   expect_false(grepl("constant_alt01", asc_output(reordered, print_asc = "alt25")))
-  partial <- recovery_table(fit, list(delta = truth$delta), print_asc = c(1L, 25L))
+  partial <- recovery_table(fit, list(delta = truth$delta),
+                            print_asc = c("alt01", "alt25"))
   expect_length(asc_lines(partial), 2L)
   expect_match(asc_output(partial), "constant_alt25")
+})
+
+test_that("a stored selection applies to subsets of a recovery table", {
+  fit <- asc_print_fit("nl")
+  rt <- recovery_table(fit, asc_print_truth(fit), print_asc = "alt05")
+  expect_match(asc_output(rt), "1 shown, 24 hidden")
+  # Subsets keep the stored selection and skip the labels they dropped
+  expect_match(asc_output(head(rt, 3)), "0 shown, 1 hidden")
+  expect_match(asc_output(rt[group == "lambda"]), "lambda_A")
+  expect_match(asc_output(rt[c(27L, 7L, 1L)]), "constant_alt05")
+  # A selection passed to print() is checked against the subset
+  expect_error(print(head(rt, 3), print_asc = "alt05"), "without an ASC")
+  # Columns the user adds cannot mask print's locals or stop its rounding
+  added <- data.table::copy(rt)
+  added[, `:=`(selection = abs(z_vs_true) > 1, rows = 1L, col = 2.5,
+               note = "check",
+               when = as.POSIXct("2026-11-01 10:00:00", tz = "UTC"))]
+  out <- asc_output(added)
+  expect_match(out, "1 shown, 24 hidden")
+  expect_match(out, "constant_alt05")
+  expect_match(out, "check")
+  expect_match(out, "2026-11-01")
+  # An empty subset still prints as an empty table
+  expect_match(asc_output(rt[0]), "0 rows")
+})
+
+test_that("MNP labels survive an ASC dropped by the collinearity check", {
+  sim <- simulate_mnp_data(N = 200, J = 3, seed = 1)
+  d <- data.table::copy(sim$data)
+  d[, rail := as.numeric(alt == 3)]  # an alternative-level dummy spans ASC_3
+  fit <- suppressMessages(run_mnprobit(
+    d, "id", "alt", "choice", c("x1", "x2", "rail"),
+    mcmc = list(R = 100, burn = 20, seed = 1)
+  ))
+  expect_identical(names(coef(fit))[fit$param_map$asc], "ASC_2")
+  expect_match(asc_output(summary(fit)), "ASC_2")
+  expect_match(asc_output(summary(fit, print_asc = "2")), "ASC_2")
+  expect_error(summary(fit, print_asc = "3"), "without an ASC")
+  rt <- recovery_table(fit, list(beta = c(1, -1, 0), delta = 0),
+                       print_asc = "2")
+  expect_match(asc_output(rt), "ASC_2")
 })
 
 test_that("MNP summaries and recovery keep covariance rows visible", {
@@ -191,16 +238,14 @@ test_that("hierarchical Bayes selectors cover delta and xi without hiding diagno
     labels <- as.character(fit$delta$alternative)
     s <- summary(fit, print_asc = labels[c(4, 2)])
     expect_match(asc_output(s), "2 shown, 2 hidden")
-    expect_equal(asc_output(s), asc_output(s, print_asc = c(4L, 2L)))
+    expect_error(print(s, print_asc = c(4L, 2L)), "labels as character")
     expect_match(asc_output(s, print_asc = FALSE), "Convergence diagnostics")
     expect_equal(nrow(s$delta), 4L)
     expect_equal(nrow(s$xi), 4L)
     expect_false(grepl("hidden", asc_output(s, print_asc = TRUE)))
     rt <- recovery_table(fit, sim, print_asc = labels[2])
     expect_match(asc_output(rt), "1 shown, 3 hidden")
-    positions <- which(rt$group == "delta")
-    expect_equal(asc_output(rt, print_asc = positions[c(4, 2)]),
-                 asc_output(rt, print_asc = labels[c(4, 2)]))
+    expect_match(asc_output(rt, print_asc = labels[c(4, 2)]), "2 shown, 2 hidden")
     expect_equal(sum(rt$group == "delta"), 4L)
   }
 })
@@ -223,4 +268,6 @@ test_that("Monte Carlo recovery retains labels and all rows across failed replic
   expect_match(asc_output(s), "1 shown, 2 hidden")
   expect_length(asc_lines(s, print_asc = TRUE), 3L)
   expect_length(asc_lines(summary(mc, print_asc = FALSE)), 0L)
+  s$summary[, `:=`(selection = 1L, rows = 1L)]
+  expect_match(asc_output(s), "1 shown, 2 hidden")
 })

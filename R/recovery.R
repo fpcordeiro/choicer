@@ -92,6 +92,30 @@
   })
 }
 
+# The constants' rows of a recovery table, named by alternative label. The
+# labels are kept by parameter name (attribute `asc_labels`), not by row, so
+# they follow the rows through the caller's subsets and reorderings.
+.recovery_asc_rows <- function(x) {
+  asc <- which(x$group %in% c("asc", "delta"))
+  labels <- attr(x, "asc_labels", exact = TRUE)
+  stats::setNames(asc, unname(labels[x$parameter[asc]]))
+}
+
+# Attach the label map and the checked selection to a new recovery table.
+.recovery_asc_print <- function(out, object, print_asc) {
+  asc <- .fit_asc_rows(object)
+  parameters <- if (inherits(object, "choicer_hb")) {
+    colnames(object$draws$delta)
+  } else {
+    names(object$coefficients)[asc]
+  }
+  data.table::setattr(out, "asc_labels",
+                      stats::setNames(names(asc) %||% character(), parameters))
+  .select_asc_rows(nrow(out), .recovery_asc_rows(out), print_asc)
+  data.table::setattr(out, "print_asc", print_asc)
+  out
+}
+
 # recovery_table() S3 generic ==================================================
 
 #' Parameter recovery table
@@ -120,10 +144,11 @@
 #' @param level Confidence level for the Wald CI and coverage indicator.
 #'   Default `0.95`.
 #' @inheritParams summary.choicer_mnl
-#' @details For recovery tables, integer positions refer to the full returned
-#'   table (including non-ASC rows). Hierarchical Bayes alternative effects
-#'   are the `delta` block. `print(table, print_asc = ...)` overrides the
-#'   selection stored by `recovery_table()`.
+#' @details `print_asc` limits the printed `asc` rows, or the `delta` rows of
+#'   a hierarchical Bayes fit. `recovery_table()` stores the selection with
+#'   the table, and `print(table, print_asc = ...)` overrides it. The stored
+#'   selection also applies to subsets and reorderings of the table, skipping
+#'   alternatives whose rows they dropped.
 #' @param ... Unused.
 #' @returns See class-specific methods.
 #' @examples
@@ -239,16 +264,26 @@ recovery_table.choicer_mc <- function(object, truth = NULL, level = 0.95,
 
 #' @export
 print.choicer_recovery <- function(x, print_asc = attr(x, "print_asc") %||% 20L, ...) {
-  selection <- .select_asc_rows(nrow(x), .recovery_asc_rows(x), print_asc)
+  # The stored selection applies to subsets of the table; an explicit one is
+  # checked against it.
+  selection <- .select_asc_rows(nrow(x), .recovery_asc_rows(x), print_asc,
+                                strict = !missing(print_asc))
   cat("<choicer_recovery>",
       if (!is.null(attr(x, "model"))) paste0(" model=", attr(x, "model")) else "",
       if (!is.null(attr(x, "level"))) paste0(" level=", attr(x, "level")) else "",
       "\n", sep = "")
-  show <- x[selection$rows]
+  # A lone symbol as `i` is evaluated here, never as a user's column
+  rows <- selection$rows
+  show <- x[rows]
   class(show) <- class(show)[!class(show) %in% "choicer_recovery"]
-  numeric_cols <- setdiff(names(show), c("parameter", "group", "covers"))
-  for (col in numeric_cols) show[, (col) := round(get(col), 4)]
-  print(show, nrows = nrow(show))
+  # Round the plain double columns, which leaves `covers` and any column the
+  # user added that is not one (text, dates, times) as they are
+  plain <- vapply(show, function(v) is.double(v) && !is.object(v), NA)
+  for (col in names(show)[plain]) {
+    data.table::set(show, j = col, value = round(show[[col]], 4))
+  }
+  # Every row; nrows = 0 would print nothing, not even an empty table
+  print(show, nrows = max(nrow(show), 1L))
   .print_asc_note(selection)
   invisible(x)
 }
@@ -423,14 +458,21 @@ print.choicer_mc <- function(x, ...) {
 #' @export
 print.choicer_mc_summary <- function(x, print_asc = x$print_asc %||% 20L, ...) {
   selection <- .select_asc_rows(nrow(x$summary),
-                                .recovery_asc_rows(x$summary), print_asc)
+                                .recovery_asc_rows(x$summary), print_asc,
+                                strict = !missing(print_asc))
   cat("<choicer_mc_summary> R=", x$n_reps,
       " convergence_rate=", round(x$conv_rate, 3),
       " coverage_level=", x$level, "\n", sep = "")
-  show <- x$summary[selection$rows]
-  numeric_cols <- setdiff(names(show), c("parameter", "group", "R_success"))
-  for (col in numeric_cols) show[, (col) := round(get(col), 4)]
-  print(show, nrows = nrow(show))
+  # A lone symbol as `i` is evaluated here, never as a user's column
+  rows <- selection$rows
+  show <- x$summary[rows]
+  # Round the plain double columns (`R_success` is an integer count)
+  plain <- vapply(show, function(v) is.double(v) && !is.object(v), NA)
+  for (col in names(show)[plain]) {
+    data.table::set(show, j = col, value = round(show[[col]], 4))
+  }
+  # Every row; nrows = 0 would print nothing, not even an empty table
+  print(show, nrows = max(nrow(show), 1L))
   .print_asc_note(selection)
   invisible(x)
 }
