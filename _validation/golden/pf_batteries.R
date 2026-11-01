@@ -66,3 +66,68 @@ run_pf_units <- function() {
   out[["pf_units|cross"]] <- rec(x, target_of(x), eta_x, "log", NULL)
   out
 }
+
+# pf_jac: mxl_blp_jacobian_parallel(), the objective, gradient, predicted
+#   counts and share Jacobian (with variance = TRUE also K) on the estimation
+#   draws, on small designs: a cross-section with the outside option, the
+#   base normalization, a panel (also from pass 1's residuals), generated
+#   draws, non-uniform weights, split draw batches, acc_bytes = 0 (one thread
+#   here, so the same single result as without it), an alternative-level W, a
+#   log-normal correlated design with rc_mean. Class D against main (a new
+#   kernel); pinned for the later steps.
+run_pf_jac <- function() {
+  out <- list()
+  ns <- asNamespace("choicer")
+  kern <- get0("mxl_blp_jacobian_parallel", envir = ns)
+  if (is.null(kern)) {
+    out[["pf_jac|absent"]] <- p2_val(stop("no mxl_blp_jacobian_parallel()"))
+    return(out)
+  }
+  rec <- function(inp, eta, theta, rc_dist = c(0L, 0L), corr = FALSE, mean = FALSE,
+                  ...) {
+    p2_val(kern(theta, inp$X, inp$W, inp$alt_idx, inp$choice_idx, inp$M,
+                inp$weights, eta, rc_dist, corr, mean, TRUE,
+                inp$include_outside_option, Ti = inp$Ti, ...))
+  }
+  theta_of <- function(inp, n_head = 6L) {
+    J <- nrow(inp$alt_mapping) - 1L
+    set.seed(191)
+    c(0.5, -0.4, 0.2, -0.1, log(0.9), log(0.6), stats::rnorm(J, sd = 0.5))[
+      c(seq_len(n_head), 6L + seq_len(J))]
+  }
+  x <- p5b_prep(p5b_sim(181L))
+  eta_x <- get_halton_normals(15L, length(x$M), 2L)
+  th <- theta_of(x)
+  # (theta: beta (2), L (2): the diagonal design has two continuous blocks)
+  th <- th[-(3:4)]
+  out[["pf_jac|cross"]] <- rec(x, eta_x, th)
+  out[["pf_jac|cross|variance"]] <- rec(x, eta_x, th, variance = TRUE)
+  out[["pf_jac|cross|batches"]] <- rec(x, eta_x, th, draw_batch = 4L, variance = TRUE)
+  out[["pf_jac|cross|shared"]] <- rec(x, eta_x, th, acc_bytes = 0, variance = TRUE)
+  out[["pf_jac|cross|generate"]] <- rec(x, array(0, dim = c(2L, 0L, 0L)), th,
+                                         gen_seed = 3L, gen_scramble = 1L,
+                                         gen_S = 15L, variance = TRUE)
+  xw <- x
+  set.seed(192)
+  xw$weights <- stats::runif(length(x$M), 0.5, 2)
+  out[["pf_jac|cross|weights"]] <- rec(xw, eta_x, th, variance = TRUE)
+  xa <- x
+  set.seed(193)
+  xa$W <- matrix(stats::rnorm(2L * (nrow(x$alt_mapping) - 1L)), ncol = 2L)
+  out[["pf_jac|cross|alt_W"]] <- rec(xa, eta_x, th, variance = TRUE)
+  # log-normal second coefficient, correlated, with rc_mean
+  th_l <- c(th[1:2], 0.1, -0.2, log(0.7), 0.2, log(0.5), th[-(1:4)])
+  out[["pf_jac|cross|lognormal"]] <- rec(x, eta_x, th_l, rc_dist = c(0L, 1L),
+                                          corr = TRUE, mean = TRUE, variance = TRUE)
+  b <- p5b_prep(p5b_sim(182L, outside = FALSE), outside = FALSE)
+  th_b <- theta_of(b)[-(3:4)]
+  out[["pf_jac|base"]] <- rec(b, get_halton_normals(15L, length(b$M), 2L), th_b,
+                               variance = TRUE)
+  pnl <- p5b_prep(p5b_sim(183L, N = 80L, T = 3L), person_col = "pid")
+  eta_p <- get_halton_normals(15L, length(pnl$Ti), 2L)
+  out[["pf_jac|panel"]] <- rec(pnl, eta_p, theta_of(pnl)[-(3:4)], variance = TRUE)
+  # the probabilities from pass 1's residuals, decision makers of several
+  # situations each
+  out[["pf_jac|panel|residuals"]] <- rec(pnl, eta_p, theta_of(pnl)[-(3:4)])
+  out
+}

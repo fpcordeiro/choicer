@@ -36,9 +36,9 @@
 # p5a_batteries.R (ucon, polish), p5b_batteries.R (pdelta, profile),
 # p8_batteries.R (p8_mnl, p8_nl, p8_edge, p8_fit), p8b_batteries.R
 # (p8b_mnl, p8b_nl, p8b_edge, p8b_mxl, p8b_cl) and p8c_batteries.R
-# (p8c_grad, p8c_polish, p8c_mxl), pf_batteries.R (pf_units; the share
-# inversion's pf_units leaves are identity-pinned, outside the solver tier:
-# see that file).
+# (p8c_grad, p8c_polish, p8c_mxl), pf_batteries.R (pf_units, pf_jac; the
+# share inversion's pf_units leaves are identity-pinned, outside the solver
+# tier: see that file).
 # blp_batteries.R (blp), sourced first: every BLP call of the batteries goes
 # through its golden_blp(), whose leaves (class "golden_blp") form the solver
 # tier: the share inversion may move within its tolerance (BLP engine plan,
@@ -1187,6 +1187,7 @@ cat("Running MNL/NL polish battery (P8C)...\n");      res_p8c_polish <- run_p8c_
 cat("Running MXL polish battery (P8C)...\n");         res_p8c_mxl <- run_p8c_mxl()
 source(file.path(.script_dir, "pf_batteries.R"))
 cat("Running panel share-inversion battery (BLP F)...\n"); res_pf_units <- run_pf_units()
+cat("Running share-Jacobian battery (BLP F)...\n");    res_pf_jac <- run_pf_jac()
 cat("Running share-inversion battery (BLP A1)...\n");  res_blp <- run_blp()
 oc_save_calls()
 
@@ -1219,7 +1220,8 @@ results <- list(mnl = res_mnl, mxl = res_mxl, nl = res_nl, errors = res_err,
                 p8b_edge = res_p8b_edge, p8b_mxl = res_p8b_mxl,
                 p8b_cl = res_p8b_cl,
                 p8c_grad = res_p8c_grad, p8c_polish = res_p8c_polish,
-                p8c_mxl = res_p8c_mxl, pf_units = res_pf_units, blp = res_blp)
+                p8c_mxl = res_p8c_mxl, pf_units = res_pf_units,
+                pf_jac = res_pf_jac, blp = res_blp)
 
 flatten <- function(x, prefix = "") {
   if (is.list(x) && !isTRUE(attr(x, "golden_leaf"))) {

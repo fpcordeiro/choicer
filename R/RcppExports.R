@@ -1054,6 +1054,35 @@ mxl_delta_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weig
     .Call(`_choicer_mxl_delta_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
+#' The objective, gradient and share Jacobian on the estimation draws
+#' (internal)
+#'
+#' For run_mxlogit(concentrate_out_asc = "blp"): the negated simulated
+#' log-likelihood and its gradient, as mxl_loglik_gradient_parallel() returns
+#' them (bit for bit at one thread), the weighted predicted counts
+#' \eqn{\sum_t w_t \bar P_{tj}} of the inside alternatives, and the Jacobian
+#' of the free constants' predicted counts with respect to the parameters, on
+#' the estimation's draws (each situation's unit's draws, weighted 1/S).
+#' Takes mxl_hessian_parallel()'s arguments; \code{use_asc} must be TRUE.
+#' \code{acc_bytes} bounds each accumulator's private triangles: the
+#' Jacobian's and, with \code{variance}, K's.
+#' @param variance Also K, the units' across-draw covariance of their
+#'   predicted counts.
+#' @returns List: \code{objective}, \code{gradient} and \code{overflow} as
+#'   the gradient kernel returns them; \code{nonfinite}, whether a gradient
+#'   entry was not finite, with a finite objective, before it was set to 0;
+#'   \code{counts}, the weighted predicted count of every inside
+#'   alternative with a constant (the normalized one included);
+#'   \code{jacobian}, n_params x n_params, its free-constant rows holding
+#'   \eqn{C_c} (continuous columns) and \eqn{C_d} (constants' columns),
+#'   its continuous block zero; with \code{variance}, \code{K} (J_d x J_d).
+#'   The counts and the matrices are complete where overflow is FALSE,
+#'   unless NaN throughout.
+#' @noRd
+mxl_blp_jacobian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL, draw_batch = 0L, acc_bytes = 2147483648.0, variance = FALSE) {
+    .Call(`_choicer_mxl_blp_jacobian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes, variance)
+}
+
 #' BHHH (outer product of gradients) information matrix for Mixed Logit
 #'
 #' Computes the BHHH approximation to the observed information matrix for the
@@ -1822,6 +1851,35 @@ nl_blp_solve <- function(delta, target_shares, X, beta, lambda, alt_idx, nest_id
 #' @noRd
 newton_step <- function(H, g, D, free_idx, lambda) {
     .Call(`_choicer_newton_step`, H, g, D, free_idx, lambda)
+}
+
+#' A positive definite system with several right-hand sides (internal)
+#'
+#' Solves \eqn{A X = B} for a symmetric positive definite \eqn{A}: Cholesky
+#' (`dpotrf`, `dpotrs`) of the Jacobi-scaled \eqn{D A D} in one working copy,
+#' \eqn{X = D Y} with \eqn{(D A D) Y = D B}. `newton_step()`'s core with a
+#' matrix right-hand side and no damping: the share-matching constants'
+#' adjoint and implicit derivative (run_mxlogit(concentrate_out_asc =
+#' "blp")) solve with the share Jacobian this way. With `offset` k, \eqn{A}
+#' is the trailing block of the matrix passed, its rows and columns after the
+#' first k, read in place (the constants' block of the share Jacobian kernel's
+#' n x n result, without a copy in R).
+#'
+#' @param A Square double matrix; only the upper triangle of its block is
+#'   read.
+#' @param B Double matrix with as many rows as the block.
+#' @param D Double vector of the block's scales, powers of two, as
+#'   `.jacobi_scale()` forms them from a diagonal (here the block's).
+#' @param offset The rows and columns of `A` before the block (default 0).
+#' @returns List with `x` (the solution, a row per row of the block; zero
+#'   unless solved) and `info`: 0 when solved, or when `B` has no column (the
+#'   block is then not factored); k > 0 when the scaled block is not positive
+#'   definite (its leading minor of order k), or its order + 1 when it is but
+#'   its reciprocal condition number is below the machine epsilon; -1 when a
+#'   scaled entry is not finite.
+#' @noRd
+spd_solve <- function(A, B, D, offset = 0L) {
+    .Call(`_choicer_spd_solve`, A, B, D, offset)
 }
 
 #' Gather rows of numeric columns into a double design matrix

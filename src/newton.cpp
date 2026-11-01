@@ -18,6 +18,7 @@
 // whose failure is a C++ exception, and is freed as the call returns; nothing
 // after it calls R. LAPACK's xerbla is unreachable with these arguments.
 #include <RcppArmadillo.h>
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
@@ -29,12 +30,13 @@ namespace {
 using arma::blas_int;
 
 // The working copy, count doubles, from new[].
-std::unique_ptr<double[]> newton_working_copy(std::size_t count) {
+std::unique_ptr<double[]> newton_working_copy(std::size_t count,
+                                              const char* what = "the Newton step") {
   try {
     return std::unique_ptr<double[]>(new double[count]);
   } catch (const std::bad_alloc&) {
-    Rcpp::stop("cannot allocate a working copy of %.1f Gb for the Newton step",
-               8.0 * static_cast<double>(count) / 1073741824.0);
+    Rcpp::stop("cannot allocate a working copy of %.1f Gb for %s",
+               8.0 * static_cast<double>(count) / 1073741824.0, what);
   }
 }
 
@@ -165,6 +167,131 @@ Rcpp::List newton_step(SEXP H, SEXP g, SEXP D, SEXP free_idx, double lambda) {
   for (std::size_t jj = 0; jj < m; ++jj) {
     const std::ptrdiff_t j = fr[jj] - 1;
     step[j] = d[j] * y[jj];
+  }
+  return out;
+}
+
+//' A positive definite system with several right-hand sides (internal)
+//'
+//' Solves \eqn{A X = B} for a symmetric positive definite \eqn{A}: Cholesky
+//' (`dpotrf`, `dpotrs`) of the Jacobi-scaled \eqn{D A D} in one working copy,
+//' \eqn{X = D Y} with \eqn{(D A D) Y = D B}. `newton_step()`'s core with a
+//' matrix right-hand side and no damping: the share-matching constants'
+//' adjoint and implicit derivative (run_mxlogit(concentrate_out_asc =
+//' "blp")) solve with the share Jacobian this way. With `offset` k, \eqn{A}
+//' is the trailing block of the matrix passed, its rows and columns after the
+//' first k, read in place (the constants' block of the share Jacobian kernel's
+//' n x n result, without a copy in R).
+//'
+//' @param A Square double matrix; only the upper triangle of its block is
+//'   read.
+//' @param B Double matrix with as many rows as the block.
+//' @param D Double vector of the block's scales, powers of two, as
+//'   `.jacobi_scale()` forms them from a diagonal (here the block's).
+//' @param offset The rows and columns of `A` before the block (default 0).
+//' @returns List with `x` (the solution, a row per row of the block; zero
+//'   unless solved) and `info`: 0 when solved, or when `B` has no column (the
+//'   block is then not factored); k > 0 when the scaled block is not positive
+//'   definite (its leading minor of order k), or its order + 1 when it is but
+//'   its reciprocal condition number is below the machine epsilon; -1 when a
+//'   scaled entry is not finite.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+Rcpp::List spd_solve(SEXP A, SEXP B, SEXP D, const int offset = 0) {
+  if (TYPEOF(A) != REALSXP || !Rf_isMatrix(A)) {
+    Rcpp::stop("`A` must be a double matrix");
+  }
+  const int n_all = Rf_nrows(A);
+  if (Rf_ncols(A) != n_all) Rcpp::stop("`A` must be square");
+  if (offset < 0 || offset > n_all) {
+    Rcpp::stop("`offset` must be between 0 and %d", n_all);
+  }
+  const int n = n_all - offset;
+  if (TYPEOF(B) != REALSXP || !Rf_isMatrix(B) || Rf_nrows(B) != n) {
+    Rcpp::stop("`B` must be a double matrix with %d rows", n);
+  }
+  if (TYPEOF(D) != REALSXP || Rf_xlength(D) != n) {
+    Rcpp::stop("`D` must be a double vector of length %d", n);
+  }
+  const int k = Rf_ncols(B);
+
+  // Every R allocation first, as in newton_step()
+  const double* av = REAL(A);
+  const double* bv = REAL(B);
+  const double* d = REAL(D);
+  const std::size_t ld = static_cast<std::size_t>(n_all);
+  const std::size_t k0 = static_cast<std::size_t>(offset);
+  const std::size_t m = static_cast<std::size_t>(n);
+  const std::size_t r = static_cast<std::size_t>(k);
+  double* lwork = nullptr;
+  blas_int* iwork = nullptr;
+  if (m > 0) {
+    lwork = reinterpret_cast<double*>(R_alloc(3 * m, sizeof(double)));
+    iwork = reinterpret_cast<blas_int*>(R_alloc(m, sizeof(blas_int)));
+  }
+  Rcpp::NumericMatrix x(n, k);
+  Rcpp::IntegerVector info(1);
+  Rcpp::List out = Rcpp::List::create(Rcpp::Named("x") = x,
+                                      Rcpp::Named("info") = info);
+  if (m == 0 || r == 0) return out;
+
+  std::unique_ptr<double[]> work = newton_working_copy(m * m, "the solve");
+  double* a = work.get();
+  double* y = x.begin();  // the right-hand side, solved in place
+
+  // The block's scaled upper triangle (d[i] * d[j], a power of two, is
+  // exact) and the scaled right-hand side
+  bool finite = true;
+  for (std::size_t j = 0; j < m; ++j) {
+    const double* aj_in = av + (k0 + j) * ld + k0;
+    double* aj = a + j * m;
+    for (std::size_t i = 0; i <= j; ++i) {
+      const double v = aj_in[i] * (d[i] * d[j]);
+      if (!std::isfinite(v)) finite = false;
+      aj[i] = v;
+    }
+  }
+  for (std::size_t c = 0; c < r; ++c) {
+    for (std::size_t i = 0; i < m; ++i) {
+      const double v = d[i] * bv[c * m + i];
+      if (!std::isfinite(v)) finite = false;
+      y[c * m + i] = v;
+    }
+  }
+  if (!finite) {
+    std::fill(y, y + m * r, 0.0);
+    info[0] = -1;
+    return out;
+  }
+
+  char uplo = 'U';
+  char norm = '1';
+  blas_int bn = static_cast<blas_int>(m);
+  blas_int nrhs = static_cast<blas_int>(r);
+  blas_int status = 0;
+  double anorm = arma::lapack::lansy<double>(&norm, &uplo, &bn, a, &bn, lwork);
+  arma::lapack::potrf<double>(&uplo, &bn, a, &bn, &status);
+  if (status != 0) {
+    std::fill(y, y + m * r, 0.0);
+    info[0] = status > 0 ? static_cast<int>(status) : -1;
+    return out;
+  }
+  double rcond = 0.0;
+  arma::lapack::pocon<double>(&uplo, &bn, a, &bn, &anorm, &rcond, lwork, iwork,
+                              &status);
+  if (status != 0 || !(rcond >= DBL_EPSILON)) {
+    std::fill(y, y + m * r, 0.0);
+    info[0] = static_cast<int>(m) + 1;
+    return out;
+  }
+  arma::lapack::potrs<double>(&uplo, &bn, &nrhs, a, &bn, y, &bn, &status);
+  if (status != 0) {
+    std::fill(y, y + m * r, 0.0);
+    info[0] = -1;
+    return out;
+  }
+  for (std::size_t c = 0; c < r; ++c) {
+    for (std::size_t i = 0; i < m; ++i) y[c * m + i] *= d[i];
   }
   return out;
 }
