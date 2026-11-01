@@ -16,6 +16,8 @@ The object invisibly.
 }
 \description{
 Prints a brief summary of the fitted Bayesian multinomial probit model.
+Coefficient rows are displayed by \code{summary(x, print_asc = )}; see
+\code{\link[=summary.choicer_mnp]{summary.choicer_mnp()}} for ASC display selection.
 }
 \examples{
 \donttest{

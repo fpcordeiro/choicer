@@ -1,5 +1,16 @@
 # choicer (development version)
 
+## Printing alternative-specific constants
+
+`summary(fit, print_asc = )` and `recovery_table(fit, truth, print_asc = )`
+print the first 20 ASCs by default. Supply a count, alternative labels, or
+a vector of ASC row positions in the full table; `TRUE` prints all and
+`FALSE` prints none. Selection preserves table order and leaves other
+parameters visible. A notice reports how many ASCs are shown and hidden.
+All rows remain in the returned object, and `print(result, print_asc = )`
+can override its stored selection. This also covers hierarchical Bayes
+alternative effects and Monte Carlo recovery summaries.
+
 ## Share inversion
 
 `blp()` and the exported `blp_contraction()`, `nl_blp_contraction()` and

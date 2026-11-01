@@ -119,6 +119,11 @@
 #'   used) or a named list of true parameter values.
 #' @param level Confidence level for the Wald CI and coverage indicator.
 #'   Default `0.95`.
+#' @inheritParams summary.choicer_mnl
+#' @details For recovery tables, integer positions refer to the full returned
+#'   table (including non-ASC rows). Hierarchical Bayes alternative effects
+#'   are the `delta` block. `print(table, print_asc = ...)` overrides the
+#'   selection stored by `recovery_table()`.
 #' @param ... Unused.
 #' @returns See class-specific methods.
 #' @examples
@@ -129,10 +134,11 @@
 #'   covariate_cols = c("x1", "x2"),
 #'   outside_opt_label = 0L, include_outside_option = FALSE, use_asc = TRUE
 #' )
-#' recovery_table(fit, sim)
+#' recovery_table(fit, sim, print_asc = 2L)
 #' }
 #' @export
-recovery_table <- function(object, truth = NULL, level = 0.95, ...) {
+recovery_table <- function(object, truth = NULL, level = 0.95,
+                           print_asc = 20L, ...) {
   UseMethod("recovery_table")
 }
 
@@ -141,7 +147,8 @@ recovery_table <- function(object, truth = NULL, level = 0.95, ...) {
 #'   `se`, `bias`, `rel_bias_pct`, `z_vs_true`, `lower_ci`, `upper_ci`,
 #'   `covers`.
 #' @export
-recovery_table.choicer_fit <- function(object, truth = NULL, level = 0.95, ...) {
+recovery_table.choicer_fit <- function(object, truth = NULL, level = 0.95,
+                                print_asc = 20L, ...) {
   if (inherits(truth, "choicer_sim")) truth <- truth$true_params
   if (!is.list(truth)) stop("`truth` must be a named list or a `choicer_sim`.")
   z <- stats::qnorm(1 - (1 - level) / 2)
@@ -165,7 +172,7 @@ recovery_table.choicer_fit <- function(object, truth = NULL, level = 0.95, ...) 
   class(out) <- c("choicer_recovery", class(out))
   attr(out, "level") <- level
   attr(out, "model") <- setdiff(class(object), c("choicer_fit", "list"))[1]
-  out
+  .recovery_asc_print(out, object, print_asc)
 }
 
 #' @describeIn recovery_table Method for Bayesian MNP fits (`choicer_mnp`).
@@ -178,7 +185,8 @@ recovery_table.choicer_fit <- function(object, truth = NULL, level = 0.95, ...) 
 #'   `sigma_11 = 1` normalization and is exact by construction. `truth` must
 #'   be on the identified scale, as returned by [simulate_mnp_data()].
 #' @export
-recovery_table.choicer_mnp <- function(object, truth = NULL, level = 0.95, ...) {
+recovery_table.choicer_mnp <- function(object, truth = NULL, level = 0.95,
+                                print_asc = 20L, ...) {
   if (inherits(truth, "choicer_sim")) truth <- truth$true_params
   if (!is.list(truth)) stop("`truth` must be a named list or a `choicer_sim`.")
   z <- stats::qnorm(1 - (1 - level) / 2)
@@ -217,28 +225,31 @@ recovery_table.choicer_mnp <- function(object, truth = NULL, level = 0.95, ...) 
   class(out) <- c("choicer_recovery", class(out))
   attr(out, "level") <- level
   attr(out, "model") <- "choicer_mnp"
-  out
+  .recovery_asc_print(out, object, print_asc)
 }
 
 #' @describeIn recovery_table For a `choicer_mc` object, delegates to
 #'   `summary(object, level)` and returns a `choicer_mc_summary`. Inspect
 #'   `object$replications` directly for per-rep detail.
 #' @export
-recovery_table.choicer_mc <- function(object, truth = NULL, level = 0.95, ...) {
-  summary(object, level = level)
+recovery_table.choicer_mc <- function(object, truth = NULL, level = 0.95,
+                                print_asc = 20L, ...) {
+  summary(object, level = level, print_asc = print_asc)
 }
 
 #' @export
-print.choicer_recovery <- function(x, ...) {
+print.choicer_recovery <- function(x, print_asc = attr(x, "print_asc") %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x), .recovery_asc_rows(x), print_asc)
   cat("<choicer_recovery>",
       if (!is.null(attr(x, "model"))) paste0(" model=", attr(x, "model")) else "",
       if (!is.null(attr(x, "level"))) paste0(" level=", attr(x, "level")) else "",
       "\n", sep = "")
-  show <- data.table::copy(x)
+  show <- x[selection$rows]
   class(show) <- class(show)[!class(show) %in% "choicer_recovery"]
   numeric_cols <- setdiff(names(show), c("parameter", "group", "covers"))
   for (col in numeric_cols) show[, (col) := round(get(col), 4)]
-  print(show)
+  print(show, nrows = nrow(show))
+  .print_asc_note(selection)
   invisible(x)
 }
 
@@ -346,6 +357,9 @@ monte_carlo <- function(sim_fun, fit_fun, R = 100, seed = 1L,
   }
 
   replications <- data.table::rbindlist(reps, use.names = TRUE, fill = TRUE)
+  asc_labels <- unlist(lapply(reps, attr, which = "asc_labels"))
+  data.table::setattr(replications, "asc_labels",
+                     asc_labels[!duplicated(names(asc_labels))])
 
   structure(
     list(
@@ -360,7 +374,7 @@ monte_carlo <- function(sim_fun, fit_fun, R = 100, seed = 1L,
 }
 
 #' @export
-summary.choicer_mc <- function(object, level = 0.95, ...) {
+summary.choicer_mc <- function(object, level = 0.95, print_asc = 20L, ...) {
   reps <- object$replications
   keep <- reps[!is.na(parameter) & converged == TRUE]
 
@@ -378,11 +392,15 @@ summary.choicer_mc <- function(object, level = 0.95, ...) {
                                  "mean_est", "median_est", "sd_est", "mean_se",
                                  "bias", "rmse", "coverage"))
 
+  data.table::setattr(agg, "asc_labels", attr(reps, "asc_labels", exact = TRUE))
+  .select_asc_rows(nrow(agg), .recovery_asc_rows(agg), print_asc)
+
   conv_rate <- mean(reps[, any(converged, na.rm = TRUE), by = rep_id]$V1)
 
   structure(
     list(
       summary = agg,
+      print_asc = print_asc,
       meta = object$meta,
       conv_rate = conv_rate,
       n_reps = object$meta$R,
@@ -403,14 +421,17 @@ print.choicer_mc <- function(x, ...) {
 }
 
 #' @export
-print.choicer_mc_summary <- function(x, ...) {
+print.choicer_mc_summary <- function(x, print_asc = x$print_asc %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x$summary),
+                                .recovery_asc_rows(x$summary), print_asc)
   cat("<choicer_mc_summary> R=", x$n_reps,
       " convergence_rate=", round(x$conv_rate, 3),
       " coverage_level=", x$level, "\n", sep = "")
-  show <- data.table::copy(x$summary)
+  show <- x$summary[selection$rows]
   numeric_cols <- setdiff(names(show), c("parameter", "group", "R_success"))
   for (col in numeric_cols) show[, (col) := round(get(col), 4)]
-  print(show)
+  print(show, nrows = nrow(show))
+  .print_asc_note(selection)
   invisible(x)
 }
 
@@ -820,7 +841,8 @@ print.choicer_mc_asymptotics <- function(x, ...) {
 #'   realized `truth$delta`). For an HMNP fit, `truth` must be on the
 #'   identified scale, as returned by [simulate_hmnp_data()].
 #' @export
-recovery_table.choicer_hb <- function(object, truth = NULL, level = 0.95, ...) {
+recovery_table.choicer_hb <- function(object, truth = NULL, level = 0.95,
+                                print_asc = 20L, ...) {
   if (inherits(truth, "choicer_sim")) truth <- truth$true_params
   if (!is.list(truth)) stop("`truth` must be a named list or a `choicer_sim`.")
   z <- stats::qnorm(1 - (1 - level) / 2)
@@ -868,5 +890,5 @@ recovery_table.choicer_hb <- function(object, truth = NULL, level = 0.95, ...) {
   class(out) <- c("choicer_recovery", class(out))
   attr(out, "level") <- level
   attr(out, "model") <- class(object)[1L]
-  out
+  .recovery_asc_print(out, object, print_asc)
 }

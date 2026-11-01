@@ -16,6 +16,8 @@ The object invisibly.
 }
 \description{
 Prints a brief summary of the fitted model.
+Coefficient rows are displayed by \code{summary(x, print_asc = )}; see
+\code{\link[=summary.choicer_mnl]{summary.choicer_mnl()}} for ASC display selection.
 }
 \examples{
 \donttest{
