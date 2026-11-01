@@ -265,6 +265,37 @@ the log scale (`L_kk` is `log(chol(Sigma)[k, k])`). The simulator
 Custom `vech` extractors should match `build_var_mat()` / `build_L_mat()` in
 `src/mxlogit.cpp`.
 
+## Share-matching constants (`blp_concentration_mc.R`)
+
+A Monte Carlo of `run_mxlogit(concentrate_out_asc = "blp")` against maximum
+likelihood on the same data and draws. The script's header gives the four
+designs (2,000 choice situations, J = 10, S = 100: a cross-section with an
+outside option, a panel of 500 x 4, no outside option, two markets) and the
+DGP. Each replication fits ML (Newton-certified) and "blp" with the sample's
+shares, with the population's exact shares, and with shares estimated from
+10 N and N choices per market together with their `target_vcov`. It prints,
+per design and estimator:
+- the SD of the estimates against ML's;
+- mean SE / SD;
+- 95% coverage (Hessian and sandwich);
+- the largest bias over SD;
+- the work per fit.
+
+```bash
+R_LIBS=<lib> Rscript _validation/blp_concentration_mc.R QUICK=TRUE   # 50 reps, cross only: ~1 min at 8 workers
+R_LIBS=<lib> Rscript _validation/blp_concentration_mc.R              # 4 designs x 1,000 reps
+```
+
+It also prints the convergence record: failed inner solves, fits that
+warned, the largest outer decrement, and optimizer stops with a code other
+than nloptr's convergence codes 1 to 4.
+The full run reproduces the Monte Carlo behind §5.9 of the math article and
+NEWS, which took about 70 minutes as 8 single-threaded shards. Bit-for-bit
+identity was checked where measured: QUICK mode's 50 cross-section
+replications matched that run's estimates. That run used an earlier build,
+which differs on these designs only in the base design's supplied targets,
+now normalized to sum to one (a change of at most 1.5e-8, relative).
+
 ## Golden identity harness (`golden/`)
 
 `golden/refactor_identity_check.R` records the outputs of one build of choicer

@@ -116,6 +116,11 @@ coef.choicer_fit <- function(object, ...) {
 #' \code{type = "cluster"} adds something only for coarser groups such as
 #' households or markets.
 #'
+#' For a mixed logit fitted with \code{concentrate_out_asc = "blp"}, every
+#' \code{type} is the share-constrained estimator's variance, with the same
+#' meaning of the types (\code{\link{run_mxlogit}}, "Share-matching
+#' constants").
+#'
 #' @param object A choicer_fit object.
 #' @param type \code{NULL} (default; return the as-fitted vcov) or one of
 #'   \code{"hessian"}, \code{"bhhh"}, \code{"robust"}, \code{"cluster"}.
