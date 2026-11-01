@@ -1933,6 +1933,380 @@ Rcpp::List mxl_delta_hessian_parallel(
                             Rcpp::Named("hessian") = acc.result);
 }
 
+// ============================================================================
+// The share Jacobian on the estimation draws, for the share-matching constants
+//
+// run_mxlogit(concentrate_out_asc = "blp") holds the constants delta at the
+// solution of the share equations s(theta_c, delta) = S*, the shares
+// integrating each choice situation's probabilities over its likelihood
+// unit's draws with equal weights 1/S (the decision maker's draws in a
+// panel). Its outer gradient (one adjoint solve) and its variance need,
+// besides the objective and the gradient, the Jacobian of the weighted
+// predicted counts on the free constants,
+//   C = d/d(theta_c, delta)' sum_t w_t Pbar_t,  Pbar_t = (1/S) sum_s P_ts:
+// C_d (J_d x J_d, symmetric) and C_c (J_d x K_c). Per draw, dP_ts/dpsi' is
+// the logit's information sum_a P_a z_a z_a' - zbar zbar', z_a = dV_tsa/dpsi,
+// zbar = sum_a P_a z_a, whose delta rows give, for slot j, P_j on the
+// diagonal, -P_j P_k between slots, and P_j (zc_j - zbar_c) against the
+// continuous parameters (zc the continuous part of z: X, W o dmu_final_dmu,
+// and W_p Dgamma1_ps eta_qs dL_pq for L, as the Hessian builds it). So C is
+// the delta rows of the Hessian's identities C - B (mxl_hessian_parallel())
+// with every draw weighted 1/S instead of omega_s, and without H_V. Each
+// unit's block [[0, C_c,u'], [C_c,u, C_d,u]] goes into an accumulator laid
+// out as the full information's (SymAcc(n_params, K_c)), whose continuous
+// block stays zero.
+// One pass also gives the objective and the gradient by the gradient kernel's
+// own routines (bit for bit at one thread), and every inside alternative's
+// weighted predicted count sum_t w_t Pbar_tj. With `variance`, also
+//   K = sum_u w_u Cov_s(Q_us),  Q_us = sum_{t in u} P_ts on the unit's slots,
+// the across-draw covariance of each unit's predicted counts (identity A's
+// delta block with the draws weighted 1/S): under the model, a unit's chosen
+// counts vary by C_d,u + Cov_s(Q_us). A unit in one draw batch reads its
+// probabilities from pass 1's residuals (DiffW, as
+// mxl_delta_hessian_parallel() does), except with `variance`, which forms
+// them per situation, as a unit split into draw batches always does (from
+// pass 1's W_u Gamma when the unit is one batch). A unit whose log-likelihood
+// is not finite is left out (the objective then overflows), and a non-finite
+// weight, or a probability formed again that is not finite, makes the
+// matrices and the counts NaN.
+// ============================================================================
+
+// Bytes of one thread's buffers at the largest unit: the unit's block (m x m,
+// m = K_c + a), its product buffer, one situation's slot probabilities F
+// (a_t x S), its continuous rows (a_t x K_c), one draw's zc for the rows
+// (m_t x K_c) and probabilities (m_t), with `variance` the unit's G (a x S),
+// its mean (a) and its product, the unit's score and the thread's gradient
+// (n each), and, for a situation's draws formed again, its W_t (m_t x K_w)
+// and W_t Gamma (m_t x S). (The threads' counts are counted with the shared
+// buffers.)
+inline double mxl_blp_unit_bytes(const MxlUnitData& ud, const bool variance) {
+  const double K_c = ud.par.idx_delta_start;
+  const double J_d = ud.n_params - K_c;
+  const double a = std::min(J_d, static_cast<double>(ud.lay.max_unit_rows));
+  const double m_t = static_cast<double>(ud.lay.max_m);
+  const double a_t = std::min(a, m_t);
+  const double m = K_c + a;
+  return sizeof(double) *
+         (2.0 * m * m + a_t * ud.S + a_t * K_c + m_t * K_c + m_t + 2.0 * K_c +
+          (variance ? a * ud.S + a + a * a : 0.0) + 2.0 * ud.n_params +
+          m_t * (ud.S + ud.W.n_cols));
+}
+
+// The unit's free-constant slots as K's map (sym_add_block()'s Map): local
+// index k is the free constant mp.delta[k], with no continuous rows.
+struct MxlSlotMap {
+  const MxlUnitMap& mp;
+  int global(const int i, const int) const { return mp.delta[i]; }
+};
+
+//' The objective, gradient and share Jacobian on the estimation draws
+//' (internal)
+//'
+//' For run_mxlogit(concentrate_out_asc = "blp"): the negated simulated
+//' log-likelihood and its gradient, as mxl_loglik_gradient_parallel() returns
+//' them (bit for bit at one thread), the weighted predicted counts
+//' \eqn{\sum_t w_t \bar P_{tj}} of the inside alternatives, and the Jacobian
+//' of the free constants' predicted counts with respect to the parameters, on
+//' the estimation's draws (each situation's unit's draws, weighted 1/S).
+//' Takes mxl_hessian_parallel()'s arguments; \code{use_asc} must be TRUE.
+//' \code{acc_bytes} bounds each accumulator's private triangles: the
+//' Jacobian's and, with \code{variance}, K's.
+//' @param variance Also K, the units' across-draw covariance of their
+//'   predicted counts.
+//' @returns List: \code{objective}, \code{gradient} and \code{overflow} as
+//'   the gradient kernel returns them; \code{nonfinite}, whether a gradient
+//'   entry was not finite, with a finite objective, before it was set to 0;
+//'   \code{counts}, the weighted predicted count of every inside
+//'   alternative with a constant (the normalized one included);
+//'   \code{jacobian}, n_params x n_params, its free-constant rows holding
+//'   \eqn{C_c} (continuous columns) and \eqn{C_d} (constants' columns),
+//'   its continuous block zero; with \code{variance}, \code{K} (J_d x J_d).
+//'   The counts and the matrices are complete where overflow is FALSE,
+//'   unless NaN throughout.
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List mxl_blp_jacobian_parallel(
+    const arma::vec &theta, const arma::mat &X, const arma::mat &W,
+    const Rcpp::IntegerVector &alt_idx,
+    const Rcpp::IntegerVector &choice_idx,
+    const Rcpp::IntegerVector &M, const arma::vec &weights,
+    const arma::cube &eta_draws, const arma::uvec &rc_dist,
+    const bool rc_correlation = true, const bool rc_mean = false,
+    const bool use_asc = true, const bool include_outside_option = false,
+    const int gen_seed = -1, const int gen_scramble = 1, const int gen_S = 0,
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue,
+    const int draw_batch = 0, const double acc_bytes = 2147483648.0,
+    const bool variance = false) {
+  if (!use_asc) {
+    Rcpp::stop("mxl_blp_jacobian_parallel() needs the constants (use_asc = TRUE).");
+  }
+  // Inputs, layout and parameters at theta, validated on the primary thread
+  const MxlUnitData ud(theta, X, W, alt_idx, choice_idx, M,
+                       &weights, eta_draws, rc_dist,
+                       rc_correlation, rc_mean, use_asc, include_outside_option,
+                       gen_seed, gen_scramble, gen_S, Ti, draw_batch,
+                       "mxl_blp_jacobian_parallel");
+  const MxlLayout& lay = ud.lay;
+  const MxlParams& par = ud.par;
+  const int n_params = ud.n_params;
+  const int Kc = par.idx_delta_start;
+  const int J_d = n_params - Kc;
+  const int J_in = static_cast<int>(par.delta.n_elem);  // one count per constant
+  const int K_w = W.n_cols;
+  const int Sdraw = ud.S;
+  const double inv_S = 1.0 / static_cast<double>(Sdraw);
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+  const double log_S = std::log(static_cast<double>(Sdraw));
+
+  // The result's counts, the accumulators and the threads' slot maps and
+  // buffers, all allocated here on the primary thread. Shared: the
+  // accumulators, the threads' counts, the counts' total and the gradients.
+  const int n_threads = kernel_team_threads(lay.U);
+  kernel_check_memory("share Jacobian", n_threads,
+                      ud.scratch_bytes() + mxl_map_bytes(ud) +
+                          mxl_blp_unit_bytes(ud, variance) + 8.0 * (n_params + 16.0),
+                      [&](const int t) {
+                        return sym_acc_need(n_params, Kc, t, acc_bytes) +
+                               (variance ? sym_acc_need(J_d, 0, t, acc_bytes) : 0.0) +
+                               8.0 * (static_cast<double>(J_in) + 16.0) * t +
+                               8.0 * (static_cast<double>(J_in) + 2.0 * n_params);
+                      });
+  Rcpp::NumericVector total(J_in);
+  SymAcc acc(n_params, n_threads, Kc, "share Jacobian", acc_bytes);
+  std::unique_ptr<SymAcc> acc_K;
+  if (variance) acc_K.reset(new SymAcc(J_d, n_threads, 0, "share Jacobian", acc_bytes));
+  MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, Kc);
+  std::vector<std::vector<double>> cols =
+      thread_vectors<double>(static_cast<std::size_t>(n_params), n_threads);
+  std::vector<std::vector<double>> counts =
+      thread_vectors<double>(static_cast<std::size_t>(J_in), n_threads);
+
+  double global_loglik = 0.0;
+  arma::vec global_grad = arma::zeros(n_params);
+  bool nonfinite_block = false;
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(n_threads)
+#endif
+  {
+    const int tid = kernel_thread_num();
+    MxlUnitMap& mp = *maps[tid];
+    double* acc_t = acc.base(tid);
+    double* acc_Kt = variance ? acc_K->base(tid) : nullptr;
+    double* col = cols[tid].data();
+    double* cnt = counts[tid].data();
+    MxlUnitScratch sc;
+    double local_loglik = 0.0;
+    arma::vec local_grad = arma::zeros(n_params);
+    arma::vec s_u;            // the unit's score (pass 1)
+    arma::mat H_u;            // the unit's block [[0, C_c'], [C_c, C_d]]
+    arma::mat F;              // a_t x S: slot probabilities per draw
+    arma::mat Zc;             // m_t x K_c: one draw's zc of the situation's rows
+    arma::mat Crow;           // a_t x K_c: the situation's continuous rows
+    arma::mat G;              // a_u x S: the unit's predicted counts per draw
+    arma::mat prod_buf;
+    arma::vec zbar(Kc);
+    std::vector<double> Pbuf;  // one draw's inside probabilities
+    std::vector<double> gbar;  // G's mean over the draws
+    bool local_nonfinite = false;
+
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+    for (mxl_off u = 0; u < lay.U; ++u) {
+      // --- Pass 1: the gradient kernel's unit ---
+      mxl_unit_load(ud, u, sc, 2);
+      const double lse = mxl_unit_simulate(ud, sc, true);
+      mxl_unit_score(ud, sc, s_u);
+      const double w_u = weights[lay.unit_first(u)];
+      mxl_unit_add(local_loglik, local_grad, w_u, lse, log_S, s_u);
+      // A unit whose utilities overflowed has no block (the objective is not
+      // finite, which the caller sees); a non-finite weight spoils it
+      if (!std::isfinite(lse)) continue;
+      if (!std::isfinite(w_u)) {
+        local_nonfinite = true;
+        continue;
+      }
+
+      // --- Pass 2: the unit's block, its draws weighted 1/S ---
+      mxl_unit_map(ud, sc, mp);
+      const int a_u = mp.a;
+      const int m_u = Kc + a_u;
+      H_u.zeros(m_u, m_u);
+      if (variance) G.zeros(a_u, Sdraw);
+      const arma::mat eta_u = mxl_eta_view(ud, sc);
+      const bool from_diffw = sc.nb == 1 && !variance;  // DiffW holds every draw
+      for (mxl_off t = sc.t0; t < sc.t1; ++t) {
+        const int m_t = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
+        const mxl_off first = lay.row_off[t] - sc.r0;  // first row in the unit
+        mxl_situation_map(ud, sc, t, mp);
+        const int a_t = mp.a_t;
+        // a unit in one batch keeps pass 1's W_u Gamma, every draw's
+        if (sc.nb > 1) mxl_situation_wgamma(sc, first, m_t);
+        const int chosen = lay.chosen(t);  // slot in P (0: the outside option)
+        F.zeros(a_t, Sdraw);
+        Crow.zeros(a_t, Kc);
+        Zc.set_size(m_t, Kc);
+        if (static_cast<int>(Pbuf.size()) < m_t) Pbuf.resize(m_t);
+        double* P = Pbuf.data();
+        const AltCodes0 alt0{lay.alt + lay.row_off[t]};
+        // zc's beta and mu columns, the same at every draw
+        for (int a = 0; a < m_t; ++a) {
+          const arma::uword r = static_cast<arma::uword>(first + a);
+          for (int k = par.idx_beta_start; k < par.idx_mu_start; ++k) {
+            Zc(a, k) = sc.X_u(r, k - par.idx_beta_start);
+          }
+          if (rc_mean) {
+            for (int p = 0; p < K_w; ++p) {
+              Zc(a, par.idx_mu_start + p) = sc.W_u(r, p) * par.dmu_final_dmu(p);
+            }
+          }
+        }
+        for (int s = 0; s < Sdraw; ++s) {
+          if (from_diffw) {
+            const double* dw = sc.DiffW.colptr(s) + first;
+            for (int a = 0; a < m_t; ++a) P[a] = ((o + a) == chosen ? 1.0 : 0.0) - dw[a];
+          } else {
+            mxl_situation_probs(ud, sc, t, s);
+            for (int a = 0; a < m_t; ++a) P[a] = sc.P[o + a];
+          }
+          // zc's L columns at draw s, and zbar = sum_a P_a zc_a
+          zbar.zeros();
+          for (int a = 0; a < m_t; ++a) {
+            const arma::uword r = static_cast<arma::uword>(first + a);
+            if (rc_correlation) {
+              int lp = 0;
+              for (int p = 0; p < K_w; ++p) {
+                const double wf = sc.W_u(r, p) * sc.Dgamma1(p, s);
+                for (int q = 0; q <= p; ++q, ++lp) {
+                  const double dL = (p == q) ? par.L(p, p) : 1.0;
+                  Zc(a, par.idx_L_start + lp) = wf * dL * eta_u(q, s);
+                }
+              }
+            } else {
+              for (int p = 0; p < K_w; ++p) {
+                Zc(a, par.idx_L_start + p) =
+                    sc.W_u(r, p) * sc.Dgamma1(p, s) * par.L(p, p) * eta_u(p, s);
+              }
+            }
+            for (int k = 0; k < Kc; ++k) zbar[k] += P[a] * Zc(a, k);
+          }
+          for (int a = 0; a < m_t; ++a) {
+            const int q = mp.row_sit[a];
+            if (q < 0) continue;
+            F(q, s) += P[a];
+            for (int k = 0; k < Kc; ++k) Crow(q, k) += P[a] * (Zc(a, k) - zbar[k]);
+          }
+          // the inside alternatives' predicted counts (the reference's too)
+          for (int a = 0; a < m_t; ++a) cnt[alt0[a]] += w_u * (P[a] * inv_S);
+        }
+        if (!F.is_finite() || !Crow.is_finite()) local_nonfinite = true;
+        // C_d: diag(Pbar) - F F' / S on the situation's slots; C_c's rows
+        prod_buf = F * F.t();
+        for (int j = 0; j < a_t; ++j) {
+          const int uj = Kc + mp.sit_slot[j];
+          for (int i = 0; i < a_t; ++i) {
+            H_u(Kc + mp.sit_slot[i], uj) -= prod_buf(i, j) * inv_S;
+          }
+          H_u(uj, uj) += arma::accu(F.row(j)) * inv_S;
+          for (int k = 0; k < Kc; ++k) {
+            const double v = Crow(j, k) * inv_S;
+            H_u(uj, k) += v;
+            H_u(k, uj) += v;
+          }
+        }
+        if (variance) {
+          for (int q = 0; q < a_t; ++q) G.row(mp.sit_slot[q]) += F.row(q);
+        }
+        mxl_situation_map_clear(mp);
+      }
+      // (a unit without a free constant has a zero block: its situations
+      // added only the reference's counts)
+      if (a_u > 0) {
+        switch (acc.mode()) {
+          case SymMode::Single:
+            sym_add_block<SymMode::Single>(acc, acc_t, mp, Kc, H_u, w_u, col);
+            break;
+          case SymMode::Triangles:
+            sym_add_block<SymMode::Triangles>(acc, acc_t, mp, Kc, H_u, w_u, col);
+            break;
+          default:
+            sym_add_block<SymMode::Shared>(acc, acc_t, mp, Kc, H_u, w_u, col);
+        }
+      }
+      if (variance && a_u > 0) {
+        // Cov_s(Q_us): G centered at its mean over the draws, G G' / S
+        gbar.assign(static_cast<std::size_t>(a_u), 0.0);
+        for (int s = 0; s < Sdraw; ++s) {
+          for (int q = 0; q < a_u; ++q) gbar[q] += G(q, s);
+        }
+        for (int q = 0; q < a_u; ++q) gbar[q] /= static_cast<double>(Sdraw);
+        for (int s = 0; s < Sdraw; ++s) {
+          for (int q = 0; q < a_u; ++q) G(q, s) -= gbar[q];
+        }
+        prod_buf = G * G.t();
+        prod_buf *= inv_S;
+        const MxlSlotMap smp{mp};
+        switch (acc_K->mode()) {
+          case SymMode::Single:
+            sym_add_block<SymMode::Single>(*acc_K, acc_Kt, smp, 0, prod_buf, w_u, col);
+            break;
+          case SymMode::Triangles:
+            sym_add_block<SymMode::Triangles>(*acc_K, acc_Kt, smp, 0, prod_buf, w_u, col);
+            break;
+          default:
+            sym_add_block<SymMode::Shared>(*acc_K, acc_Kt, smp, 0, prod_buf, w_u, col);
+        }
+      }
+      mxl_unit_map_clear(mp);
+    }
+
+#ifdef _OPENMP
+#pragma omp critical
+#endif
+    {
+      global_loglik += local_loglik;
+      global_grad += local_grad;
+      nonfinite_block = nonfinite_block || local_nonfinite;
+    }
+  }
+
+  acc.finish(false);
+  if (variance) acc_K->finish(false);
+  // The counts, the threads' added in thread order
+  for (int i = 0; i < n_threads; ++i) {
+    for (int j = 0; j < J_in; ++j) total[j] += counts[i][j];
+  }
+  if (nonfinite_block) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::fill(acc.result.begin(), acc.result.end(), nan);
+    if (variance) std::fill(acc_K->result.begin(), acc_K->result.end(), nan);
+    std::fill(total.begin(), total.end(), nan);
+  }
+
+  // The objective and the gradient as the gradient kernel returns them
+  double obj = -global_loglik;
+  arma::vec grad = -global_grad;
+  const bool overflow = !std::isfinite(obj);
+  bool nonfinite = false;
+  if (overflow) {
+    obj = 1e10;
+    grad.zeros();
+  } else {
+    const arma::uvec bad = arma::find_nonfinite(grad);
+    nonfinite = bad.n_elem > 0;
+    grad.elem(bad).zeros();
+  }
+  Rcpp::List out = Rcpp::List::create(Rcpp::Named("objective") = obj,
+                                      Rcpp::Named("gradient") = grad,
+                                      Rcpp::Named("overflow") = overflow,
+                                      Rcpp::Named("nonfinite") = nonfinite,
+                                      Rcpp::Named("counts") = total,
+                                      Rcpp::Named("jacobian") = acc.result);
+  if (variance) out["K"] = acc_K->result;
+  return out;
+}
+
 //' BHHH (outer product of gradients) information matrix for Mixed Logit
 //'
 //' Computes the BHHH approximation to the observed information matrix for the
