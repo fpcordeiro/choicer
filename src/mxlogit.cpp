@@ -4857,6 +4857,68 @@ Rcpp::List mxl_blp_solve(
   return out;
 }
 
+//' The share inversion's markets and its checks of targets (internal)
+//'
+//' For run_mxlogit(concentrate_out_asc = "blp"), before the draws: the
+//' components of the graph of choice situations and alternatives through the
+//' situations of positive weight (blp_components(), as the share inversion
+//' forms them: a market is a component, and no situation offers alternatives
+//' of two) and, with targets, blp_problem()'s checks of them, which stop with
+//' the share inversion's messages. One serial pass over the rows; no draws.
+//' @param alt_idx,M,weights As the share inversion takes them.
+//' @param J The inside alternatives (the constants' count).
+//' @param include_outside_option Whether there is an outside option.
+//' @param target_shares NULL, or the targets as the share inversion takes
+//'   them: J inside shares of the total weight, after the outside option's
+//'   when there is one.
+//' @returns List: \code{market} (each inside alternative's market, 1 to
+//'   the markets' count, numbered by their smallest codes; NA for an
+//'   alternative offered in no situation of positive weight), \code{mass}
+//'   (each market's share of the total weight, 1 for a single market) and
+//'   \code{weight} (the total weight).
+//' @noRd
+// [[Rcpp::export]]
+Rcpp::List blp_check_targets(const Rcpp::IntegerVector& alt_idx,
+                             const Rcpp::IntegerVector& M,
+                             const arma::vec& weights, const int J,
+                             const bool include_outside_option,
+                             const Rcpp::Nullable<Rcpp::NumericVector> target_shares =
+                                 R_NilValue) {
+  double n_rows = 0;
+  for (R_xlen_t i = 0; i < M.size(); ++i) n_rows += M[i];
+  const arma::mat X(static_cast<arma::uword>(n_rows), 0);
+  const arma::vec delta(static_cast<arma::uword>(J), arma::fill::zeros);
+  const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, true, delta, &weights);
+  for (arma::uword t = 0; t < weights.n_elem; ++t) {
+    if (!std::isfinite(weights[t]) || weights[t] < 0) {
+      Rcpp::stop("weights must be finite and non-negative.");
+    }
+  }
+  const double W = shares_denominator(weights);
+  const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
+                                            include_outside_option);
+  if (target_shares.isNotNull()) {
+    const arma::vec tg = Rcpp::as<arma::vec>(target_shares);
+    const arma::uword n = static_cast<arma::uword>(J + (include_outside_option ? 1 : 0));
+    if (tg.n_elem != n) {
+      Rcpp::stop("target_shares must have %d entries.", static_cast<int>(n));
+    }
+    // the inside targets here; the outside option's, each market's, in
+    // blp_problem()'s words
+    for (arma::uword k = include_outside_option ? 1 : 0; k < n; ++k) {
+      if (!(tg[k] > 0)) {
+        Rcpp::stop("Target shares contains non-positive entries; cannot take logarithm.");
+      }
+    }
+    blp_problem(comp, tg, include_outside_option, J);
+  }
+  Rcpp::IntegerVector market(J);
+  for (int j = 0; j < J; ++j) market[j] = comp.of[j] < 0 ? NA_INTEGER : comp.of[j] + 1;
+  return Rcpp::List::create(Rcpp::Named("market") = market,
+                            Rcpp::Named("mass") = Rcpp::wrap(comp.mass),
+                            Rcpp::Named("weight") = W);
+}
+
 // The elasticity kernel's pass over the choice situations, the statements
 // of the code this replaced on Armadillo matrices over the threads' buffers
 // (see mxl_pred_shares()): each situation's elasticities, from its terms and

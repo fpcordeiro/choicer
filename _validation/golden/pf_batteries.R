@@ -213,3 +213,55 @@ run_pf_meat <- function() {
                                                     gen_S = 15L))
   out
 }
+
+# pf_blpfit: run_mxlogit(concentrate_out_asc = "blp") on p5b_sim()'s data:
+#   the sample's shares (outside option; the base normalization; a panel with
+#   generated draws, weights and the sandwich), supplied targets within the
+#   market (unnamed, named, with their covariance), se_method bhhh and
+#   cluster. The inner settings are pinned here; the records move with the
+#   share inversion's iteration, so a phase that changes it (BLP plan, Phases
+#   D and E) re-pins them. Class D against the steps before it (on a build
+#   without the method the records are errors).
+run_pf_blpfit <- function() {
+  out <- list()
+  fit <- function(dt, ...) {
+    p5a_rec(run_mxlogit(data = dt, id_col = "id", alt_col = "alt",
+                        choice_col = "choice", covariate_cols = c("x1", "x2"),
+                        random_var_cols = c("w1", "w2"), S = 15L,
+                        concentrate_out_asc = "blp",
+                        concentrate_control = list(max_iter = 1000L,
+                                                   tol_shares = 1e-12), ...))
+  }
+  dt_x <- p5b_sim(186L)
+  dt_b <- p5b_sim(187L, outside = FALSE)
+  dt_p <- p5b_sim(188L, N = 80L, T = 3L)
+  set.seed(189)
+  wt <- stats::runif(80L, 0.5, 2)
+  dt_p[, w := wt[pid]]
+  dt_x[, cl := id %% 10L]
+  # supplied targets: the sample's within-market shares pulled toward their
+  # mean
+  n_x <- data.table::uniqueN(dt_x$id)
+  s <- tabulate(dt_x[choice == 1L]$alt, 8L) / n_x
+  s_t <- 0.9 * s + 0.1 * mean(s)
+  o <- list(include_outside_option = TRUE, outside_opt_label = 0L)
+  cases <- list(
+    cross = o,
+    base = list(),
+    panel_gen_w = c(o, list(person_col = "pid", draws = "generate", seed = 5L,
+                            weights_col = "w", se_method = "sandwich")),
+    supplied = c(o, list(target_shares = s_t)),
+    supplied_named = c(o, list(target_shares = stats::setNames(rev(s_t),
+                                                               as.character(8:1)))),
+    supplied_vcov = c(o, list(target_shares = s_t,
+                              target_vcov = (diag(s_t) - s_t %o% s_t) / 2000)),
+    bhhh_se = c(o, list(se_method = "bhhh")),
+    cluster = c(o, list(cluster_col = "cl"))
+  )
+  data_of <- list(base = dt_b, panel_gen_w = dt_p)
+  for (nm in names(cases)) {
+    dt <- data_of[[nm]] %||% dt_x
+    out[[paste("pf_blpfit", nm, sep = "|")]] <- do.call(fit, c(list(dt), cases[[nm]]))
+  }
+  out
+}

@@ -678,10 +678,18 @@
 #'   optimizer moves the other parameters only, and at each of its points the
 #'   constants are solved from their first-order condition; the estimator, and
 #'   so the estimates and their standard errors, are the same, to the
-#'   optimizers' tolerance. \code{"blp"} is reserved for matching aggregate
-#'   shares instead, a different estimator, and is not implemented.
+#'   optimizers' tolerance. \code{"blp"}: the constants are held at the
+#'   solution of the share equations, the model's shares on the estimation
+#'   draws equal to \code{target_shares} (the sample's own shares by
+#'   default), and the other parameters maximize the likelihood given them:
+#'   a different estimator, with its own standard errors.
 #' @param concentrate_control List of settings of the constants' inner
-#'   solve, any of \code{max_iter} (25 Newton steps per solve; the first, from
+#'   solve. For \code{concentrate_out_asc = "blp"}: \code{max_iter} (1000
+#'   evaluations of the shares per solve; the first may take four times as
+#'   many), \code{tol_shares} (\eqn{10^{-12}}{1e-12}: the largest absolute
+#'   log-share residual accepted) and \code{max_dense} (10000: the most
+#'   constants whose share Jacobian is formed and factored densely). Otherwise
+#'   any of \code{max_iter} (25 Newton steps per solve; the first, from
 #'   the start values, may take four times as many), \code{tol_residual}
 #'   (\eqn{10^{-10}}{1e-10}: the solve stops when every constant's score, and
 #'   the reference's, is below it relative to its alternative's weighted
@@ -696,6 +704,21 @@
 #'   each (0.8 GB at \eqn{J = 10^4}{J = 1e4}), besides the kernel's
 #'   accumulators, and each Newton step factors one, about
 #'   \eqn{J^3 / 3}{J^3 / 3} operations).
+#' @param target_shares For \code{concentrate_out_asc = "blp"}: the shares the
+#'   constants match, each inside alternative's share within its market (a
+#'   group of alternatives that share choice situations), named by the
+#'   alternatives' labels or in their order; with an outside option and one
+#'   market, also \code{blp()}'s convention, the outside option's share first.
+#'   NULL (default): the sample's own weighted shares, or a choice-based
+#'   sample's population shares (its \code{Q}).
+#' @param target_vcov For \code{concentrate_out_asc = "blp"} with
+#'   \code{target_shares}: their sampling covariance, a positive
+#'   semi-definite matrix over the inside alternatives in
+#'   \code{target_shares}' order, or in the order of its row and column
+#'   names when it has them, the alternatives' labels (for shares from
+#'   \eqn{n} independent choices in a market, \eqn{(\mathrm{diag}(s) -
+#'   s s') / n}{(diag(s) - s s') / n} on that market's block). NULL (default):
+#'   the targets are exact.
 #' @section Newton phase (polish):
 #' The polish does not change the estimator. From wherever the optimizer
 #' stopped (at its tolerance or at \code{maxeval}), it finishes the climb to
@@ -939,7 +962,9 @@ run_mxlogit <- function(
     polish = c("none", "newton", "bhhh"),
     polish_control = list(),
     concentrate_out_asc = c("none", "profile_likelihood", "blp"),
-    concentrate_control = list()
+    concentrate_control = list(),
+    target_shares = NULL,
+    target_vcov = NULL
 ) {
   cl <- match.call()
 
@@ -950,28 +975,27 @@ run_mxlogit <- function(
   polish <- match.arg(polish)
   polish_control <- .polish_control(polish_control)
   concentrate_out_asc <- match.arg(concentrate_out_asc)
-  concentrate_control <- .concentrate_control(concentrate_control)
+  concentrate_control <- .concentrate_control(concentrate_control,
+                                              concentrate_out_asc)
   # The concentration of the constants, by method. "profile_likelihood"
   # maximizes over them at every value of the other parameters (an inner
   # Newton solve of their first-order condition: observed counts equal to
   # posterior-weighted predicted counts), which leaves the estimator
   # unchanged, and differentiates the profile by the envelope theorem.
-  # "blp" is reserved for matching aggregate shares instead (Berry,
-  # Levinsohn and Pakes 1995), which changes the estimator: its inner solve
-  # would be a share contraction such as mxl_blp_contraction()'s, but on the
-  # estimation's draws (a panel fit's are per decision maker, the
-  # contraction's per choice situation) and to a tight tolerance (Dube, Fox
-  # and Su 2012); the outer gradient would need the implicit-function term
-  # -(ds/d delta)^-1 ds/d theta_c, since the shares' solution does not set
-  # the likelihood's score of the constants to zero; and the variance would
-  # be that of the share-constrained (micro-BLP) estimator.
-  if (identical(concentrate_out_asc, "blp")) {
-    stop("concentrate_out_asc = \"blp\" is reserved for a share-matching ",
-         "(BLP) concentration of the constants, which is not implemented; ",
-         "blp() inverts market shares for the constants after a fit.",
-         call. = FALSE)
-  }
+  # "blp" holds them at the solution of the share equations instead (Berry,
+  # Levinsohn and Pakes 1995), which changes the estimator: the share
+  # inversion on the estimation's draws (a panel fit's per decision maker)
+  # to a tight tolerance (Dube, Fox and Su 2012); the outer gradient with the
+  # implicit-function term -C_c' C_d^{-1} g_d, since the shares' solution
+  # does not set the likelihood's score of the constants to zero; and the
+  # share-constrained (micro-BLP) estimator's variance (.mxl_blp_solver(),
+  # .blp_vcov()).
   profile <- identical(concentrate_out_asc, "profile_likelihood")
+  blp <- identical(concentrate_out_asc, "blp")
+  if (!blp && (!is.null(target_shares) || !is.null(target_vcov))) {
+    stop("`target_shares` and `target_vcov` are the targets of ",
+         "concentrate_out_asc = \"blp\".", call. = FALSE)
+  }
   draws   <- match.arg(draws)
   scramble <- match.arg(scramble)
   if (identical(scramble, "owen")) {
@@ -1198,12 +1222,41 @@ run_mxlogit <- function(
   # of the alternatives named, the reference's case aside, which moves every
   # constant together (row r >= 2 of alt_mapping has the constant asc[r - 1]).
   # The profile likelihood needs every constant to have a finite estimate:
-  # those cases are errors there, and so are bounds on the constants.
+  # those cases are errors there, and so are bounds on the constants. The
+  # share-matching constants need attainable targets (the sample's shares, a
+  # choice-based sample's population shares Q, or target_shares), resolved
+  # and checked here by the share inversion's rules.
   unbounded <- NULL
+  share_tg <- NULL
   if (profile) {
     .check_profile_inputs(n_asc, lower[param_map$asc], upper[param_map$asc],
                           param_names[param_map$asc], input_data$alt_mapping,
                           concentrate_control, input_data)
+    if (!is.null(theta_init)) .check_theta_init(theta_init, n_params)
+  } else if (blp) {
+    wesml_q <- is.list(choice_sampling) &&
+      identical(choice_sampling$scheme, "wesml") && !is.null(choice_sampling$Q)
+    .check_blp_inputs(n_asc, lower[param_map$asc], upper[param_map$asc],
+                      param_names[param_map$asc], input_data$alt_mapping,
+                      concentrate_control, input_data, polish,
+                      sample_targets = is.null(target_shares) && !wesml_q)
+    if (is.null(target_shares) && wesml_q) {
+      message("concentrate_out_asc = \"blp\": the targets are the choice-based ",
+              "sample's population shares (its Q), taken as exact.")
+    }
+    share_tg <- .blp_resolve_targets(target_shares, target_vcov, input_data,
+                                     n_asc, choice_sampling)
+    if (se_method == "cluster" && !identical(share_tg$source, "sample") &&
+        length(unique(share_tg$unit_market)) > 1L) {
+      cl_u <- .to_units(input_data$cluster, input_data, "`cluster_col`")
+      if (any(tapply(share_tg$unit_market, cl_u,
+                     function(m) length(unique(m))) > 1L)) {
+        stop("se_method = \"cluster\" with concentrate_out_asc = \"blp\" and ",
+             "targets other than the sample's own shares needs clusters within ",
+             "markets (groups of alternatives that share choice situations); a ",
+             "cluster here spans two.", call. = FALSE)
+      }
+    }
     if (!is.null(theta_init)) .check_theta_init(theta_init, n_params)
   } else if (n_asc > 0) {
     unbounded <- .warn_unbounded_constants(input_data$alt_mapping,
@@ -1241,7 +1294,7 @@ run_mxlogit <- function(
   # A supplied start must have one finite value per parameter where the
   # optimizer works in scaled coordinates (checked again once the map is
   # built); with scale_vars = "none" the kernels check its length.
-  if (!profile && !is.null(theta_init) && scale_vars != "none") {
+  if (!profile && !blp && !is.null(theta_init) && scale_vars != "none") {
     .check_theta_init(theta_init, n_params)
   }
 
@@ -1409,6 +1462,42 @@ run_mxlogit <- function(
     theta_init[d_idx] <- s0$delta
   }
 
+  # --- The share-matching constants (concentrate_out_asc = "blp") -------------
+  # The constants solve the share equations on the estimation draws (the
+  # share inversion: Anderson acceleration, exponentials kept, compensated
+  # sums at scale, to tol_shares), at the start's continuous parameters from
+  # the targets' log ratios to the reference's (theta_init's constants
+  # otherwise); each solve ends with one pass of the share Jacobian
+  # (.mxl_blp_solver()).
+  if (blp) {
+    c_idx <- setdiff(seq_len(n_params), param_map$asc)
+    d_idx <- param_map$asc
+    setup <- .mxl_blp_setup(input_data, isTRUE(input_data$include_outside_option),
+                            eta_draws,
+                            list(seed = gen_seed_cpp, scramble = gen_scramble_cpp,
+                                 S = gen_S_cpp),
+                            rc_dist, rc_correlation, rc_mean, param_map,
+                            n_params, share_tg, concentrate_control)
+    if (start_default) theta_init[d_idx] <- setup$start
+    blp_solve <- setup$solve
+    t_first <- system.time(
+      s0 <- blp_solve(theta_init[c_idx], theta_init[d_idx],
+                      min(4 * concentrate_control$max_iter, .Machine$integer.max)),
+      gcFirst = FALSE)
+    if (!is.null(s0$error)) {
+      stop("concentrate_out_asc = \"blp\": the constants' solve at the start ",
+           "values stopped with an error: ", s0$error, call. = FALSE)
+    }
+    if (!s0$converged) {
+      stop(errorCondition(paste0(
+        "concentrate_out_asc = \"blp\": at the start values, ", s0$message,
+        ". Start elsewhere (theta_init), allow more evaluations of the shares ",
+        "(concentrate_control$max_iter), or check that the targets are ",
+        "attainable."), class = "choicer_blp_unconverged", call = NULL))
+    }
+    theta_init[d_idx] <- s0$delta
+  }
+
   # --- The optimizer's coordinates --------------------------------------------
   #   theta_natural = map$scale * theta_t + map$shift
   # "bhhh": the BHHH diagonal at the start values, from one gradient pass;
@@ -1431,7 +1520,7 @@ run_mxlogit <- function(
   # Run the optimizer in the map's coordinates on the objective with the
   # kernel's overflow sentinel kept above the path
   elapsed <- system.time({
-    if (!profile) {
+    if (!profile && !blp) {
       opt <- .optimize_in_coordinates(
         map = if (scale_vars != "none") map, optimizer = optimizer,
         theta_init = theta_init, eval_f = .lift_sentinel(model_f),
@@ -1440,15 +1529,25 @@ run_mxlogit <- function(
     } else {
       # The outer problem: the optimizer on theta_c alone, in the map's
       # coordinates restricted to it, on the negated profile log-likelihood
-      # and its envelope gradient (.profile_objective()), warm-started from
-      # the best converged point.
+      # and its envelope gradient, or the share-matching constants'
+      # corrected objective and implicit gradient (.profile_objective()),
+      # warm-started from the best converged point (along its tangent for
+      # "blp").
+      conc_solve <- if (blp) {
+        blp_solve
+      } else {
+        function(theta_c, delta0, max_iter, best = NULL) {
+          profile_solve(theta_c, delta0, max_iter)
+        }
+      }
       prof <- .profile_objective(
-        function(theta_c, delta0) {
-          profile_solve(theta_c, delta0, concentrate_control$max_iter)
+        function(theta_c, delta0, best) {
+          conc_solve(theta_c, delta0, concentrate_control$max_iter, best)
         },
         c_idx, list(theta_c = theta_init[c_idx], value = s0$value,
                     delta = s0$delta, gradient = s0$gradient,
-                    residual = s0$residual, decrement = s0$decrement))
+                    residual = s0$residual, decrement = s0$decrement,
+                    extra = s0$extra))
       opt <- .optimize_in_coordinates(
         map = if (scale_vars != "none") {
           list(scale = map$scale[c_idx], shift = map$shift[c_idx])
@@ -1466,7 +1565,7 @@ run_mxlogit <- function(
       if (identical(unname(opt$par), unname(best$theta_c), num.eq = FALSE)) {
         s_hat <- c(best, list(converged = TRUE))
       } else {
-        s_hat <- profile_solve(opt$par, best$delta, concentrate_control$max_iter)
+        s_hat <- conc_solve(opt$par, best$delta, concentrate_control$max_iter, best)
         st$solves <- st$solves + 1L
         st$inner_iterations <- st$inner_iterations + s_hat$iterations
         st$passes <- st$passes + s_hat$passes
@@ -1481,7 +1580,9 @@ run_mxlogit <- function(
       opt$par <- numeric(n_params)
       opt$par[c_idx] <- theta_c_hat
       opt$par[d_idx] <- s_hat$delta
-      opt$value <- s_hat$value
+      # the log-likelihood at the returned point ("blp": not its corrected
+      # objective, which the optimizer saw)
+      opt$value <- if (blp) s_hat$extra$objective else s_hat$value
     }
   })
 
@@ -1531,6 +1632,53 @@ run_mxlogit <- function(
         ". Fit with polish = \"newton\" to check that the estimates are at ",
         "the maximum."),
         class = "choicer_profile_unconverged"))
+    }
+  }
+  if (blp) {
+    elapsed <- elapsed + t_first
+    n_eval <- st$inner_iterations + s0$iterations
+    conc_record <- list(
+      method = "blp", evaluations = st$evaluations,
+      solves = st$solves + 1L, failed = st$failed,
+      inner_iterations = n_eval,
+      jacobians = st$passes + s0$passes - n_eval,
+      max_residual = max(st$max_residual, s0$residual),
+      residual = s_hat$residual,
+      lambda = stats::setNames(s_hat$extra$lambda, param_names[d_idx]),
+      decrement = NA_real_,
+      elapsed_time = elapsed[["elapsed"]])
+    message("Share-matching constants: ", st$evaluations, " evaluations of the ",
+            "optimizer, ", conc_record$solves, " inner solves (", n_eval,
+            " evaluations of the shares, ", conc_record$jacobians,
+            " passes of the share Jacobian)",
+            if (st$failed > 0L) {
+              paste0(", ", st$failed, " of them unconverged at trial points ",
+                     "(overflows to the optimizer)")
+            })
+    if (st$failed_late > 0L || !final_ok) {
+      why <- paste0(
+        if (st$failed_late > 0L) {
+          paste0(st$failed_late, " of the inner solves after the optimizer's ",
+                 "best point did not converge (it saw them as overflows, so ",
+                 "its success code can mislead",
+                 if (!is.null(st$error)) {
+                   paste0("; the last error: ", st$error)
+                 }, ")")
+        },
+        if (st$failed_late > 0L && !final_ok) "; ",
+        if (!final_ok) {
+          paste0("the share equations could not be solved at the optimizer's ",
+                 "solution",
+                 if (!is.null(final_error)) paste0(" (", final_error, ")"),
+                 ", so the best point solved is returned")
+        })
+      opt$message <- paste0(paste(as.character(opt$message), collapse = "; "),
+                            "; share-matching constants: ", why)
+      warning(warningCondition(paste0(
+        "concentrate_out_asc = \"blp\": ", why, ". Check that the targets ",
+        "are attainable, or allow more evaluations of the shares ",
+        "(concentrate_control$max_iter)."),
+        class = "choicer_blp_unconverged"))
     }
   }
   message("Optimization run time ", convertTime(elapsed))
@@ -1664,7 +1812,8 @@ run_mxlogit <- function(
     choice_sampling = choice_sampling,
     n_persons = if (!is.null(input_data$Ti)) length(input_data$Ti),
     param_scale = stats::setNames(map$scale, param_names),
-    param_shift = stats::setNames(map$shift, param_names)
+    param_shift = stats::setNames(map$shift, param_names),
+    share_targets = share_tg
   )
 
   # Compute vcov eagerly using the selected SE method, by the route
@@ -1698,6 +1847,14 @@ run_mxlogit <- function(
     rownames(vcov_result$vcov) <- param_names
     colnames(vcov_result$vcov) <- param_names
     names(vcov_result$se) <- param_names
+  }
+  if (blp && !is.null(vcov_result$It)) {
+    # The outer convergence certificate: half the total gradient's squared
+    # length in the curvature along the share constraint, over the mean weight
+    g_c <- s_hat$gradient[c_idx]
+    fit$optimizer$concentration$decrement <- tryCatch(
+      0.5 * sum(g_c * solve(vcov_result$It, g_c)) / mean(input_data$weights),
+      error = function(e) NA_real_)
   }
   fit["vcov"] <- list(vcov_result$vcov)
   fit["se"] <- list(vcov_result$se)

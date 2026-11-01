@@ -39,7 +39,9 @@ run_mxlogit(
   polish = c("none", "newton", "bhhh"),
   polish_control = list(),
   concentrate_out_asc = c("none", "profile_likelihood", "blp"),
-  concentrate_control = list()
+  concentrate_control = list(),
+  target_shares = NULL,
+  target_vcov = NULL
 )
 }
 \arguments{
@@ -377,11 +379,19 @@ other parameters, by the optimizer. \code{"profile_likelihood"}: the
 optimizer moves the other parameters only, and at each of its points the
 constants are solved from their first-order condition; the estimator, and
 so the estimates and their standard errors, are the same, to the
-optimizers' tolerance. \code{"blp"} is reserved for matching aggregate
-shares instead, a different estimator, and is not implemented.}
+optimizers' tolerance. \code{"blp"}: the constants are held at the
+solution of the share equations, the model's shares on the estimation
+draws equal to \code{target_shares} (the sample's own shares by
+default), and the other parameters maximize the likelihood given them:
+a different estimator, with its own standard errors.}
 
 \item{concentrate_control}{List of settings of the constants' inner
-solve, any of \code{max_iter} (25 Newton steps per solve; the first, from
+solve. For \code{concentrate_out_asc = "blp"}: \code{max_iter} (1000
+evaluations of the shares per solve; the first may take four times as
+many), \code{tol_shares} (\eqn{10^{-12}}{1e-12}: the largest absolute
+log-share residual accepted) and \code{max_dense} (10000: the most
+constants whose share Jacobian is formed and factored densely). Otherwise
+any of \code{max_iter} (25 Newton steps per solve; the first, from
 the start values, may take four times as many), \code{tol_residual}
 (\eqn{10^{-10}}{1e-10}: the solve stops when every constant's score, and
 the reference's, is below it relative to its alternative's weighted
@@ -396,6 +406,23 @@ solve holds two \eqn{J \times J}{J x J} matrices, \eqn{8 J^2}{8 J^2} bytes
 each (0.8 GB at \eqn{J = 10^4}{J = 1e4}), besides the kernel's
 accumulators, and each Newton step factors one, about
 \eqn{J^3 / 3}{J^3 / 3} operations).}
+
+\item{target_shares}{For \code{concentrate_out_asc = "blp"}: the shares the
+constants match, each inside alternative's share within its market (a
+group of alternatives that share choice situations), named by the
+alternatives' labels or in their order; with an outside option and one
+market, also \code{blp()}'s convention, the outside option's share first.
+NULL (default): the sample's own weighted shares, or a choice-based
+sample's population shares (its \code{Q}).}
+
+\item{target_vcov}{For \code{concentrate_out_asc = "blp"} with
+\code{target_shares}: their sampling covariance, a positive
+semi-definite matrix over the inside alternatives in
+\code{target_shares}' order, or in the order of its row and column
+names when it has them, the alternatives' labels (for shares from
+\eqn{n} independent choices in a market, \eqn{(\mathrm{diag}(s) -
+s s') / n}{(diag(s) - s s') / n} on that market's block). NULL (default):
+the targets are exact.}
 }
 \value{
 A \code{choicer_mxl} object (inherits from \code{choicer_fit}).
