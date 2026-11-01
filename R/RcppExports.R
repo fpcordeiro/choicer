@@ -1343,11 +1343,20 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #' cache_bytes bytes (8 K_w S N) and the solver may evaluate the shares twice
 #' or more (or forms the exp-space cache at a test origin), they are kept from
 #' the first evaluation on instead of formed at every one; the result is the
-#' same.
+#' same. With Ti, each situation integrates over its decision maker's draws,
+#' the estimation kernels' block of that unit (a cube of one slice per
+#' decision maker, or Halton block u + 1 on the fly): the share inversion of
+#' run_mxlogit(concentrate_out_asc = "blp") on a panel.
 #'
 #' @inheritParams mxl_blp_contraction
 #' @param control List from .blp_control().
 #' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
+#' @param Ti NULL (default: one draw block per choice situation), or the
+#'   number of choice situations of each decision maker, situations sorted by
+#'   decision maker, as mxl_loglik_gradient_parallel() takes it; then a cube
+#'   holds one slice per decision maker, and draws formed on the fly take
+#'   gen_scramble 0 or 1. The shares are a sum over situations, so the
+#'   weights may vary within a decision maker here.
 #' @return As mnl_blp_solve(), plus kept (whether the cache was allocated),
 #'   passes (the passes over the situations) and reads (the situations those
 #'   passes read Gamma from the cache); with pass "exp", also exp_prefix (the
@@ -1355,8 +1364,8 @@ mxl_diversion_ratios_parallel <- function(theta, X, W, alt_idx, M, weights, eta_
 #'   cache_bytes and control's cache_bytes) and exp_reads (the situations
 #'   the passes from them served: exp_prefix (exp_evals + exp_floors)).
 #' @noRd
-mxl_blp_solve <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes) {
-    .Call(`_choicer_mxl_blp_solve`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes)
+mxl_blp_solve <- function(delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes, Ti = NULL) {
+    .Call(`_choicer_mxl_blp_solve`, delta, target_shares, X, W, beta, mu, L_params, alt_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, include_outside_option, control, gen_seed, gen_scramble, gen_S, cache_bytes, Ti)
 }
 
 #' Compute aggregate elasticities for mixed logit model

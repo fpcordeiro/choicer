@@ -126,13 +126,40 @@ struct MxlLayout : ChoiceLayout {
   }
 };
 
+// The likelihood units of N choice situations: decision maker u owns the
+// situations [off[u], off[u+1]) (situations are sorted by decision maker);
+// empty for Ti = NULL, where every situation is its own unit. The checks
+// mirror hmnl_gibbs (src/hmnlogit.cpp): at least one respondent, every Ti
+// positive, and sum(Ti) equal to the number of choice situations.
+inline std::vector<mxl_off> mxl_unit_offsets(
+    const Rcpp::Nullable<Rcpp::IntegerVector>& Ti, const mxl_off N) {
+  std::vector<mxl_off> off;
+  if (Ti.isNull()) return off;
+  const Rcpp::IntegerVector T_u(Ti.get());
+  if (T_u.size() == 0) {
+    Rcpp::stop("Ti must contain at least one respondent.");
+  }
+  const mxl_off U = T_u.size();
+  off.assign(U + 1, 0);
+  for (mxl_off u = 0; u < U; ++u) {
+    if (T_u[u] == NA_INTEGER || T_u[u] < 1) {
+      Rcpp::stop("Ti must be positive for every respondent (Ti[%d] = %s).",
+                 u + 1,
+                 T_u[u] == NA_INTEGER ? "NA" : std::to_string(T_u[u]));
+    }
+    off[u + 1] = off[u] + T_u[u];
+  }
+  if (off[U] != N) {
+    Rcpp::stop("sum(Ti) (%d) does not match the number of choice situations "
+               "(%d).", off[U], N);
+  }
+  return off;
+}
+
 // Build and validate the layout: the units (Ti), the situations and the
 // alternative codes (ChoiceLayout's checks), then the choices; the delta,
 // draw and W checks follow in MxlUnitData. Situations are sorted by decision
 // maker; Ti = NULL makes every situation its own unit (the cross-section).
-// The Ti checks mirror hmnl_gibbs (src/hmnlogit.cpp): at least one
-// respondent, every Ti positive, and sum(Ti) equal to the number of choice
-// situations.
 inline MxlLayout mxl_layout_build(const arma::mat& X,
                                   const Rcpp::IntegerVector& alt_idx,
                                   const Rcpp::IntegerVector& choice_idx,
@@ -146,28 +173,8 @@ inline MxlLayout mxl_layout_build(const arma::mat& X,
   lay.include_outside_option = include_outside_option;
 
   // Likelihood units: decision makers (Ti) or choice situations (Ti = NULL).
-  if (Ti.isNull()) {
-    lay.U = N;
-  } else {
-    const Rcpp::IntegerVector T_u(Ti.get());
-    if (T_u.size() == 0) {
-      Rcpp::stop("Ti must contain at least one respondent.");
-    }
-    lay.U = T_u.size();
-    lay.unit_off.assign(lay.U + 1, 0);
-    for (mxl_off u = 0; u < lay.U; ++u) {
-      if (T_u[u] == NA_INTEGER || T_u[u] < 1) {
-        Rcpp::stop("Ti must be positive for every respondent (Ti[%d] = %s).",
-                   u + 1,
-                   T_u[u] == NA_INTEGER ? "NA" : std::to_string(T_u[u]));
-      }
-      lay.unit_off[u + 1] = lay.unit_off[u] + T_u[u];
-    }
-    if (lay.unit_off[lay.U] != N) {
-      Rcpp::stop("sum(Ti) (%d) does not match the number of choice situations "
-                 "(%d).", lay.unit_off[lay.U], N);
-    }
-  }
+  lay.unit_off = mxl_unit_offsets(Ti, N);
+  lay.U = lay.unit_off.empty() ? N : static_cast<mxl_off>(lay.unit_off.size()) - 1;
 
   // Situations and alternative codes (ChoiceLayout's checks, shared with the
   // MNL and NL kernels), then the choices.
@@ -2523,24 +2530,32 @@ constexpr int MXL_STORE_POINTS = 2;
 // diagnostic, for p outside [0, 1], is an ME_DOMAIN warning that Rmath
 // suppresses), and the uniforms lie in (0, 1). Rmath functions that can warn
 // (ME_RANGE, ME_PRECISION) would not be safe there.
+//
+// A panel's share inversion (run_mxlogit(concentrate_out_asc = "blp"))
+// integrates over the estimation's draws instead, one block per decision
+// maker: with `unit`, situation t reads block unit[t], cube slice unit[t] or
+// Halton block unit[t] + 1, which is what the estimation kernels form for
+// that unit (HaltonGen::fill_eta_i(unit[t] + 1)).
 struct MxlPredDraws {
   int K_w = 0, S = 0;
   bool generate = false;   // formed on the fly
   bool r_qnorm = false;    // store-mode points: identity uniforms, R's qnorm()
   HaltonGen gen;
   const double* cube = nullptr;  // a given cube: every situation's draws
+  const mxl_off* unit = nullptr; // situation -> its draw block; nullptr: its own
 
   // Write situation t's draws (column-major K_w x S) to eta.
   void fill(double* eta, const mxl_off t) const {
     const std::size_t n = static_cast<std::size_t>(K_w) * static_cast<std::size_t>(S);
+    const mxl_off b = unit ? unit[t] : t;  // the draw block
     if (!generate) {
       if (n > 0) {
-        std::memcpy(eta, cube + static_cast<std::size_t>(t) * n,
+        std::memcpy(eta, cube + static_cast<std::size_t>(b) * n,
                     n * sizeof(double));
       }
       return;
     }
-    const uint64_t n0 = static_cast<uint64_t>(t) * static_cast<uint64_t>(S) + 1;
+    const uint64_t n0 = static_cast<uint64_t>(b) * static_cast<uint64_t>(S) + 1;
     if (!r_qnorm) {
       gen.fill_block(eta, n0);
       return;
@@ -2572,6 +2587,10 @@ struct MxlPredData {
   // it.
   std::unique_ptr<double[]> gamma_cache;
   bool gamma_filled = false;
+  // A panel's share inversion: each situation's decision maker (draws.unit
+  // points here); empty otherwise. The Gamma cache keeps a slot per
+  // situation, so it holds a decision maker's Gamma once per situation.
+  std::vector<mxl_off> unit_of;
   int K_w = 0, S = 0;
   bool use_asc = false, include_outside_option = false, alt_level_W = false;
 
@@ -2601,18 +2620,24 @@ inline void mxl_pred_check_generate(const int gen_S, const int K_w,
 // the old cast to an unsigned index reported an arbitrary value), then the
 // dimensions of a given cube (cube: no draws formed on the fly), then W's
 // rows. Draws formed on the fly check W's rows too (generate mode used to
-// stop at an Armadillo bounds error).
+// stop at an Armadillo bounds error). A panel's share inversion passes its
+// number of decision makers, n_units, whose blocks the cube holds; -1: one
+// block per situation.
 inline void mxl_pred_layout(MxlPredData& pd, const Rcpp::IntegerVector& alt_idx,
                             const Rcpp::IntegerVector& M,
                             const arma::cube& eta_draws, const bool cube,
                             const bool use_asc, const arma::vec& delta,
-                            const arma::vec* weights) {
+                            const arma::vec* weights, const mxl_off n_units = -1) {
   pd.lay = choice_layout_build(pd.X, alt_idx, M, use_asc, delta, weights);
   const ChoiceLayout& lay = pd.lay;
   if (cube) {
-    if (static_cast<mxl_off>(eta_draws.n_slices) != lay.N) {
+    if (n_units < 0 && static_cast<mxl_off>(eta_draws.n_slices) != lay.N) {
       Rcpp::stop("eta_draws 3rd dimension (%d) does not match N (%d)",
                  eta_draws.n_slices, lay.N);
+    }
+    if (n_units >= 0 && static_cast<mxl_off>(eta_draws.n_slices) != n_units) {
+      Rcpp::stop("eta_draws 3rd dimension (%d) does not match the number of "
+                 "decision makers (%d)", eta_draws.n_slices, n_units);
     }
     if (eta_draws.n_rows != pd.W.n_cols) {
       Rcpp::stop("eta_draws 1st dimension (%d) does not match K_w (%d)",
@@ -3873,11 +3898,20 @@ struct MxlBlpModel {
 //' cache_bytes bytes (8 K_w S N) and the solver may evaluate the shares twice
 //' or more (or forms the exp-space cache at a test origin), they are kept from
 //' the first evaluation on instead of formed at every one; the result is the
-//' same.
+//' same. With Ti, each situation integrates over its decision maker's draws,
+//' the estimation kernels' block of that unit (a cube of one slice per
+//' decision maker, or Halton block u + 1 on the fly): the share inversion of
+//' run_mxlogit(concentrate_out_asc = "blp") on a panel.
 //'
 //' @inheritParams mxl_blp_contraction
 //' @param control List from .blp_control().
 //' @param cache_bytes Largest cache, in bytes; 0 keeps nothing.
+//' @param Ti NULL (default: one draw block per choice situation), or the
+//'   number of choice situations of each decision maker, situations sorted by
+//'   decision maker, as mxl_loglik_gradient_parallel() takes it; then a cube
+//'   holds one slice per decision maker, and draws formed on the fly take
+//'   gen_scramble 0 or 1. The shares are a sum over situations, so the
+//'   weights may vary within a decision maker here.
 //' @return As mnl_blp_solve(), plus kept (whether the cache was allocated),
 //'   passes (the passes over the situations) and reads (the situations those
 //'   passes read Gamma from the cache); with pass "exp", also exp_prefix (the
@@ -3906,7 +3940,8 @@ Rcpp::List mxl_blp_solve(
     const int gen_seed,
     const int gen_scramble,
     const int gen_S,
-    const double cache_bytes
+    const double cache_bytes,
+    const Rcpp::Nullable<Rcpp::IntegerVector> Ti = R_NilValue
 ) {
   const BlpControl ctl = blp_control(control);
   const int K_w = W.n_cols;
@@ -3916,9 +3951,35 @@ Rcpp::List mxl_blp_solve(
   check_rc_dist_length(rc_dist, K_w);
   const bool generate = gen_seed >= 0;
   if (generate) mxl_pred_check_generate(gen_S, K_w, gen_scramble);
+  // With Ti the draws are the estimation's: a cube of one slice per decision
+  // maker, or HaltonGen's blocks (scramble 0 or 1); the store-mode points
+  // formed through R's qnorm() equal the cube's only where randtoolbox and
+  // choicer contract alike, so they are refused, as the estimation kernels
+  // refuse them
+  if (Ti.isNotNull() && generate && gen_scramble == MXL_STORE_POINTS) {
+    Rcpp::stop("gen_scramble must be 0 or 1 with Ti (the estimation's draws); "
+               "got %d.", gen_scramble);
+  }
+  // A panel's decision makers (Ti): each situation's, before the cube's
+  // dimensions are checked against their number
+  std::vector<mxl_off> unit_of;
+  mxl_off n_units = -1;
+  {
+    const std::vector<mxl_off> off = mxl_unit_offsets(Ti, M.size());
+    if (!off.empty()) {
+      n_units = static_cast<mxl_off>(off.size()) - 1;
+      unit_of.resize(static_cast<std::size_t>(M.size()));
+      for (mxl_off u = 0; u < n_units; ++u) {
+        for (mxl_off t = off[u]; t < off[u + 1]; ++t) unit_of[t] = u;
+      }
+    }
+  }
   MxlPredData pd(X, W, rc_dist);
   mxl_pred_layout(pd, alt_idx, M, eta_draws, !generate, /*use_asc=*/false,
-                  arma::vec(), &weights);
+                  arma::vec(), &weights, n_units);
+  // (pd is neither copied nor moved, and mxl_pred_setup() leaves the map)
+  pd.unit_of.swap(unit_of);
+  if (!pd.unit_of.empty()) pd.draws.unit = pd.unit_of.data();
 
   // Build L matrix
   arma::mat L = build_L_mat(L_params, K_w, rc_correlation);
@@ -4008,12 +4069,13 @@ Rcpp::List mxl_blp_solve(
     const double gamma_bytes = pd.gamma_cache
         ? sizeof(double) * static_cast<double>(K_w) * pd.S * static_cast<double>(pd.lay.N)
         : 0.0;
-    // (the call holds the designs, the base utilities, and Gamma or the cube)
+    // (the call holds the designs, the base utilities, Gamma or the cube, and
+    // a panel's situation-to-unit map)
     const double held =
         sizeof(double) * (static_cast<double>(X.n_elem) + static_cast<double>(W.n_elem) +
                           static_cast<double>(pd.lay.n_rows) +
                           (pd.draws.generate ? 0.0 : static_cast<double>(eta_draws.n_elem))) +
-        gamma_bytes;
+        sizeof(mxl_off) * static_cast<double>(pd.unit_of.size()) + gamma_bytes;
     // (control's cache_bytes, Inf unless a test sets it, caps it too)
     const double room = cache_bytes - gamma_bytes;
     const double budget = !(room > 0) || !(ctl.cache_bytes > 0) ? 0.0

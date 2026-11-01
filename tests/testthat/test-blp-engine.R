@@ -299,6 +299,103 @@ test_that("draws formed on the fly give the cube's inversion, store and generate
   expect_equal(as.numeric(est), ds, tolerance = 1e-9)
 })
 
+test_that("with Ti each situation integrates over its decision maker's draws", {
+  set_omp_threads(1L)
+  on.exit(set_omp_threads(2L), add = TRUE)
+  d <- eng_design(1007L, 90L, 5L, 4L, Kw = 2L)
+  Ti <- c(rep(1L, 10L), rep(2L, 10L), rep(3L, 10L), rep(4L, 7L), 2L)
+  U <- length(Ti)
+  unit <- rep(seq_len(U), Ti)
+  S <- 12L
+  Lp <- c(log(0.8), log(0.6))
+  ds <- c(0, 0.4, -0.3, 0.2, -0.1)
+  solve_u <- function(target, cube, Ti = NULL, ioo = FALSE, gen = c(-1L, 1L, 0L),
+                      cache = 0, pass = "log") {
+    choicer:::mxl_blp_solve(
+      delta = rep(0, 5L), target_shares = target, X = d$X, W = d$W, beta = eng_beta,
+      mu = c(0, 0), L_params = Lp, alt_idx = d$alt, M = d$M, weights = d$w,
+      eta_draws = cube, rc_dist = c(0L, 0L), rc_correlation = FALSE, rc_mean = FALSE,
+      include_outside_option = ioo,
+      control = eng_ctl(1e-12, 1000L, method = "anderson", pass = pass),
+      gen_seed = gen[1L], gen_scramble = gen[2L], gen_S = gen[3L], cache_bytes = cache,
+      Ti = Ti)
+  }
+  shares_t <- function(cube, ioo) {
+    th <- c(eng_beta, Lp, if (ioo) ds else (ds - ds[1L])[-1L])
+    as.numeric(choicer:::mxl_predict_shares(th, d$X, d$W, d$alt, d$M, d$w, cube,
+                                            c(0L, 0L), FALSE, FALSE, TRUE, ioo))
+  }
+  N <- length(d$M)
+  # Store mode: a cube of one block per decision maker against the same
+  # blocks repeated per situation, which the prediction kernels read; the
+  # exp-space pass from exponentials kept for every situation
+  cube_u <- get_halton_normals(S, U, 2L)
+  cube_t <- cube_u[, , unit, drop = FALSE]
+  for (ioo in c(FALSE, TRUE)) {
+    target <- shares_t(cube_t, ioo)
+    for (pass in c("log", "exp")) {
+      cache <- if (pass == "exp") Inf else 0
+      a <- solve_u(target, cube_u, Ti = Ti, ioo = ioo, pass = pass, cache = cache)
+      b <- solve_u(target, cube_t, ioo = ioo, pass = pass, cache = cache)
+      what <- paste("store", ioo, pass)
+      expect_identical(a$delta, b$delta, label = what)
+      expect_identical(a$evaluations, b$evaluations, label = what)
+      expect_equal(as.numeric(a$delta), ds, tolerance = 1e-9, label = what)
+      if (pass == "exp") {
+        expect_true(a$exp_kept, label = what)
+        expect_gt(a$exp_evals, 0)
+        expect_identical(a$exp_prefix, as.numeric(N))
+      }
+    }
+  }
+  # Generate mode: decision maker u's Halton block u + 1, the one the
+  # estimation kernels form (HaltonGen::fill_eta_i(u + 1)), with and without
+  # the Gamma cache, which then holds each decision maker's Gamma once per
+  # situation and is read on every pass after the first, the exp-space
+  # cache's prefix aside
+  seed <- 17L
+  cube_g <- array(choicer:::halton_generate_normal(S, U, 2L, seed, 1L),
+                  c(2L, S, U))[, , unit, drop = FALSE]
+  empty <- array(0, c(2L, 0L, 0L))
+  for (ioo in c(FALSE, TRUE)) {
+    target <- shares_t(cube_g, ioo)
+    ref <- solve_u(target, cube_g, ioo = ioo)
+    for (cache in c(0, Inf)) {
+      g <- solve_u(target, empty, Ti = Ti, ioo = ioo, gen = c(seed, 1L, S), cache = cache)
+      what <- paste("generate", ioo, cache)
+      expect_identical(g$delta, ref$delta, label = what)
+      expect_identical(g$kept, is.infinite(cache), label = what)
+      if (g$kept) expect_identical(g$reads, N * (g$passes - 1))
+    }
+    e <- solve_u(target, empty, Ti = Ti, ioo = ioo, gen = c(seed, 1L, S), cache = Inf,
+                 pass = "exp")
+    expect_true(e$kept && e$exp_kept)
+    expect_identical(e$reads + e$exp_reads, N * (e$passes - 1))
+    expect_equal(as.numeric(e$delta), as.numeric(ref$delta), tolerance = 1e-9)
+  }
+  # One situation per decision maker is the cross-section
+  target <- shares_t(cube_g, FALSE)
+  one <- solve_u(target, cube_g, Ti = rep(1L, N))
+  expect_identical(one$delta, solve_u(target, cube_g)$delta)
+  # A cube of another size; a Ti that does not cover the situations, is
+  # empty or holds NA; R's qnorm() points (the prediction kernels' store
+  # mode), which equal the estimation's cube only where randtoolbox and
+  # choicer contract alike
+  expect_error(solve_u(target, cube_g, Ti = Ti),
+               "does not match the number of decision makers (38)", fixed = TRUE)
+  expect_error(solve_u(target, cube_u, Ti = c(Ti, 1L)),
+               "sum(Ti) (91) does not match the number of choice situations (90)",
+               fixed = TRUE)
+  expect_error(solve_u(target, cube_u, Ti = replace(Ti, 3L, 0L)),
+               "Ti must be positive for every respondent (Ti[3] = 0)", fixed = TRUE)
+  expect_error(solve_u(target, cube_u, Ti = replace(Ti, 3L, NA)),
+               "Ti must be positive for every respondent (Ti[3] = NA)", fixed = TRUE)
+  expect_error(solve_u(target, cube_u, Ti = integer(0)),
+               "Ti must contain at least one respondent", fixed = TRUE)
+  expect_error(solve_u(target, empty, Ti = Ti, gen = c(0L, 2L, S)),
+               "gen_scramble must be 0 or 1 with Ti", fixed = TRUE)
+})
+
 test_that("the nested logit converges where Berry's contraction does not", {
   d <- eng_design(1005L, 300L, 9L, 9L)
   nest <- rep(1:3, each = 3L)
