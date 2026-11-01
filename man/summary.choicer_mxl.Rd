@@ -4,7 +4,7 @@
 \alias{summary.choicer_mxl}
 \title{Summary for mixed logit model}
 \usage{
-\method{summary}{choicer_mxl}(object, gof = TRUE, ...)
+\method{summary}{choicer_mxl}(object, gof = TRUE, print_asc = 20L, ...)
 }
 \arguments{
 \item{object}{A choicer_mxl object.}
@@ -12,6 +12,20 @@
 \item{gof}{Logical; compute goodness-of-fit measures (McFadden R-squared,
 hit rate) for the summary footer. Involves an in-sample prediction pass
 (for mixed logit, a full simulation over draws); set to FALSE to skip.}
+
+\item{print_asc}{Which alternative-specific constants (ASCs) to print:
+a non-negative integer scalar prints the first that many (default \code{20L});
+\code{TRUE} prints all and \code{FALSE} prints none. A character vector selects
+alternative labels (not coefficient names); a numeric vector of length
+greater than one selects integer row positions in the full coefficient
+table, including non-ASC rows when counting positions. Every selected
+position must be an ASC row. Whole numbers such as \code{10} are accepted.
+Empty character or integer vectors select none; duplicates are ignored.
+Rows retain their table order, and all non-ASC rows are printed.
+Only printing is limited: the returned object retains every row.
+A notice reports the numbers shown and hidden when ASCs are omitted.
+For hierarchical Bayes summaries, selection refers to the quality ladder
+(\code{delta} and \code{xi}), whose row positions start at one.}
 
 \item{...}{Additional arguments (ignored).}
 }

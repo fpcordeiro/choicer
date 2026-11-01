@@ -19,6 +19,8 @@ model_display_name <- function(model) {
 #' Print a choicer_fit object
 #'
 #' Prints a brief summary of the fitted model.
+#' Coefficient rows are displayed by `summary(x, print_asc = )`; see
+#' [summary.choicer_mnl()] for ASC display selection.
 #'
 #' @param x A choicer_fit object.
 #' @param ... Additional arguments (ignored).
@@ -378,6 +380,19 @@ build_coef_table <- function(estimates, se, param_names) {
 #' @param gof Logical; compute goodness-of-fit measures (McFadden R-squared,
 #'   hit rate) for the summary footer. Involves an in-sample prediction pass
 #'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
+#' @param print_asc Which alternative-specific constants (ASCs) to print:
+#'   a non-negative integer scalar prints the first that many (default `20L`);
+#'   `TRUE` prints all and `FALSE` prints none. A character vector selects
+#'   alternative labels (not coefficient names); a numeric vector of length
+#'   greater than one selects integer row positions in the full coefficient
+#'   table, including non-ASC rows when counting positions. Every selected
+#'   position must be an ASC row. Whole numbers such as `10` are accepted.
+#'   Empty character or integer vectors select none; duplicates are ignored.
+#'   Rows retain their table order, and all non-ASC rows are printed.
+#'   Only printing is limited: the returned object retains every row.
+#'   A notice reports the numbers shown and hidden when ASCs are omitted.
+#'   For hierarchical Bayes summaries, selection refers to the quality ladder
+#'   (`delta` and `xi`), whose row positions start at one.
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mnl object (list with coefficients table and
 #'   metadata, including a `gof` element with goodness-of-fit measures from
@@ -393,10 +408,13 @@ build_coef_table <- function(estimates, se, param_names) {
 #' dt[, choice := 0L]
 #' dt[, choice := sample(c(1L, rep(0L, J - 1))), by = id]
 #' fit <- run_mnlogit(dt, "id", "alt", "choice", c("x1", "x2"))
-#' summary(fit)
+#' summary(fit, print_asc = 1L)
+#' print(summary(fit), print_asc = TRUE)
 #' }
 #' @export
-summary.choicer_mnl <- function(object, gof = TRUE, ...) {
+summary.choicer_mnl <- function(object, gof = TRUE, print_asc = 20L, ...) {
+  asc <- .fit_asc_rows(object)
+  .select_asc_rows(length(object$coefficients), asc, print_asc)
   object <- ensure_vcov(object)
 
   coef_table <- build_coef_table(
@@ -407,6 +425,8 @@ summary.choicer_mnl <- function(object, gof = TRUE, ...) {
 
   out <- structure(
     list(
+      asc = asc,
+      print_asc = print_asc,
       model = object$model,
       coefficients = coef_table,
       loglik = object$loglik,
@@ -431,6 +451,8 @@ summary.choicer_mnl <- function(object, gof = TRUE, ...) {
 
 #' Print summary for multinomial logit model
 #' @param x A summary.choicer_mnl object.
+#' @inheritParams summary.choicer_mnl
+#' @details `print_asc` defaults to the selection stored by `summary()`.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
 #' @examples
@@ -446,9 +468,11 @@ summary.choicer_mnl <- function(object, gof = TRUE, ...) {
 #' print(summary(fit))
 #' }
 #' @export
-print.summary.choicer_mnl <- function(x, ...) {
+print.summary.choicer_mnl <- function(x, print_asc = x$print_asc %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
   cat(model_display_name(x$model), "model\n\n")
-  print_coef_table(x$coefficients)
+  print_coef_table(x$coefficients[selection$rows, , drop = FALSE])
+  .print_asc_note(selection)
   cat("\n")
   print_se_weighting(x)
   print_footer(x)
@@ -467,6 +491,7 @@ print.summary.choicer_mnl <- function(x, ...) {
 #' @param gof Logical; compute goodness-of-fit measures (McFadden R-squared,
 #'   hit rate) for the summary footer. Involves an in-sample prediction pass
 #'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
+#' @inheritParams summary.choicer_mnl
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mxl object (includes a `gof` element with
 #'   goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
@@ -487,7 +512,9 @@ print.summary.choicer_mnl <- function(x, ...) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_mxl <- function(object, gof = TRUE, ...) {
+summary.choicer_mxl <- function(object, gof = TRUE, print_asc = 20L, ...) {
+  asc <- .fit_asc_rows(object)
+  .select_asc_rows(length(object$coefficients), asc, print_asc)
   object <- ensure_vcov(object)
 
   est <- object$coefficients
@@ -524,6 +551,8 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
 
   out <- structure(
     list(
+      asc = asc,
+      print_asc = print_asc,
       model = object$model,
       coefficients = coef_table,
       loglik = object$loglik,
@@ -550,6 +579,8 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
 
 #' Print summary for mixed logit model
 #' @param x A summary.choicer_mxl object.
+#' @inheritParams summary.choicer_mnl
+#' @details `print_asc` defaults to the selection stored by `summary()`.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
 #' @examples
@@ -568,9 +599,11 @@ summary.choicer_mxl <- function(object, gof = TRUE, ...) {
 #' print(summary(fit))
 #' }
 #' @export
-print.summary.choicer_mxl <- function(x, ...) {
+print.summary.choicer_mxl <- function(x, print_asc = x$print_asc %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
   cat(model_display_name(x$model), "model\n\n")
-  print_coef_table(x$coefficients)
+  print_coef_table(x$coefficients[selection$rows, , drop = FALSE])
+  .print_asc_note(selection)
   cat("\n")
   if (!is.null(x$sigma)) {
     cat("Random coefficient covariance (Sigma):\n")
@@ -592,6 +625,7 @@ print.summary.choicer_mxl <- function(x, ...) {
 #' @param gof Logical; compute goodness-of-fit measures (McFadden R-squared,
 #'   hit rate) for the summary footer. Involves an in-sample prediction pass
 #'   (for mixed logit, a full simulation over draws); set to FALSE to skip.
+#' @inheritParams summary.choicer_mnl
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_nl object (includes a `gof` element with
 #'   goodness-of-fit measures from \code{\link{gof}}; its fields are NA when
@@ -613,7 +647,9 @@ print.summary.choicer_mxl <- function(x, ...) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_nl <- function(object, gof = TRUE, ...) {
+summary.choicer_nl <- function(object, gof = TRUE, print_asc = 20L, ...) {
+  asc <- .fit_asc_rows(object)
+  .select_asc_rows(length(object$coefficients), asc, print_asc)
   object <- ensure_vcov(object)
 
   coef_table <- build_coef_table(
@@ -624,6 +660,8 @@ summary.choicer_nl <- function(object, gof = TRUE, ...) {
 
   out <- structure(
     list(
+      asc = asc,
+      print_asc = print_asc,
       model = object$model,
       coefficients = coef_table,
       loglik = object$loglik,
@@ -648,6 +686,8 @@ summary.choicer_nl <- function(object, gof = TRUE, ...) {
 
 #' Print summary for nested logit model
 #' @param x A summary.choicer_nl object.
+#' @inheritParams summary.choicer_mnl
+#' @details `print_asc` defaults to the selection stored by `summary()`.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
 #' @examples
@@ -667,9 +707,11 @@ summary.choicer_nl <- function(object, gof = TRUE, ...) {
 #' print(summary(fit))
 #' }
 #' @export
-print.summary.choicer_nl <- function(x, ...) {
+print.summary.choicer_nl <- function(x, print_asc = x$print_asc %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
   cat(model_display_name(x$model), "model\n\n")
-  print_coef_table(x$coefficients)
+  print_coef_table(x$coefficients[selection$rows, , drop = FALSE])
+  .print_asc_note(selection)
   cat("\n")
   print_se_weighting(x)
   print_footer(x)
@@ -685,6 +727,8 @@ print.summary.choicer_nl <- function(x, ...) {
 #' Print a choicer_mnp object
 #'
 #' Prints a brief summary of the fitted Bayesian multinomial probit model.
+#' Coefficient rows are displayed by `summary(x, print_asc = )`; see
+#' [summary.choicer_mnp()] for ASC display selection.
 #'
 #' @param x A choicer_mnp object.
 #' @param ... Additional arguments (ignored).
@@ -817,6 +861,7 @@ build_bayes_coef_table <- function(draws, prob = 0.95) {
 #' @param object A choicer_mnp object.
 #' @param prob Probability mass of the equal-tailed credible interval
 #'   (default 0.95).
+#' @inheritParams summary.choicer_mnl
 #' @param ... Additional arguments (ignored).
 #' @returns A summary.choicer_mnp object (list with coefficient and Sigma
 #'   posterior tables plus metadata).
@@ -834,13 +879,17 @@ build_bayes_coef_table <- function(draws, prob = 0.95) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_mnp <- function(object, prob = 0.95, ...) {
+summary.choicer_mnp <- function(object, prob = 0.95, print_asc = 20L, ...) {
+  asc <- .fit_asc_rows(object)
+  .select_asc_rows(length(object$coefficients), asc, print_asc)
   if (!is.numeric(prob) || length(prob) != 1L || prob <= 0 || prob >= 1) {
     stop("prob must be a single number in (0, 1).")
   }
 
   structure(
     list(
+      asc = asc,
+      print_asc = print_asc,
       model = object$model,
       coefficients = build_bayes_coef_table(object$draws$beta, prob),
       sigma_table = build_bayes_coef_table(object$draws$sigma, prob),
@@ -885,6 +934,8 @@ print_bayes_coef_table <- function(coef_table, prob) {
 
 #' Print summary for Bayesian multinomial probit model
 #' @param x A summary.choicer_mnp object.
+#' @inheritParams summary.choicer_mnl
+#' @details `print_asc` defaults to the selection stored by `summary()`.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
 #' @examples
@@ -901,9 +952,11 @@ print_bayes_coef_table <- function(coef_table, prob) {
 #' print(summary(fit))
 #' }
 #' @export
-print.summary.choicer_mnp <- function(x, ...) {
+print.summary.choicer_mnp <- function(x, print_asc = x$print_asc %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x$coefficients), x$asc, print_asc)
   cat(model_display_name(x$model), "model\n\n")
-  print_bayes_coef_table(x$coefficients, x$prob)
+  print_bayes_coef_table(x$coefficients[selection$rows, , drop = FALSE], x$prob)
+  .print_asc_note(selection)
   cat("\n")
   cat("Covariance of utility differences (Sigma, identified scale):\n")
   print_bayes_coef_table(x$sigma_table, x$prob)
@@ -2086,6 +2139,7 @@ print.choicer_hb <- function(x, ...) {
 #' @param object A `choicer_hmnl` or `choicer_hmnp` object.
 #' @param prob Probability mass of the equal-tailed credible interval
 #'   (default 0.95).
+#' @inheritParams summary.choicer_mnl
 #' @param ... Additional arguments (ignored).
 #' @returns A `summary.choicer_hb` object.
 #' @examples
@@ -2097,12 +2151,16 @@ print.choicer_hb <- function(x, ...) {
 #' summary(fit)
 #' }
 #' @export
-summary.choicer_hb <- function(object, prob = 0.95, ...) {
+summary.choicer_hb <- function(object, prob = 0.95, print_asc = 20L, ...) {
+  asc <- .fit_asc_rows(object)
+  .select_asc_rows(nrow(object$delta), asc, print_asc)
   if (!is.numeric(prob) || length(prob) != 1L || prob <= 0 || prob >= 1) {
     stop("prob must be a single number in (0, 1).")
   }
   structure(
     list(
+      asc = asc,
+      print_asc = print_asc,
       model = object$model,
       coefficients = build_bayes_coef_table(object$draws$b, prob),
       theta_table = build_bayes_coef_table(object$draws$theta, prob),
@@ -2134,10 +2192,13 @@ summary.choicer_hb <- function(object, prob = 0.95, ...) {
 #' Print the summary of a hierarchical Bayes fit
 #'
 #' @param x A `summary.choicer_hb` object.
+#' @inheritParams summary.choicer_mnl
+#' @details `print_asc` defaults to the selection stored by `summary()`.
 #' @param ... Additional arguments (ignored).
 #' @returns The object invisibly.
 #' @export
-print.summary.choicer_hb <- function(x, ...) {
+print.summary.choicer_hb <- function(x, print_asc = x$print_asc %||% 20L, ...) {
+  selection <- .select_asc_rows(nrow(x$delta), x$asc, print_asc)
   cat(model_display_name(x$model), "model\n\n")
   cat("Population coefficients b (posterior):\n")
   print_bayes_coef_table(x$coefficients, x$prob)
@@ -2158,7 +2219,9 @@ print.summary.choicer_hb <- function(x, ...) {
     xi_mean = round(x$xi$mean, 4),
     xi_sd = round(x$xi$sd, 4)
   )
-  print(ladder, row.names = FALSE)
+  print(ladder[selection$rows, , drop = FALSE], row.names = FALSE,
+        max = nrow(ladder) * ncol(ladder))
+  .print_asc_note(selection)
   cat(sprintf("\nConvergence diagnostics (%d chain%s, %d draws each)\n",
               x$diagnostic_table$chains,
               if (x$diagnostic_table$chains == 1) "" else "s",

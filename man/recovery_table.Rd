@@ -8,15 +8,15 @@
 \alias{recovery_table.choicer_hb}
 \title{Parameter recovery table}
 \usage{
-recovery_table(object, truth = NULL, level = 0.95, ...)
+recovery_table(object, truth = NULL, level = 0.95, print_asc = 20L, ...)
 
-\method{recovery_table}{choicer_fit}(object, truth = NULL, level = 0.95, ...)
+\method{recovery_table}{choicer_fit}(object, truth = NULL, level = 0.95, print_asc = 20L, ...)
 
-\method{recovery_table}{choicer_mnp}(object, truth = NULL, level = 0.95, ...)
+\method{recovery_table}{choicer_mnp}(object, truth = NULL, level = 0.95, print_asc = 20L, ...)
 
-\method{recovery_table}{choicer_mc}(object, truth = NULL, level = 0.95, ...)
+\method{recovery_table}{choicer_mc}(object, truth = NULL, level = 0.95, print_asc = 20L, ...)
 
-\method{recovery_table}{choicer_hb}(object, truth = NULL, level = 0.95, ...)
+\method{recovery_table}{choicer_hb}(object, truth = NULL, level = 0.95, print_asc = 20L, ...)
 }
 \arguments{
 \item{object}{A \code{choicer_fit} object (MNL, MXL, or NL) or a \code{choicer_mc}
@@ -27,6 +27,20 @@ used) or a named list of true parameter values.}
 
 \item{level}{Confidence level for the Wald CI and coverage indicator.
 Default \code{0.95}.}
+
+\item{print_asc}{Which alternative-specific constants (ASCs) to print:
+a non-negative integer scalar prints the first that many (default \code{20L});
+\code{TRUE} prints all and \code{FALSE} prints none. A character vector selects
+alternative labels (not coefficient names); a numeric vector of length
+greater than one selects integer row positions in the full coefficient
+table, including non-ASC rows when counting positions. Every selected
+position must be an ASC row. Whole numbers such as \code{10} are accepted.
+Empty character or integer vectors select none; duplicates are ignored.
+Rows retain their table order, and all non-ASC rows are printed.
+Only printing is limited: the returned object retains every row.
+A notice reports the numbers shown and hidden when ASCs are omitted.
+For hierarchical Bayes summaries, selection refers to the quality ladder
+(\code{delta} and \code{xi}), whose row positions start at one.}
 
 \item{...}{Unused.}
 }
@@ -51,6 +65,11 @@ When the estimator has normalized the first inside alternative's ASC to
 zero (which happens for MNL/MXL with \code{include_outside_option = FALSE} and
 no outside option baked into the fit), the first entry of \code{truth$delta} is
 dropped before the comparison so lengths match.
+
+For recovery tables, integer positions refer to the full returned
+table (including non-ASC rows). Hierarchical Bayes alternative effects
+are the \code{delta} block. \code{print(table, print_asc = ...)} overrides the
+selection stored by \code{recovery_table()}.
 }
 \section{Methods (by class)}{
 \itemize{
@@ -92,6 +111,6 @@ fit <- run_mnlogit(
   covariate_cols = c("x1", "x2"),
   outside_opt_label = 0L, include_outside_option = FALSE, use_asc = TRUE
 )
-recovery_table(fit, sim)
+recovery_table(fit, sim, print_asc = 2L)
 }
 }
