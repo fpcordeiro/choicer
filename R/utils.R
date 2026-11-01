@@ -949,6 +949,36 @@ label_matrix <- function(mat, alt_mapping) {
   msg
 }
 
+#' The alternative behind each constant of a fit
+#'
+#' Names the constants' positions in the coefficient vector (`param_map$asc`)
+#' by their alternatives' labels; for a hierarchical Bayes fit, the rows of
+#' the alternative effects. The constants follow the rows of `alt_mapping`
+#' after the reference's, the rule `.unbounded_constants()` reads, wherever
+#' there is one per row. The Bayesian probit can drop constants to
+#' collinearity; it names them `ASC_<label>`, and the constants it kept are
+#' matched by those names. A constant whose alternative cannot be resolved
+#' keeps an `NA` name, so that printing never fails on the map.
+#'
+#' @param object A `choicer_fit`, `choicer_mnp` or `choicer_hb` object.
+#' @returns Integer positions named by alternative label; empty without
+#'   constants.
+#' @noRd
+.fit_asc_rows <- function(object) {
+  if (inherits(object, "choicer_hb")) {
+    return(stats::setNames(seq_len(nrow(object$delta)),
+                           as.character(object$delta$alternative)))
+  }
+  asc <- object$param_map$asc %||% integer()
+  am <- object$alt_mapping
+  labels <- if (length(am) >= 2L) as.character(am[[2L]])[-1L] else character()
+  if (length(labels) != length(asc)) {
+    labels <- labels[match(names(object$coefficients)[asc],
+                           paste0("ASC_", labels))]
+  }
+  stats::setNames(asc, labels)
+}
+
 #' Signal a warning condition at once
 #'
 #' `warning()` prints a condition object only when the top-level call returns
