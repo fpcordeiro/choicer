@@ -527,10 +527,13 @@ mxl_probs <- function(d, par, eta) {
 # --- Choices ---------------------------------------------------------------------
 
 # One choice per situation by inverse CDF, one uniform per situation (the
-# outside option first, then the rows in order). Returns `chosen` (the chosen
-# row per situation, 0 for the outside option) and `choice` (0/1 per row).
-draw_choice <- function(P_inside, P_outside = NULL, sit, seed = NULL) {
+# outside option first, then the rows in order): `u` when given (drawn by
+# the caller), else runif(N) under `seed`. Returns `chosen` (the chosen row
+# per situation, 0 for the outside option) and `choice` (0/1 per row).
+draw_choice <- function(P_inside, P_outside = NULL, sit, seed = NULL, u = NULL) {
   N <- .n_sit(sit)
+  if (!is.null(u) && !is.null(seed)) stop("Give `seed` or `u`, not both.", call. = FALSE)
+  if (!is.null(u) && length(u) != N) stop("`u` needs one uniform per situation.", call. = FALSE)
   M <- tabulate(sit, N)
   start <- cumsum(c(1L, M[-N]))
   p0 <- if (is.null(P_outside)) numeric(N) else P_outside
@@ -548,7 +551,7 @@ draw_choice <- function(P_inside, P_outside = NULL, sit, seed = NULL) {
   }
   total <- p0 + cum[start + M - 1L]
   if (any(!(total > 0))) stop("A situation has no positive probability.", call. = FALSE)
-  thr <- .with_seed(seed, stats::runif(N)) * total - p0
+  thr <- (if (is.null(u)) .with_seed(seed, stats::runif(N)) else u) * total - p0
   k <- pmin(tabulate(sit[cum <= thr[sit]], N) + 1L, last)
   chosen <- ifelse(thr < 0, 0L, start + k - 1L)
   choice <- integer(length(sit))
