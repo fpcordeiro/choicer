@@ -1,5 +1,5 @@
 
-# choicer: fast discrete-choice models with a focus on economic applications
+# choicer: fast discrete-choice models for economic applications
 
 <!-- badges: start -->
 [![CRAN version](https://www.r-pkg.org/badges/version/choicer)](https://CRAN.R-project.org/package=choicer)
@@ -8,7 +8,8 @@
 [![R-CMD-check](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/fpcordeiro/choicer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-`choicer` provides fast discrete-choice estimation for applied economics. Multinomial Logit (MNL), Mixed Logit (MXL), and Nested Logit (NL) use C++ likelihoods, analytical gradients and
+`choicer` provides fast discrete-choice models for economic applications.
+Multinomial Logit (MNL), Mixed Logit (MXL), and Nested Logit (NL) use C++ likelihoods, analytical gradients and
 Hessians, and OpenMP parallelism. Bayesian Multinomial Probit (MNP), Hierarchical Multinomial Logit (HMNL), and Hierarchical Multinomial Probit (HMNP) use dedicated C++ MCMC
 kernels and posterior diagnostics. A common research interface covers fitted
 shares, elasticities, diversion, willingness to pay, welfare, counterfactuals,
@@ -50,18 +51,6 @@ fit <- run_mnlogit(
 )
 
 summary(fit)
-```
-
-`mode_choice` is a **choice-based sample**: minority modes were over-sampled and
-car was under-sampled. With the full set of ASCs used here, the MNL slope
-coefficients—and therefore the WTP ratios—remain consistent, but the unweighted
-constants, fitted shares, elasticity levels, and surplus levels reflect the
-sampling design rather than the population. The following outputs demonstrate
-the workflow; do not report them as population mode shares or
-population-average welfare without
-external population shares and WESML weights (see `vignette("wesml")`).
-
-``` r
 
 # Post-estimation
 predict(fit, type = "shares")           # fitted sample shares, not population shares
@@ -80,6 +69,13 @@ cs0 <- consumer_surplus(fit, price_var = "vcost")
 cs1 <- consumer_surplus(fit, price_var = "vcost", newdata = mc_cf)
 cs1$mean_cs - cs0$mean_cs
 ```
+
+Note `mode_choice` is a **choice-based sample**: minority modes were over-sampled and
+car was under-sampled. With the full set of ASCs used here, the MNL slope
+coefficients—and therefore the WTP ratios—remain consistent, but the unweighted
+constants, fitted shares, elasticity levels, and surplus levels reflect the
+sampling design rather than the population.
+WESML weights can correct for this sampling design when external population shares are available (see `vignette("wesml")`).
 
 The same post-estimation toolkit is available for nested logit. Elasticities
 respect the nest structure — within-nest and cross-nest cross-elasticities
@@ -104,13 +100,20 @@ fit_nl <- run_nestlogit(
     keep_data              = TRUE   # required for post-estimation
 )
 
+summary(fit_nl)
+
 # Post-estimation
 predict(fit_nl, type = "shares")        # aggregate fitted shares in this simulation
 elasticities(fit_nl, elast_var = "X")   # J×J elasticity matrix (nest-consistent)
 diversion_ratios(fit_nl)                # J×J diversion matrix
-# BLP share inversion: recover mean utilities matching target shares
+
+# BLP share inversion: recover the fitted constants from a zero starting point
 target_shares <- predict(fit_nl, type = "shares")
-blp(fit_nl, target_shares)
+blp(
+    fit_nl,
+    target_shares,
+    delta_init = rep(0, length(target_shares) - 1L) # inside alternatives
+)
 ```
 
 `choicer` also fits hierarchical Bayesian models with a BLP-style random-effect
@@ -123,9 +126,9 @@ characteristics (see `vignette("hb", package = "choicer")`):
 
 ``` r
 # Hierarchical Bayesian MNL — simulate panel data and fit
-sim_hb <- simulate_hmnl_data(N = 300, T = 6, J = 4, seed = 123)
+sim_hb <- simulate_hmnl_data(N = 250, T = 6, J = 6, seed = 42)
 
-set.seed(42)
+set.seed(99)
 fit_hmnl <- run_hmnlogit(
     data               = sim_hb$data,
     id_col             = "task",
@@ -135,29 +138,23 @@ fit_hmnl <- run_hmnlogit(
     person_col         = "pid",
     alt_covariate_cols = "z1",
     chains             = 2,
-    mcmc               = list(R = 4000, burn = 1000, thin = 2)
+    mcmc               = list(R = 24000, burn = 4000, thin = 8)
 )
 
 summary(fit_hmnl)
-
-# Posterior-aware post-estimation (x2 is the price-like attribute in this DGP)
-wtp(fit_hmnl, price_var = "x2")               # posterior median + quantile interval
-consumer_surplus(fit_hmnl, price_var = "x2")  # posterior-median CS by task
 
 # Multi-chain diagnostics and posterior-predictive fit
 b_chains <- lapply(fit_hmnl$chains, function(ch) ch$b)
 rhat(b_chains, rank = TRUE)
 ess(b_chains)
 mcse(b_chains)
+traceplot(fit_hmnl, block = "delta")
 ppc_shares(fit_hmnl)
-```
 
-For serious posterior work, use multiple chains, inspect rank-normalized R-hat,
-bulk/tail ESS, MCSE and trace plots for all reported blocks, and increase the run
-length until the slowest block is stable. choicer's chains use distinct seeds but
-the same data-driven initialization, so they are not deliberately overdispersed;
-a one-chain split diagnostic is weaker still because it cannot reveal disagreement
-between separately simulated runs.
+# Posterior-aware post-estimation (x2 is the price-like attribute in this DGP)
+wtp(fit_hmnl, price_var = "x2")               # posterior median + quantile interval
+consumer_surplus(fit_hmnl, price_var = "x2")  # posterior-median CS by task
+```
 
 For HMNL/HMNP, choicer retains every chain in `fit$chains` for diagnostics but
 uses chain 1 for the top-level posterior summaries and post-estimation methods;
@@ -211,6 +208,10 @@ carry no posterior uncertainty, only a simulated conditional mean and SD at
 supported only for the cross-sectional likelihood — a panel fit
 (`person_col`) rejects it, since a choice-based weight varies with the
 alternative a person chose, which can differ across their situations.
+
+## Development
+
+`choicer` began as a small set of C++ logit estimators I wrote for my research. It has since grown into a broader R package, bringing together features I find useful and emphasizing computational efficiency in applications with many alternatives and choice situations. Current development makes substantial use of AI coding agents from Anthropic and OpenAI in software design and implementation under my direction. I take responsibility for the package's code, direction, and validation. Validation includes unit tests, numerical derivative checks, Monte Carlo simulations, and comparisons against established implementations.
 
 ## Alternative packages
 
