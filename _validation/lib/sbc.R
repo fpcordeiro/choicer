@@ -3,8 +3,9 @@
 # y | theta, and L posterior draws are taken given y, the rank of any f(theta)
 # among the draws' f is uniform on 0..L (Cook, Gelman & Rubin 2006; Talts et
 # al. 2018; Modrák et al. 2023). Definitions only. The test half (ranks, the
-# ECDF test and its plot) comes first; the loop half (prior draws, thinning,
-# the per-rep SBC loop) follows it.
+# ECDF test and its plot) comes first; the loop half (thinning, ESS and each
+# replication's diag$sbc) follows it. The prior draws are the DGPs'
+# (lib/dgp_bayes.R).
 # ============================================================================
 
 # --- SBC: ranks and the uniformity test -------------------------------------
@@ -184,4 +185,64 @@ sbc_ecdf_plot <- function(ranks, L, test = NULL, main = "") {
   invisible(test)
 }
 
-# --- SBC: prior draws, thinning and the per-rep loop (WP8) ------------------
+# --- SBC: thinning, ESS and each replication's record (WP8) -----------------
+
+# A replication of SBC is one unit of the runner (run_unit()): the family's
+# simulate() draws the truth from the prior and the data given it (F9:
+# db_simulate(prior = ), lib/dgp_bayes.R), and its method runs the sampler
+# with the same prior and passes the chain to sbc_diag(), whose result is
+# the record's diag$sbc (metrics_cell()'s sbc_ecdf rows, report.R's plots).
+
+# The indices of L draws equally spaced over a chain of n kept draws, the
+# last included: floor(l n / L), l = 1..L.
+sbc_thin_index <- function(n, L = 99L) {
+  if (n < L) stop("sbc_thin_index(): the chain holds ", n, " draws, fewer than L = ", L)
+  floor(seq_len(L) * n / L)
+}
+
+# The bulk effective sample size of each column of one chain's draws (n x
+# q), choicer::ess()'s rank-normalized estimate (Vehtari et al. 2021); NA for
+# a constant column.
+sbc_ess <- function(draws) {
+  draws <- as.matrix(draws)
+  stats::setNames(choicer::ess(draws)[, "bulk"], colnames(draws))
+}
+
+# One replication's diag$sbc from the truth (a named numeric: the
+# quantities) and one chain's kept draws (n x q, columns named as truth):
+# L draws equally spaced (sbc_thin_index()) and the rank of every quantity
+# among them (sbc_rank(); ties split by the caller's RNG); with `loglik` (the
+# log-likelihood at the truth), also the rank of the log-likelihood
+# (Modrák et al. 2023), `loglik_draws` holding it at every kept draw (length
+# n, then thinned like the draws) or at the L thinned draws. Plan §2: the
+# chain should hold an ESS of at least L for every quantity, so that the L
+# draws are nearly independent; a replication below `min_ess` is flagged,
+# not dropped. Returns list(L, ranks, ess (per quantity, the chain's; the
+# log-likelihood's when given at every draw), ess_min, flagged, n).
+sbc_diag <- function(truth, draws, L = 99L, loglik = NULL, loglik_draws = NULL, min_ess = L) {
+  draws <- as.matrix(draws)
+  q <- names(truth)
+  if (is.null(q) || !all(q %in% colnames(draws))) {
+    stop("sbc_diag(): `truth` must be named by columns of `draws`")
+  }
+  draws <- draws[, q, drop = FALSE]
+  n <- nrow(draws)
+  idx <- sbc_thin_index(n, L)
+  ess <- sbc_ess(draws)
+  ranks <- sbc_rank(unname(truth), draws[idx, , drop = FALSE])
+  names(ranks) <- q
+  if (!is.null(loglik)) {
+    ll <- as.numeric(loglik_draws)
+    if (length(ll) == n) {
+      ess <- c(ess, loglik = sbc_ess(cbind(loglik = ll))[[1]])
+      ll <- ll[idx]
+    } else if (length(ll) != L) {
+      stop("sbc_diag(): `loglik_draws` must hold the log-likelihood at the n = ", n,
+           " kept draws or at the L = ", L, " thinned ones")
+    }
+    ranks <- c(ranks, loglik = sbc_rank(loglik, ll))
+  }
+  ess_min <- suppressWarnings(min(ess, na.rm = TRUE))
+  list(L = as.integer(L), ranks = ranks, ess = ess, ess_min = ess_min,
+       flagged = !is.finite(ess_min) || ess_min < min_ess, n = n)
+}

@@ -424,6 +424,98 @@ check("(5'') gated rows carry the band rule's verdict beside the plan's (tables 
     any(grepl("^\\| metric \\| estimand \\| route \\| value \\| R \\| target \\| tol \\| p_holm \\| verdict \\| band \\|$", md))
 })
 
+check("(5''') a findings-only family (gates = NULL) renders its findings, no QQ or ladders", {
+  # A tree copy whose T0 has no gates and its own findings(records).
+  tree <- file.path(tmp, "tree_findings", "_validation")
+  dir.create(tree, recursive = TRUE)
+  file.copy(file.path(root, c("mc.R", "report.R", "lib")), tree, recursive = TRUE)
+  t0 <- file.path(tree, "lib", "families", "T0.R")
+  cat('\nfamily["gates"] <- list(NULL)',
+      'family$findings <- function(records) {',
+      '  d <- data.frame(cell = vapply(records, `[[`, "", "cell"),',
+      '                  method = vapply(records, `[[`, "", "method"),',
+      '                  ok = vapply(records, function(r) isTRUE(r$ok), logical(1)))',
+      '  x1 <- vapply(records, function(r) if (r$ok) r$est$est[r$est$name == "x1"] else NA, 1)',
+      '  list(reps = as.data.frame(table(cell = d$cell, method = d$method, ok = d$ok)),',
+      '       x1 = aggregate(list(mean_x1 = x1), d[c("cell", "method")], mean, na.rm = TRUE))',
+      '}\n', file = t0, append = TRUE, sep = "\n")
+  m <- run(file.path(tree, "mc.R"), "--family=T0", "--fixtures", "--reps=1:2", "--run=fo",
+           paste0("--out=", shQuote(tmp)))
+  rp <- run(file.path(tree, "report.R"), paste0("--run=", shQuote(file.path(tmp, "fo"))))
+  md <- readLines(file.path(tmp, "fo", "REPORT.md"))
+  reps <- utils::read.csv(file.path(tmp, "fo", "tables", "T0_findings_reps.csv"))
+  plots <- list.files(file.path(tmp, "fo", "plots"))
+  note(paste(grep("^### Findings|no gates|No gates", md, value = TRUE), collapse = "\n"))
+  note("plots: ", if (length(plots)) paste(plots, collapse = ", ") else "none")
+  m$status == 0L && rp$status == 0L &&
+    all(c("### Findings: reps", "### Findings: x1", "No gates: a findings-only family.") %in% md) &&
+    any(grepl("tier mc: no gates (a findings-only family)", md, fixed = TRUE)) &&
+    sum(reps$Freq) == 8L && file.exists(file.path(tmp, "fo", "tables", "T0_findings_x1.csv")) &&
+    !any(grepl("^T0_(qq|ladder)_", plots))
+})
+
+check("(5''') a findings() that errors is reported in its section and sets the exit status", {
+  t0 <- file.path(tmp, "tree_findings", "_validation", "lib", "families", "T0.R")
+  cat('family$findings <- function(records) stop("made-up findings error")\n', file = t0,
+      append = TRUE)
+  rp <- run(file.path(tmp, "tree_findings", "_validation", "report.R"),
+            paste0("--run=", shQuote(file.path(tmp, "fo"))))
+  md <- readLines(file.path(tmp, "fo", "REPORT.md"))
+  hits <- c(grep("^\\*\\*findings\\(T0\\) failed", md, value = TRUE),
+            grep("^- findings\\(T0\\): made-up findings error", md, value = TRUE))
+  note(paste(c(grep("findings", rp$out, value = TRUE), hits), collapse = "\n"))
+  rp$status == 1L && length(hits) == 2L
+})
+
+check("(5''') a findings() that returns list() (no usable rep yet) renders, exit 0", {
+  t0 <- file.path(tmp, "tree_findings", "_validation", "lib", "families", "T0.R")
+  cat('family$findings <- function(records) list()\n', file = t0, append = TRUE)
+  rp <- run(file.path(tmp, "tree_findings", "_validation", "report.R"),
+            paste0("--run=", shQuote(file.path(tmp, "fo"))))
+  md <- readLines(file.path(tmp, "fo", "REPORT.md"))
+  hit <- grep("no findings yet", md, value = TRUE)
+  note(hit)
+  rp$status == 0L && identical(hit, "findings(T0): no findings yet (no usable rep).") &&
+    !any(md == "## Report errors")
+})
+
+check("(5'''') pooled_groups(): the constants' coverage pooled by group, in the CSV and the report", {
+  # A tree copy whose T0 groups its two constants.
+  tree <- file.path(tmp, "tree_groups", "_validation")
+  dir.create(tree, recursive = TRUE)
+  file.copy(file.path(root, c("mc.R", "report.R", "lib")), tree, recursive = TRUE)
+  t0 <- file.path(tree, "lib", "families", "T0.R")
+  cat('\nfamily$pooled_groups <- function(records) c(ASC_2 = "low", ASC_3 = "high")\n', file = t0,
+      append = TRUE)
+  m <- run(file.path(tree, "mc.R"), "--family=T0", "--fixtures", "--reps=1:3", "--run=grp",
+           paste0("--out=", shQuote(tmp)))
+  rp <- run(file.path(tree, "report.R"), paste0("--run=", shQuote(file.path(tmp, "grp"))))
+  tab <- utils::read.csv(file.path(tmp, "grp", "tables", "T0_metrics.csv"))
+  p <- tab[startsWith(tab$metric, "pooled_"), ]
+  md <- readLines(file.path(tmp, "grp", "REPORT.md"))
+  rows <- grep("^\\| asc \\| pooled_coverage \\| (low|high) \\|", md, value = TRUE)
+  note(paste(utils::capture.output(print(p[p$cell == 800 & p$method == "ml",
+                                           c("metric", "estimand", "route", "value", "R")],
+                                         row.names = FALSE)), collapse = "\n"))
+  m$status == 0L && rp$status == 0L && all(p$block == "asc") &&
+    setequal(unique(p$estimand), c("low", "high")) &&
+    setequal(unique(paste(p$cell, p$method)), c("200 ml", "200 fail", "800 ml", "800 fail")) &&
+    all(table(p$metric) == 8L) && length(rows) == 8L
+})
+
+check("(5'''') a pooled_groups() that errors is a report error (exit 1)", {
+  t0 <- file.path(tmp, "tree_groups", "_validation", "lib", "families", "T0.R")
+  cat('family$pooled_groups <- function(records) stop("made-up groups error")\n', file = t0,
+      append = TRUE)
+  rp <- run(file.path(tmp, "tree_groups", "_validation", "report.R"),
+            paste0("--run=", shQuote(file.path(tmp, "grp"))))
+  md <- readLines(file.path(tmp, "grp", "REPORT.md"))
+  hits <- grep("^- pooled_groups\\(T0, (200|800), (ml|fail)\\): made-up groups error", md,
+               value = TRUE)
+  note(paste(hits, collapse = "\n"))
+  rp$status == 1L && length(hits) == 4L
+})
+
 # --- (6) quick.R's Q3 ---------------------------------------------------------------
 
 check("(6) quick.R --only=Q3:T0 --fixtures --workers=2 runs T0's mini Monte Carlo", {

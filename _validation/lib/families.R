@@ -137,8 +137,11 @@ load_family <- function(id, lib_env, dir = file.path(lib_env$.vs_lib, "families"
 #        simulate = function(cell, seed) list(data, truth, meta),
 #        estimands = function(fit, sim) data.frame,
 #        gates = list(cell = <cells, one or more> | list(<method> = <cells>),
-#                     metrics = <character> | list(<method> = <character>)),
-#        gates_quick = NULL | <as gates, cells among those of R$quick>)   optional
+#                     metrics = <character> | list(<method> = <character>))
+#                | NULL (a findings-only family, with `findings`),
+#        gates_quick = NULL | <as gates, cells among those of R$quick>,   optional
+#        findings = NULL | function(records) <named list of data.frames>,  optional
+#        pooled_groups = NULL | function(records) <named vector constant -> group>)  optional
 # A method's and simulate()'s `cell` is the cell's row as a list (cell, N
 # and the other columns). R_by_method (optional, mc tier) runs some methods
 # of a cell at fewer reps than R$mc[cell], on the same paired reps 1..n:
@@ -146,7 +149,13 @@ load_family <- function(id, lib_env, dir = file.path(lib_env$.vs_lib, "families"
 # 1..R$mc[cell]. The gates' cells are the cells where every method is
 # gated, or a list naming each gated method's cells (cells where it runs;
 # a method the list does not name is gated nowhere); gates_quick (optional)
-# replaces gates in the quick tier. The gates' metrics apply to every method when
+# replaces gates in the quick tier. findings (optional) turns the family's
+# records (every cell and method) into its own tables, which report.R
+# renders in place of the generic ladders and QQ plots; a family that has
+# it may have no gates. pooled_groups (optional) maps a (cell, method)'s
+# records to groups of the constants (e.g. expected-count terciles), so
+# that report.R also pools their coverage by group (pooled_tails(groups =)).
+# The gates' metrics apply to every method when
 # they are a character vector, else to the methods the list names; an entry
 # is a metric name, optionally with a route suffix and a block filter
 # ("se_ratio:hessian", "bias_std@beta"): only the shape (non-empty strings)
@@ -286,7 +295,21 @@ validate_family <- function(fam, id = NULL, where = "family") {
       bad(paste0(field, "$metrics"), "non-empty strings, or a list of them named by methods")
     }
   }
-  check_gates(fam$gates, "gates", cells$cell)
+  if (!is.null(fam$findings) &&
+      (!is.function(fam$findings) || !identical(names(formals(fam$findings)), "records"))) {
+    bad("findings", "NULL or function(records)")
+  }
+  if (!is.null(fam$pooled_groups) &&
+      (!is.function(fam$pooled_groups) || length(formals(fam$pooled_groups)) != 1L)) {
+    bad("pooled_groups", "NULL or a function of one argument (the records)")
+  }
+  if (is.null(fam$gates)) {
+    if (is.null(fam$findings)) {
+      bad("gates", "a list(cell, metrics), or NULL in a findings-only family (one with `findings`)")
+    }
+  } else {
+    check_gates(fam$gates, "gates", cells$cell)
+  }
   if (!is.null(fam$gates_quick)) {
     check_gates(fam$gates_quick, "gates_quick", names(R$quick)[R$quick > 0])
   }

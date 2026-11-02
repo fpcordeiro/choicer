@@ -342,6 +342,35 @@ check("families: gate cells per method and gates_quick are checked (methods, cel
   is.list(good$gates$cell) && identical(good$gates_quick$cell, list(ml = "200")) && all(ok)
 })
 
+check("families: findings is function(records); gates = NULL only with findings", {
+  no_gates <- fam
+  no_gates["gates"] <- list(NULL)
+  m1 <- err_msg(validate_family(no_gates, id = "T0"))
+  bad_fn <- fam
+  bad_fn$findings <- function(recs) list()
+  m2 <- err_msg(validate_family(bad_fn, id = "T0"))
+  fo <- no_gates
+  fo$findings <- function(records) list(n = data.frame(reps = length(records)))
+  m3 <- err_msg(validate_family(fo, id = "T0"))
+  note("gates NULL, no findings -> ", m1)
+  note("findings(recs) -> ", m2)
+  note("gates NULL with findings -> ", if (nzchar(m3)) m3 else "accepted")
+  grepl("`gates`", m1, fixed = TRUE) && grepl("findings-only", m1) &&
+    grepl("`findings`", m2, fixed = TRUE) && !nzchar(m3)
+})
+
+check("families: pooled_groups is NULL or a function of one argument", {
+  pg <- function(x) { f <- fam; f$pooled_groups <- x; f }
+  m1 <- err_msg(validate_family(pg(function(records, extra) NULL), id = "T0"))
+  m2 <- err_msg(validate_family(pg("terciles"), id = "T0"))
+  m3 <- err_msg(validate_family(pg(function(records) c(ASC_2 = "low")), id = "T0"))
+  note("two arguments -> ", m1)
+  note("a string -> ", m2)
+  note("function(records) -> ", if (nzchar(m3)) m3 else "accepted")
+  grepl("`pooled_groups`", m1, fixed = TRUE) && grepl("`pooled_groups`", m2, fixed = TRUE) &&
+    !nzchar(m3)
+})
+
 check("DGP registry: an unregistered DGP fails with the registered list", {
   m <- err_msg(get_dgp("NOPE"))
   note(m)

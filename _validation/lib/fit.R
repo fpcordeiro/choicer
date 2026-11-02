@@ -320,19 +320,28 @@ fit_diag <- function(fit) {
 # where the family polishes), and returns it, or an error unless it
 # converged: with a polish, the polish certified the optimum (its decrement
 # below tolerance); without, choicer's reading of the optimizer's code
-# (fit_diag()). The error makes run_unit() record a failed rep. nloptr's
+# (fit_diag()), or, for a fit with constants concentrated out (`"blp"`,
+# the profile likelihood: fit$optimizer$concentration), its outer
+# decrement (1/2 grad' I~^-1 grad over the mean weight, from the fit's
+# variance) below `tol_decrement`, 1e-8 log-likelihood units, the Newton
+# polish's default. The error makes run_unit() record a failed rep. nloptr's
 # code alone cannot tell: NLOPT_FAILURE (-1) returns the start values
 # without a warning (choicer's NL from its default start on D2's WESML
 # samples, about half the fits), and it also comes at the optimum (an MNL in
-# F8, decrement 1e-14 there), which the polish certifies. The polish's
-# message, whose text carries the decrement, is muffled (fit_diag() keeps
-# the decrement); other messages pass.
-require_converged <- function(expr, what = "the fit") {
+# F8, decrement 1e-14 there), which the polish certifies, and a "blp" fit
+# of the MXL article's §5.9 Monte Carlo, decrement 2.5e-14, which the
+# outer decrement certifies (fit_diag()$converged stays FALSE there, the
+# code -1 is kept). The polish's message, whose text carries the decrement,
+# is muffled (fit_diag() keeps the decrement); other messages pass.
+require_converged <- function(expr, what = "the fit", tol_decrement = 1e-8) {
   fit <- withCallingHandlers(expr, message = function(m) {
     if (startsWith(conditionMessage(m), "Newton polish:")) invokeRestart("muffleMessage")
   })
   pol <- fit$optimizer$polish
-  ok <- if (is.null(pol)) fit_diag(fit)$converged else pol$converged
+  conc <- fit$optimizer$concentration
+  ok <- if (!is.null(pol)) pol$converged
+        else isTRUE(fit_diag(fit)$converged) ||
+          (!is.null(conc) && isTRUE(conc$decrement < tol_decrement))
   if (!isTRUE(ok)) {
     stop(what, " did not converge: code ", fit$convergence, ", ", fit$message, call. = FALSE)
   }
@@ -343,7 +352,14 @@ require_converged <- function(expr, what = "the fit") {
 # runs one fit (theta_init = NULL: choicer's default start); here it runs
 # from the default start and from theta0, each through require_converged(),
 # and the certified fit with the higher log-likelihood is returned, an error
-# (the rep fails) when neither is certified. Why: from choicer's default
+# (the rep fails) when neither is certified. A near-tie keeps the default
+# start's fit: theta0's wins only where its log-likelihood is higher by
+# more than `tol`, since two certified fits within tol are one maximum met
+# from two sides (on F10's reps theta0 was ahead in 17 of 30 fits by 9e-13
+# to 1.2e-11, its estimates within 1e-7 SE of the default's). Ties within
+# tol count as the default's win, so that the record's "how often the
+# default lost" counts real losses only; its dlogL stays the raw
+# difference. Why two starts: from choicer's default
 # start, the mixed logit fits of D1 and D4 stopped on plateaus where an L
 # diagonal goes to -Inf (a random coefficient's SD to 0, or Sigma singular),
 # which the polish certifies (on D1 up to 14 log-likelihood units below the
@@ -352,7 +368,7 @@ require_converged <- function(expr, what = "the fit") {
 # loglik_default - loglik_theta0 (NA unless both are certified),
 # default_error, theta0_error (NULL or the message)) measures how often the
 # default start loses: a package finding. Methods put it in diag$start.
-fit_two_starts <- function(fit_fun, theta0, what = "the fit") {
+fit_two_starts <- function(fit_fun, theta0, what = "the fit", tol = 1e-6) {
   run <- function(start, label) {
     tryCatch(require_converged(fit_fun(start), sprintf("%s (%s start)", what, label)),
              error = function(e) conditionMessage(e))
@@ -364,7 +380,8 @@ fit_two_starts <- function(fit_fun, theta0, what = "the fit") {
          call. = FALSE)
   }
   ll <- vapply(fits, function(f) if (is.character(f)) NA_real_ else f$loglik, numeric(1))
-  winner <- names(fits)[which.max(ll)]
+  winner <- if (failed[["default"]] || isTRUE(ll[["theta0"]] > ll[["default"]] + tol)) "theta0"
+            else "default"
   fit <- fits[[winner]]
   attr(fit, "start") <- list(winner = winner, dlogL = unname(ll[["default"]] - ll[["theta0"]]),
                              default_error = if (failed[["default"]]) fits$default,
