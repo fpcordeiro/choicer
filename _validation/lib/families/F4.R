@@ -4,12 +4,13 @@
 # opt-out, a fixed price, an irrelevant attribute (true coefficient 0), and
 # correlated random coefficients, shifted log-normal on -time and normal on
 # quality (rc_mean = TRUE, rc_correlation = TRUE). Cells: persons in {200,
-# 800, 3.2k} at S = 500 generate-mode draws (seeded from the rep's seed), and
-# "200.q" (200 persons, S = 200) for the quick tier; the composite fit takes
-# S_xsec = 200 in every cell.
-# Methods (both polish = "newton", started where F4_START says, choicer's
-# default start for now; every fit certified by require_converged() or the
-# rep fails; multi-start on reps 10, 20, ...; diag$plateau flags an L
+# 800, 3.2k}, the panel at S = 500 generate-mode draws (seeded from the
+# rep's seed), the composite at S_xsec = 800 at 200 and 800 persons only
+# (S1, 2026-11-02: sqrt(U)/S = 0.1 at 800 persons' 6,400 tasks); "200.q"
+# (200 persons, S = 200 for both) for the quick tier.
+# Methods (polish = "newton"; the main fit from choicer's default start and
+# from theta0, the better certified one kept, fit_two_starts(), its record
+# in diag$start; multi-start on reps 10, 20, ...; diag$plateau flags an L
 # diagonal driven to -Inf):
 #   panel  run_mxlogit(person_col = "person"): the panel likelihood (Revelt &
 #          Train 1998), one draw block per person; routes hessian, bhhh,
@@ -26,13 +27,12 @@
 # covariance of g = L eta (sigma_vech(), delta method); their SEs come from
 # the Hessian variance in both methods (metrics read a derived SE as the
 # hessian route).
-# Gates at 3.2k: panel bias, Hessian SE ratio and tails of every parameter,
-# joint Wald size on the common parameters (beta, mu, L), LR size, Sigma's
-# tails; xsec bias, cluster SE ratio and tails. Findings: xsec Hessian SE
-# ratio < 1, the
-# efficiency loss ESE_xsec / ESE_panel, rates over N. sqrt(U)/S at 3.2k
-# (plan §2 gates where it is <= 0.25): the panel's 3,200 persons at S = 500
-# give 0.11; the composite's 25,600 tasks at S = 200 give 0.8.
+# Gates: panel at 3.2k (sqrt(U)/S = 0.11), bias, Hessian SE ratio and tails
+# of every parameter, joint Wald size on the common parameters (beta, mu,
+# L), LR size, Sigma's tails; xsec at 800, bias, cluster SE ratio and tails
+# (gates$cell named by method). Findings: xsec Hessian SE ratio < 1; the
+# efficiency loss ESE_xsec / ESE_panel at 200 and 800 persons, the panel at
+# S = 500 against the composite at S = 800; rates over N.
 # Sourced by load_family() into a child of the library's environment.
 # ============================================================================
 
@@ -40,21 +40,16 @@ f4_simulate <- function(cell, seed) {
   get_dgp("D1")$simulate(N = cell$N, seed = seed, variant = "default", T = cell$T)
 }
 
-# Where the main fits start: "default", choicer's default start; "theta0",
-# the truth (multi-starts still perturb the estimate). From the default
-# start, choicer's fits of D1 can stop off the maximum: on a plateau where
-# an L diagonal goes to -Inf, or at another stationary point the polish
-# certifies, or uncertified (checks/wp4_sp.R, sections plateau and xtime).
-F4_START <- "default"
-
-# A certified D1 fit with S draws seeded from the rep's seed; `x` the fixed
+# One D1 fit with S draws seeded from the rep's seed; `x` the fixed
 # covariates.
-f4_fit <- function(sim, seed, S, what, x = SP_X, ...) {
-  require_converged(choicer::run_mxlogit(
-    sim$data, "id", "alt", "choice", x, SP_W, rc_dist = c(1L, 0L), rc_mean = TRUE,
-    rc_correlation = TRUE, include_outside_option = TRUE, S = S, draws = "generate",
-    seed = seed + 1L, polish = "newton", ...), what)
+f4_run <- function(sim, seed, S, x = SP_X, ...) {
+  choicer::run_mxlogit(sim$data, "id", "alt", "choice", x, SP_W, rc_dist = c(1L, 0L),
+                       rc_mean = TRUE, rc_correlation = TRUE, include_outside_option = TRUE,
+                       S = S, draws = "generate", seed = seed + 1L, polish = "newton", ...)
 }
+
+# The same, certified (require_converged()).
+f4_fit <- function(sim, seed, S, what, ...) require_converged(f4_run(sim, seed, S, ...), what)
 
 # The mean WTP for quality and Sigma's vech (sigma_vech()), SEs from
 # fit$vcov (the caller passes the composite's fit with its Hessian variance
@@ -72,18 +67,16 @@ f4_estimands <- function(fit, sim) {
 # The common parameters (everything but the constants), by name.
 .f4_common <- function(fit) names(coef(fit))[-as.integer(fit$param_map$asc)]
 
-# The main fit's start (F4_START): NULL (choicer's default) or theta0.
-.f4_start <- function(sim) if (F4_START == "theta0") sim$truth
-
-# A fit's diagnostics, with the multi-start on reps 10, 20, ..., and the
-# plateau: min_L_diag, the smaller of choicer's log-diagonal parameters
-# L_11 and L_22 (truth -0.36 and -0.09), and plateau = min_L_diag < -5. L_11
-# to -Inf drives the time coefficient's SD sd(g_1) to 0; L_22 to -Inf makes
-# Sigma singular, |corr(g_1, g_2)| -> 1 with sd(g_2) = |L_21|. The score
-# vanishes along such a ridge, so the polish can certify a point there that
-# is not the maximum.
+# A fit's diagnostics: fit_two_starts()'s record, the multi-start on reps
+# 10, 20, ..., and the plateau: min_L_diag, the smaller of choicer's
+# log-diagonal parameters L_11 and L_22 (truth -0.36 and -0.09), and plateau
+# = min_L_diag < -5. L_11 to -Inf drives the time coefficient's SD sd(g_1)
+# to 0; L_22 to -Inf makes Sigma singular, |corr(g_1, g_2)| -> 1 with
+# sd(g_2) = |L_21|. The score vanishes along such a ridge, so the polish can
+# certify a point there that is not the maximum.
 .f4_diag <- function(fit, refit, cell, seed) {
   diag <- fit_diag(fit)
+  diag$start <- attr(fit, "start")
   diag$min_L_diag <- min(coef(fit)[c("L_11", "L_22")])
   diag$plateau <- diag$min_L_diag < -5
   if (vs_seed_rep("F4", cell$cell, seed) %% 10 == 0) {
@@ -93,10 +86,13 @@ f4_estimands <- function(fit, sim) {
 }
 
 f4_panel <- function(sim, cell, seed) {
+  what <- "the panel fit"
+  fit <- fit_two_starts(function(theta_init) {
+    f4_run(sim, seed, cell$S, person_col = "person", theta_init = theta_init)
+  }, sim$truth, what)
   refit <- function(theta_init) {
-    f4_fit(sim, seed, cell$S, "the panel fit", person_col = "person", theta_init = theta_init)
+    f4_fit(sim, seed, cell$S, what, person_col = "person", theta_init = theta_init)
   }
-  fit <- refit(.f4_start(sim))
   V <- fit_vcovs(fit, c("hessian", "bhhh", "robust"))
   cf <- coef(fit)
   fit_r <- f4_fit(sim, seed, cell$S, "the LR test's restricted fit", x = setdiff(SP_X, "irr"),
@@ -112,11 +108,13 @@ f4_panel <- function(sim, cell, seed) {
 }
 
 f4_xsec <- function(sim, cell, seed) {
+  what <- "the composite fit"
+  fit <- fit_two_starts(function(theta_init) {
+    f4_run(sim, seed, cell$S_xsec, cluster_col = "person", theta_init = theta_init)
+  }, sim$truth, what)
   refit <- function(theta_init) {
-    f4_fit(sim, seed, cell$S_xsec, "the composite fit", cluster_col = "person",
-           theta_init = theta_init)
+    f4_fit(sim, seed, cell$S_xsec, what, cluster_col = "person", theta_init = theta_init)
   }
-  fit <- refit(.f4_start(sim))
   V <- fit_vcovs(fit, c("hessian", "cluster"))
   common <- coef(fit)[.f4_common(fit)]
   fit_h <- fit
@@ -134,14 +132,15 @@ family <- list(
   claims = c("C1", "C2", "C4"),
   dgp = "D1",
   cells = data.frame(cell = c("200", "800", "3.2k", "200.q"), N = c(200L, 800L, 3200L, 200L),
-                     T = 8L, S = c(500L, 500L, 500L, 200L), S_xsec = 200L,
-                     stringsAsFactors = FALSE),
+                     T = 8L, S = c(500L, 500L, 500L, 200L),
+                     S_xsec = c(800L, 800L, NA_integer_, 200L), stringsAsFactors = FALSE),
   methods = list(panel = f4_panel, xsec = f4_xsec),
-  methods_by_cell = NULL,
+  methods_by_cell = list("200" = c("panel", "xsec"), "800" = c("panel", "xsec"),
+                         "3.2k" = "panel", "200.q" = c("panel", "xsec")),
   R = list(quick = c("200.q" = 100), mc = c("200" = 1000, "800" = 1000, "3.2k" = 1000)),
   simulate = f4_simulate,
   estimands = f4_estimands,
-  gates = list(cell = "3.2k",
+  gates = list(cell = list(panel = "3.2k", xsec = "800"),
                metrics = list(panel = c("bias_std", "se_ratio:hessian", "tail_lower:hessian",
                                         "tail_upper:hessian", "joint_wald_size", "lr_size",
                                         paste0(c("tail_lower:hessian@", "tail_upper:hessian@"),

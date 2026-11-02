@@ -316,6 +316,32 @@ check("families: R_by_method (optional) is checked against the cells, methods an
   identical(good$R_by_method, list("800" = c(fail = 2))) && all(ok)
 })
 
+check("families: gate cells per method and gates_quick are checked (methods, cells, runs)", {
+  # fail runs only at 200 here, so fail cannot be gated at 800.
+  f0 <- fam
+  f0$methods_by_cell <- list("800" = "ml")
+  with_gates <- function(cell, quick = NULL) {
+    f <- f0
+    f$gates$cell <- cell
+    f$gates_quick <- quick
+    f
+  }
+  breaks <- list(
+    "`gates$cell`"       = with_gates(list(nope = "800")),
+    "`gates$cell$fail`"  = with_gates(list(ml = "800", fail = "800")),
+    "`gates$cell$ml`"    = with_gates(list(ml = c("800", "999"))),
+    "`gates_quick$cell`" = with_gates("800", list(cell = "999", metrics = "bias_std")),
+    "`gates_quick`"      = with_gates("800", list(cell = "800")))
+  ok <- vapply(names(breaks), function(field) {
+    m <- err_msg(validate_family(breaks[[field]], id = "T0"))
+    note(field, " -> ", m)
+    grepl(field, m, fixed = TRUE)
+  }, logical(1))
+  good <- validate_family(with_gates(list(ml = "800", fail = "200"),
+                                     list(cell = list(ml = "200"), metrics = "bias_std")), id = "T0")
+  is.list(good$gates$cell) && identical(good$gates_quick$cell, list(ml = "200")) && all(ok)
+})
+
 check("DGP registry: an unregistered DGP fails with the registered list", {
   m <- err_msg(get_dgp("NOPE"))
   note(m)

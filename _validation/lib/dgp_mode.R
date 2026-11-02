@@ -251,14 +251,15 @@ d2_wesml_data <- function() {
   })
 }
 
-# A weighted MNL (D2's specification, polished by Newton) on the 210 types
-# with one situation per (type i, mode j), choice j, weight W[i, j] (a
-# types x 4 matrix; cells of weight 0 left out): the MNL log-likelihood of
-# a population (W = pi_i P(j | i); its Hessian and BHHH routes are then the
-# population's H^-1 and B^-1 per traveller) or of a sample (W = its (type,
-# mode) counts: exactly the log-likelihood of its travellers). `...` goes
-# to run_mnlogit().
-d2_pseudo_fit <- function(W, ...) {
+# A weighted MNL, or NL with the ground nest (D2's specification, polished
+# by Newton; the NL in the "bhhh" coordinates), on the 210 types with one
+# situation per (type i, mode j), choice j, weight W[i, j] (a types x 4
+# matrix; cells of weight 0 left out): the log-likelihood of a population
+# (W = pi_i P(j | i); its Hessian and BHHH routes are then the population's
+# H^-1 and B^-1 per traveller) or of a sample (W = its (type, mode) counts:
+# exactly the log-likelihood of its travellers). `...` goes to the fit.
+d2_pseudo_fit <- function(W, model = c("mnl", "nl"), ...) {
+  model <- match.arg(model)
   ty <- d2_types()
   pseudo <- ty$long[rep(seq_len(nrow(ty$long)), 4L)]
   k <- rep(1:4, each = nrow(ty$long))                      # the pseudo-situation's choice
@@ -266,8 +267,22 @@ d2_pseudo_fit <- function(W, ...) {
   pseudo[, w := W[cbind(type, k)]]
   pseudo <- pseudo[w > 0]
   data.table::setorder(pseudo, id, alt)
-  .d2_quiet(choicer::run_mnlogit(pseudo, "id", "alt", "choice", D2_X, weights_col = "w",
-                                 polish = "newton", ...))
+  .d2_quiet(if (model == "mnl") {
+    choicer::run_mnlogit(pseudo, "id", "alt", "choice", D2_X, weights_col = "w",
+                         polish = "newton", ...)
+  } else {
+    choicer::run_nestlogit(pseudo, "id", "alt", "choice", D2_X, nest_col = "nest",
+                           weights_col = "w", scale_vars = "bhhh", polish = "newton", ...)
+  })
+}
+
+# The (type, mode) distribution of a Bernoulli choice-based sample from the
+# variant's population, design shares H against the population's shares Q:
+# W[i, j] = pi_i P_ij f_j / sum, f_j = H_j / Q_j (the sum is 1).
+d2_cb_weights <- function(variant = "default", H = rep(0.25, 4L)) {
+  P <- d2_type_probs(variant)
+  W <- d2_types()$pi * P
+  sweep(W, 2L, H / colSums(W), `*`)
 }
 
 # The MNL's pseudo-true value under the "mxl" truth, exactly: the

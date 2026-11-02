@@ -1,7 +1,7 @@
 # ============================================================================
 # Q1.3 (plan §5, claim C4): choicer's mixed logit by maximum simulated
 # likelihood, S = 4000 generate-mode draws, against the suite's exact
-# maximum likelihood on the same data. With K_w = 2 random coefficients the
+# maximum likelihood on the same data (D4-40, N = 2000). With K_w = 2 random coefficients the
 # integral over eta ~ N(0, I_2) is a product Gauss-Hermite rule, exact for
 # any transformation of eta up to the rule's error, which the node count
 # makes negligible (chosen by the log-likelihood's convergence over a list
@@ -216,9 +216,8 @@ quad_mxl_fit <- function(theta, d, spec, chosen, rule, metric = NULL, tol = 1e-1
        decrement = sum(sc$grad * solve(B, sc$grad)), B = B)
 }
 
-# Q1.3: D4-small (MXL variant: log-normal on -distance, normal on quality,
-# K_w = 2) at N students of `markets` (default all four; the students of the
-# other markets are simulated and dropped, so the data are D4-small's), the
+# Q1.3: D4's MXL variant (log-normal on -distance, normal on quality,
+# K_w = 2) on `design` (D4-40, F3's, by default) at N students, the
 # never-chosen alternatives dropped (drop_unbounded_alts()); choicer at S
 # draws (generate, polish = "newton") against the quadrature ML. The rule is
 # the first of `grids` (nodes on -distance's and quality's eta) whose
@@ -227,21 +226,17 @@ quad_mxl_fit <- function(theta, d, spec, chosen, rule, metric = NULL, tol = 1e-1
 # BHHH decrement there bounds the remaining error, |dtheta|/SE of about
 # sqrt(decrement). With s_q = 1.75 the quality integrand is a steep logistic
 # in eta, so Gauss-Hermite needs about a hundred nodes on it (measured
-# 2026-11-02 at the plan's design: ll within 3e-6 at (96, 96), 1e-11 between
-# 96 and 128 nodes on distance). Returns check rows; `verbose` prints
-# progress.
-ref_q13 <- function(N = 2000L, S = 4000L, markets = NULL,
+# 2026-11-02 on D4-small, N = 2000: ll within 3e-6 at (96, 96), 1e-11
+# between 96 and 128 nodes on distance). Returns check rows; `verbose`
+# prints progress.
+ref_q13 <- function(N = 2000L, S = 4000L, design = GEO_D4_40,
                     grids = list(c(32L, 64L), c(48L, 96L), c(64L, 128L), c(96L, 192L)),
                     ll_tol = 1e-6, threshold = 0.05,
                     seed = vs_seed("Q1.3", paste0("N", N), 1), verbose = FALSE) {
   t_start <- proc.time()[["elapsed"]]
   say <- function(...) if (verbose) cat(sprintf(...), "\n", sep = "")
-  M <- GEO_D4_SMALL$markets
-  n_all <- if (is.null(markets)) N else N * M %/% length(markets)
-  sim <- d4_simulate(n_all, seed, "default")
-  dt <- sim$data
-  if (!is.null(markets)) dt <- dt[dt$market %in% markets]
-  dr <- drop_unbounded_alts(dt)
+  sim <- d4_simulate(N, seed, "default", design = design)
+  dr <- drop_unbounded_alts(sim$data)
   dt <- dr$data
   alts <- sort(unique(dt$alt))
   spec <- d4_spec("default", sim$meta$schools, alts)

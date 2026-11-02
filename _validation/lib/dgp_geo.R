@@ -2,10 +2,10 @@
 # The geographic generator's R reference (plan §4: D3 hospital and D4
 # school share one generator; WP6 ports it to C++, lib/geo_gen.cpp, which
 # must give identical data at small sizes). This file holds D4, school choice
-# from a census (Abdulkadiroglu, Agarwal & Pathak 2017), at the D4-small
-# design of F2 and F3; WP6 adds D3. Definitions only, except the
-# registration of DGP "D4" (dgp_register()), which builds the fixed world of
-# schools once (160 schools, milliseconds).
+# from a census (Abdulkadiroglu, Agarwal & Pathak 2017), on two designs:
+# D4-40 (F2 and F3) and D4-small; WP6 adds D3. Definitions only, except the
+# registration of DGPs "D4" and "D4-40" (dgp_register()), which builds each
+# design's fixed world of schools once (milliseconds).
 #
 # Structure (what the port reproduces):
 #   1. geo_draw(): all randomness, as uniforms, in one documented order.
@@ -64,19 +64,33 @@
 # s_d by its dispersion, s_q by how substitution among schools of different
 # quality varies with the composition of the nearest-K sets.
 #
-# theta0. The structural values below are literals chosen 2026-11-02. The
-# tastes' dispersion (s_d = 0.8, s_q = 1.75) and quality's spatial sorting
-# (rho_q = 0.8, tau_q = 0.6) were raised from s_d = 0.5, s_q = 0.8, rho_q =
-# 0.4 so that sigma_q / SE(sigma_q) >= 5 at N = 1000 (plan §4): measured
-# 5.4 (a 16k fit's SE times 4) and 5.2 (median of five 1k fits), against 3.3
-# and 3.8 before (checks/wp5_geo.R --only=ident). sector_delta (per variant)
-# was calibrated the same day by d4_calibrate(), the expected shares at
-# N = 40000, seed 1, set to outside .15, public .65, charter .09, private
-# .11: plan §4's outside share, and charter and private shares somewhat
-# above the national split in NCES's Digest of Education Statistics (about
-# 7% of public school students in charter schools and 9% of K-12 students
-# in private schools, fall 2021), as in the urban choice districts this
-# design stands for; the outside option takes students out of the market
+# Designs. D4-40 (DGP "D4-40", F2's and F3's): one market of 40 schools,
+# K = 15, so that choice sets still vary by location (each student's 15
+# nearest of 40) while J = 40 constants keep J/sqrt(N) at 1.26, 0.63, 0.32
+# on the 1k/4k/16k rungs (S1, 2026-11-02: with D4-small's 160 the distance
+# coefficient's bias/SD was -0.163 J/sqrt(N), the incidental constants'
+# bias C6, which the gates are not meant to test). One market of the same
+# geography rather than four of 10 schools: with 10 schools and K = 15 every
+# student would face the whole market, and sigma_q, identified by how the
+# nearest-K sets' composition varies, would not be. D4-small (DGP "D4", 4
+# markets x 40, 160 constants) stays for WP6's scaled designs.
+#
+# theta0. The structural values below are literals chosen 2026-11-02 and
+# shared by the designs. The tastes' dispersion (s_d = 0.8, s_q = 1.75) and
+# quality's spatial sorting (rho_q = 0.8, tau_q = 0.6) were raised from s_d =
+# 0.5, s_q = 0.8, rho_q = 0.4 so that sigma_q / SE(sigma_q) >= 5 at N = 1000
+# (plan §4) on D4-small; SES's sorting was then lowered from rho_ses = 0.5
+# to 0.45 so that D4-40's NL variant meets the quality-gradient target.
+# sigma_q / SE(sigma_q) at N = 1000 (checks/wp5_geo.R --only=ident; a 16k
+# fit's SE times 4, and the median of five 1k fits): D4-40 6.7 and 6.6,
+# D4-small 5.5 and 5.1. Each design's sector_delta (per variant) was
+# calibrated the same day by d4_calibrate(), the expected shares at N =
+# 40000, seed 1, set to outside .15, public .65, charter .09, private .11:
+# plan §4's outside share, and charter and private shares somewhat above the
+# national split in NCES's Digest of Education Statistics (about 7% of
+# public school students in charter schools and 9% of K-12 students in
+# private schools, fall 2021), as in the urban choice districts these
+# designs stand for; the outside option takes students out of the market
 # (other districts, home schooling). The constants follow from the fixed
 # world and these literals (d4_theta0()).
 #
@@ -89,27 +103,43 @@
 
 # --- Designs and the truth -----------------------------------------------------
 
+# A design: the geography (markets of `schools` schools, K nearest in the
+# student's market, a square of side `side` km, `clusters` population
+# centres), the sector counts per market, the world's seed, and the sector
+# constants calibrated for it, per variant (d4_calibrate()).
 GEO_D4_SMALL <- list(
   kind = "school", name = "D4-small", markets = 4L, schools = 40L, K = 15L, side = 10,
   clusters = 3L, cluster_sd = 1.2, background = 0.25,
-  sectors = c(public = 24L, charter = 8L, private = 8L), world_seed = 20261102L)
+  sectors = c(public = 24L, charter = 8L, private = 8L), world_seed = 20261102L,
+  sector_delta = list(default = c(public = 2.0613, charter = 0.8518, private = 0.9528),
+                      nl = c(public = 2.2155, charter = 0.6877, private = 0.7675),
+                      mnl = c(public = 1.4733, charter = 0.5430, private = 0.6660)))
+
+GEO_D4_40 <- list(
+  kind = "school", name = "D4-40", markets = 1L, schools = 40L, K = 15L, side = 10,
+  clusters = 3L, cluster_sd = 1.2, background = 0.25,
+  sectors = c(public = 24L, charter = 8L, private = 8L), world_seed = 40261102L,
+  sector_delta = list(default = c(public = 2.0587, charter = 0.9423, private = 1.7015),
+                      nl = c(public = 2.2358, charter = 0.6381, private = 1.2110),
+                      mnl = c(public = 1.4976, charter = 0.5082, private = 1.1507)))
 
 D4_X <- c("dist", "dist_ses", "q_ses")
 D4_W <- c("ndist", "quality")
 D4_VARIANTS <- c(default = "mxl", nl = "nl", mnl = "mnl")
 
+# The structural truth, shared by the designs; d4_par() adds a design's
+# sector constants.
 D4_TRUE <- list(
-  rho_ses = 0.5, rho_q = 0.8, tau_q = 0.6,
+  rho_ses = 0.45, rho_q = 0.8, tau_q = 0.6,
   sector_q = c(public = 0, charter = 0.2, private = 0.4),
   a = 0.5, sigma_xi = 0.6,
   beta = list(default = c(dist = -0.3, dist_ses = 0.2, q_ses = 0.4),
               nl = c(dist = -1.3, dist_ses = 0.2, q_ses = 0.4),
               mnl = c(dist = -1.3, dist_ses = 0.2, q_ses = 0.4)),
   s = c(ndist = 0.8, quality = 1.75),          # sd of g = L eta (L diagonal)
-  lambda = c(public = 0.5, charter = 0.7, private = 0.85),
-  sector_delta = list(default = c(public = 2.0571, charter = 0.8472, private = 0.9463),
-                      nl = c(public = 2.2111, charter = 0.6836, private = 0.7608),
-                      mnl = c(public = 1.4694, charter = 0.5385, private = 0.6589)))
+  lambda = c(public = 0.5, charter = 0.7, private = 0.85))
+
+d4_par <- function(design) c(D4_TRUE, list(sector_delta = design$sector_delta))
 
 # The engines' specification of a D4 variant over the alternatives `alts`
 # (labels; their sectors from the schools table).
@@ -127,7 +157,7 @@ d4_spec <- function(variant, schools, alts = schools$alt) {
 # A variant's named blocks (pack_theta()'s): beta, NL lambda by nest label,
 # MXL L, and the constants by school label, delta_j = a q_j + sector_delta +
 # sigma_xi xi_j.
-d4_blocks <- function(variant, schools, par = D4_TRUE) {
+d4_blocks <- function(variant, schools, par) {
   model <- D4_VARIANTS[[variant]]
   delta <- par$a * schools$quality + par$sector_delta[[variant]][schools$sector] +
     par$sigma_xi * schools$xi
@@ -138,7 +168,7 @@ d4_blocks <- function(variant, schools, par = D4_TRUE) {
 }
 
 # theta0 of a variant in choicer's names and order.
-d4_theta0 <- function(variant, schools, par = D4_TRUE) {
+d4_theta0 <- function(variant, schools, par) {
   pack_theta(D4_VARIANTS[[variant]], d4_spec(variant, schools), d4_blocks(variant, schools, par))
 }
 
@@ -294,7 +324,7 @@ geo_build <- function(design, draws, par = D4_TRUE) {
 # counts, the schools and students tables, the tastes' normals `eta` (K_w x
 # N; MXL), and with keep_probs the probabilities the choices were drawn from
 # (`probs`: p per row, p0 per student).
-d4_simulate <- function(N, seed, variant = "default", design = GEO_D4_SMALL, par = D4_TRUE,
+d4_simulate <- function(N, seed, variant = "default", design = GEO_D4_SMALL, par = d4_par(design),
                         keep_probs = FALSE) {
   if (!variant %in% names(D4_VARIANTS)) {
     stop("D4 has no variant '", variant, "'; variants: ", paste(names(D4_VARIANTS), collapse = ", "),
@@ -426,11 +456,13 @@ D4_TARGETS <- data.frame(
 # over N students of one seed, common draws across iterations) to `target`
 # (outside, public, charter, private), by the contraction sector_delta_s +=
 # log(target_s) - log(share_s), the outside option's utility fixed at 0.
-# Not run when the file is sourced; its result is frozen in D4_TRUE.
+# Not run when the file is sourced; its result is frozen in the design's
+# sector_delta.
 d4_calibrate <- function(variant, N = 40000L, seed = 1L,
                          target = c(outside = 0.15, public = 0.65, charter = 0.09,
                                     private = 0.11),
-                         par = D4_TRUE, design = GEO_D4_SMALL, tol = 1e-10, max_iter = 200L) {
+                         design = GEO_D4_SMALL, par = d4_par(design), tol = 1e-10,
+                         max_iter = 400L) {
   model <- D4_VARIANTS[[variant]]
   draws <- geo_draw(design, N, seed)
   b <- geo_build(design, draws, par)
@@ -451,11 +483,22 @@ d4_calibrate <- function(variant, N = 40000L, seed = 1L,
 
 # --- Registration --------------------------------------------------------------------------
 
-local({
-  world <- geo_schools(GEO_D4_SMALL, geo_draw(GEO_D4_SMALL, 0L, 1L)$world)
+# Registers a D4 design as a DGP: theta0 per variant from the design's
+# fixed world (milliseconds), simulate() on the design.
+d4_register <- function(id, design, name) {
+  world <- geo_schools(design, geo_draw(design, 0L, 1L)$world)
+  par <- d4_par(design)
   dgp_register(list(
-    id = "D4", name = "school choice, D4-small (4 markets x 40 schools, K = 15, outside option)",
-    theta0 = lapply(stats::setNames(nm = names(D4_VARIANTS)), d4_theta0, schools = world),
-    simulate = function(N, seed, variant = "default", ...) d4_simulate(N, seed, variant, ...),
+    id = id, name = name, design = design,
+    theta0 = lapply(stats::setNames(nm = names(D4_VARIANTS)), d4_theta0, schools = world,
+                    par = par),
+    simulate = function(N, seed, variant = "default", ...) {
+      d4_simulate(N, seed, variant, design = design, ...)
+    },
     moments = d4_moments, targets = D4_TARGETS, variants = names(D4_VARIANTS)))
-})
+}
+
+d4_register("D4", GEO_D4_SMALL,
+            "school choice, D4-small (4 markets x 40 schools, K = 15, outside option)")
+d4_register("D4-40", GEO_D4_40,
+            "school choice, D4-40 (1 market of 40 schools, K = 15, outside option)")

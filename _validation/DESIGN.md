@@ -15,9 +15,9 @@ specifications are written here by WP10. Until then this file holds the build's 
 | WP4 | C | `lib/dgp_sp.R`, `lib/families/F4.R`, `checks/wp4_sp.R` | done | (this commit) | 29/29 checks; D1 and D1-L (HB, logit and probit); `sigma_vech()`; start-policy study |
 | WP5 | C | `lib/dgp_geo.R`, `lib/families/F2.R`, `F3.R`, `lib/references_quad.R`, `checks/wp5_geo.R` | done | (this commit) | the quadrature reference gets its own file so WP3 and WP5 own disjoint files |
 | S1 | — | | decided 2026-11-02 | | see "Decisions" below; applied in the next commits |
-| WP6 | D | `lib/geo_gen.cpp`, `lib/families/F6.R`, `F7.R` | pending | | |
-| WP7 | D | `lib/families/F5.R`, `F10.R` | pending | | |
-| WP8 | D | `lib/dgp_bayes.R`, `lib/sbc.R` (loop half), `lib/families/F9.R` | pending | | |
+| WP6 | D | `lib/geo_gen.cpp`, `lib/families/F6.R`, `F7.R`, `lib/dgp_geo.R` (from WP5), `checks/wp6_geo.R` | in progress | | D3 hospital added to the geographic generator |
+| WP7 | D | `lib/families/F5.R`, `F10.R`, `checks/wp7_sim.R` | in progress | | |
+| WP8 | D | `lib/dgp_bayes.R`, `lib/sbc.R` (loop half), `lib/families/F9.R`, `checks/wp8_bayes.R` | in progress | | |
 | S2 | — | | pending | | budget from R = 2 smoke; F7 reps, server plan |
 | WP9 | E | `quick.R` (assembly), `lib/fit.R` additions via the lead | pending | | |
 | WP10 | E | `README.md`, `DESIGN.md`, AGENTS.md rows, article note, deletions | pending | | |

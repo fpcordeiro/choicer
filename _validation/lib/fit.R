@@ -339,6 +339,39 @@ require_converged <- function(expr, what = "the fit") {
   fit
 }
 
+# Every mixed logit fit of the suite (S1, 2026-11-02): fit_fun(theta_init)
+# runs one fit (theta_init = NULL: choicer's default start); here it runs
+# from the default start and from theta0, each through require_converged(),
+# and the certified fit with the higher log-likelihood is returned, an error
+# (the rep fails) when neither is certified. Why: from choicer's default
+# start, the mixed logit fits of D1 and D4 stopped on plateaus where an L
+# diagonal goes to -Inf (a random coefficient's SD to 0, or Sigma singular),
+# which the polish certifies (on D1 up to 14 log-likelihood units below the
+# maximum), and some did not converge at all; from theta0 none did. The record
+# attr(fit, "start") = list(winner = "default" | "theta0", dlogL =
+# loglik_default - loglik_theta0 (NA unless both are certified),
+# default_error, theta0_error (NULL or the message)) measures how often the
+# default start loses: a package finding. Methods put it in diag$start.
+fit_two_starts <- function(fit_fun, theta0, what = "the fit") {
+  run <- function(start, label) {
+    tryCatch(require_converged(fit_fun(start), sprintf("%s (%s start)", what, label)),
+             error = function(e) conditionMessage(e))
+  }
+  fits <- list(default = run(NULL, "default"), theta0 = run(theta0, "theta0"))
+  failed <- vapply(fits, is.character, logical(1))
+  if (all(failed)) {
+    stop(what, " did not converge from either start: ", fits$default, "; ", fits$theta0,
+         call. = FALSE)
+  }
+  ll <- vapply(fits, function(f) if (is.character(f)) NA_real_ else f$loglik, numeric(1))
+  winner <- names(fits)[which.max(ll)]
+  fit <- fits[[winner]]
+  attr(fit, "start") <- list(winner = winner, dlogL = unname(ll[["default"]] - ll[["theta0"]]),
+                             default_error = if (failed[["default"]]) fits$default,
+                             theta0_error = if (failed[["theta0"]]) fits$theta0)
+  fit
+}
+
 # Refits from n starts theta_hat + spread * SE * U(-1, 1) through the
 # caller's refit(theta_init), which returns a fit (MXL and NL; the MNL takes
 # no theta_init). SEs that are not finite are replaced by 0.1, and SEs above

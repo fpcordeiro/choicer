@@ -1,6 +1,7 @@
 # ============================================================================
-# WP5's checks: D4 (lib/dgp_geo.R), families F2 and F3, and the Q1.3
-# reference (lib/references_quad.R). Sections (--only, comma-separated):
+# WP5's checks: D4's designs (lib/dgp_geo.R; --dgp=D4-40, the default and
+# F2/F3's, or D4, D4-small), families F2 and F3, and the Q1.3 reference
+# (lib/references_quad.R). Sections (--only, comma-separated):
 #   q0     the probabilities D4 draws choices from at theta0 against
 #          choicer: MNL and NL against predict() (max abs diff < 1e-12);
 #          MXL, the suite's simulated log-likelihood on a shared cube and on
@@ -14,7 +15,7 @@
 #          16k fit's SE scaled by 4, and the median over five 1k fits
 #          (target >= 5, plan §4).
 #   drop   drop_unbounded_alts() on a constructed case.
-#   q13    ref_q13() (--q13_N, --q13_S, --q13_markets).
+#   q13    ref_q13() on D4-40 (--q13_N, --q13_S).
 #   smoke  F2 and F3, every cell x method (--smoke=F2,F3 or F3:16k:blp, ...)
 #          through run_rep(): R = 1, R = 2 at the bottom rung plus rep 10
 #          there (the multi-start); each record re-validated.
@@ -30,7 +31,7 @@ sys.source(file.path(root, "lib", "common.R"), envir = (boot <- new.env()), keep
 b <- boot$vs_boot(root)
 suppressPackageStartupMessages(library(data.table))
 args <- vs_args(defaults = list(only = "q0,calib,ident,drop,q13,smoke", smoke = "F2,F3",
-                                q13_N = 2000L, q13_S = 4000L, q13_markets = ""))
+                                dgp = "D4-40", q13_N = 2000L, q13_S = 4000L))
 vs_threads(1L)
 options(width = 160L)
 only <- trimws(strsplit(args$only, ",", fixed = TRUE)[[1]])
@@ -48,7 +49,8 @@ quiet <- function(expr) {
   withCallingHandlers(suppressMessages(expr),
                       choicer_unbounded_constants = function(w) invokeRestart("muffleWarning"))
 }
-dgp <- get_dgp("D4")
+dgp <- get_dgp(args$dgp)
+cat(sprintf("DGP %s: %s\n", dgp$id, dgp$name))
 
 # --- q0 ------------------------------------------------------------------------------
 
@@ -59,12 +61,12 @@ if ("q0" %in% only) {
   s2 <- dgp$simulate(N = 500L, seed = 11L, variant = "nl")
   report("simulate() twice at one seed: identical data and truth",
          as.numeric(!(identical(s1$data, s2$data) && identical(s1$truth, s2$truth))), 0.5)
-  dr <- geo_draw(GEO_D4_SMALL, 500L, 11L)
+  dr <- geo_draw(dgp$design, 500L, 11L)
   last <- vs_with_seed(11L, stats::runif(3L * 500L + 500L + 2L * 500L + 500L))
   report("the choice uniforms are the sample stream's last N",
          as.numeric(!identical(utils::tail(last, 500L), dr$sample$choice)), 0.5)
   report("the world does not depend on N or the seed",
-         as.numeric(!identical(geo_draw(GEO_D4_SMALL, 10L, 1L)$world, dr$world)), 0.5)
+         as.numeric(!identical(geo_draw(dgp$design, 10L, 1L)$world, dr$world)), 0.5)
   for (v in c("mnl", "nl")) {
     for (sd in 1:2) {
       sim <- dgp$simulate(N = 3000L, seed = sd, variant = v, keep_probs = TRUE)
@@ -134,10 +136,13 @@ if ("calib" %in% only) {
     # Per rung: expected counts per school, expected number never chosen
     # (sum_j exp(-N s_j)), F2's gated constants, sqrt(N)/S and J/sqrt(N).
     sh <- sim$meta$shares
+    S_rung <- c("1000" = 500, "4000" = 500, "16000" = 520)       # F3's cells
     rung <- do.call(rbind, lapply(c(1000, 4000, 16000), function(N) {
       e <- N * sh
       data.frame(variant = v, N = N, J = length(sh), J_over_sqrtN = round(length(sh) / sqrt(N), 3),
-                 sqrtN_over_S500 = round(sqrt(N) / 500, 3), count_min = round(min(e), 1),
+                 S = S_rung[[as.character(N)]],
+                 sqrtN_over_S = round(sqrt(N) / S_rung[[as.character(N)]], 3),
+                 count_min = round(min(e), 1),
                  count_p10 = round(unname(stats::quantile(e, 0.1)), 1),
                  count_med = round(stats::median(e), 1),
                  exp_never = round(sum(exp(-e)), 2), n_count_ge50 = sum(e >= 50))
@@ -215,9 +220,8 @@ if ("drop" %in% only) {
 
 if ("q13" %in% only) {
   cat("\n== q13: MXL MSL against the quadrature ML ==\n")
-  mk <- if (nzchar(args$q13_markets)) as.integer(strsplit(args$q13_markets, ",")[[1]])
   t0 <- proc.time()[["elapsed"]]
-  rows <- ref_q13(N = args$q13_N, S = args$q13_S, markets = mk, verbose = TRUE)
+  rows <- ref_q13(N = args$q13_N, S = args$q13_S, verbose = TRUE)
   print(rows, row.names = FALSE)
   for (i in which(!is.na(rows$pass))) {
     report(rows$check[i], rows$value[i], rows$threshold[i] %||% NA, rows$pass[i])

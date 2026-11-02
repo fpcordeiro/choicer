@@ -26,12 +26,10 @@
 #          R = 2 at the bottom rung plus rep 10 there (the multi-start); each
 #          record re-validated; a table of times.
 #   plateau  F4's reps 1..K per cell (--plateau=200:40,800:10, ...; not in
-#          the default sections): failures and fits with an L diagonal
+#          the default sections): failures, kept fits with an L diagonal
 #          driven to -Inf (diag$plateau: L_11, the time coefficient's SD to
-#          0; L_22, Sigma singular), each refit from theta0 and with
-#          scale_vars = "none" to see whether it is the maximum.
-#   xtime  the composite fit at 3.2k with S = 200 and S = 800 (sqrt(U)/S 0.8
-#          and 0.2): times and the estimates' gap over the Hessian SE.
+#          0; L_22, Sigma singular), and fit_two_starts()'s record: how
+#          often the default start failed or lost to the theta0 start.
 # Usage (the dev build first on R_LIBS; one thread; each section < 10 min):
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=1 \
 #     Rscript _validation/checks/wp4_sp.R --only=q0,calib
@@ -43,7 +41,7 @@ root <- normalizePath(file.path(dirname(normalizePath(sub("^--file=", "", file_a
 sys.source(file.path(root, "lib", "common.R"), envir = (boot <- new.env()), keep.source = FALSE)
 b <- boot$vs_boot(root)
 suppressPackageStartupMessages(library(data.table))
-args <- vs_args(defaults = list(only = "q0,calib,ident,hb,smoke,xtime", smoke = "F4",
+args <- vs_args(defaults = list(only = "q0,calib,ident,hb,smoke", smoke = "F4",
                                 calib_N = 100000L, plateau = "200:40"))
 vs_threads(1L)
 options(width = 160L)
@@ -250,8 +248,12 @@ if ("calib" %in% only) {
   print(data.frame(cell = cl$cell, persons = cl$N, tasks = cl$N * cl$T, S = cl$S,
                    panel = round(sqrt(cl$N) / cl$S, 3), S_xsec = cl$S_xsec,
                    xsec = round(sqrt(cl$N * cl$T) / cl$S_xsec, 3),
-                   xsec_S800 = round(sqrt(cl$N * cl$T) / 800, 3),
-                   gated = cl$cell %in% fam$gates$cell), row.names = FALSE)
+                   methods = vapply(cl$cell, function(k) paste(cell_methods(fam, k),
+                                                               collapse = ","), ""),
+                   gated = vapply(cl$cell, function(k) {
+                     paste(Filter(function(m) k %in% .gate_cells(fam$gates, m),
+                                  cell_methods(fam, k)), collapse = ",")
+                   }, "")), row.names = FALSE)
 }
 
 # --- ident -----------------------------------------------------------------------------
@@ -386,6 +388,8 @@ if ("smoke" %in% only) {
             decrement = signif(rec$diag$decrement %||% NA_real_, 2),
             lr = signif(rec$lr$LR %||% NA_real_, 3),
             lr_fit_sec = round(rec$diag$lr_restricted[["time_sec"]] %||% NA_real_, 1),
+            start = rec$diag$start$winner %||% NA_character_,
+            start_dll = signif(rec$diag$start$dlogL %||% NA_real_, 3),
             ms_dlogL = signif(rec$diag$multistart$dlogL %||% NA_real_, 2),
             joint_p = signif(jw$p %||% NA_real_, 2),
             warnings = if (length(w)) paste(w, collapse = " ") else "",
@@ -411,87 +415,41 @@ if ("smoke" %in% only) {
 # --- plateau ---------------------------------------------------------------------------
 
 # Reps 1..K of F4's methods per cell (--plateau=<cell>:<K>,...): failures,
-# fits on a plateau (an L diagonal below -5: L_11, the time coefficient's SD
-# to 0; L_22, Sigma singular, |corr(g_1, g_2)| -> 1), and, for each plateau
-# fit, the default fit's log-likelihood against refits started at theta0
-# and with scale_vars = "none" (dlogL > 0: the plateau is not the maximum).
+# kept fits on a plateau (an L diagonal below -5: L_11, the time
+# coefficient's SD to 0; L_22, Sigma singular, |corr(g_1, g_2)| -> 1), and
+# fit_two_starts()'s record: how often the default start's fit was not
+# certified, or lost to the theta0 start's by more than 0.01 log-likelihood
+# units, and its largest loss.
 if ("plateau" %in% only) {
-  cat("\n== plateau: F4's reps, failures and plateaus (an L diagonal below -5) ==\n")
+  cat("\n== plateau: F4's reps, failures, plateaus and the default start's losses ==\n")
   fam <- load_family("F4", b$L)
-  fenv <- environment(fam$methods$panel)
   rows <- list()
-  rescue <- list()
   for (tk in trimws(strsplit(args$plateau, ",", fixed = TRUE)[[1]])) {
     p <- strsplit(tk, ":", fixed = TRUE)[[1]]
     cl <- p[1]
-    cell <- family_cell(fam, cl)
     t0 <- now()
-    recs <- unlist(lapply(seq_len(as.integer(p[2])),
-                          function(r) run_rep(fam, cl, r, c("panel", "xsec"))), recursive = FALSE)
-    for (m in c("panel", "xsec")) {
+    ms <- cell_methods(fam, cl)
+    recs <- unlist(lapply(seq_len(as.integer(p[2])), function(r) run_rep(fam, cl, r, ms)),
+                   recursive = FALSE)
+    for (m in ms) {
       rr <- Filter(function(x) x$method == m, recs)
       ok <- vapply(rr, function(x) x$ok, logical(1))
-      pl <- vapply(rr, function(x) isTRUE(x$diag$plateau), logical(1))
+      st <- lapply(rr[ok], function(x) x$diag$start)
+      dll <- vapply(st, function(s) s$dlogL %||% NA_real_, numeric(1))
       rows[[length(rows) + 1L]] <- data.frame(
-        cell = cl, method = m, reps = length(rr), ok = sum(ok), plateau = sum(pl),
+        cell = cl, method = m, reps = length(rr), ok = sum(ok),
+        plateau = sum(vapply(rr, function(x) isTRUE(x$diag$plateau), logical(1))),
+        default_failed = sum(vapply(st, function(s) !is.null(s$default_error), logical(1))),
+        default_lost = sum(dll < -0.01, na.rm = TRUE),
+        max_loss = if (any(dll < -0.01, na.rm = TRUE)) round(-min(dll, na.rm = TRUE), 2) else 0,
         median_sec = round(stats::median(vapply(rr, function(x) x$diag$unit_sec, numeric(1))), 1),
         mean_lr = if (m == "panel") round(mean(unlist(lapply(rr, function(x) x$lr$LR))), 3) else NA,
         errors = paste(unique(substr(unlist(lapply(rr[!ok], function(x) x$error)), 1, 50)),
                        collapse = " | "), stringsAsFactors = FALSE)
-      for (x in rr[pl]) {
-        sim <- fam$simulate(cell, x$seed)
-        S <- if (m == "panel") cell$S else cell$S_xsec
-        extra <- if (m == "panel") list(person_col = "person") else list(cluster_col = "person")
-        fit_m <- function(...) {
-          tryCatch(quiet(do.call(fenv$f4_fit, c(list(sim, x$seed, S, "rescue"), extra, list(...)))),
-                   error = function(e) NULL)
-        }
-        f0 <- fit_m()
-        f_t <- fit_m(theta_init = sim$truth)
-        f_n <- fit_m(scale_vars = "none")
-        ll <- function(f) if (is.null(f)) NA_real_ else f$loglik
-        rescue[[length(rescue) + 1L]] <- data.frame(
-          cell = cl, method = m, rep = x$rep, min_L_diag = round(x$diag$min_L_diag, 1),
-          dll_theta0_start = round(ll(f_t) - ll(f0), 3),
-          dll_scale_none = round(ll(f_n) - ll(f0), 3),
-          L11_theta0_start = round(if (is.null(f_t)) NA else coef(f_t)[["L_11"]], 3),
-          L22_theta0_start = round(if (is.null(f_t)) NA else coef(f_t)[["L_22"]], 3))
-      }
     }
     cat(sprintf("      cell %s: %.0f s\n", cl, now() - t0))
   }
   print(do.call(rbind, rows), row.names = FALSE)
-  if (length(rescue)) {
-    cat("plateau fits against refits (dlogL > 0: the plateau is not the maximum):\n")
-    print(do.call(rbind, rescue), row.names = FALSE)
-  }
-}
-
-# --- xtime -----------------------------------------------------------------------------
-
-if ("xtime" %in% only) {
-  cat("\n== xtime: the composite fit at 3.2k persons (25,600 tasks), S = 200 and 800 ==\n")
-  fam <- load_family("F4", b$L)
-  cell <- family_cell(fam, "3.2k")
-  seed <- vs_seed("F4", "3.2k", 1L)
-  sim <- fam$simulate(cell, seed)
-  fits <- list()
-  for (S in c(200L, 800L)) {
-    t0 <- now()
-    fits[[as.character(S)]] <- quiet(f <- run_mxlogit(
-      sim$data, "id", "alt", "choice", SP_X, SP_W, rc_dist = c(1L, 0L), rc_mean = TRUE,
-      rc_correlation = TRUE, include_outside_option = TRUE, S = S, draws = "generate",
-      seed = seed + 1L, polish = "newton", cluster_col = "person"))
-    cat(sprintf(paste("      S = %d (sqrt(U)/S = %.2f): %.1f s wall, fit %.1f s, %d iterations,",
-                      "certified %s, decrement %.1e, min L diagonal %.2f\n"),
-                S, sqrt(25600) / S, now() - t0, f$optimizer$elapsed_time, f$optimizer$iterations,
-                f$optimizer$polish$converged, f$optimizer$polish$decrement,
-                min(coef(f)[c("L_11", "L_22")])))
-  }
-  V200 <- stats::vcov(fits[["200"]], type = "hessian")
-  gap <- (coef(fits[["200"]]) - coef(fits[["800"]])) / sqrt(diag(V200))
-  cat("      (theta_S200 - theta_S800) / Hessian SE at S = 200:\n")
-  print(round(gap, 3))
 }
 
 cat(sprintf("\n%d checks, %d FAIL; %.1f s\n", length(verdicts), sum(!verdicts),

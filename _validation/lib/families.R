@@ -136,13 +136,17 @@ load_family <- function(id, lib_env, dir = file.path(lib_env$.vs_lib, "families"
 #        R_by_method = NULL | list(<cell> = c(<method> = n)),   optional
 #        simulate = function(cell, seed) list(data, truth, meta),
 #        estimands = function(fit, sim) data.frame,
-#        gates = list(cell = <cells, one or more>,
-#                     metrics = <character> | list(<method> = <character>)))
+#        gates = list(cell = <cells, one or more> | list(<method> = <cells>),
+#                     metrics = <character> | list(<method> = <character>)),
+#        gates_quick = NULL | <as gates, cells among those of R$quick>)   optional
 # A method's and simulate()'s `cell` is the cell's row as a list (cell, N
 # and the other columns). R_by_method (optional, mc tier) runs some methods
 # of a cell at fewer reps than R$mc[cell], on the same paired reps 1..n:
 # its cells exist, its methods run in the cell, and n is a whole number in
-# 1..R$mc[cell]. The gates' metrics apply to every method when
+# 1..R$mc[cell]. The gates' cells are the cells where every method is
+# gated, or a list naming each gated method's cells (cells where it runs;
+# a method the list does not name is gated nowhere); gates_quick (optional)
+# replaces gates in the quick tier. The gates' metrics apply to every method when
 # they are a character vector, else to the methods the list names; an entry
 # is a metric name, optionally with a route suffix and a block filter
 # ("se_ratio:hessian", "bias_std@beta"): only the shape (non-empty strings)
@@ -238,28 +242,53 @@ validate_family <- function(fam, id = NULL, where = "family") {
       !identical(names(formals(fam$estimands)), c("fit", "sim"))) {
     bad("estimands", "function(fit, sim)")
   }
-  g <- fam$gates
-  if (!is.list(g) || !all(c("cell", "metrics") %in% names(g))) {
-    bad("gates", "list(cell = <cells>, metrics = <character> | list(<method> = <character>))")
-  }
-  if (!is.character(g$cell) || !length(g$cell) || anyNA(g$cell) || anyDuplicated(g$cell) ||
-      !all(g$cell %in% cells$cell)) {
-    bad("gates$cell", paste0("one or more distinct cells (cells: ",
-                             paste(cells$cell, collapse = ", "), ")"))
-  }
-  entries_ok <- function(x) is.character(x) && !anyNA(x) && all(nzchar(trimws(x)))
-  gm <- g$metrics
-  if (is.list(gm)) {
-    if (length(gm) && (is.null(names(gm)) || anyDuplicated(names(gm)) ||
-                       !all(names(gm) %in% names(m)))) {
-      bad("gates$metrics", paste0("a list named by methods (methods: ",
-                                  paste(names(m), collapse = ", "), ")"))
+  # gates, and gates_quick (optional, the quick tier's, its cells among those
+  # of R$quick): cell is cells where every method is gated, or a list naming
+  # each gated method's cells, cells where the method runs.
+  check_gates <- function(g, field, allowed) {
+    if (!is.list(g) || !all(c("cell", "metrics") %in% names(g))) {
+      bad(field, paste("list(cell = <cells> | list(<method> = <cells>),",
+                       "metrics = <character> | list(<method> = <character>))"))
     }
-    for (k in names(gm)) {
-      if (!entries_ok(gm[[k]])) bad(paste0("gates$metrics$", k), "non-empty strings")
+    cells_ok <- function(x, ok) {
+      is.character(x) && length(x) && !anyNA(x) && !anyDuplicated(x) && all(x %in% ok)
     }
-  } else if (!entries_ok(gm)) {
-    bad("gates$metrics", "non-empty strings, or a list of them named by methods")
+    gc <- g$cell
+    if (is.list(gc)) {
+      if (!length(gc) || is.null(names(gc)) || anyDuplicated(names(gc)) ||
+          !all(names(gc) %in% names(m))) {
+        bad(paste0(field, "$cell"), paste0("cells, or a list of them named by methods (methods: ",
+                                           paste(names(m), collapse = ", "), ")"))
+      }
+      for (k in names(gc)) {
+        runs <- Filter(function(cl) k %in% (mbc[[cl]] %||% names(m)), allowed)
+        if (!cells_ok(gc[[k]], runs)) {
+          bad(paste0(field, "$cell$", k), paste0("one or more distinct cells where method ", k,
+                                                 " runs (", paste(runs, collapse = ", "), ")"))
+        }
+      }
+    } else if (!cells_ok(gc, allowed)) {
+      bad(paste0(field, "$cell"), paste0("one or more distinct cells (cells: ",
+                                         paste(allowed, collapse = ", "), ")"))
+    }
+    entries_ok <- function(x) is.character(x) && !anyNA(x) && all(nzchar(trimws(x)))
+    gm <- g$metrics
+    if (is.list(gm)) {
+      if (length(gm) && (is.null(names(gm)) || anyDuplicated(names(gm)) ||
+                         !all(names(gm) %in% names(m)))) {
+        bad(paste0(field, "$metrics"), paste0("a list named by methods (methods: ",
+                                              paste(names(m), collapse = ", "), ")"))
+      }
+      for (k in names(gm)) {
+        if (!entries_ok(gm[[k]])) bad(paste0(field, "$metrics$", k), "non-empty strings")
+      }
+    } else if (!entries_ok(gm)) {
+      bad(paste0(field, "$metrics"), "non-empty strings, or a list of them named by methods")
+    }
+  }
+  check_gates(fam$gates, "gates", cells$cell)
+  if (!is.null(fam$gates_quick)) {
+    check_gates(fam$gates_quick, "gates_quick", names(R$quick)[R$quick > 0])
   }
   fam
 }
