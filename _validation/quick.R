@@ -6,8 +6,8 @@
 # WP9 fills the tests in. Q3's mechanism is generic: a mini Monte Carlo of
 # its entries (family, cells, R) on PSOCK workers through run_rep() (the
 # long tier's paired reps and seeds), then metrics_cell(...,
-# tol_set = "quick") and gate_family(), gating the entry's cells with the
-# family's gate metrics.
+# tol_set = "quick") and gate_family(), gated by the family's gates_quick
+# where it has one, else at the entry's cells with the family's gate metrics.
 #
 # Usage (the build under test is the FIRST entry of R_LIBS):
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/quick.R
@@ -26,8 +26,9 @@
 
 # Q3's entries (plan §5): a family and, optionally, `cells`, `methods` and
 # `R` (default: the cells of the family's R$quick with their reps, every
-# method of the cell). The entry's cells are gated with the family's gate
-# metrics and the quick tolerances.
+# method of the cell). They are gated by the family's gates_quick, else at
+# the entry's cells with the family's gate metrics, with the quick
+# tolerances.
 Q3_ENTRIES <- list(
   F1 = list(family = "F1"),
   F2 = list(family = "F2"),
@@ -113,11 +114,13 @@ q3_run <- function(ctx, entries) {
     }
   }
 
-  # Each entry gated at its cells, over the entry (one family).
+  # Each entry gated over the entry (one family): by the family's
+  # gates_quick where it has one, else at the entry's cells with the
+  # family's gate metrics.
   key <- vapply(recs, function(r) paste(r$family, r$cell, r$method, sep = "\r"), "")
   for (k in names(plan)) {
     p <- plan[[k]]
-    gates <- list(cell = p$cells, metrics = p$fam$gates$metrics)
+    gates <- p$fam$gates_quick %||% list(cell = p$cells, metrics = p$fam$gates$metrics)
     sel <- unique(key[vapply(recs, function(r) r$family == p$fam$id && r$cell %in% p$cells,
                              logical(1))])
     tab <- do.call(rbind, lapply(sel, function(s) {
@@ -128,8 +131,12 @@ q3_run <- function(ctx, entries) {
     utils::write.csv(tab, file.path(ctx$out, sprintf("quick_%s_Q3_%s.csv", ctx$stamp, k)),
                      row.names = FALSE)
     g <- tab[tab$gated, , drop = FALSE]
-    cat(sprintf("\nQ3:%s gate table (cells %s; tolerances quick):\n", k,
-                paste(p$cells, collapse = ", ")))
+    gc <- gates$cell
+    cat(sprintf("\nQ3:%s gate table (%scells %s; tolerances quick):\n", k,
+                if (is.null(p$fam$gates_quick)) "" else "gates_quick, ",
+                if (is.list(gc)) paste(names(gc), vapply(gc, paste, "", collapse = ","),
+                                       sep = ": ", collapse = "; ")
+                else paste(gc, collapse = ", ")))
     if (!nrow(g)) {
       cat("  no gated rows\n")
       next

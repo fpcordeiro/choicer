@@ -8,7 +8,9 @@
 #   2. Calibration: the population's expected shares at theta0 equal Q
 #      (MNL: the WESML first-order conditions; MXL: the matched constants;
 #      < 1e-8); the Gauss-Hermite rule of the MXL against a trapezoid rule;
-#      theta_star refitted from the frozen theta0 equals D2_THETA_STAR.
+#      theta_star refitted from the frozen theta0 equals D2_THETA_STAR; the
+#      MNL and NL populations' weighted fits return their theta0; F8's
+#      frozen pseudo-true values under the NL population are reproduced.
 #   3. theta_star exact against a simulated N = 10^7 fit (the MNL
 #      log-likelihood of 10^7 travellers is that of their (type, mode)
 #      counts, so the fit is a weighted MNL on the counts, checked against
@@ -22,7 +24,8 @@
 #   INFO lines (no verdict): identification strength (NL lambda, the free
 #   MXL fit's sigma), population SEs and |b_vcost| / SE per F1 cell, the
 #   VTTS interval's tails under the normal approximation of the
-#   coefficients, F8's and F11's predicted SE ratios from the population.
+#   coefficients, F8's and F11's predicted SE ratios from the population,
+#   F8 random_nl's gaps from the Manski-Lerman shift and in the VTTS.
 #
 # Usage (about 30 seconds; one OpenMP thread, the dev build first on R_LIBS):
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=1 Rscript _validation/checks/wp3_mode.R
@@ -229,6 +232,45 @@ pr8 <- f8_pred()
 for (k in setdiff(names(pr8), "names")) {
   info(sprintf("F8 predicted SE ratio, %-26s %s", k,
                paste(sprintf("%s %.3f", pr8$names, pr8[[k]]), collapse = ", ")))
+}
+
+# F8 random_nl: the NL population's WESML target is theta0_nl (its weighted
+# population fit returns it); the unweighted fits' frozen pseudo-true values
+# are reproduced; their gaps from the Manski-Lerman shift and the VTTS, in
+# robust SE at N = 2000.
+f8_env <- environment(load_family("F8", b$L)$simulate)
+th_nl <- D2_THETA0$nl
+wpop <- d2_pseudo_fit(ty$pi * d2_type_probs("nl"), "nl")
+report("2", "NL population fit at theta0_nl returns it (Fisher consistency)",
+       max(abs(coef(wpop) - th_nl) / sqrt(diag(stats::vcov(wpop, type = "hessian")))), 1e-6)
+pt <- f8_env$f8_pseudo_true()
+for (m in names(pt)) {
+  fz <- f8_env$F8_NL_PSEUDO_TRUE[[m]]
+  report("2", sprintf("F8 random_nl: %s pseudo-true refitted vs frozen (rel)", m),
+         max(abs(pt[[m]][names(fz)] - fz) / abs(fz)), 1e-6)
+}
+W8 <- d2_cb_weights("nl", unname(f8_env$F8_H[D2_ALTS]))
+Qn <- d2_pop_shares("nl")
+asc <- paste0("ASC_", D2_ALTS[-1L])
+shift <- log(0.25 / Qn[-1L]) - log(0.25 / Qn[1L])
+vtts_nl <- -th_nl[["travel"]] / th_nl[["vcost"]]
+for (m in names(pt)) {
+  f8 <- d2_pseudo_fit(W8, if (m == "nl_unweighted") "nl" else "mnl")
+  Vh8 <- stats::vcov(f8, type = "hessian")
+  V8 <- Vh8 %*% solve(stats::vcov(f8, type = "bhhh")) %*% Vh8 / 2000
+  naive <- if (m == "nl_unweighted") th_nl else coef(d2_pseudo_fit(ty$pi * d2_type_probs("nl")))
+  naive[asc] <- naive[asc] + shift
+  t8 <- coef(f8)
+  gap <- (t8 - naive[names(t8)]) / sqrt(diag(V8))
+  g <- c(-1 / t8[["vcost"]], t8[["travel"]] / t8[["vcost"]]^2)
+  se_v <- sqrt(drop(g %*% V8[c("travel", "vcost"), c("travel", "vcost")] %*% g))
+  info(sprintf("F8 random_nl %s: (pseudo-true - Manski-Lerman shifted %s) / SE: %s", m,
+               if (m == "nl_unweighted") "theta0_nl" else "population MNL",
+               paste(sprintf("%s %.2f", names(gap), gap), collapse = ", ")))
+  info(sprintf("    its VTTS %.4f vs the population's %.4f: %.2f SE; Hessian / robust SE %s",
+               -t8[["travel"]] / t8[["vcost"]], vtts_nl,
+               (-t8[["travel"]] / t8[["vcost"]] - vtts_nl) / se_v,
+               paste(sprintf("%.3f", sqrt(diag(Vh8) / 2000 / diag(V8))), collapse = " ")))
 }
 
 # --- 3. theta_star exact vs simulated ----------------------------------------------------

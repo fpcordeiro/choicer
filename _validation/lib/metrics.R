@@ -276,7 +276,8 @@ lr_summary <- function(LR, q, alpha = 0.05) {
 #   them), failure_rate, and global_max_rate when some rep ran the
 #   multi-start check.
 # `gates` is the family's (validate_family()): a row is gated when its cell
-# is among gates$cell and an entry for its method matches it. An entry that
+# is among its method's gate cells (.gate_cells(): gates$cell, or its list
+# entry for the method) and an entry for its method matches it. An entry that
 # matches no row of a gated cell adds a row with value NA, so that a gated
 # check that cannot be computed is "na" in gate_family(), never "pass".
 # `tol_set` is "mc", "quick" or a named numeric like tolerances()'s.
@@ -391,10 +392,17 @@ metrics_cell <- function(records, gates = NULL, tol_set = "mc", level = 0.95) {
 
   # Gates: parsed in every cell (typos fail early), applied in gated cells.
   tab$gated <- FALSE
-  if (!is.null(gates) && id[1, 2] %in% gates$cell) {
+  if (!is.null(gates) && id[1, 2] %in% .gate_cells(gates, id[1, 3])) {
     tab <- .apply_gates(tab, en)
   }
   .finish_rows(tab, id[1, ], tol, level, sum(!ok))
+}
+
+# The cells where `method` is gated: gates$cell itself (every method's
+# entries apply there), or, when it is a list named by method, the method's
+# cells (none when the list does not name the method).
+.gate_cells <- function(gates, method) {
+  if (is.list(gates$cell)) as.character(gates$cell[[method]]) else gates$cell
 }
 
 # Marks the rows the parsed entries gate, and adds a gated row with value NA

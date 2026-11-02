@@ -1,9 +1,11 @@
 # ============================================================================
-# F2: nested logit (plan §5; claims C1, C5, C6) on D4-small's NL variant:
-# school choice among each student's 15 nearest schools of 4 markets x 40
-# (160 constants), nests by sector (lambda: public .5, charter .7, private
-# .85), the outside option a degenerate nest. Cells N in {1k, 4k, 16k}
-# students. Method `ml`: run_nestlogit() with polish = "newton" (the
+# F2: nested logit (plan §5; claims C1, C5) on D4-40's NL variant: school
+# choice among each student's 15 nearest of one market's 40 schools (40
+# constants; S1, 2026-11-02: 40 schools, not D4-small's 160, so that the
+# gates test C1 and not the incidental constants, C6; J/sqrt(N) = 1.26,
+# 0.63, 0.32 on the rungs), nests by sector (lambda: public .5, charter .7,
+# private .85), the outside option a degenerate nest. Cells N in {1k, 4k,
+# 16k} students. Method `ml`: run_nestlogit() with polish = "newton" (the
 # optimizer's stop certified, as Q2 asks), routes hessian, bhhh, robust;
 # derived: wtp_q_ses = -b_qs / b_d, wtp()'s ratio of the quality x SES and
 # distance coefficients: the extra km a student one SD above the mean SES
@@ -15,9 +17,9 @@
 # included, must converge (require_converged(), lib/fit.R).
 # Gates at 16k as F1's: bias, Hessian SE ratio and tails for beta, lambda and
 # the constants whose expected count at the cell is at least
-# F2_ASC_GATE_COUNT (incidental constants, C6: a constant's bias and
-# skewness are O(1/n_j), so those of rarely chosen schools are findings);
-# joint Wald size on beta and lambda; the WTP's tails.
+# F2_ASC_GATE_COUNT (a constant's bias and skewness are O(1/n_j), so those of
+# rarely chosen schools are findings; 38 of 40 at 16k); joint Wald size on
+# beta and lambda; the WTP's tails.
 # ============================================================================
 
 F2_ASC_GATE_COUNT <- 50
@@ -28,13 +30,13 @@ F2_ASC_GATE_COUNT <- 50
 # students of one seed), computed once per process.
 f2_shares <- function() {
   if (is.null(.f2$shares)) {
-    .f2$shares <- get_dgp("D4")$simulate(N = 40000L, seed = 1L, variant = "nl")$meta$shares
+    .f2$shares <- get_dgp("D4-40")$simulate(N = 40000L, seed = 1L, variant = "nl")$meta$shares
   }
   .f2$shares
 }
 
 f2_simulate <- function(cell, seed) {
-  geo_drop(get_dgp("D4")$simulate(N = cell$N, seed = seed, variant = "nl"))
+  geo_drop(get_dgp("D4-40")$simulate(N = cell$N, seed = seed, variant = "nl"))
 }
 
 f2_fit <- function(sim, theta_init = NULL) {
@@ -73,8 +75,8 @@ f2_ml <- function(sim, cell, seed) {
 
 family <- list(
   id = "F2",
-  claims = c("C1", "C5", "C6"),
-  dgp = "D4",
+  claims = c("C1", "C5"),
+  dgp = "D4-40",
   cells = data.frame(cell = c("1k", "4k", "16k"), N = c(1000L, 4000L, 16000L),
                      stringsAsFactors = FALSE),
   methods = list(ml = f2_ml),

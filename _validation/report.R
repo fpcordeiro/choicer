@@ -18,10 +18,13 @@
 # Usage (the build under test is the FIRST entry of R_LIBS):
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/report.R --run=DIR [--tier=mc|quick]
 #   --run   a run directory, or a run tag under _validation/output/
-#   --tier  mc: tolerances "mc", the gate cells gates$cell, the reps of
-#           R_by_method or R$mc; quick (Q3's rep files): tolerances "quick",
-#           the units quick.R ran (q3_plan.rds; else the cells of R$quick at
-#           every method), all of them gated, as quick.R gates them
+#   --tier  mc: tolerances "mc", the family's gates, the reps of R_by_method
+#           or R$mc; quick (Q3's rep files): tolerances "quick", the units
+#           quick.R ran (q3_plan.rds; else the cells of R$quick at every
+#           method), gated as quick.R gates them: by gates_quick where the
+#           family has it, else at all of those cells
+# Verdicts follow the plan's rule; gated rows also carry the band rule's
+# verdict (gate_family(rule = "band")) in a column `band`, for comparison.
 # ============================================================================
 
 root <- dirname(normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE),
@@ -194,7 +197,7 @@ rp_unit <- function(fam_id, cell, method, gates, want_z) {
 # gate entry that matches no row of a gated cell, so they are taken from it
 # on one placeholder failed record, keeping the gated rows (R = 0).
 rp_absent <- function(fam_id, cell, method, gates) {
-  met <- if (cell %in% gates$cell) {
+  met <- if (cell %in% .gate_cells(gates, method)) {
     ph <- new_rep_record(fam_id, cell, method, 1L, NA_integer_, ok = FALSE,
                          error = "absent from the run")
     tab <- rp_try(sprintf("metrics_cell(%s, %s, %s) (absent)", fam_id, cell, method),
@@ -224,29 +227,42 @@ rp_pooled <- function(tab) startsWith(tab$metric, "pooled_")
 .blank <- function(x) ifelse(is.na(x), "", x)
 
 # Rows in long form: metric, estimand, route, value ± MCSE, R (the reps
-# entering the row), target, tol, Holm p and verdict.
-rp_long <- function(d) {
-  data.frame(metric = d$metric, estimand = .blank(d$estimand), route = .blank(d$route),
-             value = .pm(d$value, d$mcse), R = d$R, target = .fmt(d$target), tol = .fmt(d$tol),
-             p_holm = .fmt(d$p_holm, 2L), verdict = d$verdict, stringsAsFactors = FALSE)
+# entering the row), target, tol, Holm p and verdict; with band = TRUE (the
+# gated tables) also the band rule's verdict.
+rp_long <- function(d, band = FALSE) {
+  out <- data.frame(metric = d$metric, estimand = .blank(d$estimand), route = .blank(d$route),
+                    value = .pm(d$value, d$mcse), R = d$R, target = .fmt(d$target),
+                    tol = .fmt(d$tol), p_holm = .fmt(d$p_holm, 2L), verdict = d$verdict,
+                    stringsAsFactors = FALSE)
+  if (band) out$band <- .blank(d$band)
+  out
 }
 RP_FINDING_COLS <- c("metric", "estimand", "route", "value", "R", "target", "tol")
 
+# Verdict counts as text ("pass 3, fail 1").
+.counts <- function(v) {
+  t <- table(v, useNA = "no")
+  paste(names(t), t, collapse = ", ")
+}
+
 # A summarized block: one row per (metric, route) with the mean value over
-# its estimands, their range, the range of R and the verdict counts.
-rp_block_rows <- function(d, b) {
+# its estimands, their range, the range of R and the verdict counts (and,
+# with band = TRUE, the band rule's).
+rp_block_rows <- function(d, b, band = FALSE) {
   key <- paste(d$metric, d$route, sep = "\r")
   do.call(rbind, lapply(split(seq_len(nrow(d)), factor(key, unique(key))), function(i) {
-    v <- table(d$verdict[i], useNA = "no")
     rng <- suppressWarnings(range(d$value[i], na.rm = TRUE))
     rr <- range(d$R[i])
-    data.frame(metric = d$metric[i[1]], estimand = sprintf("%s (%d)", b, length(unique(d$estimand[i]))),
-               route = .blank(d$route[i[1]]),
-               value = sprintf("mean %s [%s, %s]", .fmt(mean(d$value[i], na.rm = TRUE)),
-                               .fmt(rng[1]), .fmt(rng[2])),
-               R = if (rr[1] == rr[2]) as.character(rr[1]) else paste(rr, collapse = "-"),
-               target = .fmt(d$target[i[1]]), tol = .fmt(d$tol[i[1]]), p_holm = "",
-               verdict = paste(names(v), v, collapse = ", "), stringsAsFactors = FALSE)
+    out <- data.frame(
+      metric = d$metric[i[1]], estimand = sprintf("%s (%d)", b, length(unique(d$estimand[i]))),
+      route = .blank(d$route[i[1]]),
+      value = sprintf("mean %s [%s, %s]", .fmt(mean(d$value[i], na.rm = TRUE)),
+                      .fmt(rng[1]), .fmt(rng[2])),
+      R = if (rr[1] == rr[2]) as.character(rr[1]) else paste(rr, collapse = "-"),
+      target = .fmt(d$target[i[1]]), tol = .fmt(d$tol[i[1]]), p_holm = "",
+      verdict = .counts(d$verdict[i]), stringsAsFactors = FALSE)
+    if (band) out$band <- .counts(d$band[i])
+    out
   }))
 }
 
@@ -296,7 +312,8 @@ rp_gate_rows <- function(b, max = 50L) {
   out <- md_table(utils::head(data.frame(
     cell = b$cell, method = b$method, metric = b$metric, estimand = .blank(b$estimand),
     route = .blank(b$route), value = .pm(b$value, b$mcse), R = b$R, target = .fmt(b$target),
-    tol = .fmt(b$tol), p_holm = .fmt(b$p_holm, 2L), verdict = b$verdict), max))
+    tol = .fmt(b$tol), p_holm = .fmt(b$p_holm, 2L), verdict = b$verdict, band = .blank(b$band)),
+    max))
   if (nrow(b) > max) out <- c(out, "", sprintf("... and %d more in the metrics table.", nrow(b) - max))
   out
 }
@@ -316,10 +333,11 @@ rp_metrics_md <- function(tab) {
   g <- tab[tab$gated & !inbig, , drop = FALSE]
   gb <- lapply(big, function(b) {
     d <- tab[tab$gated & inbig & tab$block %in% b, , drop = FALSE]
-    if (nrow(d)) rp_block_rows(d, b)
+    if (nrow(d)) rp_block_rows(d, b, band = TRUE)
   })
   if (nrow(g) || length(unlist(gb))) {
-    out <- c(out, "Gated (H):", "", md_table(rbind(rp_long(g), do.call(rbind, gb))), "")
+    out <- c(out, "Gated (H; verdict by the plan's rule, band by the band rule):", "",
+             md_table(rbind(rp_long(g, band = TRUE), do.call(rbind, gb))), "")
   }
   bad <- tab[tab$gated & inbig & tab$verdict %in% c("fail", "na"), , drop = FALSE]
   if (nrow(bad)) out <- c(out, "**Failing or NA gated rows of summarized blocks:**", "",
@@ -501,10 +519,11 @@ rp_expected <- function(fam, cell, method) {
 }
 
 # The tier's design of a family: its units data.frame(cell, method, R) and
-# its gates. mc: every cell's methods at rp_expected() reps, gated at
-# gates$cell. quick: the units quick.R ran (q3_plan.rds), else the cells of
-# R$quick at every method of the cell, all of them gated, as quick.R gates
-# them. The gate metrics are the family's.
+# its gates. mc: every cell's methods at rp_expected() reps, gated by the
+# family's gates. quick: the units quick.R ran (q3_plan.rds), else the cells
+# of R$quick at every method of the cell, gated as quick.R gates them: by
+# gates_quick where the family has it, else at all of those cells with the
+# family's gate metrics.
 rp_design <- function(fam) {
   none <- data.frame(cell = character(), method = character(), R = integer())
   if (is.null(fam)) return(list(units = none, gates = NULL))
@@ -520,8 +539,15 @@ rp_design <- function(fam) {
     })) %||% none
     p <- p[!is.na(p$R) & p$R > 0, , drop = FALSE]
   }
-  gate_cells <- if (args$tier == "mc") fam$gates$cell else unique(p$cell)
-  list(units = p, gates = list(cell = gate_cells, metrics = fam$gates$metrics))
+  gates <- if (args$tier == "mc") fam$gates
+           else fam$gates_quick %||% list(cell = unique(p$cell), metrics = fam$gates$metrics)
+  list(units = p, gates = gates)
+}
+
+# Gate cells as text: "800, 3.2k", or per method "panel: 3.2k; xsec: 800".
+.cells_text <- function(gc) {
+  if (!is.list(gc)) return(paste(gc, collapse = ", "))
+  paste(sprintf("%s: %s", names(gc), vapply(gc, paste, "", collapse = ", ")), collapse = "; ")
 }
 
 # A family's section of REPORT.md (its units, gates, a section per cell and
@@ -541,9 +567,10 @@ rp_family <- function(fam_id, idx) {
     } else {
       paste(gm, collapse = ", ")
     }
-    md <- c(md, sprintf("Claims %s; DGP %s; tier %s: gate cell(s) %s; gated metrics %s.",
+    md <- c(md, sprintf("Claims %s; DGP %s; tier %s%s: gate cell(s) %s; gated metrics %s.",
                         paste(fam$claims, collapse = ", "), fam$dgp, args$tier,
-                        paste(gates$cell, collapse = ", "), gm), "")
+                        if (args$tier == "quick" && !is.null(fam$gates_quick)) " (gates_quick)"
+                        else "", .cells_text(gates$cell), gm), "")
   }
 
   # The units: the design's and those with rep files, in the family's cell order.
@@ -556,7 +583,7 @@ rp_family <- function(fam_id, idx) {
     cl <- keys$cell[k]; m <- keys$method[k]
     u <- if (present[k]) {
       rp_try(sprintf("reading %s/%s/%s", fam_id, cl, m),
-             rp_unit(fam_id, cl, m, gates, want_z = cl %in% gates$cell))
+             rp_unit(fam_id, cl, m, gates, want_z = cl %in% .gate_cells(gates, m)))
     } else {
       rp_absent(fam_id, cl, m, gates)
     }
@@ -584,18 +611,30 @@ rp_family <- function(fam_id, idx) {
                         n_miss, sum(cnt$files == 0L), sum(cnt$unreadable)), "")
   }
 
-  # Metrics, gated over the family.
+  # Metrics, gated over the family by the plan's rule; the band rule's
+  # verdict beside it (`band`, gated rows only), for comparison.
   tab <- .rbind_fill(lapply(units, `[[`, "met"))
-  if (!is.null(tab)) tab <- rp_try(sprintf("gate_family(%s)", fam_id), gate_family(tab))
+  if (!is.null(tab)) {
+    tab <- rp_try(sprintf("gate_family(%s)", fam_id), {
+      band <- gate_family(tab, rule = "band")$verdict
+      tab <- gate_family(tab)
+      tab$band <- ifelse(tab$gated, band, NA_character_)
+      tab
+    })
+  }
   if (!is.null(tab)) {
     utils::write.csv(tab, file.path(tab_dir, paste0(fam_id, "_metrics.csv")), row.names = FALSE)
   }
   g <- if (is.null(tab)) NULL else tab[tab$gated, , drop = FALSE]
-  vc <- if (is.null(g)) integer() else table(factor(g$verdict, c("pass", "fail", "na")))
+  lev <- c("pass", "fail", "na")
+  vc <- if (is.null(g)) integer() else table(factor(g$verdict, lev))
+  bc <- if (is.null(g)) integer() else table(factor(g$band, lev))
   md <- c(md, "### Gates", "",
           if (is.null(g) || !nrow(g)) "No gated rows."
-          else sprintf("%d gated rows: %d pass, %d fail, %d na (Holm over the family, tolerances %s).",
-                       nrow(g), vc[["pass"]], vc[["fail"]], vc[["na"]], args$tier), "")
+          else sprintf(paste("%d gated rows: %d pass, %d fail, %d na (the plan's rule; Holm over the",
+                             "family, tolerances %s). The band rule: %d pass, %d fail, %d na."),
+                       nrow(g), vc[["pass"]], vc[["fail"]], vc[["na"]], args$tier, bc[["pass"]],
+                       bc[["fail"]], bc[["na"]]), "")
   if (!is.null(g) && any(g$verdict %in% "na")) {
     md <- c(md, sprintf(paste("**%d gated check(s) without a value (verdict na, never a pass): a gate",
                               "entry that matches no row (R = 0), or a value or MCSE that is NA.**"),
@@ -638,7 +677,7 @@ rp_family <- function(fam_id, idx) {
   # QQ plots at the gate cells.
   qq <- character()
   for (u in units) {
-    if (!u$cell %in% gates$cell) next
+    if (!u$cell %in% .gate_cells(gates, u$method)) next
     f <- rp_try(sprintf("QQ %s/%s/%s", fam_id, u$cell, u$method),
                 rp_qq(u$z, file.path(plot_dir, sprintf("%s_qq_%s_%s.png", fam_id, u$cell, u$method)),
                       sprintf("%s cell %s, %s: z = (est - truth) / se_hessian", fam_id, u$cell,
@@ -703,7 +742,7 @@ rp_family <- function(fam_id, idx) {
       sb_md <- c(sb_md, md_table(data.frame(
         cell = rows$cell, method = rows$method, quantity = rows$estimand, R = rows$R,
         statistic = .fmt(rows$value), p = .fmt(rows$p, 3L), p_holm = .fmt(rows$p_holm, 3L),
-        H = ifelse(rows$gated, "H", ""), verdict = rows$verdict)), "")
+        H = ifelse(rows$gated, "H", ""), verdict = rows$verdict, band = .blank(rows$band))), "")
     } else {
       sb[[length(sb) + 1L]] <- data.frame(cell = u$cell, method = u$method, s$tab)
     }
@@ -724,6 +763,7 @@ rp_family <- function(fam_id, idx) {
                      pass = if (length(vc)) vc[["pass"]] else 0L,
                      fail = if (length(vc)) vc[["fail"]] else 0L,
                      na = if (length(vc)) vc[["na"]] else 0L,
+                     band_fail = if (length(bc)) bc[["fail"]] else 0L,
                      findings = if (is.null(tab)) 0L else sum(!tab$gated),
                      stringsAsFactors = FALSE)
   list(md = md, summary = summ)
@@ -797,6 +837,9 @@ md <- c(sprintf("# Validation report: %s", basename(run_dir)), "",
         sprintf("Run directory `%s`; %s; tier %s, tolerances %s; report by choicer %s.", run_dir,
                 format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"), args$tier,
                 paste(names(tl), tl, sep = " ", collapse = ", "), build$version), "",
+        paste("Verdicts follow the plan's gate rule (Holm p < 0.01 and |value - target| > tol);",
+              "the `band` column of the gated tables is the band rule's verdict",
+              "(gate_family(rule = \"band\")), shown for comparison only."), "",
         "## Summary", "", md_table(summ_md), "")
 for (v in c("missing", "fail", "na")) {
   k <- if (is.null(summ)) integer() else which(summ[[v]] > 0)

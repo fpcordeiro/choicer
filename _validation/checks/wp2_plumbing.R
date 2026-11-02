@@ -367,6 +367,63 @@ check("(5') R_by_method runs a method at fewer reps on the same paired reps; --r
     same_runs("full", "rbm", rel = names(files_of("full")))
 })
 
+# --- (5'') Gate cells per method, gates_quick, band verdicts ------------------------
+
+check("(5'') per-method gate cells: no na row where a method is not gated; gates_quick in quick", {
+  # A tree copy whose T0 runs fail only at 200, gates ml at 800 and fail at
+  # 200 (both with an lr_size entry the records never carry: na where gated),
+  # and gates the quick tier at 200 only (ml's bias_std).
+  tree <- file.path(tmp, "tree_gates", "_validation")
+  dir.create(tree, recursive = TRUE)
+  file.copy(file.path(root, c("mc.R", "report.R", "quick.R", "lib")), tree, recursive = TRUE)
+  cat('\nfamily$methods_by_cell <- list("800" = "ml")',
+      'family$gates <- list(cell = list(ml = "800", fail = "200"),',
+      '                     metrics = list(ml = c("bias_std", "lr_size"), fail = "lr_size"))',
+      'family$gates_quick <- list(cell = "200", metrics = list(ml = "bias_std"))\n',
+      file = file.path(tree, "lib", "families", "T0.R"), append = TRUE, sep = "\n")
+  out <- paste0("--out=", shQuote(tmp))
+  m <- run(file.path(tree, "mc.R"), "--family=T0", "--fixtures", "--reps=1:2", "--run=pm", out)
+  rp <- run(file.path(tree, "report.R"), paste0("--run=", shQuote(file.path(tmp, "pm"))))
+  tab <- utils::read.csv(file.path(tmp, "pm", "tables", "T0_metrics.csv"))
+  u <- utils::read.csv(file.path(tmp, "pm", "tables", "T0_units.csv"))
+  g <- tab[tab$gated, ]
+  na <- unique(paste(g$cell, g$method, g$metric)[g$verdict == "na"])
+  q <- run(file.path(tree, "quick.R"), "--only=Q3:T0", "--fixtures", "--workers=1",
+           paste0("--out=", shQuote(file.path(tmp, "pmq"))))
+  reps_dir <- list.files(file.path(tmp, "pmq"), pattern = "_reps$", full.names = TRUE)[1]
+  rq <- run(file.path(tree, "report.R"), paste0("--run=", shQuote(reps_dir)), "--tier=quick")
+  gq <- utils::read.csv(file.path(reps_dir, "tables", "T0_metrics.csv"))
+  gq <- gq[gq$gated, ]
+  qq <- utils::read.csv(list.files(file.path(tmp, "pmq"), pattern = "_Q3_T0\\.csv$",
+                                   full.names = TRUE)[1])
+  qq <- qq[qq$gated, ]
+  note("mc gated (cell method metric verdict): ",
+       paste(unique(paste(g$cell, g$method, g$metric, g$verdict)), collapse = "; "))
+  note("quick gated: report ", paste(paste(gq$cell, gq$method, gq$metric, gq$estimand),
+                                     collapse = "; "),
+       "; quick.R ", paste(paste(qq$cell, qq$method, qq$metric, qq$estimand), collapse = "; "))
+  m$status == 0L && rp$status == 0L && q$status %in% 0:1 && rq$status == 0L &&
+    all(g$cell[g$method == "ml"] == 800L) && all(g$cell[g$method == "fail"] == 200L) &&
+    setequal(na, c("800 ml lr_size", "200 fail lr_size")) &&
+    !any(u$cell == 800L & u$method == "fail") &&
+    nrow(gq) == 2L && all(gq$cell == 200L & gq$method == "ml" & gq$metric == "bias_std") &&
+    nrow(qq) == 2L && all(qq$cell == 200L & qq$method == "ml" & qq$metric == "bias_std") &&
+    any(grepl("tier quick (gates_quick): gate cell(s) 200", readLines(file.path(reps_dir,
+                                                                          "REPORT.md")),
+              fixed = TRUE))
+})
+
+check("(5'') gated rows carry the band rule's verdict beside the plan's (tables and CSV)", {
+  tab <- utils::read.csv(file.path(tmp, "full", "tables", "T0_metrics.csv"))
+  md <- readLines(file.path(tmp, "full", "REPORT.md"))
+  note("plan: ", paste(tab$verdict[tab$gated], collapse = " "), "\nband: ",
+       paste(tab$band[tab$gated], collapse = " "))
+  "band" %in% names(tab) && all(!is.na(tab$band[tab$gated])) && all(is.na(tab$band[!tab$gated])) &&
+    all(tab$band[tab$gated] %in% c("pass", "fail", "na")) &&
+    any(grepl("`band` column of the gated tables is the band rule's verdict", md, fixed = TRUE)) &&
+    any(grepl("^\\| metric \\| estimand \\| route \\| value \\| R \\| target \\| tol \\| p_holm \\| verdict \\| band \\|$", md))
+})
+
 # --- (6) quick.R's Q3 ---------------------------------------------------------------
 
 check("(6) quick.R --only=Q3:T0 --fixtures --workers=2 runs T0's mini Monte Carlo", {
