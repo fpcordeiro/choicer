@@ -240,6 +240,28 @@ lr_test <- function(ll_u, ll_r, df) {
   list(LR = LR, df = df, p = stats::pchisq(LR, df, lower.tail = FALSE))
 }
 
+# --- Derived estimands --------------------------------------------------------
+
+# vech of Sigma = L L' (row by row: Sigma_11, Sigma_21, Sigma_22, ...; the
+# diagonal only for an uncorrelated L), the covariance of the MXL's g = L
+# eta, from choicer's sigma block (log diagonal), with delta-method SEs from
+# V, the block's covariance (NA without one). A data.frame(name, est, se).
+sigma_vech <- function(sigma, K_w, correlated, V = NULL) {
+  L <- L_from_theta(unname(sigma), K_w, correlated)
+  pij <- if (correlated) cbind(rep(seq_len(K_w), seq_len(K_w)), sequence(seq_len(K_w)))
+         else cbind(seq_len(K_w), seq_len(K_w))
+  Jac <- matrix(0, nrow(pij), nrow(pij))
+  for (p in seq_len(nrow(pij))) {
+    dL <- matrix(0, K_w, K_w)
+    dL[pij[p, 1L], pij[p, 2L]] <- if (pij[p, 1L] == pij[p, 2L]) L[pij[p, 1L], pij[p, 1L]] else 1
+    Jac[, p] <- (dL %*% t(L) + L %*% t(dL))[pij]
+  }
+  se <- if (is.null(V)) rep(NA_real_, nrow(pij))
+        else sqrt(pmax(diag(Jac %*% V %*% t(Jac)), 0))
+  data.frame(name = sprintf("Sigma_%d%d", pij[, 1L], pij[, 2L]), est = (L %*% t(L))[pij],
+             se = se, stringsAsFactors = FALSE)
+}
+
 # --- Post-estimation at the truth -------------------------------------------
 
 # A copy of `fit` at theta0 (matched by name with coef(fit)), for derived
@@ -319,18 +341,23 @@ require_converged <- function(expr, what = "the fit") {
 
 # Refits from n starts theta_hat + spread * SE * U(-1, 1) through the
 # caller's refit(theta_init), which returns a fit (MXL and NL; the MNL takes
-# no theta_init). SEs that are not finite are replaced by 0.1. The NL's
-# dissimilarities move on the log scale (lambda_hat * exp(spread * SE /
-# lambda_hat * U)), so they stay positive. Returns dlogL = max over starts of
-# loglik_alt - loglik_hat (> 0: the fit missed a higher maximum),
-# max_dtheta_se = max |theta_alt - theta_hat| / SE, n_failed (errors or a
-# loglik that is not finite) and n_warned (refits that warned; their warnings
-# are muffled so that they do not count as the rep's).
+# no theta_init). SEs that are not finite are replaced by 0.1, and SEs above
+# 1 capped at 1: a fit on a zero-variance plateau (an MXL's log SD driven to
+# -Inf) has SEs of order 1e4 there, which sent both starts out of range and
+# made both refits fail, so the check missed exactly the fits it exists to
+# catch. The NL's dissimilarities move on the log scale (lambda_hat *
+# exp(spread * SE / lambda_hat * U)), so they stay positive. Returns dlogL =
+# max over starts of loglik_alt - loglik_hat (> 0: the fit missed a higher
+# maximum), max_dtheta_se = max |theta_alt - theta_hat| / SE (the capped
+# SE), n_failed (errors or a loglik that is not finite) and n_warned (refits
+# that warned; their warnings are muffled so that they do not count as the
+# rep's).
 multistart <- function(fit, refit, n = 2, seed, spread = 2) {
   th <- coef(fit)
   p <- length(th)
   se <- fit$se %||% rep(NA_real_, p)
   se[!is.finite(se) | se <= 0] <- 0.1
+  se <- pmin(se, 1)
   U <- vs_with_seed(seed, matrix(stats::runif(n * p, -1, 1), n, p))
   lam <- as.integer(fit$param_map$lambda %||% integer())
   res <- lapply(seq_len(n), function(k) {
