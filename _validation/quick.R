@@ -116,11 +116,16 @@ q3_run <- function(ctx, entries) {
 
   # Each entry gated over the entry (one family): by the family's
   # gates_quick where it has one, else at the entry's cells with the
-  # family's gate metrics.
+  # family's gate metrics; a findings-only family (gates NULL) is not gated.
   key <- vapply(recs, function(r) paste(r$family, r$cell, r$method, sep = "\r"), "")
   for (k in names(plan)) {
     p <- plan[[k]]
-    gates <- p$fam$gates_quick %||% list(cell = p$cells, metrics = p$fam$gates$metrics)
+    gates <- p$fam$gates_quick %||%
+      (if (!is.null(p$fam$gates)) list(cell = p$cells, metrics = p$fam$gates$metrics))
+    if (is.null(gates)) {
+      rows[[length(rows) + 1L]] <- q_row(paste0("Q3:", k), "no gates: a findings-only family")
+      next
+    }
     sel <- unique(key[vapply(recs, function(r) r$family == p$fam$id && r$cell %in% p$cells,
                              logical(1))])
     tab <- do.call(rbind, lapply(sel, function(s) {

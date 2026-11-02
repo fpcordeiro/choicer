@@ -15,10 +15,10 @@ specifications are written here by WP10. Until then this file holds the build's 
 | WP4 | C | `lib/dgp_sp.R`, `lib/families/F4.R`, `checks/wp4_sp.R` | done | (this commit) | 29/29 checks; D1 and D1-L (HB, logit and probit); `sigma_vech()`; start-policy study |
 | WP5 | C | `lib/dgp_geo.R`, `lib/families/F2.R`, `F3.R`, `lib/references_quad.R`, `checks/wp5_geo.R` | done | (this commit) | the quadrature reference gets its own file so WP3 and WP5 own disjoint files |
 | S1 | — | | decided 2026-11-02 | | see "Decisions" below; applied in the next commits |
-| WP6 | D | `lib/geo_gen.cpp`, `lib/families/F6.R`, `F7.R`, `lib/dgp_geo.R` (from WP5), `checks/wp6_geo.R` | in progress | | D3 hospital added to the geographic generator |
-| WP7 | D | `lib/families/F5.R`, `F10.R`, `checks/wp7_sim.R` | in progress | | |
-| WP8 | D | `lib/dgp_bayes.R`, `lib/sbc.R` (loop half), `lib/families/F9.R`, `checks/wp8_bayes.R` | in progress | | |
-| S2 | — | | pending | | budget from R = 2 smoke; F7 reps, server plan |
+| WP6 | D | `lib/geo_gen.cpp`, `lib/families/F6.R`, `F7.R`, `lib/dgp_geo.R` (from WP5), `checks/wp6_geo.R` | done | (this commit) | C++ port equals the R reference (39/39 and 300 lattice cases); 187/187 checks; contraction self-test and compile lock; F7 ≈ 1,060 CPU-h vs plan 650 (S2) |
+| WP7 | D | `lib/families/F5.R`, `F10.R`, `checks/wp7_sim.R` | done | (this commit) | F10 reproduces `blp_concentration_mc.R` rep by rep (store cube kept); F5 warm-started Newton ladders on F3, F4, F6, F7; `findings` tables; two-start tie rule (tol 1e-6); `"blp"` fits certified by their decrement; F4's gate S = 500 has simulation bias < 0.1 SE (12-dataset probe) |
+| WP8 | D | `lib/dgp_bayes.R`, `lib/sbc.R` (loop half), `lib/families/F9.R`, `checks/wp8_bayes.R` | done | (this commit) | 55/55 checks; Q1.4 vs bayesm 2.2 MCSE / SD 2.8%; Q4 passes; chains 5k + 30k thinned by 3 (10k left ESS below 99); MNP base `car`; BvM tail ESS recorded, chains lengthened (F9 ≈ 28 CPU-h) |
+| S2 | — | | in progress | | R = 2 smoke of every family: 142/142 ok, report renders, 0 gated failures |
 | WP9 | E | `quick.R` (assembly), `lib/fit.R` additions via the lead | pending | | |
 | WP10 | E | `README.md`, `DESIGN.md`, AGENTS.md rows, article note, deletions | pending | | |
 | S3 | — | | pending | | quick-tier run, then a PR |
@@ -58,5 +58,8 @@ rather than serialized through it.
 4. `prepare_mxl_data(covariate_cols = NULL)` fails ("length(alt_idx) == nrow(X) is not TRUE").
 5. `sample_by_choice(frac_per_alt =)` keeps round(f · available) per stratum, i.e. quotas, not
    Bernoulli sampling: worth a sentence in its documentation.
-6. From the plan: `summary.choicer_mc(level =)` is ignored; `monte_carlo()` on MNP/HB fits calls
+6. `ess()` and `mcse()` return NA for chains longer than about 65,000 draws: `.fft_autocov()`
+   (`R/hb_diagnostics.R:64`) divides by `L * n`, an integer product (`nextn()` returns an integer)
+   that overflows; `as.numeric(L) * n` fixes it.
+7. From the plan: `summary.choicer_mc(level =)` is ignored; `monte_carlo()` on MNP/HB fits calls
    `logLik` outside its `tryCatch`.

@@ -9,11 +9,14 @@
 # warnings by class and messages; plots in base graphics: a QQ plot of the
 # Hessian z at the gate cells, ladders (ESE*sqrt(N), N*bias, tail imbalance)
 # against every numeric cell column that varies, with rate_fit() slopes,
-# and SBC ECDF differences where the records carry ranks; then the run's
-# metadata. Reads one (cell, method)'s records at a time. Runs with R = 2
-# per cell (NA metrics) and with families whose reps all failed. A section
-# that errors is reported in REPORT.md and makes the exit status 1, as does
-# a run without rep files.
+# and SBC ECDF differences where the records carry ranks; a family with its
+# own findings(records) gets those tables (tables/<id>_findings_<name>.csv)
+# in place of the QQ plots and ladders; then the run's metadata. Reads one
+# (cell, method)'s records at a time, and all of a family's records at once
+# for its findings. Runs with R = 2 per cell (NA metrics) and with families
+# whose reps all failed (findings() may then return list(): no findings
+# yet). A section that errors is reported in REPORT.md and makes the exit
+# status 1, as does a run without rep files.
 #
 # Usage (the build under test is the FIRST entry of R_LIBS):
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/report.R --run=DIR [--tier=mc|quick]
@@ -120,13 +123,14 @@ md_table <- function(df) {
 
 # One (cell, method)'s summary from its records: counts, failures,
 # warnings, messages, the metrics (with pooled_tails() rows for blocks of
-# more than MAX_BLOCK estimands), the Hessian z of each estimand (gate
+# more than MAX_BLOCK estimands, and for the constants by the family's
+# pooled_groups() when it has one), the Hessian z of each estimand (gate
 # cells only) and SBC ranks.
 #
 # SBC ranks are the records' diag$sbc, list(L = <number of posterior
 # draws>, ranks = c(<test quantity> = <rank in 0..L>)), as metrics_cell()
 # reads them; records without them have no SBC section.
-rp_unit <- function(fam_id, cell, method, gates, want_z) {
+rp_unit <- function(fam_id, cell, method, gates, want_z, pooled_groups = NULL) {
   recs <- withCallingHandlers(read_reps(run_dir, fam_id, cell, method),
                               vs_unreadable_rep = function(w) invokeRestart("muffleWarning"))
   ok <- vapply(recs, function(r) isTRUE(r$ok), logical(1))
@@ -185,6 +189,16 @@ rp_unit <- function(fam_id, cell, method, gates, want_z) {
   for (bk in names(eb)[eb > MAX_BLOCK]) {
     met <- .rbind_fill(list(met, rp_try(sprintf("pooled_tails(%s, %s, %s, %s)", fam_id, cell,
                                                 method, bk), pooled_tails(recs, block = bk))))
+  }
+  # The constants' coverage pooled by the family's groups (pooled_groups():
+  # constant -> group, e.g. expected-count terciles; NULL: no usable rep).
+  if (!is.null(pooled_groups) && any(blocks == "asc")) {
+    grp <- rp_try(sprintf("pooled_groups(%s, %s, %s)", fam_id, cell, method), pooled_groups(recs))
+    if (length(grp)) {
+      met <- .rbind_fill(list(met, rp_try(
+        sprintf("pooled_tails(%s, %s, %s, asc, groups)", fam_id, cell, method),
+        pooled_tails(recs, block = "asc", groups = grp))))
+    }
   }
   bad <- length(attr(recs, "unreadable"))
   list(files = length(recs) + bad, ok = sum(ok), failed = sum(!ok), unreadable = bad,
@@ -365,6 +379,13 @@ rp_metrics_md <- function(tab) {
     w <- rp_worst(d)
     if (!is.null(w)) out <- c(out, "Its worst rows:", "", md_table(w), "")
   }
+  # Coverage pooled within reps for blocks shown estimand by estimand (the
+  # family's pooled_groups() over a small block).
+  p <- tab[pooled & !tab$block %in% big, , drop = FALSE]
+  if (nrow(p)) {
+    out <- c(out, "Coverage pooled within reps (by group):", "",
+             md_table(data.frame(block = p$block, rp_long(p)[RP_FINDING_COLS])), "")
+  }
   out
 }
 
@@ -540,7 +561,8 @@ rp_design <- function(fam) {
     p <- p[!is.na(p$R) & p$R > 0, , drop = FALSE]
   }
   gates <- if (args$tier == "mc") fam$gates
-           else fam$gates_quick %||% list(cell = unique(p$cell), metrics = fam$gates$metrics)
+           else fam$gates_quick %||%
+             (if (!is.null(fam$gates)) list(cell = unique(p$cell), metrics = fam$gates$metrics))
   list(units = p, gates = gates)
 }
 
@@ -567,10 +589,15 @@ rp_family <- function(fam_id, idx) {
     } else {
       paste(gm, collapse = ", ")
     }
-    md <- c(md, sprintf("Claims %s; DGP %s; tier %s%s: gate cell(s) %s; gated metrics %s.",
-                        paste(fam$claims, collapse = ", "), fam$dgp, args$tier,
-                        if (args$tier == "quick" && !is.null(fam$gates_quick)) " (gates_quick)"
-                        else "", .cells_text(gates$cell), gm), "")
+    md <- c(md, if (is.null(gates)) {
+      sprintf("Claims %s; DGP %s; tier %s: no gates (a findings-only family).",
+              paste(fam$claims, collapse = ", "), fam$dgp, args$tier)
+    } else {
+      sprintf("Claims %s; DGP %s; tier %s%s: gate cell(s) %s; gated metrics %s.",
+              paste(fam$claims, collapse = ", "), fam$dgp, args$tier,
+              if (args$tier == "quick" && !is.null(fam$gates_quick)) " (gates_quick)" else "",
+              .cells_text(gates$cell), gm)
+    }, "")
   }
 
   # The units: the design's and those with rep files, in the family's cell order.
@@ -583,7 +610,8 @@ rp_family <- function(fam_id, idx) {
     cl <- keys$cell[k]; m <- keys$method[k]
     u <- if (present[k]) {
       rp_try(sprintf("reading %s/%s/%s", fam_id, cl, m),
-             rp_unit(fam_id, cl, m, gates, want_z = cl %in% .gate_cells(gates, m)))
+             rp_unit(fam_id, cl, m, gates, want_z = cl %in% .gate_cells(gates, m),
+                     pooled_groups = fam$pooled_groups))
     } else {
       rp_absent(fam_id, cl, m, gates)
     }
@@ -630,7 +658,8 @@ rp_family <- function(fam_id, idx) {
   vc <- if (is.null(g)) integer() else table(factor(g$verdict, lev))
   bc <- if (is.null(g)) integer() else table(factor(g$band, lev))
   md <- c(md, "### Gates", "",
-          if (is.null(g) || !nrow(g)) "No gated rows."
+          if (is.null(gates)) "No gates: a findings-only family."
+          else if (is.null(g) || !nrow(g)) "No gated rows."
           else sprintf(paste("%d gated rows: %d pass, %d fail, %d na (the plan's rule; Holm over the",
                              "family, tolerances %s). The band rule: %d pass, %d fail, %d na."),
                        nrow(g), vc[["pass"]], vc[["fail"]], vc[["na"]], args$tier, bc[["pass"]],
@@ -662,6 +691,36 @@ rp_family <- function(fam_id, idx) {
               "")
     }
   }
+  # The family's own findings (findings = function(records): every cell's and
+  # method's records to a named list of data.frames, or list() when no rep
+  # is usable yet), each a table here and tables/<family>_findings_<name>.csv.
+  # An error is the section's and the report's (exit status 1).
+  if (!is.null(fam$findings)) {
+    recs <- withCallingHandlers(read_reps(run_dir, fam_id),
+                                vs_unreadable_rep = function(w) invokeRestart("muffleWarning"))
+    fnd <- rp_try(sprintf("findings(%s)", fam_id), {
+      x <- fam$findings(recs)
+      if (!is.list(x) || (length(x) && (is.null(names(x)) || !all(nzchar(names(x))) ||
+                                        !all(vapply(x, is.data.frame, logical(1)))))) {
+        stop("findings() must return a named list of data.frames, or list()")
+      }
+      x
+    })
+    if (is.null(fnd)) md <- c(md, sprintf("**findings(%s) failed: see Report errors.**", fam_id), "")
+    if (!is.null(fnd) && !length(fnd)) {
+      md <- c(md, sprintf("findings(%s): no findings yet (no usable rep).", fam_id), "")
+    }
+    for (k in names(fnd)) {
+      d <- fnd[[k]]
+      utils::write.csv(d, file.path(tab_dir, sprintf("%s_findings_%s.csv", fam_id,
+                                                     gsub("[^A-Za-z0-9._-]", "_", k))),
+                       row.names = FALSE)
+      num <- vapply(d, is.numeric, logical(1))
+      d[num] <- lapply(d[num], .fmt)
+      md <- c(md, sprintf("### Findings: %s", k), "", md_table(d), "")
+    }
+    rm(recs)
+  }
   for (what in c("fails", "warns", "msgs")) {
     d <- .rbind_fill(lapply(units, `[[`, what))
     if (!is.null(d)) {
@@ -674,10 +733,11 @@ rp_family <- function(fam_id, idx) {
   if (!is.null(cnt)) utils::write.csv(cnt, file.path(tab_dir, paste0(fam_id, "_units.csv")),
                                       row.names = FALSE)
 
-  # QQ plots at the gate cells.
+  # QQ plots at the gate cells; none, nor ladders, for a family with its own
+  # findings (its cells are regimes or designs, not rungs).
   qq <- character()
   for (u in units) {
-    if (!u$cell %in% .gate_cells(gates, u$method)) next
+    if (!is.null(fam$findings) || !u$cell %in% .gate_cells(gates, u$method)) next
     f <- rp_try(sprintf("QQ %s/%s/%s", fam_id, u$cell, u$method),
                 rp_qq(u$z, file.path(plot_dir, sprintf("%s_qq_%s_%s.png", fam_id, u$cell, u$method)),
                       sprintf("%s cell %s, %s: z = (est - truth) / se_hessian", fam_id, u$cell,
@@ -690,7 +750,7 @@ rp_family <- function(fam_id, idx) {
   # cells; the rates of the estimands whose fits have two cells or more.
   rates <- list()
   lad_md <- character()
-  if (!is.null(fam) && !is.null(tab)) {
+  if (!is.null(fam) && is.null(fam$findings) && !is.null(tab)) {
     cols <- setdiff(names(fam$cells)[vapply(fam$cells, is.numeric, logical(1))], "cell")
     N <- stats::setNames(as.numeric(fam$cells$N), fam$cells$cell)
     big <- rp_big_blocks(tab)
