@@ -294,6 +294,29 @@ fit_diag <- function(fit) {
        time_sec = fit$optimizer$elapsed_time %||% NA_real_)
 }
 
+# Every family's fits: evaluates `expr`, a choicer fit (polish = "newton"
+# where the family polishes), and returns it, or an error unless it
+# converged: with a polish, the polish certified the optimum (its decrement
+# below tolerance); without, choicer's reading of the optimizer's code
+# (fit_diag()). The error makes run_unit() record a failed rep. nloptr's
+# code alone cannot tell: NLOPT_FAILURE (-1) returns the start values
+# without a warning (choicer's NL from its default start on D2's WESML
+# samples, about half the fits), and it also comes at the optimum (an MNL in
+# F8, decrement 1e-14 there), which the polish certifies. The polish's
+# message, whose text carries the decrement, is muffled (fit_diag() keeps
+# the decrement); other messages pass.
+require_converged <- function(expr, what = "the fit") {
+  fit <- withCallingHandlers(expr, message = function(m) {
+    if (startsWith(conditionMessage(m), "Newton polish:")) invokeRestart("muffleMessage")
+  })
+  pol <- fit$optimizer$polish
+  ok <- if (is.null(pol)) fit_diag(fit)$converged else pol$converged
+  if (!isTRUE(ok)) {
+    stop(what, " did not converge: code ", fit$convergence, ", ", fit$message, call. = FALSE)
+  }
+  fit
+}
+
 # Refits from n starts theta_hat + spread * SE * U(-1, 1) through the
 # caller's refit(theta_init), which returns a fit (MXL and NL; the MNL takes
 # no theta_init). SEs that are not finite are replaced by 0.1. The NL's
@@ -428,4 +451,63 @@ run_unit <- function(family, cell, method, rep, sim = NULL, ref = NULL) {
            lr = NULL, derived = NULL, diag = diag, meta = meta)
     })
   })
+}
+
+# A record's message counts with the simulation's messages added (texts in
+# order of first appearance, the simulation's first).
+.vs_message_counts <- function(sim_txt, counts) {
+  u <- unique(c(sim_txt, names(counts)))
+  if (!length(u)) return(integer(0))
+  n <- tabulate(match(sim_txt, u), length(u))
+  k <- match(names(counts), u)
+  n[k] <- n[k] + as.integer(counts)
+  stats::setNames(n, u)
+}
+
+# The rep's records, a list named by method. The rep is simulated once,
+# after vs_set_seed(seed), and the same data go to every method through
+# run_unit(), which seeds again before each method, so that the records
+# equal those run_unit() gives when it simulates itself. The simulation's
+# warnings (stage "simulate"), messages and time join each record; a failed
+# simulation gives every method a failed record ("simulate: <message>").
+# Every method receives the same `sim`: a method must not modify sim$data by
+# reference (`:=`, setorder(), setkey()), or the later methods fit other data.
+run_rep <- function(fam, cell, rep, methods, ref = NULL) {
+  seed <- vs_seed(fam$id, cell, rep)
+  w <- list()
+  txt <- character()
+  t0 <- proc.time()[["elapsed"]]
+  vs_set_seed(seed)
+  sim <- tryCatch(withCallingHandlers(
+    fam$simulate(family_cell(fam, cell), seed),
+    warning = function(c) {
+      w[[length(w) + 1L]] <<- data.frame(stage = "simulate", class = class(c)[1],
+                                         message = conditionMessage(c), stringsAsFactors = FALSE)
+      invokeRestart("muffleWarning")
+    }, message = function(c) {
+      m <- trimws(conditionMessage(c))
+      if (!grepl("^(Optimization|MCMC) run time", m)) txt <<- c(txt, m)
+      invokeRestart("muffleMessage")
+    }), error = function(e) structure(list(msg = conditionMessage(e)), class = "vs_sim_failed"))
+  sim_sec <- proc.time()[["elapsed"]] - t0
+  sim_w <- if (length(w)) do.call(rbind, w) else NULL
+  failed <- inherits(sim, "vs_sim_failed")
+  meta <- list(choicer_version = getNamespaceVersion("choicer")[["version"]],
+               threads = choicer::thread_info()$omp_get_max_threads, ref = ref)
+  recs <- lapply(methods, function(m) {
+    if (failed) {
+      return(new_rep_record(fam$id, cell, m, rep, seed, ok = FALSE,
+                            error = paste("simulate:", sim$msg), warnings = sim_w,
+                            diag = list(sim_sec = sim_sec,
+                                        messages = .vs_message_counts(txt, integer(0))),
+                            meta = meta))
+    }
+    rec <- run_unit(fam, cell, m, rep, sim = sim, ref = ref)
+    rec$warnings <- rbind(sim_w, rec$warnings)
+    rec$diag$sim_sec <- sim_sec
+    rec$diag$messages <- .vs_message_counts(txt, rec$diag$messages)
+    rec
+  })
+  names(recs) <- methods
+  recs
 }

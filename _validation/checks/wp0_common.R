@@ -299,6 +299,23 @@ check("families: gates name several cells and per-method metrics; bad shapes nam
     identical(names(fam$gates$metrics), "ml") && all(ok)
 })
 
+check("families: R_by_method (optional) is checked against the cells, methods and R$mc", {
+  rbm <- function(x) { f <- fam; f$R_by_method <- x; f }
+  breaks <- list(
+    "`R_by_method`"      = list("900" = c(ml = 2)),
+    "`R_by_method$800` " = list("800" = c(nope = 2)),
+    "`R_by_method$800`"  = list("800" = c(fail = 5)),
+    " `R_by_method$800`" = list("800" = c(fail = 1.5)))
+  ok <- vapply(names(breaks), function(field) {
+    m <- err_msg(validate_family(rbm(breaks[[field]]), id = "T0"))
+    hit <- grepl(trimws(field), m, fixed = TRUE)
+    note(trimws(field), " -> ", m)
+    hit
+  }, logical(1))
+  good <- validate_family(rbm(list("800" = c(fail = 2))), id = "T0")
+  identical(good$R_by_method, list("800" = c(fail = 2))) && all(ok)
+})
+
 check("DGP registry: an unregistered DGP fails with the registered list", {
   m <- err_msg(get_dgp("NOPE"))
   note(m)
@@ -506,6 +523,7 @@ fake_dgp <- c(
   "  variants = 'default'))")
 
 check("DGP registry: dgp_register() validates and names the field", {
+  before <- list_dgps()                 # the lib's own DGPs, registered at source time
   ok_entry <- list(id = "Z8", name = "x", theta0 = c(a = 1),
                    simulate = function(N, seed, variant = "default") NULL,
                    moments = function(sim) NULL,
@@ -523,7 +541,7 @@ check("DGP registry: dgp_register() validates and names the field", {
     hit
   }, logical(1))
   note(sum(ok), " of ", length(ok), " breakages named their field")
-  all(ok) && identical(list_dgps(), character())
+  all(ok) && identical(list_dgps(), before)       # the failed registrations left it as it was
 })
 
 check("calibrate.R: a registered DGP prints its moments against the targets", {

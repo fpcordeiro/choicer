@@ -1,3 +1,4 @@
 output/
 cloud-init.yaml
 *.sh
+!run_shards.sh
