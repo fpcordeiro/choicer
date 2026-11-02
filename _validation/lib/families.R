@@ -133,12 +133,16 @@ load_family <- function(id, lib_env, dir = file.path(lib_env$.vs_lib, "families"
 #        methods = list(<name> = function(sim, cell, seed)),
 #        methods_by_cell = NULL | list(<cell> = <method names>),
 #        R = list(quick = c(<cell> = n), mc = c(<cell> = n)),
+#        R_by_method = NULL | list(<cell> = c(<method> = n)),   optional
 #        simulate = function(cell, seed) list(data, truth, meta),
 #        estimands = function(fit, sim) data.frame,
 #        gates = list(cell = <cells, one or more>,
 #                     metrics = <character> | list(<method> = <character>)))
 # A method's and simulate()'s `cell` is the cell's row as a list (cell, N
-# and the other columns). The gates' metrics apply to every method when
+# and the other columns). R_by_method (optional, mc tier) runs some methods
+# of a cell at fewer reps than R$mc[cell], on the same paired reps 1..n:
+# its cells exist, its methods run in the cell, and n is a whole number in
+# 1..R$mc[cell]. The gates' metrics apply to every method when
 # they are a character vector, else to the methods the list names; an entry
 # is a metric name, optionally with a route suffix and a block filter
 # ("se_ratio:hessian", "bias_std@beta"): only the shape (non-empty strings)
@@ -201,6 +205,29 @@ validate_family <- function(fam, id = NULL, where = "family") {
     if (!all(names(r) %in% cells$cell)) {
       bad(paste0("R$", k), paste0("named by cells (unknown: ",
                                   paste(setdiff(names(r), cells$cell), collapse = ", "), ")"))
+    }
+  }
+  rbm <- fam$R_by_method
+  if (!is.null(rbm)) {
+    if (!is.list(rbm) || is.null(names(rbm)) || anyDuplicated(names(rbm)) ||
+        !all(names(rbm) %in% cells$cell)) {
+      bad("R_by_method", "NULL or list(<cell> = c(<method> = n)) named by cells")
+    }
+    for (k in names(rbm)) {
+      r <- rbm[[k]]
+      run <- mbc[[k]] %||% names(m)
+      if (!is.numeric(r) || !length(r) || is.null(names(r)) || anyDuplicated(names(r)) ||
+          !all(names(r) %in% run)) {
+        bad(paste0("R_by_method$", k), paste0("numbers named by the cell's methods (",
+                                              paste(run, collapse = ", "), ")"))
+      }
+      cap <- unname(R$mc[k])
+      if (!length(cap) || is.na(cap) || anyNA(r) || any(r < 1) || any(r != floor(r)) ||
+          any(r > cap)) {
+        bad(paste0("R_by_method$", k),
+            sprintf("whole numbers in 1..R$mc[\"%s\"] (%s)", k,
+                    if (length(cap) && !is.na(cap)) cap else "not set"))
+      }
     }
   }
   if (!is.function(fam$simulate) ||

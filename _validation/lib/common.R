@@ -41,6 +41,20 @@ vs_load_choicer <- function(min_version = "0.2.1.9000") {
   invisible(list(path = path, version = version, lib = lib))
 }
 
+# A script's start, from `root` (the _validation/ directory): the build
+# guard, before anything can load choicer, then the library
+# (vs_source_lib()), attached as "vs_lib". Returns list(build, L). Scripts
+# reach it by sourcing this file alone first:
+#   sys.source(file.path(root, "lib", "common.R"), envir = (boot <- new.env()))
+#   b <- boot$vs_boot(root)
+vs_boot <- function(root) {
+  build <- vs_load_choicer()
+  sys.source(file.path(root, "lib", "families.R"), envir = (fe <- new.env()), keep.source = FALSE)
+  L <- fe$vs_source_lib(file.path(root, "lib"))
+  attach(L, name = "vs_lib", warn.conflicts = FALSE)
+  list(build = build, L = L)
+}
+
 # Stops naming the reference packages that are not installed: the quick tier
 # needs survival, mlogit and bayesm, the mc tier data.table and Rcpp.
 vs_require <- function(pkgs) {
