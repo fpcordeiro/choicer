@@ -14,16 +14,34 @@
 #   mnl  run_mnlogit() with every constant, polish = "newton" (both designs);
 #        route hessian.
 #   mxl  run_mxlogit() with every constant, S = 100 generate-mode draws seeded
-#        from the rep, polish = "newton", two starts (fit_two_starts()): the
-#        claims panel (person_col = "patient": the patient's tastes shared
-#        by their admissions; log-normal -distance and normal teaching x
-#        severity with means), the census cross-section (D4's rc_mean =
-#        FALSE design); route hessian; multi-start on reps 10, 20, ...
+#        from the rep, polish = "newton" (the claims panel, person_col =
+#        "patient": the patient's tastes shared by their admissions;
+#        log-normal -distance and normal teaching x severity with means; the
+#        census cross-section, D4's rc_mean = FALSE design); route hessian.
+#        Newton steps from theta0 (f7_estimate(), fit_newton(); S2 in
+#        DESIGN.md), not the S1 two starts. On reps 10, 20, ... also the
+#        optimizer from choicer's default start, the better certified fit
+#        kept under fit_two_starts()'s rule (diag$start), so that the default
+#        start stays measured at this scale; that comparison is the
+#        multi-start check (diag$multistart replaces the perturbed refits).
+#        diag$newton_only and diag$newton_steps record the route (steps NA
+#        after a fallback, whose polish follows the optimizer), and
+#        diag$newton_error and diag$newton_failed_sec the failed attempt, whose
+#        wall seconds diag$time_sec, the kept fit's, leaves out. Measured
+#        at N / 25 (2026-11-05; claims S = 20, census S = 100; 4 reps each):
+#        every fit certified without the fallback, in 6-12 and 6-7 steps, the
+#        two starts' maximum (|difference| / SE < 1e-4, |dlogL| < 1e-8) at 1/8
+#        and 1/3.6 of their CPU time; at full N, certified in 11 steps (claims,
+#        S = 5) and 5 (census, S = 25), further from theta0 than S = 100 is.
 #   blp  census only: concentrate_out_asc = "blp" with the sample's shares
-#        (R = 25, the same reps' data as mxl).
+#        (R = 25, the same reps' data as mxl), one start, theta0 ("blp" takes
+#        no polish). require_converged() accepts the optimizer's code here, and
+#        a premature stop from theta0 would flatter coverage, so the record
+#        keeps the outer decrement (diag$decrement, diag$concentration).
 # Threads come from the runner (mc.R --threads; 16 in the mc tier). Peak
-# RSS at one thread (2026-11-02, macOS): claims 8.5 GB (MNL rep) and 8.1 GB
-# (an MXL fit's preparation, Hessian and variance), census 4.2 and 4.0 GB.
+# RSS at one thread (macOS): claims 8.5 GB (MNL rep) and 7.1 GB (the Newton
+# route through its variance), census 4.2 and 3.4 GB; a rep with the default
+# start holds two fits' data at the end (claims 8.6 GB).
 # Derived, every method (truth at_truth()'s, S x 4 for the MXL; no SE):
 #   claims  closing hospital F7_CLOSE_HOSP (the 10th largest): the diversion
 #           to the hospital taking most of its patients at theta0, and the
@@ -121,6 +139,11 @@ f7_estimands <- function(fit, sim) {
   diag$drop <- sim$meta$drop
   diag$asc_expected <- geo_asc_expected(fit, sim)
   diag$start <- attr(fit, "start")
+  diag$multistart <- attr(fit, "multistart")
+  diag$newton_only <- attr(fit, "newton_only")
+  diag$newton_steps <- attr(fit, "newton_steps")
+  diag$newton_error <- attr(fit, "newton_error")
+  diag$newton_failed_sec <- attr(fit, "newton_failed_sec")
   diag$rows <- nrow(sim$data)
   diag
 }
@@ -157,27 +180,67 @@ f7_run <- function(sim, cell, seed, ...) {
   }
 }
 
-f7_mxl <- function(sim, cell, seed) {
-  fit <- fit_two_starts(function(theta_init) {
-    f7_run(sim, cell, seed, polish = "newton", theta_init = theta_init)
-  }, sim$truth, "the MXL fit")
-  diag <- .f7_diag(fit, sim)
-  if (vs_seed_rep("F7", cell$cell, seed) %% 10 == 0) {
-    diag$multistart <- multistart(fit, refit = function(theta_init) {
-      require_converged(f7_run(sim, cell, seed, polish = "newton", theta_init = theta_init),
-                        "the MXL fit")
-    }, seed = seed)
+# The rep's MXL estimate from fit_fun(...), a polished fit: fit_newton() from
+# theta0. On reps 10, 20, ... also a fit from choicer's default start, its
+# warnings muffled and counted, and fit_two_starts() keeps the better
+# certified one (either alone where the other fails, an error where both do).
+# Then attr(fit, "start") is fit_two_starts()'s record and attr(fit,
+# "multistart") has multistart()'s shape: dlogL = loglik_default -
+# loglik_newton, max_dtheta_se = max |theta_default - theta_newton| / SE (the
+# Newton fit's SE, capped as there; both NA unless both fits are certified),
+# n_failed, n_warned. attr(fit, "newton_only"), "newton_error" and
+# "newton_failed_sec" are fit_newton()'s, whichever fit is kept (newton_only NA
+# where it failed), and "newton_steps" counts the steps alone (NA after a
+# fallback or a failure). F5's F7 regimes call this for their step 1.
+f7_estimate <- function(fit_fun, theta0, rep, what = "the MXL fit") {
+  steps <- function(f) {
+    if (isTRUE(attr(f, "newton_only"))) f$optimizer$polish$iterations %||% NA_integer_
+    else NA_integer_
   }
-  .f7_out(fit, sim, FALSE, diag)
+  if (rep %% 10 != 0) {
+    fit <- fit_newton(fit_fun, theta0, what)
+    return(structure(fit, newton_steps = steps(fit)))
+  }
+  fits <- list()
+  warned <- 0L
+  fit <- fit_two_starts(function(theta_init) {
+    if (!is.null(theta_init)) return(fits$newton <<- fit_newton(fit_fun, theta_init, what))
+    fits$default <<- withCallingHandlers(fit_fun(theta_init = NULL), warning = function(w) {
+      warned <<- 1L
+      invokeRestart("muffleWarning")
+    })
+  }, theta0, what)
+  st <- attr(fit, "start")
+  errors <- c(st$default_error, st$theta0_error)
+  dtheta <- NA_real_
+  if (!length(errors)) {
+    th <- coef(fits$newton)
+    se <- fits$newton$se
+    se[!is.finite(se) | se <= 0] <- 0.1
+    dtheta <- max(abs(coef(fits$default)[names(th)] - th) / pmin(se, 1))
+  }
+  structure(fit, multistart = list(dlogL = st$dlogL, max_dtheta_se = dtheta,
+                                   n_failed = length(errors), n_warned = warned),
+            newton_only = attr(fits$newton, "newton_only") %||% NA,
+            newton_steps = steps(fits$newton),
+            newton_error = attr(fits$newton, "newton_error"),
+            newton_failed_sec = attr(fits$newton, "newton_failed_sec"))
+}
+
+f7_mxl <- function(sim, cell, seed) {
+  fit <- f7_estimate(function(...) f7_run(sim, cell, seed, polish = "newton", ...), sim$truth,
+                     vs_seed_rep("F7", cell$cell, seed))
+  .f7_out(fit, sim, FALSE, .f7_diag(fit, sim))
 }
 
 f7_blp <- function(sim, cell, seed) {
-  fit <- fit_two_starts(function(theta_init) {
-    f7_run(sim, cell, seed, concentrate_out_asc = "blp", theta_init = theta_init)
-  }, sim$truth, "the blp fit")
+  fit <- require_converged(f7_run(sim, cell, seed, concentrate_out_asc = "blp",
+                                  theta_init = sim$truth), "the blp fit")
   diag <- .f7_diag(fit, sim)
-  diag$concentration <- unlist(fit$optimizer$concentration[c("evaluations", "solves", "failed",
-                                                             "max_residual")])
+  conc <- fit$optimizer$concentration
+  diag$decrement <- conc$decrement %||% NA_real_
+  diag$concentration <- unlist(conc[c("evaluations", "solves", "failed", "max_residual",
+                                      "decrement")])
   .f7_out(fit, sim, FALSE, diag)
 }
 

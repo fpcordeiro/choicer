@@ -348,13 +348,13 @@ require_converged <- function(expr, what = "the fit", tol_decrement = 1e-8) {
   fit
 }
 
-# Every mixed logit fit of the suite (S1, 2026-11-02): fit_fun(theta_init)
-# runs one fit (theta_init = NULL: choicer's default start); here it runs
-# from the default start and from theta0, each through require_converged(),
-# and the certified fit with the higher log-likelihood is returned, an error
-# (the rep fails) when neither is certified. A near-tie keeps the default
-# start's fit: theta0's wins only where its log-likelihood is higher by
-# more than `tol`, since two certified fits within tol are one maximum met
+# Every mixed logit fit of the suite but F7's (S1, 2026-11-02; F7: fit_newton(),
+# S2): fit_fun(theta_init) runs one fit (theta_init = NULL: choicer's default
+# start); here it runs from the default start and from theta0, each through
+# require_converged(), and the certified fit with the higher log-likelihood is
+# returned, an error (the rep fails) when neither is certified. A near-tie keeps
+# the default start's fit: theta0's wins only where its log-likelihood is higher
+# by more than `tol`, since two certified fits within tol are one maximum met
 # from two sides (on F10's reps theta0 was ahead in 17 of 30 fits by 9e-13
 # to 1.2e-11, its estimates within 1e-7 SE of the default's). Ties within
 # tol count as the default's win, so that the record's "how often the
@@ -387,6 +387,34 @@ fit_two_starts <- function(fit_fun, theta0, what = "the fit", tol = 1e-6) {
                              default_error = if (failed[["default"]]) fits$default,
                              theta0_error = if (failed[["theta0"]]) fits$theta0)
   fit
+}
+
+# Newton steps alone from `start`, for a start next to the maximum: runs
+# fit_fun(theta_init = start, control = list(maxeval = 1L), polish_control =
+# list(max_iter = max_iter)), one polished fit with the optimizer stopped
+# after one evaluation, certified by require_converged(). Where the steps are
+# not certified, fit_fun(theta_init = start), the optimizer and the polish;
+# where that fails too, an error giving both messages (the caller's). attr(fit,
+# "newton_only") says which fit came back. After a fallback, attr(fit,
+# "newton_error") is the steps' message and attr(fit, "newton_failed_sec") their
+# wall seconds, which the kept fit's elapsed_time leaves out; its polish record
+# is the fallback's, so it counts the steps of this route only where newton_only
+# is TRUE. Why (S2, DESIGN.md): on the population designs L-BFGS needed 500-900
+# iterations on the claims, and F5's warm fits reached the same maximum, within
+# 2e-5 SE, at 1/3 to 1/13 of its time. A warning raised by steps that were not
+# certified stays the caller's.
+fit_newton <- function(fit_fun, start, what = "the fit", max_iter = 30L) {
+  t0 <- proc.time()[["elapsed"]]
+  fit <- tryCatch(require_converged(fit_fun(theta_init = start, control = list(maxeval = 1L),
+                                            polish_control = list(max_iter = max_iter)), what),
+                  error = function(e) conditionMessage(e))
+  if (!is.character(fit)) return(structure(fit, newton_only = TRUE))
+  failed_sec <- proc.time()[["elapsed"]] - t0
+  steps_error <- fit
+  fit <- tryCatch(require_converged(fit_fun(theta_init = start), what), error = function(e) {
+    stop(conditionMessage(e), " (Newton steps alone: ", steps_error, ")", call. = FALSE)
+  })
+  structure(fit, newton_only = FALSE, newton_error = steps_error, newton_failed_sec = failed_sec)
 }
 
 # Refits from n starts theta_hat + spread * SE * U(-1, 1) through the

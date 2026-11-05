@@ -147,5 +147,24 @@ family <- list(
                                                rep(c("Sigma_11", "Sigma_21", "Sigma_22"),
                                                    each = 2L))),
                               xsec = c("bias_std", "se_ratio:cluster", "tail_lower:cluster",
-                                       "tail_upper:cluster")))
+                                       "tail_upper:cluster"))),
+  # The quick tier at 200.q (S1; 200 persons, S = 200 for both methods), R = 300 on the family's
+  # seeds, 2026-11-05 (MCSE 0.058 for bias, 0.04 for an SE ratio; no failed rep; the composite's
+  # default start lost in 239 of 300 fits, and 20 of its kept fits ended on a plateau); reps 1-100,
+  # Q3's own, pass every row. Kept: bias of beta and mu in both methods, and of the constants in the
+  # panel (|value| at most 0.099); the SE ratio of price and mu, Hessian in the panel (0.993, 1.03,
+  # 0.959), cluster in the composite (0.963, 1.03, 0.966); the panel's WTP SE ratio (1.01). Dropped,
+  # all at this rung (C5): irr's SE ratio, 0.906 +- 0.037 (panel), 0.925 +- 0.038 (cluster), which
+  # alone fail about 5% of R = 100 runs; the constants' SE ratio (0.93); every tail (price 2.0 /
+  # 4.0%, irr 3.3 / 4.7%, Mu_neg_time 5.7 / 0%: one-sided errors O(N^-1/2)); the L block (L_22's bias
+  # -0.327 +- 0.058, L_21's SE ratio 0.805, L_11's lower tail 9.3%) and Sigma (SE ratio 0.814, tails
+  # to 10.3%); the joint Wald size, 22.0% panel, 40.3% composite; the LR size, 8.0% +- 1.6 (mean LR /
+  # q 1.22). Q2 checks the L block at 3.2k persons.
+  # False failures at R = 100, 1,000 bootstrap samples of the 300: 2.2%, recentered 0.7%.
+  gates_quick = list(cell = "200.q",
+                     metrics = list(panel = c("bias_std@beta", "bias_std@mu", "bias_std@asc",
+                                              "se_ratio:hessian@price", "se_ratio:hessian@mu",
+                                              "se_ratio:hessian@wtp_quality"),
+                                    xsec = c("bias_std@beta", "bias_std@mu",
+                                             "se_ratio:cluster@price", "se_ratio:cluster@mu")))
 )

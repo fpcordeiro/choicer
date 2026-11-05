@@ -553,19 +553,16 @@ ref_q14 <- function(N = 300L, burn = 5000L, kept = 200000L, seed = 20261102L) {
   q <- colnames(dc)
   e <- min(choicer::ess(dc[th, , drop = FALSE])[, "bulk"],
            choicer::ess(db[th, , drop = FALSE])[, "bulk"])
+  # Comparisons by .ref_row(), so that a NaN fails; the last row is information.
+  per_quantity <- function(what, x, threshold) {
+    do.call(rbind, lapply(q, function(k) .ref_row("Q1.4", sprintf(what, k), x[[k]], threshold)))
+  }
   rbind(
-    data.frame(test = "Q1.4", check = "differenced design: bayesm::createX() vs the DGP's",
-               value = dx, threshold = 1e-12, pass = dx < 1e-12, stringsAsFactors = FALSE),
-    data.frame(test = "Q1.4", check = paste("mean", q, "|diff| / combined MCSE"),
-               value = unname(z), threshold = 4, pass = unname(!is.na(z) & z < 4),
-               stringsAsFactors = FALSE),
-    data.frame(test = "Q1.4", check = paste("sd", q, "|choicer / bayesm - 1|"),
-               value = unname(r), threshold = 0.10, pass = unname(!is.na(r) & r < 0.10),
-               stringsAsFactors = FALSE),
-    data.frame(test = "Q1.4",
-               check = sprintf("seconds: choicer %.1f, bayesm %.1f; smallest bulk ESS %.0f",
-                               t_c, t_b, e),
-               value = t_c + t_b, threshold = NA_real_, pass = NA, stringsAsFactors = FALSE))
+    .ref_row("Q1.4", "differenced design: bayesm::createX() vs the DGP's", dx, 1e-12),
+    per_quantity("mean %s |diff| / combined MCSE", z, 4),
+    per_quantity("sd %s |choicer / bayesm - 1|", r, 0.10),
+    q_row("Q1.4", sprintf("seconds: choicer %.1f, bayesm %.1f; smallest bulk ESS %.0f", t_c, t_b, e),
+          t_c + t_b))
 }
 
 # --- Q4: the mini-SBC ----------------------------------------------------------
@@ -574,16 +571,19 @@ ref_q14 <- function(N = 300L, burn = 5000L, kept = 200000L, seed = 20261102L) {
 # q_sbc_hmnl, q_sbc_hmnp; R$quick reps each, through run_rep()): their
 # sbc_ecdf rows, gated by F9's gates_quick and Holm-adjusted together at
 # alpha = 0.001 (plan Q4: Holm p > 0.001). One row per quantity, value the
-# Holm-adjusted p. Returns list(rows, tab).
-q4_check <- function(fam, records, alpha = 0.001) {
+# Holm-adjusted p; it also fails when the quantity's ranks cover fewer than
+# `min_share` of the cell's reps (failed reps, or a quantity some reps lack: the
+# ECDF test sees only those it has). Returns list(rows, tab).
+q4_check <- function(fam, records, alpha = 0.001, min_share = 0.95) {
   key <- vapply(records, function(r) paste(r$cell, r$method, sep = "\r"), "")
   tab <- do.call(rbind, lapply(unname(split(records, key)), metrics_cell,
                                gates = fam$gates_quick, tol_set = "quick"))
   tab <- gate_family(tab, alpha = alpha)
   g <- tab[tab$gated & tab$metric == "sbc_ecdf", , drop = FALSE]
-  rows <- data.frame(test = "Q4", check = paste0(g$cell, " ", g$estimand, " (R = ", g$R, ")"),
-                     value = g$p_holm, threshold = alpha, pass = g$verdict == "pass",
-                     stringsAsFactors = FALSE)
+  cells <- vapply(records, `[[`, "", "cell")
+  n <- vapply(g$cell, function(cl) sum(cells == cl), 1L, USE.NAMES = FALSE)
+  rows <- q_row("Q4", paste0(g$cell, " ", g$estimand, " (R = ", g$R, " of ", n, ")"), g$p_holm, alpha,
+                g$verdict == "pass" & g$R >= min_share * n)
   list(rows = rows, tab = tab)
 }
 

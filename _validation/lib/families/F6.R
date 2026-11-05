@@ -123,8 +123,9 @@ f6_blp <- function(sim, cell, seed) {
     f6_run(sim, cell, seed, concentrate_out_asc = "blp", theta_init = theta_init)
   }, sim$truth, "the blp fit")
   diag <- .f6_diag(fit, sim)
-  diag$concentration <- unlist(fit$optimizer$concentration[c("evaluations", "solves", "failed",
-                                                             "max_residual")])
+  conc <- fit$optimizer$concentration
+  diag$decrement <- conc$decrement %||% NA_real_
+  diag$concentration <- unlist(conc[c("evaluations", "solves", "failed", "max_residual", "decrement")])
   .f6_out(fit, sim, FALSE, diag)
 }
 

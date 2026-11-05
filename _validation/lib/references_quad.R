@@ -287,24 +287,22 @@ ref_q13 <- function(N = 2000L, S = 4000L, design = GEO_D4_40,
   say("reference: grid %s, %d steps, BHHH decrement %.2e (finest grid %.2e), %.1f s; max |dtheta|/SE %.4f (%s)",
       lab(grids[[k]]), ref$iterations, ref$decrement, dec_fine, t_ref, max(z), worst)
 
-  row <- function(check, value, threshold = NA_real_, pass = NA) {
-    data.frame(test = "Q1.3", check = check, value = value, threshold = threshold, pass = pass,
-               stringsAsFactors = FALSE)
-  }
+  # Comparisons by .ref_row(): a NaN fails. q_row(): a verdict, or information.
   rbind(
-    row(sprintf("choicer polish converged (decrement over the mean weight; S = %d, %.0f s)",
-                S, t_fit), fit$optimizer$polish$decrement %||% NA_real_,
-        pass = isTRUE(fit$optimizer$polish$converged)),
-    row(sprintf("quadrature: |ll(%s) - ll(%s)| at the MSL estimate", lab(grids[[k]]),
-                lab(grids[[G]])), gap[k], ll_tol, gap[k] < ll_tol),
-    row(sprintf("reference converged: its BHHH decrement after %d steps (%.0f s)",
-                ref$iterations, t_ref), ref$decrement, 1e-12, ref$decrement < 1e-12),
-    row(sprintf("reference on the finest rule (%s): BHHH decrement", lab(grids[[G]])), dec_fine,
-        1e-6, dec_fine < 1e-6),
-    row(sprintf("ll(ML) - ll(MSL estimate), quadrature, %d parameters", length(th_msl)),
-        ref$ll - ll_g[k]),
-    row(sprintf("max |theta_ML - theta_MSL| / SE (worst %s; N = %d, S = %d)", worst,
-                length(unique(dt$id)), S), max(z), threshold, max(z) < threshold),
-    row(sprintf("median |theta_ML - theta_MSL| / SE; %.0f s in all",
-                proc.time()[["elapsed"]] - t_start), stats::median(z)))
+    q_row("Q1.3", sprintf("choicer polish converged (decrement over the mean weight; S = %d, %.0f s)",
+                          S, t_fit),
+          fit$optimizer$polish$decrement %||% NA_real_,
+          pass = isTRUE(fit$optimizer$polish$converged)),
+    .ref_row("Q1.3", sprintf("quadrature: |ll(%s) - ll(%s)| at the MSL estimate", lab(grids[[k]]),
+                             lab(grids[[G]])), gap[k], ll_tol),
+    .ref_row("Q1.3", sprintf("reference converged: its BHHH decrement after %d steps (%.0f s)",
+                             ref$iterations, t_ref), ref$decrement, 1e-12),
+    .ref_row("Q1.3", sprintf("reference on the finest rule (%s): BHHH decrement",
+                             lab(grids[[G]])), dec_fine, 1e-6),
+    q_row("Q1.3", sprintf("ll(ML) - ll(MSL estimate), quadrature, %d parameters", length(th_msl)),
+          ref$ll - ll_g[k]),
+    .ref_row("Q1.3", sprintf("max |theta_ML - theta_MSL| / SE (worst %s; N = %d, S = %d)", worst,
+                             length(unique(dt$id)), S), max(z), threshold),
+    q_row("Q1.3", sprintf("median |theta_ML - theta_MSL| / SE; %.0f s in all",
+                          proc.time()[["elapsed"]] - t_start), stats::median(z)))
 }

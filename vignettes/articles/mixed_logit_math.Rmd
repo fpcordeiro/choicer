@@ -1771,7 +1771,7 @@ targets)` reproduce the targets, as shares of the whole sample (`fit$share_targe
 and $\hat\delta$ only in a cross-section: a panel's
 predictions integrate per situation, the estimator per decision maker.
 
-**A Monte Carlo.** `_validation/blp_concentration_mc.R` simulates four designs of 2,000
+**A Monte Carlo.** Family F10 of the validation suite (`Rscript _validation/mc.R --family=F10`) simulates four designs of 2,000
 choice situations among ten alternatives, each situation offering a random subset of at
 least half of them (of its market's): a cross-section with an outside option; 500 decision
 makers with four situations each, with an outside option; a cross-section without one; and

@@ -23,12 +23,16 @@
 #   full   one generation at full size with the port (--full=claims or
 #          census): seconds, rows, R's heap; run it under /usr/bin/time -l
 #          for the process's peak RSS.
+#   route  fit_newton() and F7's f7_estimate() on scripted fits: which fit each
+#          branch runs and keeps, the tie rule, the records, the warnings.
 #   smoke  F6 and F7 through run_rep() (--smoke=F6,F7, or F6:20k:blp, ...):
 #          R = 1 per cell x method, plus reps 2 and 10 at F6's bottom rungs
 #          (the multi-start); F7's MXL cells ("claims", "census") at N /
 #          --f7_div and S = --f7_S, its MNL cells at full size unless
 #          --f7_mnl_div > 1; --S=<cell>:<S>,... overrides a cell's S (timing at
-#          a smaller S); each record re-validated.
+#          a smaller S); --f7_reps=1,10 lists the reps of F7's cells (default
+#          1; f7_mxl's rep 10 adds the default start, and the check reads its
+#          record and global_max_rate); each record re-validated.
 # Usage (the dev build first on R_LIBS; one thread; each section < 10 min):
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=1 VS_GEO_CACHE=<dir> \
 #     Rscript _validation/checks/wp6_geo.R --only=q0,port,calib
@@ -41,8 +45,9 @@ root <- normalizePath(file.path(dirname(normalizePath(sub("^--file=", "", file_a
 sys.source(file.path(root, "lib", "common.R"), envir = (boot <- new.env()), keep.source = FALSE)
 b <- boot$vs_boot(root)
 suppressPackageStartupMessages(library(data.table))
-args <- vs_args(defaults = list(only = "q0,port,calib", smoke = "F6,F7", full = "claims",
-                                f7_div = 25L, f7_S = 100L, f7_mnl_div = 1L, S = NULL))
+args <- vs_args(defaults = list(only = "q0,port,calib,route", smoke = "F6,F7", full = "claims",
+                                f7_div = 25L, f7_S = 100L, f7_mnl_div = 1L, f7_reps = "1",
+                                S = NULL))
 vs_threads(1L)
 options(width = 160L)
 only <- trimws(strsplit(args$only, ",", fixed = TRUE)[[1]])
@@ -280,6 +285,140 @@ if ("full" %in% only) {
   }
 }
 
+# --- route ---------------------------------------------------------------------------
+
+# fit_newton() and f7_estimate() on scripted fits: which fit each branch runs
+# and keeps, and the records. A "fit" is the list require_converged() reads;
+# the call's arguments say which one it is (no theta_init: the default start;
+# control: Newton steps alone; otherwise the optimizer from the start).
+if ("route" %in% only) {
+  cat("\n== route: fit_newton() and f7_estimate() on scripted fits ==\n")
+  estimate <- environment(load_family("F7", b$L)$simulate)$f7_estimate
+  script <- function(ok = c(newton = TRUE, optimizer = TRUE, default = TRUE),
+                     ll = c(newton = -10, optimizer = -10, default = -10), warn = NULL,
+                     throw = NULL) {
+    calls <- character()
+    list(calls = function() calls, fn = function(theta_init = NULL, control = NULL,
+                                                 polish_control = NULL) {
+      kind <- if (is.null(theta_init)) "default"
+              else if (is.null(control)) "optimizer"
+              else "newton"
+      calls <<- c(calls, kind)
+      if (kind %in% warn) warning("a warning of the ", kind, " fit")
+      if (kind %in% throw) stop("a kernel error of the ", kind, " fit")
+      th <- c(a = 1, b = 2) + if (kind == "default") c(0.01, 0) else 0
+      list(coefficients = th, se = c(a = 0.1, b = 100), loglik = ll[[kind]], convergence = 1L,
+           message = kind, kind = kind,
+           optimizer = list(polish = list(converged = ok[[kind]],
+                                          iterations = if (kind == "newton") 3L else 1L)))
+    })
+  }
+  flag <- function(pass, label) report(label, as.numeric(!isTRUE(pass)), 0.5)
+  th0 <- c(a = 1, b = 2)
+  caught <- function(expr) tryCatch(expr, error = function(e) conditionMessage(e))
+
+  s <- script()
+  f <- fit_newton(s$fn, th0)
+  flag(identical(s$calls(), "newton") && identical(attr(f, "newton_only"), TRUE) &&
+         is.null(attr(f, "newton_error")) && is.null(attr(f, "newton_failed_sec")),
+       "fit_newton: certified steps alone, newton_only TRUE, no failed attempt's record")
+  s <- script(ok = c(newton = FALSE, optimizer = TRUE, default = TRUE))
+  f <- fit_newton(s$fn, th0)
+  flag(identical(s$calls(), c("newton", "optimizer")) && identical(attr(f, "newton_only"), FALSE) &&
+         f$kind == "optimizer", "fit_newton: not certified, the optimizer from the start")
+  flag(grepl("did not converge: code 1, newton", attr(f, "newton_error"), fixed = TRUE) &&
+         is.numeric(attr(f, "newton_failed_sec")) && attr(f, "newton_failed_sec") >= 0,
+       "  the failed attempt's message and seconds are kept")
+  s <- script(throw = "newton")
+  f <- fit_newton(s$fn, th0)
+  flag(f$kind == "optimizer" && grepl("a kernel error of the newton fit", attr(f, "newton_error"),
+                                      fixed = TRUE),
+       "fit_newton: an error in the steps is kept too, the optimizer runs")
+  s <- script(ok = c(newton = FALSE, optimizer = FALSE, default = TRUE))
+  e <- caught(fit_newton(s$fn, th0))
+  flag(is.character(e) && grepl("code 1, optimizer", e, fixed = TRUE) &&
+         grepl("Newton steps alone: the fit did not converge: code 1, newton", e, fixed = TRUE),
+       "fit_newton: neither certified, an error giving both messages")
+
+  s <- script()
+  f <- estimate(s$fn, th0, 1L)
+  flag(identical(s$calls(), "newton") && is.null(attr(f, "start")) &&
+         is.null(attr(f, "multistart")) && identical(attr(f, "newton_steps"), 3L),
+       "f7_estimate rep 1: Newton alone, no record of a default start")
+  flag(is.null(attr(f, "newton_error")) && is.null(attr(f, "newton_failed_sec")),
+       "  no failed attempt's record")
+  s <- script(ok = c(newton = FALSE, optimizer = TRUE, default = TRUE))
+  f <- estimate(s$fn, th0, 1L)
+  flag(f$kind == "optimizer" && identical(attr(f, "newton_only"), FALSE) &&
+         identical(attr(f, "newton_steps"), NA_integer_) && is.character(attr(f, "newton_error")) &&
+         is.numeric(attr(f, "newton_failed_sec")),
+       "f7_estimate rep 1: a fallback: steps NA (not the fallback polish's), the attempt recorded")
+  s <- script(ok = c(newton = FALSE, optimizer = FALSE, default = TRUE))
+  flag(is.character(caught(estimate(s$fn, th0, 1L))) && !("default" %in% s$calls()),
+       "f7_estimate rep 1: Newton and the optimizer fail, an error, no default start")
+
+  # Rep 10: the tie rule, both ways.
+  s <- script(ll = c(newton = -10 + 5e-7, optimizer = -10, default = -10))
+  f <- estimate(s$fn, th0, 10L)
+  m <- attr(f, "multistart")
+  st <- attr(f, "start")
+  flag(f$kind == "default" && st$winner == "default" && setequal(s$calls(), c("newton", "default")),
+       "f7_estimate rep 10: a tie within tol keeps the default start's fit")
+  flag(identical(names(st), c("winner", "dlogL", "default_error", "theta0_error")) &&
+         isTRUE(all.equal(m$dlogL, -5e-7)) && isTRUE(all.equal(m$max_dtheta_se, 0.1)) &&
+         m$n_failed == 0L && m$n_warned == 0L,
+       "  its record: dlogL = default - Newton, max dtheta / SE on the capped SE (0.01 / 0.1)")
+  flag(identical(attr(f, "newton_only"), TRUE) && identical(attr(f, "newton_steps"), 3L),
+       "  the Newton fit's newton_only and steps, the default's fit kept")
+  s <- script(ll = c(newton = -10 + 2e-6, optimizer = -10, default = -10))
+  f <- estimate(s$fn, th0, 10L)
+  flag(f$kind == "newton" && attr(f, "start")$winner == "theta0" && attr(f, "multistart")$dlogL < 0,
+       "f7_estimate rep 10: Newton higher by more than tol is kept")
+  s <- script(ll = c(newton = -10, optimizer = -10, default = -9))
+  f <- estimate(s$fn, th0, 10L)
+  flag(f$kind == "default" && isTRUE(all.equal(attr(f, "multistart")$dlogL, 1)),
+       "f7_estimate rep 10: the default start above: kept, dlogL > 0 for global_max_rate")
+  # Rep 10: one route fails, or warns.
+  s <- script(ok = c(newton = TRUE, optimizer = TRUE, default = FALSE))
+  f <- estimate(s$fn, th0, 10L)
+  m <- attr(f, "multistart")
+  flag(f$kind == "newton" && m$n_failed == 1L && is.na(m$dlogL) && is.na(m$max_dtheta_se) &&
+         is.character(attr(f, "start")$default_error),
+       "f7_estimate rep 10: the default start fails: Newton kept, n_failed 1, dlogL NA")
+  s <- script(ok = c(newton = FALSE, optimizer = FALSE, default = TRUE))
+  f <- estimate(s$fn, th0, 10L)
+  m <- attr(f, "multistart")
+  flag(f$kind == "default" && m$n_failed == 1L && is.na(m$dlogL) && is.na(attr(f, "newton_only")) &&
+         is.na(attr(f, "newton_steps")) && is.null(attr(f, "newton_error")) &&
+         grepl("Newton steps alone", attr(f, "start")$theta0_error, fixed = TRUE),
+       "f7_estimate rep 10: Newton and the optimizer fail: the default's kept, both messages")
+  s <- script(ok = c(newton = FALSE, optimizer = TRUE, default = TRUE))
+  f <- estimate(s$fn, th0, 10L)
+  flag(f$kind == "default" && identical(attr(f, "newton_only"), FALSE) &&
+         identical(attr(f, "newton_steps"), NA_integer_) && is.character(attr(f, "newton_error")) &&
+         is.numeric(attr(f, "newton_failed_sec")),
+       "f7_estimate rep 10: a fallback, the default's fit kept: the attempt recorded, steps NA")
+  s <- script(ok = c(newton = FALSE, optimizer = FALSE, default = FALSE))
+  flag(grepl("did not converge from either start", caught(estimate(s$fn, th0, 10L)), fixed = TRUE),
+       "f7_estimate rep 10: all fail, an error naming both starts")
+  s <- script(warn = "default")
+  w <- 0L
+  f <- withCallingHandlers(estimate(s$fn, th0, 10L), warning = function(c) {
+    w <<- w + 1L
+    invokeRestart("muffleWarning")
+  })
+  flag(w == 0L && attr(f, "multistart")$n_warned == 1L,
+       "f7_estimate rep 10: the default start's warning muffled and counted")
+  s <- script(warn = "newton")
+  w <- 0L
+  f <- withCallingHandlers(estimate(s$fn, th0, 10L), warning = function(c) {
+    w <<- w + 1L
+    invokeRestart("muffleWarning")
+  })
+  flag(w == 1L && attr(f, "multistart")$n_warned == 0L,
+       "f7_estimate rep 10: the Newton fit's warning stays the rep's")
+}
+
 # --- smoke ---------------------------------------------------------------------------
 
 if ("smoke" %in% only) {
@@ -305,7 +444,9 @@ if ("smoke" %in% only) {
       ms <- cell_methods(fam, cl)
       if (length(p) >= 3L) ms <- intersect(ms, p[3])
       bottom <- fam$id == "F6" && fam$cells$N[fam$cells$cell == cl] == 5000L
-      reps <- if (bottom) c(1L, 2L, 10L) else 1L
+      reps <- if (bottom) c(1L, 2L, 10L)
+              else if (fam$id == "F7") as.integer(strsplit(args$f7_reps, ",", fixed = TRUE)[[1]])
+              else 1L
       for (r in reps) {
         t0 <- now()
         recs <- run_rep(fam, cl, r, ms)
@@ -326,6 +467,7 @@ if ("smoke" %in% only) {
             fit_sec = round(rec$diag$time_sec %||% NA_real_, 1),
             iterations = rec$diag$iterations %||% NA, code = rec$diag$code %||% NA,
             decrement = signif(rec$diag$decrement %||% NA_real_, 2),
+            newton_only = rec$diag$newton_only %||% NA, steps = rec$diag$newton_steps %||% NA,
             start = if (is.null(st)) "" else sprintf("%s %.2g", st$winner, st$dlogL %||% NA),
             dropped = rec$diag$drop[["alts"]] %||% NA,
             heap_mb = round(rec$diag$peak_mem_mb[["heap_mb"]]),
@@ -336,6 +478,36 @@ if ("smoke" %in% only) {
             error = substr(rec$error %||% "", 1, 80), stringsAsFactors = FALSE)
           report(sprintf("%s/%s/%s rep %d: ok and valid", rec$family, rec$cell, rec$method,
                          rec$rep), as.numeric(!(rec$ok && valid)), 0.5)
+          # F7's route: the default start's record on reps 10, 20, ... only;
+          # metrics_cell()'s global_max_rate reads its dlogL (a rep twice,
+          # since the rate needs two).
+          if (rec$ok && fam$id == "F7" && rec$method == "mxl") {
+            mst <- rec$diag$multistart
+            has <- !is.null(mst) && !is.null(st)
+            report(sprintf("F7/%s/mxl rep %d: the default start's record only on reps 10, 20, ...",
+                           rec$cell, rec$rep), as.numeric(has != (rec$rep %% 10 == 0)), 0.5)
+            if (has) {
+              cat(sprintf(paste("      default start: winner %s, dlogL %.3g, max dtheta / SE %.3g,",
+                                "failed %d, warned %d\n"), st$winner, mst$dlogL, mst$max_dtheta_se,
+                          mst$n_failed, mst$n_warned))
+              report(sprintf("F7/%s/mxl rep %d: multistart's dlogL = the start record's", rec$cell,
+                             rec$rep), as.numeric(!identical(mst$dlogL, st$dlogL)), 0.5)
+              rr <- list(rec, rec)
+              rr[[2]]$rep <- rec$rep + 1L
+              gm <- metrics_cell(rr)
+              gm <- gm[gm$metric == "global_max_rate", ]
+              report(sprintf("F7/%s/mxl rep %d: global_max_rate reads it (R = 2)", rec$cell,
+                             rec$rep), as.numeric(!(nrow(gm) == 1L && gm$R == 2L)), 0.5)
+            }
+          }
+          # "blp" takes no polish: the record keeps the outer decrement.
+          if (rec$ok && fam$id == "F7" && rec$method == "blp") {
+            report(sprintf("F7/%s/blp rep %d: the record keeps the outer decrement (%.3g)",
+                           rec$cell, rec$rep, rec$diag$decrement),
+                   as.numeric(!(is.finite(rec$diag$decrement) &&
+                                  identical(rec$diag$decrement,
+                                            rec$diag$concentration[["decrement"]]))), 0.5)
+          }
           if (rec$ok && rec$rep == 1L) {
             e <- rec$est
             z <- (e$est - e$truth) / e$se_hessian

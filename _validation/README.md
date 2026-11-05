@@ -1,300 +1,353 @@
-# MXL Monte Carlo Validation Suite
+# Validation suite
 
-Developer infrastructure for the `choicer` package. This suite exercises every
-supported feature of the Mixed Logit estimator against the classical
-asymptotic claims from MLE / MSL theory, at enough replications to separate
-signal from MC noise.
+Developer infrastructure for `choicer`, not shipped with the package (`_validation/` is in
+`.Rbuildignore`). The suite asks two things of the frequentist and Bayesian estimators: do they
+estimate what theory says they estimate, and is the uncertainty they report honest? It asks on
+designs that resemble the package's target applications: stated-preference panels,
+revealed-preference mode choice, hospital choice from claims, school choice from a census.
+`DESIGN.md` holds the derivations behind the claims, the metrics' formulas, the designs' calibration
+and what the build measured.
 
-**Not shipped with the package.** `_validation/` is listed in
-`.Rbuildignore` and only exists in the development tree.
+## What it can and cannot say
 
-## What this validates
+A pass says that, on these data-generating processes and at this number of replications, an
+estimator's bias, the calibration of its standard errors and the size of its tests do not deviate
+from what theory predicts by more than a tolerance fixed in advance. Agreement with truth on
+realistic designs is strong evidence that the implementation is right and that its inference can be
+trusted there.
 
-Seven claims operationalized as pass / fail checks on every scenario:
+It cannot say the following.
 
-1. Consistency: `|bias / MC-SE| < 3` at the largest N in Scenario A.
-2. Asymptotic normality: moments of `z = (theta_hat - theta_0) / se`
-   (skew, excess kurt) plus four normality tests (Shapiro, AD, JB, KS).
-3. Wald coverage: Wilson CI on empirical coverage contains the nominal
-   level at 90 / 95 / 99 pct.
-4. Information-matrix equality: `mean(SE) / sd_emp` near 1 (both Hessian
-   and BHHH).
-5. Simulation bias: `|bias|` approximately linear in `1 / S` (Scenario D).
-6. LR statistic distribution: empirical CDF matches chi-squared via KS;
-   size of nominal-5 pct test near 0.05 (Scenario A).
-7. Analytical Hessian correctness: max relative error vs `numDeriv` under
-   1e-4 (one rep per scenario).
+- That a model suits an application. Except in the misspecification designs (F8's unweighted fits
+  on the NL population, F11), the fitted model is the true one. The suite validates the estimators, not any modeling
+  choice.
+- That a result extends beyond its design. J, N, S and the share of the outside option are those of
+  the tables below.
+- What a user reaches from choicer's default start. Every mixed logit fit runs from the default
+  start and from the truth and keeps the higher certified likelihood (S1 in `DESIGN.md`); F7 takes
+  Newton steps from the truth (S2). So the verdicts concern the maximum of the likelihood, not the
+  optimizer's path. How often the default start lost is recorded (`diag$start`), and it is a finding
+  about the package.
+- That simulation error is inside the standard errors. The variance routes estimate the sampling
+  variance given the draws; family F5 measures the simulation error beside them.
+- Anything where a claim is measured, not proved. The incidental-constants prediction for the MXL
+  and the NL (C6) is derived by analogy to panel models; no published theorem covers it, so it is a
+  finding, never a gate.
+- That derivatives are exact, or that malformed inputs are handled. Those checks live in
+  `tests/testthat/` and are not repeated here.
 
-## Scenario grid
+**The long tier has not been run yet.** Numbers quoted in this directory come from the build's
+probes and from the quick tier's calibration, each with the R it was measured at. A server run comes
+later.
 
-| id | purpose | N | S | K_w | rc_dist | rc_corr | rc_mean | R |
-|----|---------|---|---|-----|---------|---------|---------|---|
-| A  | consistency across N | 1k / 2.5k / 5k / 10k | ceil(1.5 sqrt N) rounded up to 50 | 2 | normal, normal | FALSE | FALSE | 1000 (2000 at 10k) |
-| B  | correlated Sigma, K_w=2 | 5000 | 100 | 2 | normal, normal | TRUE | FALSE | 1000 |
-| B2 | correlated Sigma, K_w=3 | 5000 | 100 | 3 | normal x 3 | TRUE | FALSE | 1000 |
-| C  | log-normal RC with mu | 5000 | 100 | 2 | log-n, normal | FALSE | TRUE | 1000 |
-| D  | simulation bias O(1/S) | 5000 | 25 / 50 / 100 / 250 / 500 | 2 | normal, normal | FALSE | FALSE | 300 |
-| F  | weak identification | 5000 | 100 | 2 | normal, normal | FALSE | FALSE | 1000 |
-| G1 | correlated Sigma + log-normal price | 20000 | 250 | 2 | log-n, normal | TRUE | TRUE | 5000 |
+## The three gates
 
-All scenarios use J = 8 inside alternatives, `outside_option = TRUE`,
-`vary_choice_set = TRUE`, `use_asc = TRUE`. See
-`.claude/plans/MXL_MC_VALIDATION_PLAN.md` (in the main worktree) for the
-theoretical motivation and the justification of the fixed-J, `outside_option = TRUE` conventions.
+| Gate | Question | Compared with | Cost |
+|---|---|---|---|
+| `golden/` identity harness | Did this change move any number between two builds? | another build, bit for bit | a minute or two per build |
+| `quick.R` | Are the estimates and the inference still right? | the truth, exact references, other packages | estimated 9.5 minutes on 8 workers (budget 15) |
+| `mc.R` | Do the asymptotic claims hold on realistic designs? | the truth, over replications | about 790 CPU-hours |
 
-## How to run
+The golden harness is not the quick run. It catches regressions but never compares anything with the
+truth, so it cannot say whether either build is right. The other two can, and neither can prove that
+a change moved nothing.
 
-### Pre-flight (QUICK mode, < 90 minutes)
+## Running it
 
-```bash
-OMP_NUM_THREADS=2 QUICK=TRUE Rscript _validation/mxl_monte_carlo.R
+**The build under test.** Install it from a copy of its tree into a library of its own, and name
+that library first on `R_LIBS`:
+
+```sh
+mkdir -p /tmp/lib-dev && R CMD INSTALL --library=/tmp/lib-dev /tmp/copy-of-the-tree
 ```
 
-QUICK mode reduces every R to 50 and trims Scenario A's N-grid to {1k, 5k}
-and Scenario D's S-grid. The output artifacts are written but the study's
-headline claims cannot be fully adjudicated at R = 50 alone; inspect the
-per-rep RDS files for debugging only.
+Every runner stops unless `R_LIBS` is set, its first entry holds choicer, the namespace was loaded
+from there and the version is at least 0.2.1.9000. The site library's 0.2.1 lacks `person_col`,
+`polish` and `concentrate_out_asc`, and it would otherwise shadow the development build. Commands
+below write `<lib>` for that library.
 
-### Full overnight run (~75 hours on an 8-worker, 2-thread setup)
+**Dependencies.** Besides choicer's: `survival`, `mlogit` (with `dfidx`) and `bayesm` for the quick
+tier's references, `data.table`, `Rcpp` and a C++ compiler for the generator, `numDeriv` in the
+self-checks.
 
-```bash
-OMP_NUM_THREADS=2 Rscript _validation/mxl_monte_carlo.R
+**The generator's build cache.** Families F5, F6 and F7, and Q0 and Q2 of the quick tier, simulate
+through `lib/geo_gen.cpp`, compiled once by `Rcpp::sourceCpp()`. `VS_GEO_CACHE` names its cache
+(default `_validation/output/geo_gen_cache`). Processes sharing a cache compile once, under a lock;
+give a machine or a checkout one cache.
+
+**Outputs** go to `_validation/output/` (ignored by git) or to `--out=DIR`. Inside a package tree
+the suite accepts only a directory git ignores.
+
+### The quick tier
+
+```sh
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/quick.R
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/quick.R --only=Q0,Q1.3,Q2:F1,Q3:F2 --workers=4
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/quick.R --only=Q3:F1,Q4 --reps=2
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/report.R --run=<out>/quick_<stamp>_reps --tier=quick
 ```
 
-The driver wires `future::plan(multisession, workers = floor(cores/2))` so
-parallel R-level replications combine with 2-thread OpenMP per fit without
-oversubscribing the machine. Set `OMP_NUM_THREADS=1` if you plan to use
-more parallel workers; set higher if your cores are hyper-threaded.
+`--only` selects tests, and `Q2:<entry>` and `Q3:<entry>` select one of their entries. `--workers`
+(default 8) sets the PSOCK workers, each at one thread. `--reps=N` runs every cell of Q3 and Q4 at N
+reps instead of 100: that exercises the plumbing, since the gates hold at 100. `--perturb=x` adds x
+to the truth on choicer's side of Q0, a failure injection for `checks/wp9_quick.R`. `--fixtures`
+adds the plumbing fixture T0 to Q3. `--ref=NAME` is recorded in the metadata, and `--out=DIR`
+replaces the default `_validation/output/quick/`.
 
-Scenario G1 (N = 20000, R = 5000, S = 250, correlated K_w = 2 with a
-log-normal price RC) is by far the heaviest single scenario in the suite
-and benefits from running in a dedicated batch:
+It writes `quick_<stamp>.csv` (every check row, with the test's seconds), `quick_<stamp>_info.csv`
+(rows that carry information and no verdict), `quick_<stamp>_Q3_<entry>.csv` and
+`quick_<stamp>_Q4.csv` (the metrics), and the reps of Q3 and Q4 under `quick_<stamp>_reps/`. It
+prints a summary, the gate tables and the report's command. It exits 1 if any check fails. A missing
+reference, a family that does not load, a test that returns no row and a gated row without a value
+all count as failures.
 
-```bash
-OMP_NUM_THREADS=2 SCENARIOS=G1 RUN_TAG=$(date +%Y%m%d-%H%M%S)-g1 \
-  Rscript _validation/mxl_monte_carlo.R
+| Test | What it compares | Claim | Pass rule |
+|---|---|---|---|
+| Q0 | Every DGP against choicer at the truth: the probabilities its choices are drawn from against `predict()` (MNL, NL), and the suite's simulated log-likelihood on a shared cube of draws, and on the DGP's own tastes as a one-draw cube, against a fit with every parameter fixed (MXL) | the conventions | max abs diff below 1e-12; relative difference below 1e-12 |
+| Q1.1 | MNL on `mode_choice` against `survival::clogit` and `mlogit` | same estimator | \|Δθ\|/SE below 1e-4, relative SE difference below 1e-4, \|ΔlogL\| below 1e-6 |
+| Q1.2 | NL (ground nest) against `mlogit` with `un.nest.el = TRUE` | same estimator | \|Δθ\|/SE below 1e-3, \|ΔlogL\| below 1e-5 |
+| Q1.3 | MXL at S = 4,000 against the suite's exact Gauss-Hermite maximum likelihood (D4-40, N = 2,000) | C4 | \|Δθ\|/SE below 0.05 |
+| Q1.4 | MNP against `bayesm::rmnpGibbs`, same prior, base alternative aligned | same posterior | means within 4 combined MCSEs, SDs within 10% |
+| Q2 | One large fit per family: F1 (N = 10^6), F2 (200,000), F3 (16k), F4 (3.2k persons), F6 MXL (20k), F6 MNL (80k) | C1 | polish certified; max \|z\| below 4; BHHH and robust SEs within 10% of the Hessian's (for a constant with n choices, within the larger of 10% and 2/√n, 4 SD of the routes' difference) |
+| Q3 | Mini Monte Carlos, R = 100: the bottom rungs of F1, F2, F3 (S = 200), F4 (S = 200), and F8's unweighted MNL under quotas | C1, C2 | the gate rule at the quick tolerances, on each family's `gates_quick`, F8's including the exact constant shift; at most 2% failed reps per cell and method; information rows say how often the default start failed or lost |
+| Q4 | Mini SBC, R = 100: MNP, HMNL, HMNP on small data and short chains | C7 | ECDF test, Holm p above 0.001; at most 2% failed reps; each quantity's ranks cover at least 95% of the reps |
+
+Each family's `gates_quick` holds only the checks theory supports at its bottom rung, confirmed at R
+= 300 (R = 3,000 for the cheap families) on the family's own seeds; a comment beside it lists what
+was dropped and why, with the numbers.
+
+### The long tier
+
+```sh
+# One family, or part of one, in one process:
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/mc.R --family=F1 --run=try
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/mc.R --family=F3 --cells=16k --methods=ml --reps=1:100 --run=try
+# Shard 2 of 8 of a run, by hand:
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/mc.R --family=F2 --shard=2/8 --run=f2
+# Background shards, after a warm pass that compiles the generator once:
+R_LIBS=<lib> VS_GEO_CACHE=<dir> _validation/run_shards.sh --family=F1,F2,F8,F11 --shards=32 --run=cheap
+R_LIBS=<lib> VS_GEO_CACHE=<dir> _validation/run_shards.sh --family=F7 --shards=4 --threads=16 --run=f7
+# More replications of F7's mixed logit, into the same run:
+R_LIBS=<lib> VS_GEO_CACHE=<dir> _validation/run_shards.sh --family=F7 --cells=claims,census --methods=mxl --reps=101:1000 --shards=4 --threads=16 --run=f7
+# Failed reps again; seed ranges checked:
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/mc.R --family=F3 --run=f3 --retry-failed
+R_LIBS=<lib> Rscript _validation/mc.R --check-seeds
+# The report:
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/report.R --run=f3
 ```
 
-### Run tagging and checkpointing
+`--family` takes an id, a list or `all`. A unit (family, cell, method, rep) writes one file,
+`<out>/<run>/<family>/<cell>/<method>/rep_NNNNN.rds`, atomically. Each rep is simulated once and its
+data go to every method of the rep, so comparisons between methods are paired. Running again with
+the same `--run` skips the units with a readable file, so a killed or preempted run resumes where it
+stopped and extending `--reps` adds to it. Shard k of K takes the reps with `rep %% K == k - 1`. A
+failed rep is a record (error, warnings, optimizer code) that counts in the failure rate;
+`--retry-failed` reruns those. The seed is a function of family, cell and rep and not of the method,
+and a rep is reproducible at a fixed thread count, bit for bit at one thread.
 
-Every run writes its artifacts under a tagged subfolder
-`_validation/output/<RUN_TAG>/`. Default: `RUN_TAG=YYYYMMDD-HHMMSS`, so
-each run is isolated by timestamp.
+`run_shards.sh` passes other arguments to `mc.R`, starts each shard with `nohup` from a generated
+script under `<run>/logs/`, and prints the commands to watch, stop, resume and report the run. It
+starts nothing while a shard of the same run is alive. Its `--threads` sets each shard's OpenMP
+threads.
 
-```bash
-# Fresh run, timestamped folder
-Rscript _validation/mxl_monte_carlo.R
+A sensible order is the cheap families with hard gates first and F7 last.
 
-# Named run (e.g., before/after a code change)
-RUN_TAG=post-batch-cholesky Rscript _validation/mxl_monte_carlo.R
+### Calibration and self-checks
 
-# Resume a preempted run: the driver skips any scenario whose
-# mc_<id>_raw.rds already exists in <tag>/, and rehydrates those for the
-# cross-scenario summary and REPORT.md
-RUN_TAG=20260423-120000 Rscript _validation/mxl_monte_carlo.R
+`lib/calibrate.R` prints a DGP's moments against their targets, and its truth:
 
-# Re-run a subset of scenarios into an existing folder (e.g., after a
-# spot-instance preemption killed Scenario F midway)
-RUN_TAG=20260423-120000 SCENARIOS=F Rscript _validation/mxl_monte_carlo.R
-
-# Comma-separated list is supported
-SCENARIOS=B,B2,F Rscript _validation/mxl_monte_carlo.R
+```sh
+R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/lib/calibrate.R --dgp=D4-40 --variant=nl --N=200000
 ```
 
-`_validation/output/latest` is a symlink (or, on filesystems without
-symlink support, a `LATEST` pointer file) to the most recent run so
-ad-hoc tooling can find outputs without knowing the tag.
+The suite's own checks exit 1 on a failure, and each file's header lists its sections:
 
-### Live per-rep progress and parallelism
-
-The driver emits a `[<id>] rep <r>/<R> <ok|ERR> t=<sec>s` line on stderr
-at the end of each replication (see `run_one()` in
-`_validation/mxl_monte_carlo.R`). Whether those lines stream live or
-arrive in a single burst at the end depends on the iteration backend:
-
-- `MC_WORKERS=1` (sequential): the driver bypasses
-  `future.apply::future_lapply` and uses plain `lapply()`. Messages
-  stream live. This is the path used by `_validation/run_g1.sh`. When
-  the wrapper pipes through `tee`, prefix `Rscript` with
-  `stdbuf -oL -eL` to defeat libc block-buffering on the pipe (already
-  done in `run_g1.sh`).
-- `MC_WORKERS>1` (multisession): the driver uses `future_lapply`, which
-  captures every per-future stdout/stderr via `sink()`-style redirection
-  and **only replays it once all elements have resolved**. `message()`
-  emitted from inside workers therefore will NOT appear live -- a
-  multi-hour run would print nothing until completion. The escape
-  hatches `future.stdout = FALSE` and `future.conditions = "message"`
-  either drop output or relay only on assembly, so they do not solve the
-  live-progress problem.
-
-To get live progress under multiple workers, wire the loop with
-`progressr`. It signals a custom `progression` condition that `future`
-relays immediately, bypassing the buffer-and-replay path:
-
-```r
-# Top of script, alongside future::plan():
-if (PARALLEL && requireNamespace("progressr", quietly = TRUE)) {
-  progressr::handlers(global = TRUE)
-  progressr::handlers("cli")  # or "progress" / "txtprogressbar"
-}
-
-# Inside run_scenario(), replacing the future_lapply branch:
-if (PARALLEL && n_workers > 1L) {
-  results <- progressr::with_progress({
-    p <- progressr::progressor(steps = R)
-    future.apply::future_lapply(
-      seq_len(R),
-      function(r) {
-        res <- run_one(r)
-        p(sprintf("[%s] rep %d/%d %s t=%.1fs",
-                  tag, r, R,
-                  if (is.na(res$error)) "ok" else "ERR",
-                  res$time_sec))
-        res
-      },
-      future.seed = TRUE
-    )
-  })
-} else {
-  results <- lapply(seq_len(R), run_one)
-}
+```sh
+R_LIBS=<lib> OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=1 Rscript _validation/checks/wp0_common.R
 ```
 
-Caveats under multi-worker:
+| File | What it checks |
+|---|---|
+| `checks/wp0_common.R` | the build guard, arguments, seeds, rep files, the output guard, the family contract (under 2 minutes) |
+| `checks/wp0_simulate.R` | the suite's probability engines against choicer, and choice frequencies over 10^6 situations |
+| `checks/wp1_metrics_null.R` | the metrics on fake records with known distributions: MCSE calibration, gate size and power, the exact SBC test |
+| `checks/wp2_plumbing.R` | the runners and report on a fixture: shards, resume after a kill, failures, `--retry-failed` (under 5 minutes) |
+| `checks/wp3_mode.R` | D2, F1, F8, F11, Q1.1, Q1.2, the pseudo-true value and the exact constant shift |
+| `checks/wp4_sp.R` | D1, D1-L, F4, the start-policy study |
+| `checks/wp5_geo.R` | D4's designs, F2, F3, Q1.3, identification strength |
+| `checks/wp6_geo.R` | the C++ generator against its R reference, D3, D3-claims, D4-census, F6, F7 |
+| `checks/wp7_sim.R` | F5, F10, and F10 against the script it replaced (read from git history, commit ae38e12) |
+| `checks/wp8_bayes.R` | the priors and data of the Bayesian samplers, the SBC loop, F9, Q1.4, Q4 |
+| `checks/wp9_quick.R` | `quick.R` through its command line, with injected failures |
 
-- Update order is not guaranteed -- rep 5 may print before rep 3. Only
-  the running total from `progressor` is meaningful.
-- Add `progressr` to `Suggests:` in `DESCRIPTION` if you enable this
-  branch.
-- Do not mix raw `message()` from worker code with `progressr`; per-worker
-  `message()` is still buffered.
+## The claims
 
-### Planned: rep-level checkpointing
+`DESIGN.md` states each claim's conditions and derivation, with references.
 
-Scenario-level resume (skip a scenario whose `mc_<id>_raw.rds` exists)
-protects against losing whole scenarios but not against losing a single
-long scenario in flight. A 12-22h G1 run that dies at rep 2999/3000
-currently discards every prior rep. Rep-level checkpointing closes that
-gap. Not yet implemented; sketch:
+| Claim | What theory predicts | Tested in |
+|---|---|---|
+| C1 First order | Under correct specification, √N(θ̂ − θ0) is asymptotically N(0, H⁻¹) and H = B, so Wald intervals and the joint Wald test reach nominal level, LR is χ²_q for interior restrictions (λ = 1 is interior in choicer's NL), and the delta method holds | F1, F2, F3, F4 panel, F7's MNL; Q1, Q2, Q3 |
+| C2 Sampling designs | Choice-based samples: unweighted MNL slopes are consistent and the constants shift exactly by log(H_j/Q_j) − log(H_ref/Q_ref); WESML is consistent, its plain robust variance exact under random stratum sizes and conservative under quotas. A panel fitted as a cross-section is consistent and inefficient, with cluster SEs valid and Hessian SEs too small | F8; F4 composite |
+| C3 Misspecification | θ̂ converges to the pseudo-true θ*, and only the sandwich estimates its variance | F11 |
+| C4 Simulation | MSL's bias is about b/S, so bias/SD is O(√N/S), and MSL is equivalent to ML only if √N/S goes to 0. choicer's permuted Halton has no randomized-QMC guarantee, so the error is measured. Panel integrands raise it | F5; the gates' condition √N/S ≤ 0.25; Q1.3 |
+| C5 Higher order | N·bias is stable; one-sided tail errors are O(N^-½) and two-sided coverage errors O(N⁻¹); E[LR] = q(1 + c/N); ratios such as WTP are skewed when the denominator is weakly determined | ladders in F1 to F4 (findings) |
+| C6 Many alternatives | With J constants the MNL's slopes carry no leading-order incidental bias, but its non-linear functionals carry O(J/N) and its sandwich is biased down. For the MXL and NL the prediction is bias/SD of O(J/√N), derived and measured, not a theorem | F6, F7 |
+| C7 Bayesian samplers | SBC ranks are uniform at any N. Bernstein-von Mises gives coverage and posterior SD over ESE of 1 for quantities whose information grows with N | F9; Q1.4, Q4 |
 
-1. Every `MC_CHECKPOINT_EVERY` reps (env var, default 100; 0 disables),
-   serialize the accumulated `results` list to
-   `_validation/output/<tag>/checkpoint_<id>_<NNNN>.rds`, where `<NNNN>`
-   is the rep count at write time. Atomic write via `saveRDS()` to a
-   `tempfile()` then `file.rename()` so a crash mid-write can't leave a
-   half-flushed file.
-2. On startup, `run_scenario()` globs `checkpoint_<id>_*.rds`, loads the
-   highest, and rewrites the iteration to skip already-completed `r`.
-   Merge loaded reps into `results` before continuing the loop.
-3. On clean completion, delete `checkpoint_<id>_*.rds`; the durable
-   artifact remains the final `mc_<id>_raw.rds`.
+## Metrics and the gate rule
 
-This works without seed bookkeeping because `run_one(r)` is deterministic
-in `r`: the per-rep seed is `base_seed + r - 1L` and the fit uses Halton
-draws (no global RNG dependence). Resumed reps produce byte-identical
-output to a never-interrupted run.
+Every metric comes with a Monte Carlo SE (Morris, White & Crowther 2019). A failed rep is recorded
+and counted in the failure rate, while the other metrics read the reps that survive, so read the two
+together. Formulas as coded are in `DESIGN.md`.
 
-**Integration point:** the `lapply()` branch in
-`_validation/mxl_monte_carlo.R` -- replace with a `for` loop that
-checkpoints periodically. The `future_lapply` branch cannot checkpoint
-naturally (workers don't return until all reps complete); the cleanest
-multi-worker extension is to chunk `seq_len(R)` by
-`MC_CHECKPOINT_EVERY` and run one `future_lapply` per chunk, saving
-between chunks. Sequential is the easy win and covers the G1 use case.
+| Metric | Definition | Target | mc tolerance | quick tolerance |
+|---|---|---|---|---|
+| `bias_std` | (mean θ̂ − θ0) / ESE | 0 | 0.10 | 0.30 |
+| `ese` | sd(θ̂) | stable as √N·ESE | finding | finding |
+| `se_ratio` | √mean(ŝe²) / ESE, per variance route | 1 | 0.05 | 0.15 |
+| `tail_lower`, `tail_upper` | P(θ0 below the 95% interval), P(θ0 above it), per route | 0.025 each | 0.75 pp | 2.5 pp |
+| `coverage` | 1 minus the tails | 0.95 | 1.5 pp | 5 pp |
+| `joint_wald_size`, `lr_size` | rate of p below 0.05 | 0.05 | 1.5 pp | 2.5 pp |
+| `lr_mean_q` | mean(LR)/q | 1 | finding | finding |
+| `route_failure_rate`, `joint_wald_failure_rate` | reps where a variance route or the Wald statistic failed | 0 | 0.5 pp | 2 pp |
+| `failure_rate`, `global_max_rate` | failed reps; multi-start refits that found a higher maximum at another point | | finding | finding |
+| `sbc_ecdf` | the exact ECDF test of SBC ranks | uniform | Holm p below 0.01 alone | Holm p below 0.001 (Q4) |
+| `pooled_*` | coverage pooled over the constants within each rep, by expected-count tercile | 0.95 | finding | finding |
 
-**Open question:** whether to also persist a per-rep timing log so an
-interrupted run's wall-clock estimate survives the restart. Probably
-worth it -- write `checkpoint_<id>_<NNNN>.times.rds` alongside each
-checkpoint.
+**The gate rule.** A gated row fails when its Holm-adjusted p-value, within the family, is below
+0.01 and its deviation from target exceeds the tolerance. The p-value is the exact binomial test for
+proportions, the t test for `bias_std`, and the normal reference on deviation over MCSE otherwise.
+Gates apply only where the theory's conditions hold at the design: the top rung with √N/S ≤ 0.25,
+SBC, the exact constant shift, cluster SEs in F4, robust SEs in F11. Everything else is a finding:
+tabulated with its MCSE, to be compared with the predicted sign or rate, never a verdict.
 
-## Output artifacts
+## The designs
 
-Under `_validation/output/<RUN_TAG>/`:
+The DGPs never call choicer's kernels. Their probabilities come from `lib/simulate.R`, in choicer's
+parameterization (Q0 ties the two), and θ0 is frozen in the registry. No DGP writes physical outside
+rows. Alternatives never chosen in a replication are dropped, with the situations offering one
+chosen wherever offered: this is ML's limit, and the counts are recorded.
 
-- `mc_<scenario>_raw.rds`, `mc_<scenario>_natural.rds`: long per-rep
-  `choicer_mc` objects on the raw (Cholesky / log-mu) and natural
-  (vech Sigma / exp mu) scales. For Scenario A / D, a named list keyed by
-  N or S.
-- `aux_<scenario>.rds`: auxiliary tables (LR statistics for A; first-rep
-  Hessian-agreement records for all scenarios).
-- `asymptotics_<scenario>_raw.csv`, `asymptotics_<scenario>_natural.csv`:
-  `mc_asymptotics()` output.
-- `asymptotics_<scenario>_raw.csv` now includes a `se_ratio_bhhh` column
-  (the BHHH-based SE ratio per parameter; NA when BHHH failed to converge for
-  that parameter).
-- `hessian_agreement_<scenario>.csv`: per-scenario record of the analytical-
-  vs-numerical Hessian max relative error (one row per replication that ran
-  the agreement check, currently the first rep per N/S arm).
-- `plot_qq_<scenario>.png`: QQ of studentized z vs N(0, 1), faceted by
-  parameter.
-- `plot_consistency.png`: log |bias| and log RMSE vs log N (Scenario A).
-- `plot_coverage.png`: empirical 95 pct coverage with Wilson bands vs N
-  (Scenario A).
-- `plot_sim_bias.png`: |bias| vs 1 / S (Scenario D).
-- `plot_se_ratios.png`: `mean_se / sd_emp` ratios across scenarios
-  (Hessian only in v1; BHHH slot reserved).
-- `plot_lr_cdf.png`: empirical LR CDF vs chi-squared 1 (Scenario A).
-- `REPORT.md`: per-scenario pass / fail matrix and one-paragraph narratives.
+| DGP | Real-data analogue | Structure | Used by |
+|---|---|---|---|
+| D1 | Stated-preference conjoint (Revelt & Train 1998) | N persons × 8 tasks, 3 unlabeled alternatives and an opt-out, level-balanced. Fixed price, an irrelevant attribute, a shifted log-normal on −time and a normal on quality, correlated | F4, F5 |
+| D1-L | Labeled products | D1's variant `labeled`: J = 6 products with one characteristic, an implicit outside option, normal tastes; logit or probit shocks | F9 |
+| D2 | Intercity mode choice (`mode_choice`) | The 210 travellers' covariates resampled to Greene's population shares, J = 4. Variants: MNL, NL (ground nest), MXL (normal travel coefficient with σ = \|μ\|) | F1, F8, F11, F9's MNP |
+| D3 | Hospital choice from claims | 200 hospitals over 200 × 200 km in 10 towns, the hospitals within 30 km (3 to 30, mean 21.5), no outside option, the largest hospital the reference, a cross-section | F6, F5 |
+| D3-claims | The same at population scale | 2,000 hospitals, sets of 3 to 60 (mean 39), a panel: 625,000 patients, about 10^6 admissions, 3.9 × 10^7 rows | F7, F5 |
+| D4 | School choice from a census | "D4-small": 4 markets of 40 schools, 160 constants. No family uses it now; it is the design of S1's measurement of C6 | checks only |
+| D4-40 | The same, few constants | One market of 40 schools, each student's 15 nearest and an outside option; sectors public, charter, private; NL nests by sector | F2, F3, F5, Q1.3 |
+| D4-census | The same at population scale | 150 markets of 20 schools (J = 3,000), 10^6 students, 1.5 × 10^7 rows | F7, F5 |
+| DB | The samplers' data | MNP on D2's design (base `car`), HMNL and HMNP on D1-L, truth from the prior for SBC | F9, Q1.4, Q4 |
 
-## What this suite does NOT validate
+F10 keeps the DGP of the Monte Carlo behind §5.9 of the mixed logit article, inline in
+`lib/families/F10.R`.
 
-**Cross-package validation**: comparing `choicer` point estimates and SEs
-against `mlogit`, `gmnl`, and Apollo on a canonical dataset is a
-complementary artifact and a high-leverage sanity check, but it is
-orthogonal to Monte Carlo parameter recovery. Add a separate
-`_validation/cross_package.R` when desired.
+## The families
 
-**Incidental ASCs (J -> infinity) asymptotics**: Scenario A fixes J = 8
-across the N-grid on purpose — standard MSL theory is a fixed-J, N -> inf
-regime. A companion scenario that scales J with N would turn each ASC
-`delta_j` into an incidental parameter (Neyman-Scott) whose information
-scales with per-alternative frequency rather than total N, so the
-sqrt(N)-rate claim would not apply. That study is out of scope here.
+R is the long tier's replications per cell. Cells ending in `.q` or starting with `q_` belong to the
+quick tier.
 
-**No-outside-option identification**: every scenario uses
-`outside_option = TRUE`. A separate no-OO scenario would exercise the
-first-ASC-normalization branch of `run_mxlogit()` but is deliberately
-excluded here to keep dimensionality down.
+| Family | Claims | DGP | Cells | R | Methods | Gated |
+|---|---|---|---|---|---|---|
+| F1 MNL | C1, C5 | D2 | N = 500, 2k, 8k | 5,000 | `ml` | at 8k: bias, Hessian SE ratio and tails of every coefficient, joint Wald on the slopes, two-sided VTTS coverage, LR test of IIA |
+| F2 NL | C1, C5 | D4-40 NL | N = 1k, 4k, 16k | 5,000 | `ml` | at 16k: bias, Hessian SE ratio and tails of β, λ and the constants with expected count at least 50; joint Wald on β and λ; WTP tails |
+| F3 MXL | C1, C4, C5 | D4-40 | N = 1k, 4k, 16k; S = 500, 500, 520 | 1,000; `blp` 500 at 16k | `ml`; `blp` at 16k | at 16k, `ml`: bias, Hessian SE ratio and tails of β and L, joint Wald, Σ's tails |
+| F4 MXL panel | C1, C2, C4 | D1 | persons = 200, 800, 3.2k; panel S = 500; composite S = 800 at 200 and 800 | 1,000 | `panel`; `xsec` (composite, cluster) | `panel` at 3.2k: bias, Hessian SE ratio and tails of every parameter, joint Wald, LR exclusion, Σ's tails; `xsec` at 800: bias, cluster SE ratio and tails |
+| F5 simulation | C4 | regimes on F3 16k, F4 3.2k, F6 20k, F7 claims, F7 census | S = 50 to 800 × 2 seeds, store at 100, 200, against S = 3,200; population regimes S = 50 to 400 against 800 | 30 datasets; population 1 | `msl` | findings only |
+| F6 many alternatives | C6 | D3 | N = 5k, 20k, 80k, J = 200 (N/J = 25, 100, 400); S = 200; MNL data in cells `.mnl` | 1,000, 1,000, 500; `blp` 500 at 20k | `mnl`, `mxl`, `blp` at 20k | `mnl` at every rung: slopes' bias and Hessian SE ratio |
+| F7 population | C1, C6 | D3-claims, D4-census | `claims.mnl`, `claims`, `census.mnl`, `census`; S = 100 | MNL 1,000; MXL 100 (extendable); `blp` 25 | `mnl`, `mxl`, `blp` on the census | `mnl` on both: slopes' bias, Hessian SE ratio and tails, joint Wald |
+| F8 choice-based | C2 | D2 | `quota`, `random`, `random_nl`; N = 2,000 | 2,000 | `mnl_unweighted`, `mnl_wesml`, `nl_wesml`, `nl_unweighted`; `mnl_misspec` on `random_nl` | at `random` and `random_nl`: unweighted MNL's bias against the exact shift, Hessian SE ratio and tails, joint Wald; WESML robust tails |
+| F9 Bayesian | C7 | DB | SBC: MNP N = 300, HMNL and HMNP 100 persons × 8. BvM: MNP N = 500, 2k, HMNL 200, 800 persons | SBC 1,000; BvM 500 | `mnp`, `hmnl`, `hmnp` | SBC cells: the ECDF test on every scalar and the log-likelihood; BvM findings |
+| F10 share matching | C1 | inline | `cross`, `panel`, `base`, `markets`; N = 2,000, J = 10, S = 100 | 1,000 | `ml`, `blp_sample`, `blp_exact`, `blp_n10`, `blp_n1` | findings only |
+| F11 misspecification | C3 | D2 MXL fitted by MNL | N = 500, 8k | 2,000 | `ml` | at 8k: bias against θ*, robust SE ratio and tails, robust joint Wald |
 
-## Conventions
+## Reading a report
 
-**Cholesky packing:** All MXL functions in `choicer` pack `L_params` row-major
-lower-triangular: `[L_11, L_21, L_22, L_31, L_32, L_33, ...]`, with diagonals on
-the log scale (`L_kk` is `log(chol(Sigma)[k, k])`). The simulator
-`simulate_mxl_data()` and the fitted-object names follow the same convention.
-Custom `vech` extractors should match `build_var_mat()` / `build_L_mat()` in
-`src/mxlogit.cpp`.
+`report.R --run=<dir or tag> [--tier=mc|quick]` writes into the run directory:
 
-## Share-matching constants (`blp_concentration_mc.R`)
+- `REPORT.md`: a summary per family (gated rows passing and failing, reps missing), then for each
+  family its claims and gates, its units against the design (absent units and missing reps flagged),
+  its failing rows, a section per cell and method (gated rows first, findings below, blocks of more
+  than ten constants summarized and pooled, failures and warnings by class), its own findings tables
+  where it has them (F5, F10), and plots; last the run's metadata (choicer's path and version,
+  `--ref`, git SHA and uncommitted paths, threads, BLAS, CPU);
+- `tables/`: `<family>_metrics.csv` with every row, `<family>_units.csv`, `summary.csv`, `meta.csv`,
+  `<family>_findings_<name>.csv`, and failures, warnings and messages;
+- `plots/`: QQ plots of the Hessian z at the gate cells, ladders against each varying cell column
+  (ESE·√N, N·bias, tail imbalance, with fitted slopes), SBC ECDF differences with simultaneous
+  bands.
 
-A Monte Carlo of `run_mxlogit(concentrate_out_asc = "blp")` against maximum
-likelihood on the same data and draws. The script's header gives the four
-designs (2,000 choice situations, J = 10, S = 100: a cross-section with an
-outside option, a panel of 500 x 4, no outside option, two markets) and the
-DGP. Each replication fits ML (Newton-certified) and "blp" with the sample's
-shares, with the population's exact shares, and with shares estimated from
-10 N and N choices per market together with their `target_vcov`. It prints,
-per design and estimator:
-- the SD of the estimates against ML's;
-- mean SE / SD;
-- 95% coverage (Hessian and sandwich);
-- the largest bias over SD;
-- the work per fit.
+`--tier=quick` applies the quick tolerances to the units quick.R ran, gated as quick.R gates them.
+The report's exit status says whether it rendered (1 on a section's error or a run without rep
+files), not whether a gate passed: read the summary.
 
-```bash
-R_LIBS=<lib> Rscript _validation/blp_concentration_mc.R QUICK=TRUE   # 50 reps, cross only: ~1 min at 8 workers
-R_LIBS=<lib> Rscript _validation/blp_concentration_mc.R              # 4 designs x 1,000 reps
-```
+A row's `verdict` is one of:
 
-It also prints the convergence record: failed inner solves, fits that
-warned, the largest outer decrement, and optimizer stops with a code other
-than nloptr's convergence codes 1 to 4.
-The full run reproduces the Monte Carlo behind §5.9 of the math article and
-NEWS, which took about 70 minutes as 8 single-threaded shards. Bit-for-bit
-identity was checked where measured: QUICK mode's 50 cross-section
-replications matched that run's estimates. That run used an earlier build,
-which differs on these designs only in the base design's supplied targets,
-now normalized to sum to one (a change of at most 1.5e-8, relative).
+- **`pass`**: gated, and either the deviation is within tolerance or it is not significant after
+  Holm.
+- **`fail`**: gated, Holm p below 0.01, and the deviation beyond tolerance (SBC: Holm p alone). Look
+  at the estimand, its MCSE and whether the theory's conditions hold before blaming the estimator.
+- **`na`**: gated, but the value, its MCSE or its tolerance is missing: a gate entry that matched no
+  row, or every rep failed. It is never a pass, and the quick tier fails on it.
+- **`finding`**: not gated. Read it against the predicted sign or rate.
+
+Gating an SE metric also gates that route's failure rate, and gating a joint Wald size its failure
+rate, so that reps dropped by a failed route count against the gate.
+
+The **`band`** column, on gated rows only, is another rule's verdict, shown for comparison: it tests
+whether the true value lies inside the tolerance band, so a true value anywhere in the band fails a
+family with probability at most 0.01, at any R. The plan's rule tests the value against its target
+and then asks the estimate to exceed the tolerance. `fail` with `band` `pass` therefore says that
+the estimate is significantly off target and past the tolerance, but not significantly past it. S1
+kept the plan's rule for the verdict.
+
+## Budget and server
+
+CPU-hours at one thread, estimated from measured per-fit times, not from a run. F7's figure is an
+extrapolation, linear in rows and draws: no full-size fit at S = 100 has been run, so the first
+long-tier reps' `diag$newton_steps` replace the extrapolated step counts.
+
+| F1, F2, F8, F11 | F3 | F4 | F5 | F6 | F7 | F9 | F10 | Total |
+|---|---|---|---|---|---|---|---|---|
+| about 4 | about 78 | about 59 | about 35 | about 234 | about 340 | about 28 | about 12 | about 790 |
+
+The long tier needs one machine of about 64 cores and at least 64 GB of RAM, so as to hold four
+concurrent population fits of at most 15 GB at 16 threads. It will be set up in a later session;
+`run_shards.sh` and the rep files are what it relies on (resume after preemption, one process per
+shard).
+
+## Excluded by design
+
+The suite tests well-identified designs and leaves out three things on purpose:
+
+- weak identification near σ = 0, a boundary: log σ goes to −∞ in choicer's parameterization, and
+  the LR test of σ = 0 is a mixture of chi-squares (Self & Liang 1987);
+- Fieller and Krinsky-Robb alternatives to the delta method;
+- cross-package MXL comparisons under other draw schemes, which measure the draws. Q1.3's exact
+  quadrature takes their place.
+
+The MXL-only Monte Carlo this suite replaced, its helpers, and the one-off script F10 ports are in
+git history (commit ae38e12 holds all three).
+
+## Layout
+
+| Path | Purpose |
+|---|---|
+| `quick.R`, `mc.R`, `run_shards.sh`, `report.R` | the runners and the report |
+| `lib/common.R`, `lib/families.R`, `lib/fit.R` | the build guard, seeds and rep files; the DGP registry and family contract; the rep record, variance routes, two starts, multi-start |
+| `lib/simulate.R`, `lib/dgp_mode.R`, `lib/dgp_sp.R`, `lib/dgp_geo.R`, `lib/geo_gen.cpp`, `lib/dgp_bayes.R` | the probability engines and the DGPs, each header giving its design and calibration |
+| `lib/calibrate.R` | a DGP's moments against its targets |
+| `lib/metrics.R`, `lib/sbc.R` | the metrics, the gate rule, the SBC test and loop |
+| `lib/references.R`, `lib/references_quad.R`, `lib/quick_checks.R` | Q1.1 and Q1.2, Q1.3, Q0 and Q2 (Q1.4 and Q4's check are in `lib/dgp_bayes.R`) |
+| `lib/families/` | one file per family, its header stating its design, methods and gates; `T0.R` is a plumbing fixture |
+| `checks/` | the suite's self-checks |
+| `golden/` | the identity harness |
+| `DESIGN.md` | derivations, metrics' formulas, calibration, measurements, status, decisions, package findings |
+
+**Cholesky packing.** All mixed logit functions pack `L` row-major lower-triangular, `[L_11, L_21,
+L_22, ...]`, with the diagonal on the log scale. The suite's `sigma_vech()` and `L_from_theta()`
+follow it.
 
 ## Golden identity harness (`golden/`)
 
@@ -303,7 +356,7 @@ and checks another build's against them, leaf by leaf: every compiled entry
 point of the multinomial, mixed and nested logit kernels over grids of flags,
 draw modes, weights, panels, edge inputs and error cases, plus the data
 preparations, the Bayesian samplers and fits through the `run_*()` wrappers
-(about 30,600 leaves). Leaves must be bit-identical, except a tolerance group
+(about 35,000 leaves). Leaves must be bit-identical, except a tolerance group
 (the mixed logit estimation kernels' outputs whose summation order a change may
 alter), which passes when max|new - base| / max(1, max|base|) is at most 1e-10.
 It is the identity gate of the scale audit: a change that should not move

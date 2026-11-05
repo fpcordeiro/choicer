@@ -23,21 +23,25 @@
 # (625k patients), beside the 10-15 GB an F7 fit holds.
 # One method, `msl`, per dataset (the ladder's fits depend on the
 # reference's, so they run in one unit):
-#   1. the source family's own fit of the rep: fit_two_starts() (choicer's
-#      default start and theta0, the better certified fit kept: the S1 rule
-#      for estimation from scratch) at the source cell's S and draws seed
-#      (the rep's seed + 1, as F3, F4, F6 and F7 seed theirs);
+#   1. the source family's own fit of the rep, at the source cell's S and
+#      draws seed (the rep's seed + 1, as F3, F4, F6 and F7 seed theirs):
+#      fit_two_starts() on F3, F4 and F6 (choicer's default start and theta0,
+#      the better certified fit kept: the S1 rule for estimation from
+#      scratch), F7's f7_estimate() on its regimes (Newton steps from theta0,
+#      S2, with the default start on the source's reps 10, 20, ...), so that
+#      it stays the source's own estimate;
 #   2. the reference, theta_ref, at S_ref generate-mode draws, warm-started
-#      from it (the two-start rule has chosen the maximum's basin; at S_ref
-#      only the simulation error moves it), which costs well under the two
-#      cold starts at S_ref the rule would take;
+#      from it (step 1 has chosen the maximum's basin; at S_ref only the
+#      simulation error moves it), which costs well under the two cold starts
+#      at S_ref the S1 rule would take;
 #   3. warm-started from theta_ref, fits at every S of S_gen in generate
 #      mode with `seeds` draw seeds, and in store mode (plain Halton, no
 #      seed) at every S of S_store. They measure simulation error, not
 #      optimization: one start each, next to the maximum.
-# The warm fits (2, 3) take Newton steps alone (the optimizer stopped after
-# one evaluation, the polish up to 30 steps), falling back to the optimizer
-# where they are not certified (diag$fits$newton_only): from a start within
+# The warm fits (2, 3) take Newton steps alone (fit_newton(), lib/fit.R: the
+# optimizer stopped after one evaluation, the polish up to 30 steps), falling
+# back to the optimizer where they are not certified
+# (diag$fits$newton_only): from a start within
 # the simulation error of the maximum the polish certifies it in 2-3 steps,
 # the same maximum as the optimizer's (|difference| / SE 2e-5 on F7's census
 # at N / 25, 3e-9 on its claims at N / 100) at 1/3 to 1/13 of its time:
@@ -152,26 +156,24 @@ f5_msl <- function(sim, cell, seed) {
   model <- F5_MODELS[[cell$cell]]
   s0 <- sim$meta$f5$seed
   fits <- list()
+  # newton_steps is the kept fit's polish, after the optimizer where
+  # newton_only is FALSE; newton_error and newton_failed_sec are fit_newton()'s
+  # record of a failed attempt, which time_sec leaves out.
   log_fit <- function(f, variant, S, draws, dseed) {
     fits[[length(fits) + 1L]] <<- data.frame(
       variant = variant, S = S, draws = draws, seed = dseed, code = f$convergence,
       iterations = f$optimizer$iterations %||% NA_integer_,
       newton_steps = f$optimizer$polish$iterations %||% NA_integer_,
       newton_only = isTRUE(attr(f, "newton_only")),
+      newton_error = attr(f, "newton_error") %||% NA_character_,
+      newton_failed_sec = attr(f, "newton_failed_sec") %||% NA_real_,
       decrement = f$optimizer$polish$decrement %||% NA_real_,
       time_sec = f$optimizer$elapsed_time %||% NA_real_, loglik = f$loglik,
       stringsAsFactors = FALSE)
   }
-  # A warm fit (step 2 and 3): Newton steps alone from `start` (nloptr
-  # stopped after one evaluation, the polish up to 30 steps); where they are
-  # not certified, the optimizer and the polish from `start`.
+  # A warm fit (step 2 and 3).
   warm <- function(S, draws, dseed, start, what) {
-    f <- tryCatch(require_converged(model(sim, S = S, draws = draws, seed = dseed,
-                                          theta_init = start, control = list(maxeval = 1L),
-                                          polish_control = list(max_iter = 30L)), what),
-                  error = function(e) NULL)
-    if (!is.null(f)) return(structure(f, newton_only = TRUE))
-    require_converged(model(sim, S = S, draws = draws, seed = dseed, theta_init = start), what)
+    fit_newton(function(...) model(sim, S = S, draws = draws, seed = dseed, ...), start, what)
   }
   rows <- function(est, suffix) {
     est$name <- paste0(est$name, "/", suffix)
@@ -179,9 +181,14 @@ f5_msl <- function(sim, cell, seed) {
   }
   S_src <- sim$meta$f5$S_src
   dsrc <- s0 + 1L
-  start <- fit_two_starts(function(theta_init) {
-    model(sim, S = S_src, draws = "generate", seed = dsrc, theta_init = theta_init)
-  }, sim$truth, sprintf("the fit at the source's S = %d", S_src))
+  src_fit <- function(...) model(sim, S = S_src, draws = "generate", seed = dsrc, ...)
+  src_what <- sprintf("the fit at the source's S = %d", S_src)
+  start <- if (cell$src == "F7") {
+    environment(.f5_source("F7")$simulate)$f7_estimate(src_fit, sim$truth, sim$meta$f5$rep,
+                                                       src_what)
+  } else {
+    fit_two_starts(function(theta_init) src_fit(theta_init = theta_init), sim$truth, src_what)
+  }
   log_fit(start, "src", S_src, "generate", dsrc)
   dref <- .f5_subseed(s0, 1L)
   ref <- warm(cell$S_ref, "generate", dref, coef(start), "the reference fit")

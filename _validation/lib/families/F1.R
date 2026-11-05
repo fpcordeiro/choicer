@@ -72,5 +72,19 @@ family <- list(
   gates = list(cell = "8k",
                metrics = list(ml = c("bias_std", "se_ratio:hessian", "tail_lower:hessian",
                                      "tail_upper:hessian", "joint_wald_size",
-                                     "coverage:hessian@vtts", "lr_size")))
+                                     "coverage:hessian@vtts", "lr_size"))),
+  # The quick tier at 500 (S1), on the family's seeds, 2026-11-05: R = 300 and, the cell being
+  # cheap, R = 3000 (below; MCSE 0.018 for bias, 0.013 for an SE ratio, 0.3 pp for a tail); reps
+  # 1-100, Q3's own, pass every row. Kept: bias of every coefficient but wait (|value| at most
+  # 0.083), the Hessian SE ratio (0.980-1.000) and tails (1.9-3.0%) of every coefficient, the joint
+  # Wald size (4.3%) and the LR size (5.5%). Dropped: wait's bias, -0.165 (R = 300: -0.133 +- 0.058):
+  # C5's O(N^-1/2) is real for the strongest coefficient at N = 500, and it alone fails 2% of R = 100
+  # runs; the VTTS, its ratio skewed by a weak b_vcost (|b| / SE = 2.0; C5): lower tail 11.2% +- 0.6,
+  # coverage 88.8%.
+  # False failures at R = 100, 1,000 bootstrap samples of the 3000: 0.6%, recentered 0.6%.
+  gates_quick = list(cell = "500",
+                     metrics = list(ml = c("bias_std@travel", "bias_std@vcost",
+                                           "bias_std@income_air", "bias_std@asc",
+                                           "se_ratio:hessian", "tail_lower:hessian",
+                                           "tail_upper:hessian", "joint_wald_size", "lr_size")))
 )
