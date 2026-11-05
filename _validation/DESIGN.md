@@ -410,10 +410,10 @@ F5's 30 datasets replace this probe.
 | WP7 | D | `lib/families/F5.R`, `F10.R`, `checks/wp7_sim.R` | done | c60451e | F10 reproduces the old share-matching script rep by rep (store cube kept); F5 warm-started Newton ladders on F3, F4, F6, F7; `findings` tables; two-start tie rule (tol 1e-6); `"blp"` fits certified by their decrement; F4's gate S = 500 has simulation bias < 0.1 SE (12-dataset probe) |
 | WP8 | D | `lib/dgp_bayes.R`, `lib/sbc.R` (loop half), `lib/families/F9.R`, `checks/wp8_bayes.R` | done | c60451e | 55/55 checks; Q1.4 vs bayesm 2.2 MCSE / SD 2.8%; Q4 passes; chains 5k + 30k thinned by 3 (10k left ESS below 99); MNP base `car`; BvM tail ESS recorded, chains lengthened (F9 ≈ 28 CPU-h) |
 | S2 | — | | decided 2026-11-05 | | R = 2 smoke of every family: 142/142 ok, report renders, 0 gated failures; see "Decisions" |
-| WP9 | E | `quick.R` (assembly), `lib/quick_checks.R`, `gates_quick` in F1–F4, F8, `checks/wp9_quick.R` | done | (this commit) | every gated row passes at R = 300 and every piece passes on its own; 6.5 to 9.5 min estimated on 8 workers against 15 |
-| WP6b | E | `fit_newton()`, F7's route, F5's F7 regimes | done | (this commit) | the S2 decision, measured at N/25 before freezing |
-| WP10 | E | `README.md`, `DESIGN.md`, article and NEWS lines, deletions, `.claude/pending-validation/` (AGENTS.md patch and the cloud files' removal, run by the user) | done | (this commit) | the bundle was rehearsed on copies only |
-| S3 | — | | pending | | quick-tier run, then a PR |
+| WP9 | E | `quick.R` (assembly), `lib/quick_checks.R`, `gates_quick` in F1–F4, F8, `checks/wp9_quick.R` | done | 533a03e | every gated row passes at R = 300; the whole tier passes 249 of 249 checks in 9 min 9 s on 8 workers |
+| WP6b | E | `fit_newton()`, F7's route, F5's F7 regimes | done | 533a03e | the S2 decision, measured at N/25 before freezing |
+| WP10 | E | `README.md`, `DESIGN.md`, article and NEWS lines, deletions, `.claude/pending-validation/` (AGENTS.md patch and the cloud files' removal, run by the user) | done | 533a03e | the bundle was rehearsed on copies only |
+| S3 | — | | done 2026-11-05 | | one end-to-end quick-tier run on the dev build: exit 0, 249 of 249 checks, 9 min 9 s against the 15-minute budget; the mc tier has not been run |
 
 WP0 runs as two implementers (WP0a, WP0b) on disjoint files: the probability engines in
 `lib/simulate.R` are shared by every DGP of group C, so they are fixed before group C starts
@@ -467,6 +467,10 @@ rather than serialized through it.
 - **F4's gate carries simulation variance.** At S = 500 and 3.2k persons L_11's simulation SD is about
   0.3 SE, which the Hessian SE leaves out: its SE ratio should read about 0.955 with nothing wrong,
   inside the 0.05 tolerance, near its edge.
+- **F4's composite fit is fragile at small rungs.** At 200 persons and S = 200 its default start failed or
+  lost in 82 of 100 reps, the kept fits include plateaus (L_11's Hessian SE ratio 502, ungated), and its
+  joint Wald size was 0.45. Its gate sits at 800 persons and S = 800, where the plateau rate has not been
+  measured beyond the smoke: the first mc run may show those gates failing for this reason.
 - **F7's global-maximum evidence is thin.** With the default start on every tenth rep, R = 100 gives 10
   comparisons (0 of 10 still allows a missed-maximum rate up to about 26%), and the census `"blp"` fits
   start once, from the truth.
