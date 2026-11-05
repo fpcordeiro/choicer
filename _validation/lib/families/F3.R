@@ -130,5 +130,19 @@ family <- list(
                metrics = list(ml = c("bias_std", "se_ratio:hessian", "tail_lower:hessian",
                                      "tail_upper:hessian", "joint_wald_size",
                                      paste0(c("tail_lower:hessian@", "tail_upper:hessian@"),
-                                            rep(c("Sigma_11", "Sigma_22"), each = 2L)))))
+                                            rep(c("Sigma_11", "Sigma_22"), each = 2L))))),
+  # The quick tier at 1k.q (S1; sqrt(N)/S = 0.16, J/sqrt(N) = 1.26), R = 300 on the family's seeds,
+  # 2026-11-05 (MCSE 0.058 for bias, 0.04 for an SE ratio, 1 pp for a tail; no failed rep); reps
+  # 1-100, Q3's own, pass every row. Kept: the bias of dist_ses, q_ses and L_22 (0.067, 0.003,
+  # -0.080), the slopes' Hessian SE ratio (0.950-1.02) and tails (1.0-3.3%), the joint Wald size
+  # (4.7%). Dropped: dist's bias, -0.175 (reps 1-100: -0.295), C6's -0.16 J/sqrt(N) measured; L_11,
+  # where 1 of 300 fits ends on the plateau (L_11 near -19, SE about 10^4: SE ratio 716); L_22's SE
+  # ratio, 0.947 +- 0.039, which alone fails 0.8% of R = 100 runs (Q1.3 and Q2 check the L block);
+  # Sigma's tails, the delta method skewed at this rung (upper 6.7%, 7.0%; C5); the constants (about
+  # 20 choices each at 1k).
+  # False failures at R = 100, 1,000 bootstrap samples of the 300: 1.4%, recentered 1.6%.
+  gates_quick = list(cell = "1k.q",
+                     metrics = list(ml = c("bias_std@dist_ses", "bias_std@q_ses", "bias_std@L_22",
+                                           "se_ratio:hessian@beta", "tail_lower:hessian@beta",
+                                           "tail_upper:hessian@beta", "joint_wald_size")))
 )

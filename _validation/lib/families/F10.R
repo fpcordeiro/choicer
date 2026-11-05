@@ -1,8 +1,9 @@
 # ============================================================================
 # F10: the share-matching constants, run_mxlogit(concentrate_out_asc =
 # "blp"), against maximum likelihood (plan §5; claim C1): the port of
-# _validation/blp_concentration_mc.R, whose four designs and DGP it keeps
-# statement for statement, so that the mixed logit article's §5.9 table and
+# share-matching Monte Carlo script (git history, commit ae38e12), whose four
+# designs and DGP it keeps statement for statement, so that the mixed logit
+# article's §5.9 table and
 # NEWS stay reproducible from the runner (plan §3). Findings only.
 # Designs (cells), each 2,000 choice situations among J = 10 alternatives,
 # every situation a random subset of at least half of its market's:
@@ -362,7 +363,7 @@ f10_findings <- function(records) {
 family <- list(
   id = "F10",
   claims = "C1",
-  dgp = "inline (blp_concentration_mc.R)",
+  dgp = "inline (the Monte Carlo of the MXL article's §5.9)",
   cells = data.frame(cell = F10_CELLS, N = c(2000L, 500L, 2000L, 2000L), T = c(1L, 4L, 1L, 1L),
                      outside = c(TRUE, TRUE, FALSE, TRUE), markets = c(1L, 1L, 1L, 2L),
                      J = 10L, S = 100L, stringsAsFactors = FALSE),

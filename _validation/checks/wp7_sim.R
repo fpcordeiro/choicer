@@ -7,8 +7,8 @@
 #           pop_shares() and the port's f10_pop_shares() (about 25 s a
 #           design; --designs=).
 #   repro   the port against the old script rep by rep (--repro=cross:1-3,
-#           panel:1, ...): the old one_rep() (its functions parsed from
-#           _validation/blp_concentration_mc.R, nothing else run) and the
+#           panel:1, ...): the old one_rep() (its functions parsed from the
+#           script in git history, commit ae38e12, nothing else run) and the
 #           port's run_rep() on the same seeds; where the default start won
 #           fit_two_starts(), the estimates and SEs must be the old ones to
 #           1e-12 (a tie within fit_two_starts()'s tol keeps the default
@@ -23,7 +23,8 @@
 #           the same model
 #           (F3 1k.q, F4 200.q, F6 5k; F7's claims and census at N /
 #           --spec_div, default 100), rep 1, through run_unit(), and F5's
-#           model with the same S, draws seed and start; estimates equal.
+#           model with the same S, draws seed and start (F7's: fit_newton()
+#           from theta0); estimates equal.
 #   f5      one dataset per regime (--f5=F4,F3,F6,F7.claims,F7.census)
 #           through run_unit() at a reduced ladder (--f5_ref, --f5_gen,
 #           --f5_store, --f5_seeds; the source's fit at its own S is full
@@ -83,9 +84,19 @@ valid_record <- function(rec) {
 f10 <- load_family("F10", b$L)
 f10_env <- environment(f10$simulate)
 
-# The old script's functions, parsed from its file (no top-level code runs).
+# The old script's functions, parsed from its text (no top-level code runs).
+# F10 replaced the script and it left the tree; it lives in git history at
+# commit ae38e12 (on main), read here with `git show`, so sections shares and
+# repro need a clone with that commit.
+OLD_SCRIPT <- "ae38e12:_validation/blp_concentration_mc.R"
 old_script <- function() {
-  ex <- parse(file.path(root, "blp_concentration_mc.R"), keep.source = FALSE)
+  src <- suppressWarnings(system2("git", c("-C", shQuote(root), "show", OLD_SCRIPT), stdout = TRUE,
+                                  stderr = FALSE))
+  if (!is.null(attr(src, "status"))) {
+    stop("`git show ", OLD_SCRIPT, "` failed: sections shares and repro need a clone of the ",
+         "repository with that commit", call. = FALSE)
+  }
+  ex <- parse(text = src, keep.source = FALSE)
   env <- new.env(parent = globalenv())
   for (e in ex) {
     if (is.call(e) && identical(e[[1]], as.name("<-")) && is.call(e[[3]]) &&
@@ -304,10 +315,19 @@ if ("spec" %in% only) {
     seed <- vs_seed(src_id, cl, 1L)
     vs_set_seed(seed)
     sim <- src$simulate(row, seed)
-    winner <- rec$diag$start$winner %||% "default"
-    th <- if (winner == "theta0") sim$truth else NULL
-    fit <- suppressMessages(suppressWarnings(environment(f5$simulate)$F5_MODELS[[rg]](
-      sim, S = row$S, draws = "generate", seed = seed + 1L, theta_init = th)))
+    model <- function(...) {
+      suppressMessages(suppressWarnings(environment(f5$simulate)$F5_MODELS[[rg]](
+        sim, S = row$S, draws = "generate", seed = seed + 1L, ...)))
+    }
+    # F7's fit of rep 1 is Newton steps from theta0 (f7_estimate()); the
+    # others' the two starts' winner.
+    if (src_id == "F7") {
+      winner <- if (isTRUE(rec$diag$newton_only)) "Newton, theta0" else "fallback, theta0"
+      fit <- fit_newton(model, sim$truth)
+    } else {
+      winner <- rec$diag$start$winner %||% "default"
+      fit <- model(theta_init = if (winner == "theta0") sim$truth)
+    }
     d <- max(abs(coef(fit)[rec$est$name] - rec$est$est))
     report(sprintf("%s: F5's model = %s/%s/%s's fit, rep 1, N = %d, S = %d (%s start; %.0f s)",
                    rg, src_id, cl, m, row$N, row$S, winner, now() - t0), d, 1e-12)
@@ -351,13 +371,20 @@ if ("f5" %in% only) {
       next
     }
     cat(sprintf("      warnings: %s\n", paste(unique(rec$warnings$class), collapse = " ")))
-    cat(sprintf("      the source's fit (two starts): winner %s, dlogL (default - theta0) %.3g\n",
-                rec$diag$start$winner, rec$diag$start$dlogL))
     fits <- rec$diag$fits
+    two <- !is.null(rec$diag$start)
+    if (two) {
+      cat(sprintf("      the source's fit (two starts): winner %s, dlogL (default - theta0) %.3g\n",
+                  rec$diag$start$winner, rec$diag$start$dlogL))
+    } else {
+      src <- fits[fits$variant == "src", ]
+      cat(sprintf("      the source's fit (Newton steps from theta0): newton_only %s, %d steps\n",
+                  src$newton_only, src$newton_steps))
+    }
     fits$sec_per_draw <- fits$time_sec / fits$S
     print(fits, row.names = FALSE)
     # Extrapolation to the regime's full ladder, linear in draws and, at N /
-    # div, in rows (times div): step 1 (the source's S, both starts) as
+    # div, in rows (times div): step 1 (the source's S, its route) as
     # measured (the unit's time less the other fits'); the warm reference at
     # its seconds per draw times the full S_ref; the warm ladder at the
     # ladder's median seconds per draw times each S.
@@ -373,11 +400,12 @@ if ("f5" %in% only) {
     est_lad <- lad_spd * sum(S_lad)
     tot <- t_src + est_ref + est_lad
     cat(sprintf(paste("      full ladder (extrapolated, linear in draws%s): the source's fit",
-                      "%.0f s (S = %d, two starts), reference %.0f s (S = %d, %.4f s per draw),",
+                      "%.0f s (S = %d, %s), reference %.0f s (S = %d, %.4f s per draw),",
                       "ladder %.0f s (%d fits, %.4f s per draw); %.2f h per dataset; x %d",
                       "datasets = %.1f CPU-h\n"),
                 if (div[[cl]] > 1) sprintf(" and in rows, x %g", div[[cl]]) else "",
-                t_src, fits$S[is_src], est_ref, fr$S_ref, ref_spd, est_lad, length(S_lad),
+                t_src, fits$S[is_src], if (two) "two starts" else "Newton from theta0",
+                est_ref, fr$S_ref, ref_spd, est_lad, length(S_lad),
                 lad_spd, tot / 3600, f5$R$mc[[cl]], tot * f5$R$mc[[cl]] / 3600))
   }
   fnd <- tryCatch(f5$findings(recs), error = function(e) conditionMessage(e))

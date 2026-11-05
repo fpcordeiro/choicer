@@ -47,10 +47,11 @@
 # the slopes, and the WESML robust tails; nl_wesml's robust tails in
 # random_nl too (each against its own truth). Everything else is a finding.
 # Under quotas the unweighted constants' Hessian variance is not the
-# sampling variance (Prentice & Pyke: the slopes' is), so est$gated is the
-# slopes only there (quick.R's Q3 gates `quota` with mnl_unweighted). The
-# misspecified MNL is its own method, so that mnl_unweighted's gates do not
-# reach the NL population.
+# sampling variance (Prentice & Pyke: the slopes' is), but their bias tests the
+# exact shift: est$gated there is the slopes and the constants, and quick.R's
+# Q3, which gates `quota` with mnl_unweighted, reads the constants' bias alone
+# (gates_quick; the mc gates skip `quota`). The misspecified MNL is its own
+# method, so that mnl_unweighted's gates do not reach the NL population.
 # Sourced by load_family() into a child of the library's environment.
 # ============================================================================
 
@@ -137,8 +138,8 @@ f8_estimands <- function(fit, sim) {
 # where both converged), multi-start on every 10th rep. Every fit is
 # polished by Newton and must converge (require_converged(), lib/fit.R).
 # est$gated: every coefficient under random sizes from the MNL population
-# and nl_wesml's in random_nl; the slopes of the unweighted MNL under
-# quotas; nothing else.
+# and nl_wesml's in random_nl; the slopes and the constants of the unweighted
+# MNL under quotas; nothing else.
 f8_fit <- function(sim, cell, seed, method, weighted, nested) {
   data <- if (weighted) sim$data else sim$meta$unweighted
   call_fit <- function(theta_init = NULL) require_converged(if (nested && weighted) {
@@ -160,7 +161,7 @@ f8_fit <- function(sim, cell, seed, method, weighted, nested) {
   cf <- coef(fit)
   common <- names(cf)[setdiff(seq_along(cf), fit$param_map$asc)]
   gated <- switch(cell$cell, random = TRUE, random_nl = method == "nl_wesml",
-                  quota = if (method == "mnl_unweighted") "beta" else FALSE)
+                  quota = if (method == "mnl_unweighted") c("beta", "asc") else FALSE)
   diag <- fit_diag(fit)
   if (nested && vs_seed_rep("F8", cell$cell, seed) %% 10 == 0) {
     diag$multistart <- multistart(fit, refit = call_fit, seed = seed)
@@ -207,5 +208,24 @@ family <- list(
                                                  "tail_lower:hessian", "tail_upper:hessian",
                                                  "joint_wald_size:hessian"),
                               mnl_wesml = c("tail_lower:robust", "tail_upper:robust"),
-                              nl_wesml = c("tail_lower:robust", "tail_upper:robust")))
+                              nl_wesml = c("tail_lower:robust", "tail_upper:robust"))),
+  # The quick tier: mnl_unweighted under quotas (Q3's F8-MNL), the only quick check of
+  # sample_by_choice() and of the exact constant shift (plan §2), on the family's seeds, 2026-11-05:
+  # R = 300 and, the cell being cheap, R = 3000 (below; MCSE 0.018 for bias, 0.013 for an SE ratio,
+  # 0.3 pp for a tail); reps 1-100, Q3's own, pass every row. Kept: the constants' bias against
+  # theta0's shifted by log(H_j / Q_j) - log(H_air / Q_air), -0.026, -0.070, -0.027 (R = 300: -0.046,
+  # -0.079, -0.036, +- 0.058); the slopes' bias but wait's (|value| at most 0.027), Hessian SE ratio
+  # (0.980-1.02; R = 300's 1.09 +- 0.045 for wait was noise) and tails (2.0-3.1%); the joint Wald
+  # size on the slopes (4.9%). Dropped: wait's bias, -0.114 (R = 300: -0.114 +- 0.058), C5's at the
+  # strongest coefficient, which alone fails 1% of R = 100 runs; the constants' Hessian SE ratio and
+  # tails, their Hessian variance not the sampling variance under quotas (Prentice & Pyke); the VTTS
+  # (bias -0.185, lower tail 5.9%).
+  # False failures at R = 100, 1,000 bootstrap samples of the 3000: 0.8%, recentered 0.5%.
+  gates_quick = list(cell = "quota",
+                     metrics = list(mnl_unweighted = c("bias_std@asc", "bias_std@travel",
+                                                       "bias_std@vcost", "bias_std@income_air",
+                                                       "se_ratio:hessian@beta",
+                                                       "tail_lower:hessian@beta",
+                                                       "tail_upper:hessian@beta",
+                                                       "joint_wald_size:hessian")))
 )

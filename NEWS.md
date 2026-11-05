@@ -347,7 +347,7 @@ stopped.
   targets, for any heterogeneity (the tests reproduce the ML estimates within
   the optimizers' tolerance).
 - **Precision.** In a Monte Carlo of 1,000 replications in each of four
-  designs (`_validation/blp_concentration_mc.R`; §5.9 of the math article),
+  designs (`Rscript _validation/mc.R --family=F10`; §5.9 of the math article),
   exact shares cut the constants' standard deviations to 0.51-0.60 of ML's,
   and shares estimated from ten times the sample's choices to 0.60-0.70, the
   other parameters as precise as under ML. Shares from as many choices as the
