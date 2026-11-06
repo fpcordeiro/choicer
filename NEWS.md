@@ -1115,9 +1115,9 @@ designs of their own, described where they appear.
 ## Corrections
 
 The following were found during this development cycle, while implementing
-the panel likelihood and the population-scale work above or reviewing it,
-and independently verified. Each affected released versions unless it says
-otherwise.
+the panel likelihood and the population-scale work above or reviewing it, or
+by the rebuilt validation suite, and independently verified. Each affected
+released versions unless it says otherwise.
 
 - `mxl_hessian_parallel()` silently dropped any choice situation whose
   simulated choice probability, summed over draws, was `<= 1e-12`, while the
@@ -1590,6 +1590,43 @@ otherwise.
   in these cases with an error that says why. Labels that coded the
   alternatives before still do: the check reads the codes the preparations
   build.
+- An optimizer that reported a failure passed in silence. L-BFGS's line search
+  gives up (`NLOPT_FAILURE`, code -1) where its first trial step, one gradient
+  long, is too far off for its ten reductions, and `run_mnlogit()`,
+  `run_nestlogit()` and `run_mxlogit()` then returned the start values as the
+  estimates, with standard errors at them and only `fit$convergence` to tell:
+  in about half of the WESML nested logit fits of a choice-based sample of
+  2,000 travellers from `run_nestlogit()`'s default coordinates, about 1,600
+  log-likelihood units short. The same code also comes at the maximum, where
+  rounding leaves the line search nothing to gain and the estimates are right.
+  So a fit whose optimizer reports a failure (nloptr's negative codes; optim's
+  10, 51 and 52) now checks its point: without a polish, by a Newton phase of
+  no steps, one pass of the Hessian, recorded in `fit$optimizer$polish`
+  (`iterations` 0), and under `concentrate_out_asc = "blp"` by the outer
+  decrement. A point so certified takes the success code, `fit$message` keeping
+  the optimizer's; any other keeps the failure code and warns (class
+  `choicer_optimizer_failed`), saying whether the estimates are the start
+  values. Estimates and variances do not change.
+- `prepare_mxl_data(covariate_cols = NULL)` stopped with
+  "length(alt_idx) == nrow(X) is not TRUE", and so did `prepare_mnl_data()`
+  and `prepare_nl_data()` without covariates, with `prepare_mnp_data()` failing
+  in `cbind()`. They now return a design of no columns, and `run_mxlogit()` fits
+  a mixed logit whose every coefficient is random (`covariate_cols = NULL`), the
+  kernels' stop on no fixed coefficients lifted: it gives the likelihood, its
+  derivatives and the post-estimation results of the same model with a fixed
+  column held at 0. The multinomial and nested logit kernels still need a
+  covariate.
+- `ess()` and `mcse()` returned `NA`, with integer-overflow warnings, for chains
+  longer than about 65,000 draws: the autocovariance divided by the integer
+  product of the FFT's length and the half-chain's.
+- `summary()` of a `monte_carlo()` result ignored `level`: it reported coverage
+  at 0.95 whatever was asked, under the level's label. It now computes coverage
+  at `level` from each replication's estimate and standard error; `level = 0.95`
+  gives the same numbers. `recovery_table()` of such a result inherits this.
+- `monte_carlo()` stopped at the first multinomial probit or hierarchical Bayes
+  fit, calling `logLik()`, which those fits do not have, outside its error
+  handling. Their replications now carry `loglik = NA` and `converged = TRUE`,
+  a sampler having no stop code (its convergence check warns at fit time).
 
 # choicer 0.2.1
 
