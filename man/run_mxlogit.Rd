@@ -458,7 +458,17 @@ nloptr, 0 for optim and a custom optimizer) and leads \code{message}
 with its verdict; otherwise both keep the optimizer's, the polish's
 reason appended to the message. A polish that stops with an error (the
 Hessian's memory check, say) keeps its last accepted point and warns
-(class \code{choicer_polish_failed}). With
+(class \code{choicer_polish_failed}). An optimizer that reports a failure
+(nloptr's negative codes, such as \code{NLOPT_FAILURE} where L-BFGS's line
+search gives up, and optim's 10, 51 and 52) may have returned its start
+values or stopped at the maximum, which its code cannot tell. Without a
+polish, a Newton phase of no steps then checks its point:
+\code{fit$optimizer$polish} records it (\code{iterations} 0), and a point
+it certifies takes the success code as above; under
+\code{concentrate_out_asc = "blp"}, which takes no polish, the outer
+decrement below \code{polish_control}'s \code{tol_decrement} does. A point
+nothing certified keeps the failure code and warns (class
+\code{choicer_optimizer_failed}). With
 \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
 describes the optimizer over the other parameters, and
 \code{fit$optimizer$concentration} records the inner solves:

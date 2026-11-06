@@ -960,7 +960,17 @@
 #'   with its verdict; otherwise both keep the optimizer's, the polish's
 #'   reason appended to the message. A polish that stops with an error (the
 #'   Hessian's memory check, say) keeps its last accepted point and warns
-#'   (class \code{choicer_polish_failed}). With
+#'   (class \code{choicer_polish_failed}). An optimizer that reports a failure
+#'   (nloptr's negative codes, such as \code{NLOPT_FAILURE} where L-BFGS's line
+#'   search gives up, and optim's 10, 51 and 52) may have returned its start
+#'   values or stopped at the maximum, which its code cannot tell. Without a
+#'   polish, a Newton phase of no steps then checks its point:
+#'   \code{fit$optimizer$polish} records it (\code{iterations} 0), and a point
+#'   it certifies takes the success code as above; under
+#'   \code{concentrate_out_asc = "blp"}, which takes no polish, the outer
+#'   decrement below \code{polish_control}'s \code{tol_decrement} does. A point
+#'   nothing certified keeps the failure code and warns (class
+#'   \code{choicer_optimizer_failed}). With
 #'   \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
 #'   describes the optimizer over the other parameters, and
 #'   \code{fit$optimizer$concentration} records the inner solves:
@@ -1379,19 +1389,23 @@ run_mxlogit <- function(
                                            asc_upper = upper[param_map$asc])
   }
   # The constants a polish holds, and, for "bhhh", the rank of the BHHH
-  # matrix of the likelihood units against the parameters it moves
-  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
-                       n_units = length(.unit_first(input_data)),
-                       units = if (is.null(input_data$Ti)) "choice situations"
-                               else "decision makers",
-                       lower = lower, upper = upper)
-  # Where the reference is never chosen, the alternatives that anchor the
-  # constants against a common rise (.polish_anchors()), before the draws
-  anchors <- .polish_anchors(polish, unbounded, held, upper, param_map$asc,
-                             input_data$alt_mapping,
-                             list(alt_idx = input_data$alt_idx,
-                                  choice_idx = input_data$choice_idx,
-                                  M = input_data$M))
+  # matrix of the likelihood units against the parameters it moves; where the
+  # reference is never chosen, the alternatives that anchor the constants
+  # against a common rise (.polish_anchors()), before the draws
+  polish_setup <- function(polish) {
+    held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                         n_units = length(.unit_first(input_data)),
+                         units = if (is.null(input_data$Ti)) "choice situations"
+                                 else "decision makers",
+                         lower = lower, upper = upper)
+    list(held = held,
+         anchors = .polish_anchors(polish, unbounded, held, upper, param_map$asc,
+                                   input_data$alt_mapping,
+                                   list(alt_idx = input_data$alt_idx,
+                                        choice_idx = input_data$choice_idx,
+                                        M = input_data$M)))
+  }
+  setup <- polish_setup(polish)
 
   # Store-mode draws: their checks and the size warning before the column
   # scales below, the cube itself after them
@@ -1803,9 +1817,18 @@ run_mxlogit <- function(
   # ("newton") or the BHHH matrix ("bhhh", its weights unsquared, the
   # objective's curvature) of the same draws, in natural units
   # (.polish_fit()); under scale_vars = "none" the steps' scales come from one
-  # BHHH pass at the optimizer's solution. The estimator is unchanged.
+  # BHHH pass at the optimizer's solution. The estimator is unchanged. Where
+  # the optimizer reports a failure and no polish was asked for, a phase of no
+  # steps checks its point ("blp" has no such phase: its outer decrement
+  # checks it, below, with the variance).
   polish_record <- NULL
   curv <- NULL
+  polish_asked <- polish != "none"
+  if (!blp && .check_optimizer_stop(polish, opt, optimizer)) {
+    polish <- "newton"
+    polish_control$max_iter <- 0L
+    setup <- polish_setup(polish)
+  }
   if (polish != "none") {
     curv_kernel <- if (polish == "newton") mxl_hessian_parallel else mxl_bhhh_parallel
     curv_f <- function(theta) {
@@ -1836,11 +1859,11 @@ run_mxlogit <- function(
     pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
                       lower = lower, upper = upper,
                       scale = if (scale_vars != "none") map$scale,
-                      control = polish_control, held = held,
+                      control = polish_control, held = setup$held,
                       keep_curvature = reuse, unbounded = unbounded,
                       asc_idx = param_map$asc,
                       alt_mapping = input_data$alt_mapping,
-                      anchors = anchors,
+                      anchors = setup$anchors,
                       weights = input_data$weights, optimizer = optimizer)
     opt <- pf$opt
     polish_record <- pf$record
@@ -1849,6 +1872,11 @@ run_mxlogit <- function(
     # the list's reference to a kept curvature, dropped so that curv <- NULL
     # after the variance frees it
     pf <- NULL
+  }
+  # (a share-matching fit's failure is judged with the variance, below)
+  if (!blp) {
+    .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
+                           polish_asked)
   }
 
   # Estimate at the optimum (natural units)
@@ -1970,6 +1998,21 @@ run_mxlogit <- function(
     fit$optimizer$concentration$decrement <- tryCatch(
       0.5 * sum(g_c * solve(vcov_result$It, g_c)) / mean(input_data$weights),
       error = function(e) NA_real_)
+  }
+  # The optimizer's failure code at the share constraint's maximum: the outer
+  # decrement certifies the point, where it can be computed and is below
+  # polish_control's tolerance
+  if (blp && .optimizer_failed(opt, optimizer)) {
+    dec <- fit$optimizer$concentration$decrement
+    if (isTRUE(dec < polish_control$tol_decrement)) {
+      fit$message <- paste0("Outer decrement ", format(signif(dec, 3)),
+                            " below tol_decrement; the optimizer: ",
+                            paste(as.character(opt$message), collapse = "; "))
+      fit$convergence <- if (identical(optimizer %||% "nloptr", "nloptr")) 1L else 0L
+    } else {
+      .warn_optimizer_failed(opt, optimizer, theta_init, NULL, scale_vars, FALSE,
+                             decrement = dec %||% NA_real_, can_polish = FALSE)
+    }
   }
   fit["vcov"] <- list(vcov_result$vcov)
   fit["se"] <- list(vcov_result$se)

@@ -186,6 +186,14 @@ optimizer) and leads \code{message} with its verdict; otherwise both keep
 the optimizer's, the polish's reason appended to the message. A polish
 that stops with an error (the Hessian's memory check, say) keeps its
 last accepted point and warns (class \code{choicer_polish_failed}).
+An optimizer that reports a failure (nloptr's negative codes, such as
+\code{NLOPT_FAILURE} where L-BFGS's line search gives up, and optim's 10,
+51 and 52) may have returned its start values or stopped at the maximum,
+which its code cannot tell. Without a polish, a Newton phase of no steps
+then checks its point: \code{fit$optimizer$polish} records it
+(\code{iterations} 0), and a point it certifies takes the success code
+as above. A point no polish certified keeps the failure code and warns
+(class \code{choicer_optimizer_failed}).
 }
 \description{
 Estimates a multinomial logit model via maximum likelihood.

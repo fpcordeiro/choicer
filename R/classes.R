@@ -603,6 +603,100 @@ normalize_optim_result <- function(result) {
   )
 }
 
+#' Whether an optimizer's own code reports a failure
+#'
+#' nloptr's negative codes (NLOPT_FAILURE, -1, comes when L-BFGS's line search
+#' gives up: from the start values where the first trial step, one gradient
+#' long, is too far off for its ten reductions, and at the maximum where
+#' rounding leaves nothing to gain) and optim's 10 (a degenerate simplex), 51
+#' and 52 (L-BFGS-B's warning and error, its abnormal line search among them).
+#' Caps on the evaluations or the time are not failures, and a custom
+#' optimizer's codes follow no convention.
+#'
+#' @param opt `run_optimizer()`'s result.
+#' @param optimizer The `optimizer` argument.
+#' @returns TRUE or FALSE.
+#' @noRd
+.optimizer_failed <- function(opt, optimizer) {
+  if (is.function(optimizer)) return(FALSE)
+  code <- opt$convergence
+  switch(optimizer %||% "nloptr",
+         nloptr = isTRUE(code < 0L),
+         optim = isTRUE(code %in% c(10L, 51L, 52L)),
+         FALSE)
+}
+
+#' Whether a fit without a polish should check the optimizer's stop
+#'
+#' An optimizer that reports a failure may have returned its start values or
+#' stopped at the maximum, and its code cannot tell which. So a fit without a
+#' polish takes a Newton phase of no steps there (`polish_control$max_iter` =
+#' 0), one pass of the Hessian, which certifies the point or leaves the code
+#' for `.warn_optimizer_failed()`.
+#'
+#' @param polish The fit's `polish`.
+#' @param opt `run_optimizer()`'s result.
+#' @param optimizer The `optimizer` argument.
+#' @returns TRUE or FALSE; TRUE says so in a message.
+#' @noRd
+.check_optimizer_stop <- function(polish, opt, optimizer) {
+  if (polish != "none" || !.optimizer_failed(opt, optimizer)) return(FALSE)
+  message("The optimizer reports a failure (",
+          paste(as.character(opt$message), collapse = "; "),
+          "): a Newton phase of no steps checks the point it returned.")
+  TRUE
+}
+
+#' Warn of an optimizer's failure that nothing certified
+#'
+#' Called after the polish, which sets a success code on the point it
+#' certifies (class `choicer_optimizer_failed`). The estimates are named as
+#' the start values where they are.
+#'
+#' @param opt The optimizer's result, as the polish left it.
+#' @param optimizer The `optimizer` argument.
+#' @param start The start values, in natural units.
+#' @param record The polish's record, or NULL.
+#' @param scale_vars The fit's `scale_vars`.
+#' @param polish_asked Whether the fit asked for a polish.
+#' @param decrement The decrement at the point returned, or NA.
+#' @param can_polish Whether the model allows a polish.
+#' @returns NULL, invisibly.
+#' @noRd
+.warn_optimizer_failed <- function(opt, optimizer, start, record, scale_vars,
+                                   polish_asked,
+                                   decrement = record$decrement %||% NA_real_,
+                                   can_polish = TRUE) {
+  if (!.optimizer_failed(opt, optimizer)) return(invisible(NULL))
+  said <- record$optimizer$message %||% opt$message
+  stuck <- all(abs(opt$par - start) <= 1e-10 * (abs(start) + 1))
+  warning(warningCondition(paste0(
+    "The optimizer reports a failure (",
+    paste(as.character(said), collapse = "; "), ")",
+    if (stuck) {
+      " and returned the start values, so the estimates are not a maximum of the likelihood"
+    } else {
+      " and its point is not certified as a maximum of the likelihood"
+    },
+    if (!is.na(decrement)) {
+      paste0(" (Newton decrement ", format(signif(decrement, 3)), ")")
+    },
+    ". ",
+    if (scale_vars == "none") {
+      paste0("Under scale_vars = \"none\" its first trial step is one gradient ",
+             "long in the parameters' own units: try scale_vars = \"bhhh\". ")
+    },
+    if (polish_asked) {
+      "Start elsewhere (theta_init), or allow the polish more steps (polish_control)."
+    } else if (can_polish) {
+      paste0("Fit with polish = \"newton\", which goes on from this point, or ",
+             "start elsewhere (theta_init).")
+    } else {
+      "Start elsewhere (theta_init)."
+    }), class = "choicer_optimizer_failed"))
+  invisible(NULL)
+}
+
 # --- The Newton phase (polish) -----------------------------------------------
 
 #' Settings of the Newton phase

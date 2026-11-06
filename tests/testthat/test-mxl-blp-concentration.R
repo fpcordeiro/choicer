@@ -479,8 +479,11 @@ test_that("solves failing after the best point warn, and the best point solved s
     }
     s
   })
-  w <- expect_warning(fit <- blpc_fit(dt, concentrate_out_asc = "blp"),
-                      class = "choicer_blp_unconverged")
+  # (the solves it saw as overflows can also leave a failure code, its own warning)
+  w <- suppressWarnings(
+    expect_warning(fit <- blpc_fit(dt, concentrate_out_asc = "blp"),
+                   class = "choicer_blp_unconverged"),
+    classes = "choicer_optimizer_failed")
   expect_match(conditionMessage(w), paste0(
     "of the inner solves after the optimizer's best point did not converge (it ",
     "saw them as overflows, so its success code can mislead; the last error: a ",
