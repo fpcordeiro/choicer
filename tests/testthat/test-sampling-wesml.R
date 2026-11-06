@@ -120,6 +120,19 @@ test_that("character Q names match numeric alternatives; mismatches error", {
 
 # --- 7. sample_by_choice quotas / integrity / errors -------------------------
 
+test_that("sample_by_choice(frac_per_alt =) keeps quotas, not Bernoulli draws", {
+  pop <- data.table(id = rep(1:400, each = 2), alt = rep(1:2, 400), x = 0)
+  pop[, choice := as.integer(alt == ifelse(id <= 300, 1L, 2L))]
+  # round(0.25 * 300) = 75 and round(0.25 * 100) = 25 at every seed: sizes
+  # that Bernoulli draws at 0.25 would vary (SD 7.5 and 4.3)
+  for (seed in 1:5) {
+    s <- sample_by_choice(pop, "id", "alt", "choice", frac_per_alt = 0.25, seed = seed)
+    n <- table(s$alt[s$choice == 1L])
+    expect_identical(as.integer(n), c(75L, 25L))
+  }
+})
+
+
 test_that("sample_by_choice honors quotas, keeps situations intact, errors on over-request", {
   set.seed(7)
   N <- 500L; J <- 3L

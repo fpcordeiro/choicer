@@ -53,6 +53,15 @@ ready-to-use WESML weight column (see \code{\link{wesml_weights}}).
 Sampling is by choice situation (id), never by row: all alternative-rows of a
 sampled situation are kept together. Sampling is \strong{without
 replacement}.
+
+Both \code{n_per_alt} and \code{frac_per_alt} set quotas: \code{frac_per_alt}
+keeps \code{round(frac * available)} situations of each stratum, a size fixed
+given the data, not independent Bernoulli draws with probability
+\code{frac}, whose stratum sizes would be random. So the design has
+\code{H(j)} fixed by the quotas, the case for which the plain robust variance
+of \code{\link{wesml_weights}}' estimator is conservative (it omits the
+subtraction of the strata's mean scores). To study random stratum sizes, draw
+the situations yourself and attach weights with \code{\link{wesml_weights}}.
 }
 \examples{
 library(data.table)
