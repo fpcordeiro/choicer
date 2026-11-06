@@ -3,9 +3,10 @@
 # For each family in the run, against the tier's design (its units, reps and
 # gate cells): the units' rep counts, units absent from the run and missing
 # reps flagged; the metrics of every (cell, method) (metrics_cell(), then
-# gate_family() over the family; an absent unit of a gate cell gets its gate
-# entries as "na" rows), a table per cell and method with the gated rows (H)
-# first and the findings below; failures (distinct errors with counts),
+# gate_family() over the family, gate_quick() in the quick tier; an absent
+# unit of a gate cell gets its gate entries as "na" rows), a table per cell
+# and method with the gated rows (H) first and the findings below; failures
+# (distinct errors with counts),
 # warnings by class and messages; plots in base graphics: a QQ plot of the
 # Hessian z at the gate cells, ladders (ESE*sqrt(N), N*bias, tail imbalance)
 # against every numeric cell column that varies, with rate_fit() slopes,
@@ -22,12 +23,14 @@
 #   R_LIBS=<lib> OMP_NUM_THREADS=1 Rscript _validation/report.R --run=DIR [--tier=mc|quick]
 #   --run   a run directory, or a run tag under _validation/output/
 #   --tier  mc: tolerances "mc", the family's gates, the reps of R_by_method
-#           or R$mc; quick (Q3's rep files): tolerances "quick", the units
-#           quick.R ran (q3_plan.rds; else the cells of R$quick at every
-#           method), gated as quick.R gates them: by gates_quick where the
-#           family has it, else at all of those cells
+#           or R$mc; quick (the rep files of Q3 and Q4): tolerances "quick", the
+#           units quick.R ran (q3_plan.rds; else the cells of R$quick at every
+#           method), gated by gates_quick where the family has it, else at all of
+#           those cells, with quick.R's own verdicts: gate_quick() (lib/metrics.R)
+#           on both sides, so each unit of a family with gates also has its failed
+#           reps gated, and F9 has its Holm level 0.001 and its rank coverage
 # Verdicts follow the plan's rule; gated rows also carry the band rule's
-# verdict (gate_family(rule = "band")) in a column `band`, for comparison.
+# verdict (rule = "band") in a column `band`, for comparison.
 # ============================================================================
 
 root <- dirname(normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(FALSE),
@@ -508,7 +511,7 @@ rp_rates <- function(tab, lad, x, xname, method) {
 
 # SBC (ranks from diag$sbc, see rp_unit()): one ECDF-difference panel per
 # test quantity, with the panels' sbc_ecdf_test() p-values. The verdicts
-# are the metrics table's sbc_ecdf rows (gate_family()); the p-values are
+# are the metrics table's sbc_ecdf rows (gated above); the p-values are
 # shown, ungated, only for units whose metrics carry no such rows.
 rp_sbc <- function(sbc, file, title) {
   if (!length(sbc)) return(NULL)
@@ -542,7 +545,7 @@ rp_expected <- function(fam, cell, method) {
 # The tier's design of a family: its units data.frame(cell, method, R) and
 # its gates. mc: every cell's methods at rp_expected() reps, gated by the
 # family's gates. quick: the units quick.R ran (q3_plan.rds), else the cells
-# of R$quick at every method of the cell, gated as quick.R gates them: by
+# of R$quick at every method of the cell, gated where quick.R gates them: by
 # gates_quick where the family has it, else at all of those cells with the
 # family's gate metrics.
 rp_design <- function(fam) {
@@ -640,12 +643,18 @@ rp_family <- function(fam_id, idx) {
   }
 
   # Metrics, gated over the family by the plan's rule; the band rule's
-  # verdict beside it (`band`, gated rows only), for comparison.
+  # verdict beside it (`band`, gated rows only), for comparison. In the quick
+  # tier a family with gates gets quick.R's verdicts, gate_quick(); a
+  # findings-only family has no gates there, and so no gated failure row.
   tab <- .rbind_fill(lapply(units, `[[`, "met"))
+  quick <- args$tier == "quick" && !is.null(gates)
   if (!is.null(tab)) {
-    tab <- rp_try(sprintf("gate_family(%s)", fam_id), {
-      band <- gate_family(tab, rule = "band")$verdict
-      tab <- gate_family(tab)
+    tab <- rp_try(sprintf("gating %s", fam_id), {
+      gate <- function(rule) {
+        if (quick) gate_quick(tab, fam, rule = rule) else gate_family(tab, rule = rule)
+      }
+      band <- gate("band")$verdict
+      tab <- gate("plan")
       tab$band <- ifelse(tab$gated, band, NA_character_)
       tab
     })
@@ -660,9 +669,12 @@ rp_family <- function(fam_id, idx) {
   md <- c(md, "### Gates", "",
           if (is.null(gates)) "No gates: a findings-only family."
           else if (is.null(g) || !nrow(g)) "No gated rows."
-          else sprintf(paste("%d gated rows: %d pass, %d fail, %d na (the plan's rule; Holm over the",
-                             "family, tolerances %s). The band rule: %d pass, %d fail, %d na."),
-                       nrow(g), vc[["pass"]], vc[["fail"]], vc[["na"]], args$tier, bc[["pass"]],
+          else sprintf(paste("%d gated rows: %d pass, %d fail, %d na (%s, tolerances %s).",
+                             "The band rule: %d pass, %d fail, %d na."),
+                       nrow(g), vc[["pass"]], vc[["fail"]], vc[["na"]],
+                       if (quick) sprintf("gate_quick(); Holm at %g over the family",
+                                          .quick_alpha(fam))
+                       else "the plan's rule; Holm over the family", args$tier, bc[["pass"]],
                        bc[["fail"]], bc[["na"]]), "")
   if (!is.null(g) && any(g$verdict %in% "na")) {
     md <- c(md, sprintf(paste("**%d gated check(s) without a value (verdict na, never a pass): a gate",
@@ -785,7 +797,7 @@ rp_family <- function(fam_id, idx) {
   }
 
   # SBC: the plots; the verdicts are the metrics table's sbc_ecdf rows
-  # (statistic, exact p, Holm p and verdict from gate_family()); the plots'
+  # (statistic, exact p, Holm p and verdict from the gate above); the plots'
   # p-values are listed, ungated, only for units whose metrics carry none.
   sb <- list()
   sb_md <- character()
@@ -900,6 +912,13 @@ md <- c(sprintf("# Validation report: %s", basename(run_dir)), "",
         paste("Verdicts follow the plan's gate rule (Holm p < 0.01 and |value - target| > tol);",
               "the `band` column of the gated tables is the band rule's verdict",
               "(gate_family(rule = \"band\")), shown for comparison only."), "",
+        if (args$tier == "quick") {
+          c(paste("In the quick tier the verdicts of a family with gates are quick.R's own,",
+                  "gate_quick(): Holm at the family's gates_quick$alpha (0.01 unless it sets one;",
+                  "F9's is 0.001); a unit's failure_rate gated, more than 2% of failed reps",
+                  "failing it; an sbc_ecdf row failing when its ranks cover under 95% of the",
+                  "unit's reps."), "")
+        },
         "## Summary", "", md_table(summ_md), "")
 for (v in c("missing", "fail", "na")) {
   k <- if (is.null(summ)) integer() else which(summ[[v]] > 0)

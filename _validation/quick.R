@@ -12,12 +12,13 @@
 #   Q2    one large-N fit per family F1-F4, F6, on workers (lib/quick_checks.R)
 #   Q3    a mini Monte Carlo of the bottom rungs of F1-F4 and F8 on workers
 #         through run_rep() (the long tier's paired reps and seeds), then
-#         metrics_cell(tol_set = "quick") and gate_family(), gated by the
-#         family's gates_quick (the checks theory supports at that rung,
+#         metrics_cell(tol_set = "quick") and gate_quick() (lib/metrics.R), gated
+#         by the family's gates_quick (the checks theory supports at that rung,
 #         confirmed at R = 300), else at the entry's cells with the family's
 #         gate metrics; every entry also bounds its failed reps, and reports how
 #         often the default start failed or lost (an information row)
-#   Q4    the mini-SBC of MNP, HMNL, HMNP on workers: q4_check() (lib/dgp_bayes.R)
+#   Q4    the mini-SBC of MNP, HMNL, HMNP on workers: q4_check() (lib/dgp_bayes.R),
+#         through gate_quick() too, at F9's alpha; its failed reps bounded alike
 # A reference that is missing or fails is a failed check, printed at once and
 # in the summary; a test without a check row fails too.
 #
@@ -37,7 +38,8 @@
 # q_run_kind(), "tier" only for the whole tier unshortened), quick_<stamp>_info.csv
 # (the information rows), quick_<stamp>_Q3_<entry>.csv and quick_<stamp>_Q4.csv
 # (the metrics), and the reps of Q3 and Q4 under quick_<stamp>_reps/ with
-# q3_plan.rds, the units they ran, Q4's included. Render them, gated as here, with
+# q3_plan.rds, the units they ran, Q4's included. Render them with this script's
+# verdicts (both sides call gate_quick()) by
 #   Rscript _validation/report.R --run=<out>/quick_<stamp>_reps --tier=quick
 # Prints a summary and the gate tables; exits 1 if any check fails.
 # ============================================================================
@@ -164,21 +166,21 @@ q_mc_run <- function(ctx, test, ents) {
   list(plan = plan, recs = recs, rows = rows)
 }
 
-# One row per (cell, method) of a family's records: their share of failed reps
-# (an error, or a fit no start certified) against the quick tier's tolerance on
-# failures, 2%, whatever the surviving reps say: metrics read those alone; the
-# message of the first failure when there is one. At R = 300 no entry failed a
-# rep. T0's `fail` method fails half on purpose, so the fixture is exempt.
-q_failed_rows <- function(id, recs) {
-  tol <- tolerances("quick")[["failure"]]
+# One row per gated failure_rate row of gate_quick()'s table `tab`, with its
+# verdict: a (cell, method)'s share of failed reps (an error, or a fit no start
+# certified) against the quick tier's tolerance on failures, 2%, whatever the
+# surviving reps say: metrics read those alone; the message of the first failure
+# when there is one. At R = 300 no entry failed a rep. T0's `fail` method fails
+# half on purpose, so the fixture has no such row and gets no check here.
+q_failed_rows <- function(id, recs, tab) {
+  f <- tab[tab$metric == "failure_rate" & tab$gated, , drop = FALSE]
   key <- vapply(recs, function(r) paste0(r$cell, "/", r$method), "")
-  do.call(rbind, lapply(unique(key), function(s) {
-    rr <- recs[key == s]
+  do.call(rbind, lapply(seq_len(nrow(f)), function(i) {
+    rr <- recs[key == paste0(f$cell[i], "/", f$method[i])]
     bad <- !vapply(rr, function(r) isTRUE(r$ok), logical(1))
-    v <- mean(bad)
-    q_row(id, sprintf("%s failed reps: %d of %d%s", s, sum(bad), length(rr),
+    q_row(id, sprintf("%s/%s failed reps: %d of %d%s", f$cell[i], f$method[i], sum(bad), length(rr),
                       if (any(bad)) paste0(" (", rr[bad][[1L]]$error, ")") else ""),
-          v, tol, v <= tol)
+          f$value[i], f$tol[i], f$verdict[i] == "pass")
   }))
 }
 
@@ -232,17 +234,17 @@ q3_run <- function(ctx, entries) {
       rows[[length(rows) + 1L]] <- q_row(id, "no records came back", pass = FALSE)
       next
     }
-    tab <- gate_family(tab)
+    tab <- gate_quick(tab, p$fam)
     utils::write.csv(tab, file.path(ctx$out, sprintf("quick_%s_Q3_%s.csv", ctx$stamp, k)),
                      row.names = FALSE)
-    g <- tab[tab$gated, , drop = FALSE]
+    g <- tab[tab$gated & tab$metric != "failure_rate", , drop = FALSE]
     gc <- gates$cell
     cat(sprintf("\nQ3:%s gate table (%scells %s; tolerances quick):\n", k,
                 if (is.null(p$fam$gates_quick)) "" else "gates_quick, ",
                 if (is.list(gc)) paste(names(gc), vapply(gc, paste, "", collapse = ","),
                                        sep = ": ", collapse = "; ")
                 else paste(gc, collapse = ", ")))
-    if (!k %in% names(Q3_FIXTURES)) rows[[length(rows) + 1L]] <- q_failed_rows(id, recs)
+    rows[[length(rows) + 1L]] <- q_failed_rows(id, recs, tab)
     rows[[length(rows) + 1L]] <- q_start_rows(id, recs)
     if (!nrow(g)) {
       cat("  no gated rows\n")
@@ -271,7 +273,7 @@ q4_run <- function(ctx, entries) {
   r <- chk$rows[order(chk$rows$value), , drop = FALSE]
   cat(sprintf("\nQ4: %d quantities; smallest Holm p (threshold %g):\n", nrow(r), r$threshold[1]))
   print(utils::head(r[c("check", "value", "pass")], 5L), row.names = FALSE)
-  rbind(do.call(rbind, unname(m$rows)), q_failed_rows("Q4", m$recs), chk$rows)
+  rbind(do.call(rbind, unname(m$rows)), q_failed_rows("Q4", m$recs, chk$tab), chk$rows)
 }
 
 # --- Q2 -----------------------------------------------------------------------------

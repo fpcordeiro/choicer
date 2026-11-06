@@ -3,6 +3,7 @@
 # SEs (Morris, White & Crowther 2019, Table 6), and the gate rule (plan §2):
 #   metrics_cell()  one (family, cell, method)'s reps -> a table of metrics;
 #   gate_family()   Holm over a family's gated rows, then the tolerance rule;
+#   gate_quick()    the quick tier's verdicts, which quick.R and report.R share;
 #   pooled_tails()  coverage pooled over the constants within each rep;
 #   rate_fit()      a ladder's log-log slope across cells.
 # Definitions only. Records are lib/fit.R's rep records; a failed rep enters
@@ -12,7 +13,7 @@
 
 # The pre-registered tolerances of the gate rule (plan §2; quick: plan Q3);
 # `failure` is the tolerance of a variance route's or the joint Wald's
-# failure rate.
+# failure rate and, in the quick tier (gate_quick()), of a unit's failed reps.
 tolerances <- function(set = c("mc", "quick")) {
   set <- match.arg(set)
   switch(set,
@@ -26,7 +27,8 @@ tolerances <- function(set = c("mc", "quick")) {
 # cell's test; a cell's by variance route; an SBC quantity's; the cell's),
 # whether a family may gate them, and the name of their tolerance in
 # tolerances(). ese, lr_mean_q (E LR = q (1 + c/N), Bartlett 1937),
-# failure_rate and global_max_rate are findings only; sbc_ecdf is gated on
+# failure_rate and global_max_rate are findings only (gate_quick() gates
+# failure_rate in the quick tier; no gate entry can); sbc_ecdf is gated on
 # its p-value alone (plan §2).
 VS_METRICS <- data.frame(
   metric   = c("bias_std", "ese", "se_ratio", "tail_lower", "tail_upper", "coverage",
@@ -569,6 +571,36 @@ gate_family <- function(tab, alpha = 0.01, rule = c("plan", "band")) {
                                        is.na(tab$tol)))
   fail <- tab$p_holm < alpha & (sbc | rule == "band" | abs(dev) > tab$tol * (1 + 1e-9))
   tab$verdict <- ifelse(!tab$gated, "finding", ifelse(na, "na", ifelse(fail, "fail", "pass")))
+  tab
+}
+
+# The quick tier's Holm level: the family's gates_quick$alpha, else 0.01.
+.quick_alpha <- function(fam) fam$gates_quick$alpha %||% 0.01
+
+# The quick tier's verdicts, the one definition quick.R and report.R share:
+# gate_family() at .quick_alpha(), and two conditions on each (cell, method) that
+# the metrics' own rows cannot express, since they read only the reps that
+# survive. A failure_rate row is gated (target 0): more failed reps than
+# tolerances("quick")["failure"] fail it, whatever the survivors say. An sbc_ecdf
+# row whose ranks cover fewer than `min_share` of the unit's reps fails: the ECDF
+# test sees only the ranks it has. Fixtures (T*), whose `fail` method fails on
+# purpose, are exempt from the first. The failure rows stay out of Holm's family.
+gate_quick <- function(tab, fam, rule = c("plan", "band"), min_share = 0.95) {
+  tab <- gate_family(tab, alpha = .quick_alpha(fam), rule = rule)
+  fr <- which(tab$metric == "failure_rate")
+  unit <- paste(tab$cell, tab$method, sep = "\r")
+  n <- tab$R[fr][match(unit, unit[fr])]
+  low <- which(tab$gated & tab$metric == "sbc_ecdf" & !is.na(tab$R) & !is.na(n) &
+                 tab$R < min_share * n)
+  tab$verdict[low] <- "fail"
+  if (!grepl("^T[0-9]+$", fam$id)) {
+    tol <- tolerances("quick")[["failure"]]
+    tab$gated[fr] <- TRUE
+    tab$target[fr] <- 0
+    tab$tol[fr] <- tol
+    tab$verdict[fr] <- ifelse(is.na(tab$value[fr]), "na",
+                              ifelse(tab$value[fr] <= tol * (1 + 1e-9), "pass", "fail"))
+  }
   tab
 }
 

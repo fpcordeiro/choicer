@@ -139,7 +139,8 @@ load_family <- function(id, lib_env, dir = file.path(lib_env$.vs_lib, "families"
 #        gates = list(cell = <cells, one or more> | list(<method> = <cells>),
 #                     metrics = <character> | list(<method> = <character>))
 #                | NULL (a findings-only family, with `findings`),
-#        gates_quick = NULL | <as gates, cells among those of R$quick>,   optional
+#        gates_quick = NULL | <as gates, cells among those of R$quick,
+#                               and optionally alpha = <its Holm level>>,   optional
 #        findings = NULL | function(records) <named list of data.frames>,  optional
 #        pooled_groups = NULL | function(records) <named vector constant -> group>)  optional
 # A method's and simulate()'s `cell` is the cell's row as a list (cell, N
@@ -149,8 +150,9 @@ load_family <- function(id, lib_env, dir = file.path(lib_env$.vs_lib, "families"
 # 1..R$mc[cell]. The gates' cells are the cells where every method is
 # gated, or a list naming each gated method's cells (cells where it runs;
 # a method the list does not name is gated nowhere); gates_quick (optional)
-# replaces gates in the quick tier. findings (optional) turns the family's
-# records (every cell and method) into its own tables, which report.R
+# replaces gates in the quick tier, where gate_quick() (lib/metrics.R) reads its
+# alpha (default 0.01; the mc tier's level is fixed). findings (optional) turns
+# the family's records (every cell and method) into its own tables, which report.R
 # renders in place of the generic ladders and QQ plots; a family that has
 # it may have no gates. pooled_groups (optional) maps a (cell, method)'s
 # records to groups of the constants (e.g. expected-count terciles), so
@@ -253,7 +255,8 @@ validate_family <- function(fam, id = NULL, where = "family") {
   }
   # gates, and gates_quick (optional, the quick tier's, its cells among those
   # of R$quick): cell is cells where every method is gated, or a list naming
-  # each gated method's cells, cells where the method runs.
+  # each gated method's cells, cells where the method runs; alpha, if given, a
+  # level strictly between 0 and 1.
   check_gates <- function(g, field, allowed) {
     if (!is.list(g) || !all(c("cell", "metrics") %in% names(g))) {
       bad(field, paste("list(cell = <cells> | list(<method> = <cells>),",
@@ -279,6 +282,10 @@ validate_family <- function(fam, id = NULL, where = "family") {
     } else if (!cells_ok(gc, allowed)) {
       bad(paste0(field, "$cell"), paste0("one or more distinct cells (cells: ",
                                          paste(allowed, collapse = ", "), ")"))
+    }
+    if (!is.null(g$alpha) && !(is.numeric(g$alpha) && length(g$alpha) == 1L && !is.na(g$alpha) &&
+                                 g$alpha > 0 && g$alpha < 1)) {
+      bad(paste0(field, "$alpha"), "a single number between 0 and 1")
     }
     entries_ok <- function(x) is.character(x) && !anyNA(x) && all(nzchar(trimws(x)))
     gm <- g$metrics

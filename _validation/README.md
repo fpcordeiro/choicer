@@ -176,9 +176,9 @@ R_LIBS=<lib> OMP_NUM_THREADS=1 OMP_THREAD_LIMIT=1 Rscript _validation/checks/wp0
 | `checks/wp4_sp.R` | D1, D1-L, F4, the start-policy study |
 | `checks/wp5_geo.R` | D4's designs, F2, F3, Q1.3, identification strength |
 | `checks/wp6_geo.R` | the C++ generator against its R reference, D3, D3-claims, D4-census, F6, F7 |
-| `checks/wp7_sim.R` | F5, F10, and F10 against the script it replaced (read from git history, commit ae38e12) |
+| `checks/wp7_sim.R` | F5 and its rate uncertainty on synthetic records, F10, and F10 against the script it replaced (read from git history, commit ae38e12) |
 | `checks/wp8_bayes.R` | the priors and data of the Bayesian samplers, the SBC loop, F9, Q1.4, Q4 |
-| `checks/wp9_quick.R` | `quick.R` through its command line, with injected failures |
+| `checks/wp9_quick.R` | `quick.R` through its command line, with injected failures; the report's verdicts against the runner's on fixture records |
 
 ## The claims
 
@@ -210,8 +210,9 @@ together. Formulas as coded are in `DESIGN.md`.
 | `joint_wald_size`, `lr_size` | rate of p below 0.05 | 0.05 | 1.5 pp | 2.5 pp |
 | `lr_mean_q` | mean(LR)/q | 1 | finding | finding |
 | `route_failure_rate`, `joint_wald_failure_rate` | reps where a variance route or the Wald statistic failed | 0 | 0.5 pp | 2 pp |
-| `failure_rate`, `global_max_rate` | failed reps; multi-start refits that found a higher maximum at another point | | finding | finding |
-| `sbc_ecdf` | the exact ECDF test of SBC ranks | uniform | Holm p below 0.01 alone | Holm p below 0.001 (Q4) |
+| `failure_rate` | failed reps | 0 in the quick tier | finding | 2 pp per cell and method |
+| `global_max_rate` | multi-start refits that found a higher maximum at another point | | finding | finding |
+| `sbc_ecdf` | the exact ECDF test of SBC ranks | uniform | Holm p below 0.01 alone | Holm p below 0.001 (Q4), ranks in at least 95% of the reps |
 | `pooled_*` | coverage pooled over the constants within each rep, by expected-count tercile | 0.95 | finding | finding |
 
 **The gate rule.** A gated row fails when its Holm-adjusted p-value, within the family, is below
@@ -220,6 +221,20 @@ proportions, the t test for `bias_std`, and the normal reference on deviation ov
 Gates apply only where the theory's conditions hold at the design: the top rung with √N/S ≤ 0.25,
 SBC, the exact constant shift, cluster SEs in F4, robust SEs in F11. Everything else is a finding:
 tabulated with its MCSE, to be compared with the predicted sign or rate, never a verdict.
+
+**The quick tier's verdicts.** `quick.R` and `report.R --tier=quick` share one definition of them,
+`gate_quick()` in `lib/metrics.R`, so the report's gated rows are the runner's checks. It is the
+gate rule at the family's `gates_quick$alpha` (0.01 unless the family sets one; F9's is 0.001, as
+Q4 asks) and two more rules, because the metrics read only the reps that survive:
+
+- a cell and method fails when more than 2% of its reps failed: its `failure_rate` row is gated at
+  target 0, outside the Holm adjustment (the T0 fixture, whose `fail` method fails on purpose, is
+  exempt);
+- an SBC quantity fails when its ranks cover under 95% of the cell and method's reps, whatever its
+  p-value says.
+
+A findings-only family has no gated rows in either tier. `checks/wp9_quick.R` compares the two sides
+row by row on fixture records. The long tier's verdicts are the gate rule alone.
 
 ## The designs
 
@@ -262,6 +277,11 @@ quick tier.
 | F10 share matching | C1 | inline | `cross`, `panel`, `base`, `markets`; N = 2,000, J = 10, S = 100 | 1,000 | `ml`, `blp_sample`, `blp_exact`, `blp_n10`, `blp_n1` | findings only |
 | F11 misspecification | C3 | D2 MXL fitted by MNL | N = 500, 8k | 2,000 | `ml` | at 8k: bias against θ*, robust SE ratio and tails, robust joint Wald |
 
+F5's rates of simulation error take their SEs from complete units, the spread of each dataset's own
+rate over the datasets (over the seeds in the population regimes, which have one dataset). A
+ladder's S points share datasets, reference fits and draw seeds, and the S-level MCSEs miss that
+covariance.
+
 ## Reading a report
 
 `report.R --run=<dir or tag> [--tier=mc|quick]` writes into the run directory:
@@ -278,7 +298,9 @@ quick tier.
   (ESE·√N, N·bias, tail imbalance, with fitted slopes), SBC ECDF differences with simultaneous
   bands.
 
-`--tier=quick` applies the quick tolerances to the units quick.R ran, gated as quick.R gates them.
+`--tier=quick` applies the quick tolerances to the units quick.R ran, with quick.R's own verdicts
+(`gate_quick()`, under "The quick tier's verdicts" above): its Holm level, the bound on failed reps
+and the rank coverage, row for row.
 The report's exit status says whether it rendered (1 on a section's error or a run without rep
 files), not whether a gate passed: read the summary.
 
@@ -286,8 +308,9 @@ A row's `verdict` is one of:
 
 - **`pass`**: gated, and either the deviation is within tolerance or it is not significant after
   Holm.
-- **`fail`**: gated, Holm p below 0.01, and the deviation beyond tolerance (SBC: Holm p alone). Look
-  at the estimand, its MCSE and whether the theory's conditions hold before blaming the estimator.
+- **`fail`**: gated, Holm p below 0.01, and the deviation beyond tolerance (SBC: Holm p alone; in
+  the quick tier, `gate_quick()`'s rules above). Look at the estimand, its MCSE and whether the
+  theory's conditions hold before blaming the estimator.
 - **`na`**: gated, but the value, its MCSE or its tolerance is missing: a gate entry that matched no
   row, or every rep failed. It is never a pass, and the quick tier fails on it.
 - **`finding`**: not gated. Read it against the predicted sign or rate.

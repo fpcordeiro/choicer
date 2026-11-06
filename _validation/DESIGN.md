@@ -216,7 +216,7 @@ finite SE. d_r = θ̂_r − θ0_r (each rep's own truth), ESE = sd(d), ŝe_r the
 | `joint_wald_size`, `lr_size` | rate of p < 0.05 over finite statistics | smoothed proportion | exact binomial |
 | `joint_wald_failure_rate`, `route_failure_rate` | share of reps with a statistic or SE not finite | smoothed proportion | exact binomial, target 0 |
 | `lr_mean_q` | mean(LR/q) | sd(LR/q)/√R | never gated |
-| `failure_rate` | failed reps over all reps | smoothed proportion | never gated |
+| `failure_rate` | failed reps over all reps | smoothed proportion | none; the quick tier bounds it (`gate_quick()`, below) |
 | `global_max_rate` | share of multi-start reps with ΔlogL > 0.01 and max \|Δθ\|/SE > 0.1 | smoothed proportion | never gated |
 | `sbc_ecdf` | the smallest two-sided binomial tail over the evaluation points | none | exact (below) |
 
@@ -231,7 +231,17 @@ The *joint Wald* statistic is computed on the Jacobi-equilibrated V̂, on the co
 expected-count tercile, with MCSE the between-rep SD over √R, since a rep's constants share its
 data. *Ladders* (report): ESE·√N, N·bias (MCSE N·ESE/√R) and the tail imbalance upper minus lower
 (its MCSE from the multinomial). `rate_fit()` is weighted least squares of log|value| on log x with
-weights (|value|/MCSE)², its slope's SE the known-variance one.
+weights (|value|/MCSE)², its slope's SE the known-variance one: the rungs of a family's ladder are
+separate simulations on separate seeds, so their metrics are independent.
+
+*F5's rates* are different: their S points reuse the same datasets, reference fits and draw seeds,
+so the S-level MCSEs miss the covariance between them, and the diagonal formula can err either way
+(a shared multiple of the ladder makes `b_se` too small and `slope_se` too large). With the weights
+fixed, b = Σ_S c_S ȳ_S is the mean over units of b_d = Σ_S c_S y_dS, so `b_se` is sd(b_d)/√D over
+the D units complete at the S points with weight: datasets, or seeds where there is one dataset, NA
+for one fit per S (store mode on one dataset). `slope_se` is the same by the delta method, the
+influence Σ_S a_S y_dS/ȳ_S with a_S the slope's weights (`.f5_units()`, `.f5_rate_se()`). The
+point estimates do not depend on this.
 
 *SBC.* Ranks among L = 99 equally spaced draws, ties split at random. At z_i = i/(L + 1), #{rank <
 i} is Binomial(R, z_i) under uniformity. The statistic is the smallest two-sided binomial tail over
@@ -270,6 +280,24 @@ never `pass`. Gating an SE metric also gates its route's failure rate, and gatin
 its failure rate, so that reps dropped by a failed route count against the gate. Gates sit only
 where the theory's conditions hold at the design (each family's header says why); the rest are
 findings.
+
+**The quick tier's verdicts.** `gate_quick(tab, fam, rule = "plan", min_share = 0.95)` is the one
+definition: `q3_run()`, `q4_check()` and `report.R --tier=quick` all call it, and `q_failed_rows()`
+reads its verdicts, so the runner and the report hold the same ones. On top of the gate above:
+
+- the Holm level is `fam$gates_quick$alpha`, 0.01 unless the family sets one; F9 sets 0.001 (plan
+  Q4), and `validate_family()` requires it strictly between 0 and 1;
+- each (cell, method)'s `failure_rate` row is gated at target 0 and tolerance
+  `tolerances("quick")["failure"]`, 0.02: `fail` above it (with the factor above), `na` without a
+  value. It has no p-value and stays out of Holm's family. Fixtures (T*) are exempt, since T0's
+  `fail` method fails on purpose;
+- an `sbc_ecdf` row with fewer than 0.95 n ranks, n the unit's reps, is `fail` whatever p_holm says:
+  the ECDF test sees only the ranks it has.
+
+The report calls it only for a family with gates in the quick tier, so a findings-only family keeps
+every row a `finding`. The mc tier is `gate_family()` alone. `checks/wp9_quick.R --only=verdicts`
+runs `q3_run()`, `q4_run()` and the report on the same fixture records and compares every gated
+verdict.
 
 ## The designs: calibration and identification
 
@@ -414,6 +442,7 @@ F5's 30 datasets replace this probe.
 | WP6b | E | `fit_newton()`, F7's route, F5's F7 regimes | done | 533a03e | the S2 decision, measured at N/25 before freezing |
 | WP10 | E | `README.md`, `DESIGN.md`, article and NEWS lines, deletions, `.claude/pending-validation/` (AGENTS.md patch and the cloud files' removal, run by the user) | done | 533a03e | the bundle was rehearsed on copies only |
 | S3 | — | | done 2026-11-05 | | one end-to-end quick-tier run on the dev build: exit 0, 249 of 249 checks, 9 min 9 s against the 15-minute budget; the mc tier has not been run |
+| PR review | — | `gate_quick()` (`lib/metrics.R`), F5's rate SEs, `checks/wp9_quick.R --only=verdicts`, `checks/wp7_sim.R --only=rates` | done 2026-11-06 | after 0b3cda0 | the report's quick verdicts now equal the runner's (152 of 152 rows on a full run); `b_se` and `slope_se` come from complete units; the whole tier again passes 249 of 249 checks, 10 min 5 s under background load |
 
 WP0 runs as two implementers (WP0a, WP0b) on disjoint files: the probability engines in
 `lib/simulate.R` are shared by every DGP of group C, so they are fixed before group C starts

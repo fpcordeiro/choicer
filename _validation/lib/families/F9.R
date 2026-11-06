@@ -41,8 +41,8 @@
 # quantities' less than 0.05 pp; 400 in every rep would take about 180k
 # iterations (about 250 s a rep, 35 CPU-h for the cell's 500 reps).
 # Quick cells (q_*; plan Q4): the SBC cells with fewer persons or situations
-# and short chains, R = 100; q4_check() (lib/dgp_bayes.R) applies Holm at
-# 0.001 to their sbc_ecdf rows.
+# and short chains, R = 100; gates_quick holds Holm at 0.001 over their sbc_ecdf
+# rows, which q4_check() (lib/dgp_bayes.R) and report.R apply through gate_quick().
 # The HB samplers' fit-time convergence warning (rank-R-hat > 1.01 or bulk
 # ESS < 400) is recorded by run_unit(), and its rate is diag$converged's.
 # ============================================================================
@@ -181,5 +181,5 @@ family <- list(
   simulate = f9_simulate,
   estimands = f9_estimands,
   gates = list(cell = f9_sbc_cells, metrics = "sbc_ecdf"),
-  gates_quick = list(cell = f9_quick_cells, metrics = "sbc_ecdf")
+  gates_quick = list(cell = f9_quick_cells, metrics = "sbc_ecdf", alpha = 0.001)
 )

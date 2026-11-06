@@ -569,21 +569,22 @@ ref_q14 <- function(N = 300L, burn = 5000L, kept = 200000L, seed = 20261102L) {
 
 # Q4's check rows from the records of F9's quick cells (q_sbc_mnp,
 # q_sbc_hmnl, q_sbc_hmnp; R$quick reps each, through run_rep()): their
-# sbc_ecdf rows, gated by F9's gates_quick and Holm-adjusted together at
-# alpha = 0.001 (plan Q4: Holm p > 0.001). One row per quantity, value the
-# Holm-adjusted p; it also fails when the quantity's ranks cover fewer than
-# `min_share` of the cell's reps (failed reps, or a quantity some reps lack: the
-# ECDF test sees only those it has). Returns list(rows, tab).
-q4_check <- function(fam, records, alpha = 0.001, min_share = 0.95) {
+# sbc_ecdf rows, gated by F9's gates_quick and Holm-adjusted together at its
+# alpha, 0.001 (plan Q4: Holm p > 0.001). One row per quantity, value the
+# Holm-adjusted p, verdict gate_quick()'s (lib/metrics.R), so it also fails when
+# the quantity's ranks cover fewer than 95% of the cell's reps (failed reps, or a
+# quantity some reps lack). tab holds the failure rows too, which quick.R reads
+# through q_failed_rows(). Returns list(rows, tab).
+q4_check <- function(fam, records) {
   key <- vapply(records, function(r) paste(r$cell, r$method, sep = "\r"), "")
   tab <- do.call(rbind, lapply(unname(split(records, key)), metrics_cell,
                                gates = fam$gates_quick, tol_set = "quick"))
-  tab <- gate_family(tab, alpha = alpha)
+  tab <- gate_quick(tab, fam)
   g <- tab[tab$gated & tab$metric == "sbc_ecdf", , drop = FALSE]
   cells <- vapply(records, `[[`, "", "cell")
   n <- vapply(g$cell, function(cl) sum(cells == cl), 1L, USE.NAMES = FALSE)
-  rows <- q_row("Q4", paste0(g$cell, " ", g$estimand, " (R = ", g$R, " of ", n, ")"), g$p_holm, alpha,
-                g$verdict == "pass" & g$R >= min_share * n)
+  rows <- q_row("Q4", paste0(g$cell, " ", g$estimand, " (R = ", g$R, " of ", n, ")"), g$p_holm,
+                .quick_alpha(fam), g$verdict == "pass")
   list(rows = rows, tab = tab)
 }
 
