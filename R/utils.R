@@ -1181,11 +1181,10 @@ label_matrix <- function(mat, alt_mapping) {
 #'   of the values to subtract.
 #' @returns A `length(rows)` x `length(cols)` double matrix with column names
 #'   `as.character(cols)` (a named `cols` leaves no names behind, as with
-#'   `as.matrix()`); for zero columns, `as.matrix()`'s 0 x 0 logical matrix,
-#'   which the callers' final checks reject.
+#'   `as.matrix()`), without names for zero columns.
 #' @noRd
 .gather_matrix <- function(src, cols, rows, base = NULL) {
-  if (!length(cols)) return(as.matrix(data.table::data.table()))
+  if (!length(cols)) return(matrix(0, length(rows), 0L))
   X <- prep_gather_design(lapply(match(cols, names(src)),
                                  function(j) .subset2(src, j)), rows, base)
   big <- attr(X, "int64_big")
