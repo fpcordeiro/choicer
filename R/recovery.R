@@ -10,8 +10,11 @@
 # Convergence dispatch ---------------------------------------------------------
 # Different optimizers use incompatible convergence codes. nloptr returns
 # positive integers for success (1-4 = tolerance-based stop), stats::optim
-# returns 0 on success. Custom optimizers are treated permissively.
+# returns 0 on success. Custom optimizers are treated permissively. A sampler
+# (MNP, HB) has no stop code: a fit it returned counts, and its own R-hat check
+# warns at fit time.
 .is_converged <- function(fit) {
+  if (inherits(fit, c("choicer_mnp", "choicer_hb"))) return(TRUE)
   code <- fit$convergence
   if (is.null(code) || length(code) != 1L || !is.finite(code)) return(FALSE)
   nm <- fit$optimizer$name %||% "nloptr"
@@ -300,11 +303,15 @@ print.choicer_recovery <- function(x, print_asc = attr(x, "print_asc") %||% 20L,
 #' Each iteration calls `sim_fun(seed = seed + r - 1L)`, then `fit_fun(sim)`.
 #' Write `sim_fun` as a closure that captures `N`, `J`, and other DGP settings
 #' and forwards `seed`. Write `fit_fun` as a closure that takes a
-#' `choicer_sim` and returns a fitted `choicer_fit` object, wrapping any
-#' data-preparation, draws, or optimizer-control setup.
+#' `choicer_sim` and returns a fitted object, wrapping any data-preparation,
+#' draws, or optimizer-control setup. The samplers' fits (`choicer_mnp`,
+#' `choicer_hb`) have no likelihood and no optimizer's code: their reps carry
+#' `loglik = NA`, and `converged` is `TRUE` for a fit returned (their
+#' convergence check warns at fit time).
 #'
 #' @param sim_fun Function of `seed` returning a `choicer_sim`.
-#' @param fit_fun Function of a `choicer_sim` returning a `choicer_fit`.
+#' @param fit_fun Function of a `choicer_sim` returning a fitted object that
+#'   [recovery_table()] accepts.
 #' @param R Number of replications.
 #' @param seed Base integer seed. Replication `r` uses `seed + r - 1L`.
 #' @param parallel Logical; if `TRUE` and `future.apply` is available, run
@@ -362,7 +369,8 @@ monte_carlo <- function(sim_fun, fit_fun, R = 100, seed = 1L,
     rt[, `:=`(
       rep_id    = r,
       seed      = seeds[r],
-      loglik    = as.numeric(stats::logLik(fit)),
+      # no likelihood on the samplers' fits (MNP, HB)
+      loglik    = if (inherits(fit, "choicer_fit")) as.numeric(stats::logLik(fit)) else NA_real_,
       converged = .is_converged(fit),
       time_sec  = elapsed,
       error     = NA_character_
@@ -412,6 +420,13 @@ monte_carlo <- function(sim_fun, fit_fun, R = 100, seed = 1L,
 summary.choicer_mc <- function(object, level = 0.95, print_asc = 20L, ...) {
   reps <- object$replications
   keep <- reps[!is.na(parameter) & converged == TRUE]
+
+  # Coverage at `level`, from each rep's estimate and SE: the reps' own
+  # `covers` is recovery_table()'s, at its default 0.95
+  half_width <- stats::qnorm(1 - (1 - level) / 2) * keep[["se"]]
+  data.table::set(keep, j = "covers",
+                  value = keep[["true"]] >= keep[["estimate"]] - half_width &
+                    keep[["true"]] <= keep[["estimate"]] + half_width)
 
   agg <- keep[, .(
     R_success  = .N,

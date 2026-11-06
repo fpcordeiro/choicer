@@ -17,7 +17,8 @@ monte_carlo(
 \arguments{
 \item{sim_fun}{Function of \code{seed} returning a \code{choicer_sim}.}
 
-\item{fit_fun}{Function of a \code{choicer_sim} returning a \code{choicer_fit}.}
+\item{fit_fun}{Function of a \code{choicer_sim} returning a fitted object that
+\code{\link[=recovery_table]{recovery_table()}} accepts.}
 
 \item{R}{Number of replications.}
 
@@ -46,8 +47,11 @@ Returns a \code{choicer_mc} object; call \code{summary()} for aggregated statist
 Each iteration calls \code{sim_fun(seed = seed + r - 1L)}, then \code{fit_fun(sim)}.
 Write \code{sim_fun} as a closure that captures \code{N}, \code{J}, and other DGP settings
 and forwards \code{seed}. Write \code{fit_fun} as a closure that takes a
-\code{choicer_sim} and returns a fitted \code{choicer_fit} object, wrapping any
-data-preparation, draws, or optimizer-control setup.
+\code{choicer_sim} and returns a fitted object, wrapping any data-preparation,
+draws, or optimizer-control setup. The samplers' fits (\code{choicer_mnp},
+\code{choicer_hb}) have no likelihood and no optimizer's code: their reps carry
+\code{loglik = NA}, and \code{converged} is \code{TRUE} for a fit returned (their
+convergence check warns at fit time).
 }
 \examples{
 \donttest{
