@@ -342,6 +342,21 @@ check("families: gate cells per method and gates_quick are checked (methods, cel
   is.list(good$gates$cell) && identical(good$gates_quick$cell, list(ml = "200")) && all(ok)
 })
 
+check("families: gates_quick$alpha (optional) must lie strictly between 0 and 1", {
+  with_alpha <- function(a) {
+    f <- fam
+    f$gates_quick <- list(cell = "200", metrics = "bias_std", alpha = a)
+    f
+  }
+  ok <- vapply(list(0, 1, -0.01, 1.5, NA_real_, c(0.01, 0.02), "0.01"), function(a) {
+    m <- err_msg(validate_family(with_alpha(a), id = "T0"))
+    note(deparse(a), " -> ", m)
+    grepl("`gates_quick$alpha`", m, fixed = TRUE)
+  }, logical(1))
+  good <- validate_family(with_alpha(0.001), id = "T0")
+  all(ok) && identical(good$gates_quick$alpha, 0.001)
+})
+
 check("families: findings is function(records); gates = NULL only with findings", {
   no_gates <- fam
   no_gates["gates"] <- list(NULL)

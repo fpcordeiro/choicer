@@ -13,6 +13,11 @@
 #            verdict, the two-start information row, every quantity of Q4's three
 #            cells; q4_check()'s floor on a quantity's reps.
 #   report   report.R --tier=quick on those rep files gates as quick.R did.
+#   verdicts report.R --tier=quick against quick.R's q3_run() and q4_run() on the
+#            same fixture records, no fits: F9 with 10 of 100 failed MNP records,
+#            F9 with a Holm p between 0.001 and 0.01, F1 with 5 of 100 failed, and
+#            controls: every gated verdict, by row, on both sides. A findings-only
+#            family gets no gated row.
 #   inject   failures, each from a tree copy, each exit 1 with the row printed: a
 #            comparison that met a NaN; a NaN BHHH SE of a constant in Q2; a gated
 #            row "na"; a missing reference; a test without a check row; a family
@@ -31,7 +36,7 @@ root <- dirname(dirname(normalizePath(sub("^--file=", "", grep("^--file=", comma
                                                                value = TRUE)[1]))))
 sys.source(file.path(root, "lib", "common.R"), envir = (boot <- new.env()), keep.source = FALSE)
 b <- boot$vs_boot(root)
-args <- vs_args(defaults = list(only = "entries,q0,q1,q2,q3,q4,report,inject", out = NULL,
+args <- vs_args(defaults = list(only = "entries,q0,q1,q2,q3,q4,report,verdicts,inject", out = NULL,
                                 workers = 2L))
 only <- trimws(strsplit(args$only, ",", fixed = TRUE)[[1]])
 out <- if (is.null(args$out)) tempfile("wp9_") else args$out
@@ -95,17 +100,22 @@ tree <- function(tag, patches) {
   d
 }
 
-# --- entries -------------------------------------------------------------------------
-
-if ("entries" %in% only) {
-  source_quick <- parse(file.path(root, "quick.R"))
-  defs <- new.env()
-  for (e in source_quick) {
+# Definitions of quick.R, parsed from the script (its top level runs a tier).
+quick_defs <- function(keep) {
+  defs <- new.env(parent = globalenv())
+  for (e in parse(file.path(root, "quick.R"), keep.source = FALSE)) {
     if (is.call(e) && identical(e[[1]], as.name("<-")) && is.name(e[[2]]) &&
-        as.character(e[[2]]) %in% c("Q3_ENTRIES", "Q3_FIXTURES", "Q4_ENTRY")) {
+        as.character(e[[2]]) %in% keep) {
       eval(e, defs)
     }
   }
+  defs
+}
+
+# --- entries -------------------------------------------------------------------------
+
+if ("entries" %in% only) {
+  defs <- quick_defs(c("Q3_ENTRIES", "Q3_FIXTURES", "Q4_ENTRY"))
   check("Q3's entries are the plan's bottom rungs at R = 100, with parsing gates_quick", {
     want <- list(F1 = "500", F2 = "1k", F3 = "1k.q", F4 = "200.q", F8 = "quota")
     ok <- setequal(names(defs$Q3_ENTRIES), names(want)) &&
@@ -282,6 +292,155 @@ if (any(c("q3", "q4", "report") %in% only)) {
     }, TRUE)
     note(paste(names(same), same, collapse = "; "))
     is.null(attr(o, "status")) && all(same)
+  })
+}
+
+# --- verdicts ------------------------------------------------------------------------
+
+# The report against the runner on fixture records, no fits. The runner is quick.R's own
+# q3_run() or q4_run(), with q_mc_run() replaced by one that hands them the records; the
+# report is report.R --tier=quick, in a subprocess, on those records' rep files. Each gated
+# row of its metrics CSV is labelled as the runner labels its check row, and `agree()` asks
+# for the same rows with the same verdicts: every row, not the counts.
+if ("verdicts" %in% only) {
+  verdicts <- function(tag, recs) {
+    d <- file.path(out, paste0("verdicts_", tag))
+    dir.create(d, showWarnings = FALSE)
+    for (r in recs) write_rep(r, rep_path(d, r$family, r$cell, r$method, r$rep))
+    fam <- load_family(recs[[1]]$family, b$L)
+    cells <- vapply(recs, `[[`, "", "cell")
+    plan <- unique(data.frame(family = fam$id, cell = cells,
+                              method = vapply(recs, `[[`, "", "method"), R = 100L,
+                              stringsAsFactors = FALSE))
+    saveRDS(plan, file.path(d, "q3_plan.rds"))
+    defs <- quick_defs(c("Q3_ENTRIES", "Q3_FIXTURES", "Q4_ENTRY", "q3_entries", "q3_run", "q4_run",
+                         "q_failed_rows", "q_start_rows", "q_gate_rows"))
+    defs$q_mc_run <- function(ctx, test, ents) {
+      list(plan = stats::setNames(list(list(fam = fam, cells = unique(cells))), fam$id),
+           recs = recs, rows = list())
+    }
+    ctx <- list(fixtures = FALSE, out = out, stamp = tag)
+    utils::capture.output(rows <- if (fam$id == "F9") defs$q4_run(ctx, "*") else
+      defs$q3_run(ctx, "*"))
+    o <- suppressWarnings(system2(rscript, c(shQuote(file.path(root, "report.R")),
+                                             paste0("--run=", shQuote(d)), "--tier=quick"),
+                                  stdout = TRUE, stderr = TRUE, env = env))
+    tab <- utils::read.csv(file.path(d, "tables", paste0(fam$id, "_metrics.csv")),
+                           stringsAsFactors = FALSE)
+    g <- tab[tab$gated, , drop = FALSE]
+    lab <- defs$q_gate_rows("report", g)$check
+    f <- g$metric == "failure_rate"
+    n <- g$R[f][match(paste(g$cell, g$method), paste(g$cell, g$method)[f])]
+    s <- g$metric == "sbc_ecdf"
+    lab[s] <- sprintf("%s %s (R = %d of %d)", g$cell[s], g$estimand[s], g$R[s], n[s])
+    lab[f] <- sprintf("%s/%s failed reps: %d of %d", g$cell[f], g$method[f], g$n_failed[f], g$R[f])
+    run <- rows[!is.na(rows$pass), , drop = FALSE]
+    list(runner = stats::setNames(run$pass, sub("( failed reps: [0-9]+ of [0-9]+) \\(.*\\)$", "\\1",
+                                                run$check)),
+         report = stats::setNames(g$verdict == "pass", lab), rows = run, g = g,
+         out = o, status = attr(o, "status") %||% 0L)
+  }
+  # The same rows with the same verdicts, `n` of them, failing exactly `fails`.
+  agree <- function(v, n, fails = character()) {
+    note(sprintf("runner: %d rows, %d fail; report: %d rows, %d fail; report exit %d",
+                 length(v$runner), sum(!v$runner), length(v$report), sum(!v$report), v$status))
+    for (k in names(v$runner)[!v$runner]) note("runner fails: ", k)
+    for (k in names(v$report)[!v$report]) note("report fails: ", k)
+    v$status == 0L && length(v$runner) == n && !anyDuplicated(names(v$runner)) &&
+      setequal(names(v$runner), names(v$report)) &&
+      identical(v$runner[names(v$report)], v$report) && setequal(names(v$runner)[!v$runner], fails)
+  }
+
+  # F9's records: `ranks(cell)` gives the 100 ranks of the quantity q, NA a failed rep. The
+  # ranks are in 0..99; 0:99 is the even spread.
+  f9 <- load_family("F9", b$L)
+  f9_cells <- names(f9$R$quick)[f9$R$quick > 0]
+  f9_recs <- function(ranks) {
+    unlist(lapply(f9_cells, function(cl) {
+      rk <- ranks(cl)
+      lapply(1:100, function(r) {
+        if (is.na(rk[r])) {
+          new_rep_record("F9", cl, cell_methods(f9, cl), r, seed = r, ok = FALSE,
+                         error = "injected")
+        } else {
+          new_rep_record("F9", cl, cell_methods(f9, cl), r, seed = r,
+                         diag = list(sbc = list(L = 99L, ranks = c(q = rk[r]))))
+        }
+      })
+    }), recursive = FALSE)
+  }
+  mnp <- "q_sbc_mnp"
+  check("verdicts, F9 with 10 of 100 MNP records failed: the runner and the report fail MNP", {
+    v <- verdicts("f9_failed", f9_recs(function(cl) {
+      if (cl == mnp) c(rep(NA, 10L), floor(0:89 * 100 / 90)) else 0:99
+    }))
+    cov <- v$rows[grepl("(R = 90 of 100)", v$rows$check, fixed = TRUE), ]
+    note(sprintf("%s: Holm p %.3f, above %g", cov$check, cov$value, cov$threshold))
+    agree(v, 6L, c("q_sbc_mnp q (R = 90 of 100)", "q_sbc_mnp/mnp failed reps: 10 of 100")) &&
+      cov$value > cov$threshold && printed(v, "F9: 6 gated rows, 4 pass, 2 fail, 0 na")
+  })
+  check("verdicts, F9 with complete ranks and a Holm p in (0.001, 0.01): both pass at Q4's alpha", {
+    skew <- floor(100 * ((1:100 - 0.5) / 100)^1.6)
+    v <- verdicts("f9_alpha", f9_recs(function(cl) if (cl == mnp) skew else 0:99))
+    p <- v$g$p_holm[v$g$metric == "sbc_ecdf" & v$g$cell == mnp]
+    note(sprintf("the skewed cell's Holm p: %.5f", p))
+    agree(v, 6L) && p > 0.001 && p < 0.01 && printed(v, "F9: 6 gated rows, 6 pass, 0 fail, 0 na")
+  })
+
+  # F1's records at cell 500: its coefficients with exact SEs, each rep's z and LR drawn on a
+  # frozen seed, otherwise unremarkable. The first `failed` reps fail; the others are the same
+  # draws whichever `failed` is.
+  th <- D2_THETA0$default
+  f1_recs <- function(failed = 0L) {
+    beta <- !startsWith(names(th), "ASC_")
+    vs_with_seed(20261106L, lapply(1:100, function(r) {
+      e <- th + 0.1 * stats::rnorm(length(th))
+      lr <- stats::rchisq(1L, 1)
+      if (r <= failed) {
+        return(new_rep_record("F1", "500", "ml", r, seed = r, ok = FALSE, error = "injected"))
+      }
+      est <- data.frame(name = names(th), block = ifelse(beta, "beta", "asc"), est = unname(e),
+                        truth = unname(th), se_hessian = 0.1, se_bhhh = NA_real_,
+                        se_robust = NA_real_, se_cluster = NA_real_, gated = TRUE,
+                        stringsAsFactors = FALSE)
+      new_rep_record("F1", "500", "ml", r, seed = r, est = est,
+                     joint_wald = joint_wald(e[beta], th[beta], diag(0.01, sum(beta))),
+                     lr = lr_test(lr / 2, 0, 1))
+    }))
+  }
+  check("verdicts, F1 with 5 of 100 failed: both fail the unit, and agree on the other 31 rows", {
+    v <- verdicts("f1_failed", f1_recs(5L))
+    agree(v, 32L, "500/ml failed reps: 5 of 100") &&
+      printed(v, "F1: 32 gated rows, 31 pass, 1 fail")
+  })
+  check("verdicts, a control where nothing is wrong: every verdict passes on both sides", {
+    f <- verdicts("f1_clean", f1_recs())
+    q <- verdicts("f9_clean", f9_recs(function(cl) 0:99))
+    agree(f, 32L) && agree(q, 6L)
+  })
+  check("verdicts: a findings-only family gets no gated row in the quick tier", {
+    nm <- c("price/ref", "price/S100/g1", "price/S200/g1")
+    v <- lapply(1:4, function(d) {
+      new_rep_record("F5", "F4", "msl", d, seed = d, ok = d > 1L, error = if (d == 1L) "injected",
+                     est = if (d > 1L) data.frame(
+                       name = nm, block = "beta", est = c(0, 0.2, 0.1) * d, truth = 0,
+                       se_hessian = NA_real_, se_bhhh = NA_real_, se_robust = NA_real_,
+                       se_cluster = NA_real_, gated = FALSE, stringsAsFactors = FALSE),
+                     diag = if (d > 1L) list(se_ref = c(price = 1), S_ref = 400L, units = 800L,
+                                             src = c(S_src = 100L)))
+    })
+    d <- file.path(out, "verdicts_f5")
+    dir.create(d, showWarnings = FALSE)
+    for (r in v) write_rep(r, rep_path(d, r$family, r$cell, r$method, r$rep))
+    o <- suppressWarnings(system2(rscript, c(shQuote(file.path(root, "report.R")),
+                                             paste0("--run=", shQuote(d)), "--tier=quick"),
+                                  stdout = TRUE, stderr = TRUE, env = env))
+    tab <- utils::read.csv(file.path(d, "tables", "F5_metrics.csv"), stringsAsFactors = FALSE)
+    fr <- tab[tab$metric == "failure_rate", ]
+    note(sprintf("%d rows, %d gated; failure_rate %.2f, verdict %s", nrow(tab), sum(tab$gated),
+                 fr$value, fr$verdict))
+    is.null(attr(o, "status")) && nrow(tab) > 0L && !any(tab$gated) && nrow(fr) == 1L &&
+      fr$value == 0.25 && fr$verdict == "finding"
   })
 }
 

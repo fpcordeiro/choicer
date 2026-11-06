@@ -263,6 +263,30 @@ f5_estimands <- function(fit, sim) NULL
     sd_se = sd, sd_se_mcse = if (nu > 0) sd / sqrt(2 * nu) else NA_real_)
 }
 
+# One ladder's z by independent unit (rows) and S (columns): a dataset's mean
+# over seeds; with one dataset, one row per seed. A unit keeps its S points
+# together, because they share a dataset, a reference fit and draw seeds, so a
+# rate's uncertainty comes from the spread of its value over units and not from
+# the S-level MCSEs, which ignore the covariance between S points. NA where a
+# unit has no fit at an S.
+.f5_units <- function(long, d) {
+  z <- long[long$regime == d$regime[1] & long$param == d$param[1] & long$kind == d$kind[1] &
+              long$S %in% d$S, , drop = FALSE]
+  by <- if (length(unique(z$rep)) >= 2L) z$rep else z$seed
+  tapply(z$z, list(by, z$S), mean)[, as.character(d$S), drop = FALSE]
+}
+
+# The MCSE of a statistic linear in the S-level means, sum_S w_S y_S: its SD over
+# the units complete at the S points it uses / sqrt(units), so that every
+# covariance among those points counts (the delta method for a statistic that is
+# not linear; weights treated as fixed). NA below two units.
+.f5_rate_se <- function(u, w) {
+  on <- w != 0
+  v <- drop(u[, on, drop = FALSE] %*% w[on])
+  v <- v[!is.na(v)]
+  if (length(v) >= 2L) stats::sd(v) / sqrt(length(v)) else NA_real_
+}
+
 # F5's findings from its records (every regime): a list of
 #   by_S    per regime, parameter (the common ones; the constants pooled as
 #           "(constants, RMS)": the root mean square over constants), kind
@@ -274,7 +298,8 @@ f5_estimands <- function(fit, sim) NULL
 #           that b / S is the bias against infinite S in SE units; S_01 =
 #           |b| / 0.1, the S at which it is 0.1 SE; the log-log slope of
 #           |bias| on S (C4 predicts -1 well below S_ref); and S_ladder, the
-#           smallest S of the ladder from which every |bias| < 0.1 SE;
+#           smallest S of the ladder from which every |bias| < 0.1 SE; b_se and
+#           slope_se from complete units (.f5_units(), .f5_rate_se());
 #   regimes per regime and ladder: the likelihood units U, the gates' S =
 #           4 sqrt(U) (sqrt(U) / S = 0.25), the source family's own S and
 #           the largest |bias| / SE of its fits there over the common
@@ -319,9 +344,12 @@ f5_findings <- function(records) {
     m <- d$bias_se_mcse
     x <- 1 / d$S - 1 / S_ref
     wt <- is.finite(m) & m > 0
+    u <- .f5_units(long, d)
     if (sum(wt) >= 2) {
       b <- sum(x[wt] * y[wt] / m[wt]^2) / sum(x[wt]^2 / m[wt]^2)
-      b_se <- 1 / sqrt(sum(x[wt]^2 / m[wt]^2))
+      cb <- numeric(length(x))
+      cb[wt] <- (x[wt] / m[wt]^2) / sum(x[wt]^2 / m[wt]^2)
+      b_se <- .f5_rate_se(u, cb)
     } else {
       b <- sum(x * y) / sum(x^2)
       b_se <- NA_real_
@@ -329,9 +357,11 @@ f5_findings <- function(records) {
     lw <- (y / m)^2
     k <- is.finite(log(abs(y))) & is.finite(lw)
     sl <- if (sum(k) >= 2) {
-      f <- stats::lm.wfit(cbind(1, log(d$S[k])), log(abs(y[k])), lw[k])
-      XtWX <- crossprod(cbind(1, log(d$S[k])) * sqrt(lw[k]))
-      c(f$coefficients[[2]], sqrt(solve(XtWX)[2, 2]))
+      X <- cbind(1, log(d$S[k]))
+      f <- stats::lm.wfit(X, log(abs(y[k])), lw[k])
+      a <- numeric(length(y))
+      a[k] <- (solve(crossprod(X * sqrt(lw[k]))) %*% t(X * lw[k]))[2, ] / y[k]
+      c(f$coefficients[[2]], .f5_rate_se(u, a))
     } else c(NA_real_, NA_real_)
     below <- abs(y) < 0.1
     ok_from <- rev(cumprod(rev(below))) == 1

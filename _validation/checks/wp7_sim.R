@@ -3,6 +3,10 @@
 # constants, the port of blp_concentration_mc.R). Sections (--only,
 # comma-separated):
 #   load    both families load and validate; F5's regimes and their sources.
+#   rates   F5's rate uncertainty on synthetic records, no fits (under a minute):
+#           b_se and slope_se over complete units on a correlated ladder, against
+#           the diagonal formula on independent S points, with one dataset, with
+#           source rows on the ladder, and calibrated over ensembles.
 #   shares  F10's frozen population shares against the old script's
 #           pop_shares() and the port's f10_pop_shares() (about 25 s a
 #           design; --designs=).
@@ -48,7 +52,7 @@ root <- normalizePath(file.path(dirname(normalizePath(sub("^--file=", "", file_a
 sys.source(file.path(root, "lib", "common.R"), envir = (boot <- new.env()), keep.source = FALSE)
 b <- boot$vs_boot(root)
 suppressPackageStartupMessages(library(data.table))
-args <- vs_args(defaults = list(only = "load,repro", designs = "cross,panel,base,markets",
+args <- vs_args(defaults = list(only = "load,rates,repro", designs = "cross,panel,base,markets",
                                 repro = "cross:1-3,panel:1,base:1,markets:1", smoke_reps = "1:2",
                                 f5 = "F4", f5_ref = 400L, f5_gen = "50,100", f5_store = "100",
                                 f5_seeds = 2L, f5_div = 100, spec_div = 100,
@@ -123,6 +127,117 @@ if ("load" %in% only) {
     }
   }
   print(f10$cells, row.names = FALSE)
+}
+
+# --- rates -----------------------------------------------------------------------
+
+# F5's b_se and slope_se on synthetic records, no fits. A record holds z (S by
+# seed), with store and source rows where given, as named vectors (S -> z). The
+# reference's SE is 1, so z is the estimate.
+if ("rates" %in% only) {
+  cat("\n== rates: F5's rate uncertainty, from complete units ==\n")
+  f5 <- load_family("F5", b$L)
+  S <- c(50L, 100L, 200L, 400L, 800L)
+  S_ref <- 3200L
+  x <- 1 / S - 1 / S_ref
+  rec5 <- function(d, z, store = NULL, src = NULL) {
+    nm <- c(as.vector(outer(paste0("price/S", S), paste0("g", seq_len(ncol(z))), paste, sep = "/")),
+            sprintf("price/S%s/store", names(store)), sprintf("price/S%s/src", names(src)))
+    e <- data.frame(name = c("price/ref", nm), block = "beta", est = c(0, z, store, src), truth = 0,
+                    se_hessian = NA_real_, se_bhhh = NA_real_, se_robust = NA_real_,
+                    se_cluster = NA_real_, gated = FALSE, stringsAsFactors = FALSE)
+    new_rep_record("F5", "F4", "msl", d, seed = d, est = e,
+                   diag = list(se_ref = c(price = 1), S_ref = S_ref, units = 3200L,
+                               src = c(S_src = 500L)))
+  }
+  # The diagonal formula's b_se from the S-level MCSEs of one ladder: right only
+  # when the S points are independent.
+  diag_se <- function(by_S) {
+    d <- by_S[by_S$kind == "generate", ]
+    1 / sqrt(sum((1 / d$S - 1 / S_ref)^2 / d$bias_se_mcse^2))
+  }
+
+  # z_d(S) = B_d (1/S - 1/3200), the same at both seeds: b_d = B_d, so b = mean(B)
+  # and its MCSE is sd(B) / sqrt(30); B_d scales every S alike, so the slope does
+  # not depend on it. The diagonal formula reports 2.033325, too small by sqrt(5).
+  set.seed(104)
+  B <- stats::rnorm(30, 100, 30)
+  lad <- f5$findings(lapply(1:30, function(d) rec5(d, cbind(B[d] * x, B[d] * x))))$rates
+  se_B <- stats::sd(B) / sqrt(30)
+  report("correlated ladder: sd(B) / sqrt(30) is the review's 4.546653", abs(se_B - 4.546653),
+         1e-6)
+  report("correlated ladder: one rates row, b = mean(B)", abs(lad$b - mean(B)), 1e-9,
+         pass = nrow(lad) == 1L && abs(lad$b - mean(B)) < 1e-9)
+  report("correlated ladder: b_se = sd(B) / sqrt(30)", abs(lad$b_se - se_B), 1e-9)
+  report("correlated ladder: slope_se is 0", lad$slope_se, 1e-10)
+
+  # Independent noise at each S and seed, no part shared across S (200 datasets,
+  # so that the ratio is not itself noisy): the diagonal formula is right here, and
+  # the units must agree with it.
+  set.seed(105)
+  ind <- f5$findings(lapply(1:200, function(d) {
+    rec5(d, 100 * cbind(x, x) + sqrt(30 / S) * matrix(stats::rnorm(10), 5L, 2L))
+  }))
+  cat(sprintf("      independent S points: b_se %.4f, diagonal %.4f, slope_se %.4f\n",
+              ind$rates$b_se, diag_se(ind$by_S), ind$rates$slope_se))
+  report("independent S points: b_se within 15% of the diagonal formula",
+         abs(ind$rates$b_se / diag_se(ind$by_S) - 1), 0.15)
+
+  # One dataset (the F7 regimes): the unit is the seed, and store mode, one fit per
+  # S, has no units to spread over.
+  set.seed(106)
+  z1 <- 100 * cbind(x, x) + matrix(stats::rnorm(10, 0, 0.1), 5L, 2L)
+  one <- tryCatch(f5$findings(list(rec5(1L, z1, store = c("100" = 0.9, "200" = 0.4)))),
+                  error = function(e) conditionMessage(e))
+  report("one dataset, two seeds, store rows: findings() returns its tables",
+         as.numeric(!is.list(one)), 0.5)
+  if (is.list(one)) {
+    g <- one$rates[one$rates$kind == "generate", ]
+    s <- one$rates[one$rates$kind == "store", ]
+    d <- one$by_S[one$by_S$kind == "generate", ]
+    cb <- (x / d$bias_se_mcse^2) / sum(x^2 / d$bias_se_mcse^2)
+    report("one dataset: b_se is the two seeds' spread / sqrt(2)",
+           abs(g$b_se - stats::sd(drop(cb %*% z1)) / sqrt(2)), 1e-9)
+    report("one dataset: store's b_se and slope_se are NA, its b is not",
+           as.numeric(!(nrow(s) == 1L && is.na(s$b_se) && is.na(s$slope_se) && is.finite(s$b))),
+           0.5)
+  }
+
+  # Source rows at an S on the ladder: step 1's fit, off the ladder's seeds. They
+  # must reach by_S and stay out of the rates.
+  recs <- lapply(1:30, function(d) rec5(d, cbind(B[d] * x, B[d] * x)))
+  src <- f5$findings(lapply(1:30, function(d) {
+    rec5(d, cbind(B[d] * x, B[d] * x), src = c("200" = 50 + d))
+  }))
+  report("source rows at S = 200 reach by_S", as.numeric(!any(src$by_S$kind == "source" &
+                                                                src$by_S$S == 200L)), 0.5)
+  report("source rows at S = 200 leave the rates as they were",
+         as.numeric(!identical(src$rates, f5$findings(recs)$rates)), 0.5)
+
+  # Calibration: B_d a shared part per dataset, and each seed's noise correlated
+  # 0.9 across S (nested draws). The mean reported SE over the SD of b; the
+  # diagonal formula's ratio beside it shows the design tells the two apart (0.50).
+  set.seed(107)
+  rho <- 0.9
+  t0 <- now()
+  cal <- vapply(seq_len(300L), function(i) {
+    B <- stats::rnorm(30, 100, 30)
+    f <- f5$findings(lapply(1:30, function(d) {
+      seeds <- function() B[d] * x + sqrt(30 / S) * (rho * stats::rnorm(1) +
+                                                       sqrt(1 - rho^2) * stats::rnorm(5))
+      rec5(d, cbind(seeds(), seeds()))
+    }))
+    c(b = f$rates$b, b_se = f$rates$b_se, diag = diag_se(f$by_S))
+  }, numeric(3))
+  sd_b <- stats::sd(cal["b", ])
+  cat(sprintf(paste("      300 ensembles (%.0f s): SD of b %.3f; mean b_se %.3f, ratio %.3f;",
+                    "diagonal %.3f, ratio %.3f\n"),
+              now() - t0, sd_b, mean(cal["b_se", ]), mean(cal["b_se", ]) / sd_b,
+              mean(cal["diag", ]), mean(cal["diag", ]) / sd_b))
+  report("calibration: mean b_se / SD(b) within 0.85-1.15", abs(mean(cal["b_se", ]) / sd_b - 1),
+         0.15)
+  report("calibration: the design tells them apart, diagonal formula / SD(b) below 0.7",
+         mean(cal["diag", ]) / sd_b, 0.7)
 }
 
 # --- shares ----------------------------------------------------------------------
