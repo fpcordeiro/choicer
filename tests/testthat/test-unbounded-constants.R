@@ -32,10 +32,13 @@ ucon_mxl <- function(dt, ...) {
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
     covariate_cols = "x1", random_var_cols = "w1", S = 10L, ...))
 }
+# (where a constant diverges, L-BFGS's line search can give up: a warning of its
+# own, class choicer_optimizer_failed, beside the one these tests are about)
 ucon_nl <- function(dt, ...) {
-  suppressMessages(run_nestlogit(
+  suppressWarnings(suppressMessages(run_nestlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
-    covariate_cols = "x1", nest_col = "nest", ...))
+    covariate_cols = "x1", nest_col = "nest", ...)),
+    classes = "choicer_optimizer_failed")
 }
 
 UCON <- "choicer_unbounded_constants"
@@ -182,8 +185,9 @@ test_that("prepared input_data warns too", {
     input_data = inp, eta_draws = get_halton_normals(10L, inp$N, 1L))),
     class = UCON)
   inp <- prepare_nl_data(dt, "id", "alt", "choice", "x1", "nest")
-  expect_warning(suppressMessages(run_nestlogit(input_data = inp)),
-                 class = UCON)
+  suppressWarnings(
+    expect_warning(suppressMessages(run_nestlogit(input_data = inp)), class = UCON),
+    classes = "choicer_optimizer_failed")
 })
 
 test_that("factor labels are quoted and dates printed as dates", {

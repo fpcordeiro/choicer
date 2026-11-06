@@ -159,6 +159,14 @@
 #'   the optimizer's, the polish's reason appended to the message. A polish
 #'   that stops with an error (the Hessian's memory check, say) keeps its
 #'   last accepted point and warns (class \code{choicer_polish_failed}).
+#'   An optimizer that reports a failure (nloptr's negative codes, such as
+#'   \code{NLOPT_FAILURE} where L-BFGS's line search gives up, and optim's 10,
+#'   51 and 52) may have returned its start values or stopped at the maximum,
+#'   which its code cannot tell. Without a polish, a Newton phase of no steps
+#'   then checks its point: \code{fit$optimizer$polish} records it
+#'   (\code{iterations} 0), and a point it certifies takes the success code
+#'   as above. A point no polish certified keeps the failure code and warns
+#'   (class \code{choicer_optimizer_failed}).
 #' @section Newton phase (polish):
 #' The polish does not change the estimator. From wherever the optimizer
 #' stopped, it takes Newton steps on the curvature of the log-likelihood and
@@ -431,24 +439,28 @@ run_nestlogit <- function(
   nest_of_row <- function(rows) {
     input_data$nest_idx[input_data$alt_mapping[["alt_int"]][rows]]
   }
-  never <- if (polish != "none" && !is.null(unbounded)) {
-    unbounded$never[unbounded$never >= 2L]
-  } else integer()
-  moves <- if (length(never)) {
-    multi <- tabulate(input_data$nest_idx) > 1L
-    param_map$asc[never[multi[nest_of_row(never)]] - 1L]
-  } else integer()
-  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
-                       n_units = length(input_data$M), lower = theta_lb,
-                       moves = moves)
   # Where the reference is never chosen, the alternatives that anchor the
   # constants against a common rise (.polish_anchors(); the release below
   # frees only never-chosen constants, which anchor nothing)
-  anchors <- .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
-                             input_data$alt_mapping,
-                             list(alt_idx = input_data$alt_idx,
-                                  choice_idx = input_data$choice_idx,
-                                  M = input_data$M))
+  polish_setup <- function(polish) {
+    never <- if (polish != "none" && !is.null(unbounded)) {
+      unbounded$never[unbounded$never >= 2L]
+    } else integer()
+    moves <- if (length(never)) {
+      multi <- tabulate(input_data$nest_idx) > 1L
+      param_map$asc[never[multi[nest_of_row(never)]] - 1L]
+    } else integer()
+    held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                         n_units = length(input_data$M), lower = theta_lb,
+                         moves = moves)
+    list(never = never, held = held,
+         anchors = .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
+                                   input_data$alt_mapping,
+                                   list(alt_idx = input_data$alt_idx,
+                                        choice_idx = input_data$choice_idx,
+                                        M = input_data$M)))
+  }
+  setup <- polish_setup(polish)
 
   # The model's objective, gradient and overflow flag at theta; `...` takes
   # opg_diag
@@ -508,10 +520,20 @@ run_nestlogit <- function(
   # units (.polish_fit()), on the raw objective, whose overflow flag fails a
   # trial point, the dissimilarities kept above their bound; under scale_vars
   # = "none" (the default) the steps' scales come from one BHHH pass at the
-  # optimizer's solution. The estimator is unchanged.
+  # optimizer's solution. The estimator is unchanged. Where the optimizer
+  # reports a failure and no polish was asked for, a phase of no steps checks
+  # its point.
   polish_record <- NULL
   curv <- NULL
+  polish_asked <- polish != "none"
+  if (.check_optimizer_stop(polish, opt, optimizer)) {
+    polish <- "newton"
+    polish_control$max_iter <- 0L
+    setup <- polish_setup(polish)
+  }
   if (polish != "none") {
+    held <- setup$held
+    never <- setup$never
     curv_kernel <- if (polish == "newton") nl_loglik_hessian_parallel else nl_bhhh_parallel
     curv_f <- function(theta) {
       curv_kernel(
@@ -584,7 +606,7 @@ run_nestlogit <- function(
                       keep_curvature = reuse, unbounded = unbounded,
                       asc_idx = param_map$asc,
                       alt_mapping = input_data$alt_mapping,
-                      anchors = anchors,
+                      anchors = setup$anchors,
                       weights = input_data$weights, optimizer = optimizer,
                       certify_f = certify_f, ref_open = ref_open)
     opt <- pf$opt
@@ -595,6 +617,8 @@ run_nestlogit <- function(
     # after the variance frees it
     pf <- NULL
   }
+  .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
+                         polish_asked)
 
   # Estimates in natural units
   theta_hat <- opt$par
