@@ -288,7 +288,7 @@ inline MnlParams parse_mnl_theta(const arma::vec& theta, const int K,
 // hessian, bhhh) sits inside an `if (rc_mean)` block, where the values below
 // match what each function computed before; when !rc_mean they are never read.
 //
-// All theta-block validation (K_x > 0, rc_dist length, per-block theta
+// All theta-block validation (K_x >= 0, rc_dist length, per-block theta
 // lengths, no trailing unparsed parameters) happens here unconditionally, so
 // every entry point — including the predict family — fails with the same
 // actionable message on a malformed theta.
@@ -310,8 +310,8 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
                                  const bool use_asc,
                                  const bool include_outside_option) {
   const int n_params = theta.n_elem;
-  if (K_x <= 0) {
-    Rcpp::stop("K_x must be positive, got %d", K_x);
+  if (K_x < 0) {
+    Rcpp::stop("K_x must not be negative, got %d", K_x);
   }
   check_rc_dist_length(rc_dist, K_w);
 
@@ -322,11 +322,12 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
   P.idx_L_start = rc_mean ? K_x + K_w : K_x;
   P.idx_delta_start = P.idx_L_start + P.L_size;
 
-  // beta: coefficients for design matrix X
+  // beta: coefficients for design matrix X (empty in a model whose every
+  // coefficient is random)
   if (n_params < P.idx_mu_start)
     Rcpp::stop("Theta vector too short: missing beta parameters "
                "(expected at least %d, got %d).", K_x, n_params);
-  P.beta = theta.subvec(P.idx_beta_start, P.idx_mu_start - 1);
+  if (K_x > 0) P.beta = theta.subvec(P.idx_beta_start, P.idx_mu_start - 1);
 
   // mu: means of random coefficients (zeros when not estimated)
   arma::vec mu;

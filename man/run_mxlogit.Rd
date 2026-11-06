@@ -54,7 +54,8 @@ Mutually exclusive with \code{input_data}.}
 
 \item{choice_col}{Name of the column indicating chosen alternative (1/0).}
 
-\item{covariate_cols}{Vector of column names for fixed covariates. None
+\item{covariate_cols}{Vector of column names for fixed covariates; \code{NULL}
+where every coefficient is random. None
 may take a name the model gives its parameters, or prints for them in
 \code{summary()}: \code{L_<i><j>} and \code{Sigma_<i><j>}, with
 \code{use_asc = TRUE} \code{ASC_<label>}, and with

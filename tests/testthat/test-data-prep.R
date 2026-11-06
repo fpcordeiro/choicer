@@ -673,8 +673,7 @@ test_that("design matrices are double, with the covariate names as column names"
   expect_identical(.gather_matrix(df, c("x1", "x1"), seq_len(nrow(df))),
                    num(c("x1", "x1")))
   cc <- character(0)
-  expect_identical(.gather_matrix(df, cc, seq_len(nrow(df))),
-                   as.matrix(data.table::as.data.table(df)[, ..cc]))
+  expect_identical(.gather_matrix(df, cc, seq_len(nrow(df))), matrix(0, nrow(df), 0L))
 })
 
 test_that("prep_gather_design gathers rows exactly and checks its inputs", {

@@ -29,7 +29,8 @@ prepare_mxl_data(
 
 \item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)}
 
-\item{covariate_cols}{Vector of names of columns to be used as covariates}
+\item{covariate_cols}{Vector of names of columns to be used as covariates;
+\code{NULL} where every coefficient is random}
 
 \item{random_var_cols}{Vector of names of columns to be used as random variables}
 

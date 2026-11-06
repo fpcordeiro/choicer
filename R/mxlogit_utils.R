@@ -381,7 +381,8 @@
 #' @param id_col Name of the column identifying choice situations.
 #' @param alt_col Name of the column identifying alternatives.
 #' @param choice_col Name of the column indicating chosen alternative (1/0).
-#' @param covariate_cols Vector of column names for fixed covariates. None
+#' @param covariate_cols Vector of column names for fixed covariates; \code{NULL}
+#'   where every coefficient is random. None
 #'   may take a name the model gives its parameters, or prints for them in
 #'   \code{summary()}: \code{L_<i><j>} and \code{Sigma_<i><j>}, with
 #'   \code{use_asc = TRUE} \code{ASC_<label>}, and with
@@ -1168,9 +1169,9 @@ run_mxlogit <- function(
   if (has_data) {
     # Convenience workflow: validate required column-name arguments
     if (is.null(id_col) || is.null(alt_col) || is.null(choice_col) ||
-        is.null(covariate_cols) || is.null(random_var_cols)) {
+        is.null(random_var_cols)) {
       stop("Convenience workflow requires: id_col, alt_col, choice_col, ",
-           "covariate_cols, and random_var_cols.")
+           "and random_var_cols.")
     }
     # WESML provenance present but no weights supplied: auto-adopt the recorded
     # weight column, or error -- never silently fit unweighted under a WESML label.
@@ -1999,7 +2000,8 @@ run_mxlogit <- function(
 #' @param id_col Name of the column identifying choice situations
 #' @param alt_col Name of the column identifying alternatives
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)
-#' @param covariate_cols Vector of names of columns to be used as covariates
+#' @param covariate_cols Vector of names of columns to be used as covariates;
+#'   \code{NULL} where every coefficient is random
 #' @param random_var_cols Vector of names of columns to be used as random variables
 #' @param weights Optional vector of weights, one per choice situation in the
 #'   prepared order (ascending id; see Details). If NULL, equal weights are
