@@ -97,11 +97,7 @@
   theta <- rep(0, n_params)
   K_w <- ncol(W)
   if (!K_w) return(theta)
-  diag_idx <- if (rc_correlation) {
-    param_map$sigma[cumsum(seq_len(K_w))]
-  } else {
-    param_map$sigma
-  }
+  diag_idx <- .mxl_diag_idx(param_map, K_w, rc_correlation)
   if (!is.double(W)) storage.mode(W) <- "double"
   s <- design_column_step(W)
   ok <- is.finite(s) & s > 0
@@ -110,6 +106,75 @@
   log_L[rc_dist[seq_len(K_w)] %in% 1L] <- log(0.5)
   theta[diag_idx] <- log_L
   theta
+}
+
+#' The positions of the log-Cholesky diagonal in theta
+#'
+#' @param param_map The fit's parameter map.
+#' @param K_w Number of random coefficients.
+#' @param rc_correlation Whether L is lower triangular (else diagonal).
+#' @returns Integer positions, one per random coefficient.
+#' @noRd
+.mxl_diag_idx <- function(param_map, K_w, rc_correlation) {
+  if (rc_correlation) param_map$sigma[cumsum(seq_len(K_w))] else param_map$sigma
+}
+
+#' The log-Cholesky diagonals on a zero-variance plateau
+#'
+#' A diagonal L_pp is on the plateau where its standard deviation exp(L_pp) is
+#' numerically zero: below 1e-4 of the default start's level (`levels`), so
+#' that its typical effect on a utility is below 1e-4 for a normal coefficient,
+#' whose start is one over its column's typical step. The likelihood is flat
+#' there because the score in L_pp is the standard deviation times the score in
+#' the standard deviation, so it and the curvature vanish together, while the
+#' Newton decrement falls below any tolerance on the way down. In the study
+#' behind this rule (a stated-preference panel, its composite likelihood, logit
+#' data), no certified fit had a diagonal between about 6.5 and 14.4 log units
+#' below that level. Pinned parameters do not count.
+#'
+#' @param theta Parameters, in natural units.
+#' @param levels The default start (`.mxl_default_start()`).
+#' @param diag_idx `.mxl_diag_idx()`.
+#' @param lower,upper Bounds.
+#' @returns The positions in theta of the diagonals on the plateau.
+#' @noRd
+.mxl_variance_plateau <- function(theta, levels, diag_idx, lower, upper) {
+  diag_idx[which(theta[diag_idx] - levels[diag_idx] < log(1e-4) &
+                   lower[diag_idx] < upper[diag_idx])]
+}
+
+#' Warn of a variance at zero
+#'
+#' Class `choicer_variance_plateau`: the fit's estimates stand, but the
+#' diagonal's standard error says nothing, and the point may be a local maximum
+#' of a simulated likelihood that the draws' asymmetry created.
+#'
+#' @param names,values The parameters' names and values.
+#' @param restarted Whether a polish restarted from these diagonals.
+#' @param can_restart Whether `polish = "newton"` would restart.
+#' @returns NULL, invisibly.
+#' @noRd
+.warn_variance_plateau <- function(names, values, restarted, can_restart) {
+  many <- length(names) > 1L
+  warning(warningCondition(paste0(
+    "The log-Cholesky diagonal", if (many) "s ", if (!many) " ",
+    paste0(names, " (", format(signif(values, 3)), ")", collapse = ", "),
+    if (many) " have" else " has", " gone to minus infinity: the variance of ",
+    if (many) "those random coefficients" else "that random coefficient",
+    ", given those before ", if (many) "them" else "it",
+    ", is numerically zero. The score of such a diagonal vanishes with it, so ",
+    "its standard error says nothing and the Newton decrement cannot tell this ",
+    "point from a maximum. ",
+    if (restarted) {
+      paste0("A restart from ", if (many) "larger standard deviations" else "a larger standard deviation",
+             " found no higher likelihood.")
+    } else if (can_restart) {
+      paste0("It can be a local maximum below a higher one: fit with polish = ",
+             "\"newton\", which restarts once from it, or start elsewhere (theta_init).")
+    } else {
+      "It can be a local maximum below a higher one: start elsewhere (theta_init)."
+    }), class = "choicer_variance_plateau"))
+  invisible(NULL)
 }
 
 #' The profile likelihood's requirements on the constants
@@ -765,13 +830,34 @@
 #' all the others, which stops their rise: each other constant's alternative
 #' is offered in a choice situation that chooses an alternative whose
 #' constant is held or bounded above, or one anchored so. A random coefficient
-#' whose variance's maximum is at zero drives its log-Cholesky diagonal
+#' whose variance's local maximum is at zero drives its log-Cholesky diagonal
 #' toward \eqn{-\infty} by Newton steps of \eqn{\frac{1}{2}}{1/2} to 1, each
 #' shrinking the decrement by a factor of about \eqn{e}: \code{"newton"} may
 #' certify a point where the variance is negligible but that diagonal, and
 #' its standard error, depend on \code{tol_decrement}; \code{"bhhh"}, whose
 #' curvature in that direction vanishes faster, comes to hold the diagonal
-#' and stops unconverged. A parameter without usable curvature (no
+#' and stops unconverged. Such a point (a standard deviation below
+#' \eqn{10^{-4}}{1e-4} of the default start's) can be a false stop: the first
+#' derivative of a simulated likelihood in a standard deviation at zero is not
+#' zero with finitely many draws, and where it is negative, zero is a local
+#' maximum, often below a higher one. So the polish restarts once from there:
+#' the optimizer and the polish again from the same point with those standard
+#' deviations raised, a normal coefficient's to the default start's (one over
+#' its column's typical step), a log-normal's to 1, in coordinates taken afresh.
+#' The higher likelihood stands. On a stated-preference panel of 200 persons, 4
+#' of 40 fits stopped so, 4.1 to 10.3 log-likelihood units below the maximum, and
+#' the restart reached it in all 4. On composite fits of those data, 57 of 100
+#' stopped so, and 54 of them ended at the maximum of the fit from the true
+#' parameters; certified fits more than 0.01 short of it fell from 44 to 6. On
+#' logit data, whose variances are zero, 23 of 40 stopped so and all 23 came back.
+#' Where a variance ends at zero the fit warns (class
+#' \code{choicer_variance_plateau}), with or without a polish: the standard
+#' error of that diagonal says nothing (a clustered one reads about 0.5 where
+#' the Hessian's reads \eqn{10^4}{1e4}), and the variance is on the boundary of
+#' its parameter space. A restart costs about one more run of the optimizer on
+#' the fits that stop there. Under
+#' \code{concentrate_out_asc = "profile_likelihood"} the fit warns without
+#' restarting. A parameter without usable curvature (no
 #' information at the point, or a curvature that has all but vanished, giving
 #' a step more than 100 times its scale in the optimizer's coordinates) is
 #' held for the step and stops the polish unconverged. Under
@@ -954,7 +1040,13 @@
 #'   (the log-likelihood gained), \code{error}, \code{elapsed_time} (the
 #'   polish's seconds, which \code{fit$optimizer$elapsed_time} includes), and
 #'   \code{optimizer}, the optimizer's own \code{convergence},
-#'   \code{message}, \code{iterations} and \code{elapsed_time}. A converged
+#'   \code{message}, \code{iterations} and \code{elapsed_time}. Where the
+#'   polish restarted from a zero-variance plateau (see the section), the
+#'   record, of the point that stands, also has \code{restart}:
+#'   \code{parameters}, \code{adopted}, \code{gain} (the log-likelihood
+#'   gained by the restart, negative where it ended lower), \code{converged},
+#'   \code{optimizer_iterations} and \code{polish_iterations} (the restart's),
+#'   \code{error} and \code{elapsed_time}. A converged
 #'   polish sets \code{convergence} to the optimizer's success code (1 for
 #'   nloptr, 0 for optim and a custom optimizer) and leads \code{message}
 #'   with its verdict; otherwise both keep the optimizer's, the polish's
@@ -1492,9 +1584,10 @@ run_mxlogit <- function(
   # outside the box (the optimizer refuses a start outside it), with a
   # message. A supplied theta_init is used as given.
   start_default <- is.null(theta_init)
+  start_levels <- NULL
   if (start_default) {
-    theta_init <- .mxl_default_start(n_params, param_map, input_data$W,
-                                     rc_dist, rc_correlation)
+    theta_init <- start_levels <- .mxl_default_start(n_params, param_map, input_data$W,
+                                                     rc_dist, rc_correlation)
     moved <- theta_init < lower | theta_init > upper
     if (any(moved)) {
       # Parameters pinned by lower == upper are moved without a word.
@@ -1632,19 +1725,22 @@ run_mxlogit <- function(
   # "bhhh": the BHHH diagonal at the start values, from one gradient pass;
   # unusable where the likelihood overflows there (unit entries: the identity).
   if (scale_vars != "none") .check_theta_init(theta_init, n_params)
-  opg0 <- NULL
-  t_bpass <- system.time(if (scale_vars == "bhhh") {
-    g0 <- model_f(theta_init, opg_diag = TRUE)
-    if (isTRUE(g0$overflow)) {
-      message("scale_vars = \"bhhh\": the likelihood overflows at the start ",
-              "values (check theta_init); the parameters are left unscaled.")
-      opg0 <- rep(1, n_params)
-    } else {
-      opg0 <- g0$opg_diag
+  coordinates_at <- function(theta) {
+    opg0 <- NULL
+    if (scale_vars == "bhhh") {
+      g0 <- model_f(theta, opg_diag = TRUE)
+      if (isTRUE(g0$overflow)) {
+        message("scale_vars = \"bhhh\": the likelihood overflows at the start ",
+                "values (check theta_init); the parameters are left unscaled.")
+        opg0 <- rep(1, n_params)
+      } else {
+        opg0 <- g0$opg_diag
+      }
     }
-  }, gcFirst = FALSE)
-  map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX, sW = sW,
-                         rc_correlation = rc_correlation, opg_diag = opg0)
+    .coordinate_map(scale_vars, param_map, n_params, sX = sX, sW = sW,
+                    rc_correlation = rc_correlation, opg_diag = opg0)
+  }
+  t_bpass <- system.time(map <- coordinates_at(theta_init), gcFirst = FALSE)
 
   # Run the optimizer in the map's coordinates on the objective with the
   # kernel's overflow sentinel kept above the path
@@ -1856,15 +1952,18 @@ run_mxlogit <- function(
     # buffers (the squared weights; the cluster kernel's 8 (U + 2G) bytes and
     # labels) outweigh the Hessian kernel's.
     reuse <- switch(polish, newton = se_method != "bhhh", bhhh = se_method == "bhhh")
-    pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
-                      lower = lower, upper = upper,
-                      scale = if (scale_vars != "none") map$scale,
-                      control = polish_control, held = setup$held,
-                      keep_curvature = reuse, unbounded = unbounded,
-                      asc_idx = param_map$asc,
-                      alt_mapping = input_data$alt_mapping,
-                      anchors = setup$anchors,
-                      weights = input_data$weights, optimizer = optimizer)
+    polish_from <- function(opt, elapsed) {
+      .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
+                  lower = lower, upper = upper,
+                  scale = if (scale_vars != "none") map$scale,
+                  control = polish_control, held = setup$held,
+                  keep_curvature = reuse, unbounded = unbounded,
+                  asc_idx = param_map$asc,
+                  alt_mapping = input_data$alt_mapping,
+                  anchors = setup$anchors,
+                  weights = input_data$weights, optimizer = optimizer)
+    }
+    pf <- polish_from(opt, elapsed)
     opt <- pf$opt
     polish_record <- pf$record
     curv <- pf$curvature
@@ -1873,10 +1972,94 @@ run_mxlogit <- function(
     # after the variance frees it
     pf <- NULL
   }
+
+  # A diagonal on a zero-variance plateau: the decrement cannot tell a false
+  # stop, where the draws' asymmetry makes zero a local maximum below a higher
+  # one, from a variance whose maximum is at zero. A restart can: from the same
+  # point with those standard deviations raised, the optimizer and the polish
+  # climb to the higher maximum, or come back. The higher likelihood stands (by
+  # more than 1e-6 over the mean weight, so that the same point met twice leaves
+  # the first fit as it was). The level is the default start's for a normal
+  # coefficient, one over its column's step; a log-normal's standard deviation
+  # has no units, and from 1 the study's fits came back less often than from the
+  # default start's 0.5 (3 of 37 still short of the maximum, against 10). The
+  # coordinates are taken afresh: "bhhh"'s scales at the first start can be
+  # wrong for this one. Only a polish asked for restarts: a profile fit's
+  # constants have their own solver, and a fit without a polish has not asked
+  # to spend a Newton phase.
+  diag_idx <- .mxl_diag_idx(param_map, K_w, rc_correlation)
+  if (is.null(start_levels)) {
+    start_levels <- .mxl_default_start(n_params, param_map, input_data$W, rc_dist,
+                                       rc_correlation)
+  }
+  on_plateau <- function(par) .mxl_variance_plateau(par, start_levels, diag_idx, lower, upper)
+  restarted <- FALSE
+  low <- on_plateau(opt$par)
+  if (polish_asked && !profile && length(low)) {
+    restarted <- TRUE
+    low_names <- paste(param_names[low], collapse = ", ")
+    message("The log-Cholesky diagonal", if (length(low) > 1L) "s ", if (length(low) == 1L) " ",
+            low_names, " went to minus infinity: restarting from a larger standard deviation.")
+    from <- opt$par
+    from[low] <- ifelse(rc_dist[match(low, diag_idx)] %in% 1L, 0, start_levels[low])
+    from <- pmin(pmax(from, lower), upper)
+    # (held while the restart runs, the first point's curvature would add to its
+    # peak; the variance evaluates it again where the first point stands)
+    curv <- NULL
+    map_first <- map
+    t_restart <- system.time(second <- tryCatch({
+      map <- coordinates_at(from)
+      t_opt <- system.time(opt2 <- .optimize_in_coordinates(
+        map = if (scale_vars != "none") map, optimizer = optimizer, theta_init = from,
+        eval_f = .lift_sentinel(model_f), lower = lower, upper = upper, control = control
+      ), gcFirst = FALSE)
+      polish_from(opt2, t_opt)
+    }, error = function(e) conditionMessage(e)), gcFirst = FALSE)
+    elapsed <- elapsed + t_restart
+    failed <- is.character(second)
+    gain <- if (failed) NA_real_ else opt$value - second$opt$value
+    adopted <- isTRUE(gain > 1e-6 * mean(input_data$weights))
+    restart_record <- list(
+      parameters = param_names[low], adopted = adopted, gain = gain,
+      converged = if (!failed) second$record$converged,
+      optimizer_iterations = if (!failed) second$record$optimizer$iterations,
+      polish_iterations = if (!failed) second$record$iterations,
+      error = if (failed) second,
+      elapsed_time = t_restart[["elapsed"]])
+    message("Restart: ", if (failed) {
+      paste0("stopped with an error, so the first point stands: ", second)
+    } else if (adopted) {
+      paste0("the log-likelihood rose by ", format(signif(gain, 3)))
+    } else {
+      "no higher log-likelihood, so the first point stands"
+    })
+    if (adopted) {
+      opt <- second$opt
+      polish_record <- second$record
+      curv <- second$curvature
+    } else {
+      map <- map_first
+    }
+    opt$message <- paste0(paste(as.character(opt$message), collapse = "; "),
+                          "; a restart from a larger standard deviation of ", low_names,
+                          if (adopted) {
+                            paste0(" raised the log-likelihood by ", format(signif(gain, 3)))
+                          } else {
+                            " found no higher log-likelihood"
+                          })
+    polish_record$restart <- restart_record
+    second <- NULL
+  }
+  low <- on_plateau(opt$par)
+  if (length(low)) {
+    .warn_variance_plateau(param_names[low], opt$par[low], restarted,
+                           can_restart = !profile && !blp)
+  }
+
   # (a share-matching fit's failure is judged with the variance, below)
   if (!blp) {
     .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
-                           polish_asked)
+                           polish_asked, scale = if (scale_vars != "none") map$scale)
   }
 
   # Estimate at the optimum (natural units)
