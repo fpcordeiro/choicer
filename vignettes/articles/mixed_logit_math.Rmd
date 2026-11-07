@@ -1425,33 +1425,35 @@ while the BHHH polish holds $\ell_{11}$ at $-9.94$ and stops after 18 steps, $6.
 10^{-4}$ log-likelihood units short.
 
 **The restart.** A point where the linear term puts the supremum at $\ell_{pp} \to -\infty$
-is a maximum of the simulated likelihood on the boundary of the parameter space, but it is
+is a local maximum of the simulated likelihood on the boundary of the parameter space, but
 often a false one. The linear term comes from the draws' finite-sample asymmetry and has mean
-zero, while the quadratic term $c$ is what identifies the variance. With $c > 0$ the likelihood
-in the standard deviation $\sigma$, $b\,\sigma + \tfrac{1}{2} c\, \sigma^2$ with $b < 0$, falls
-and then rises again past $\sigma = 2|b|/c$, so the decrement certifies a point below a higher
-maximum. So a polish whose estimates end with $\sigma_p$ below $10^{-4}$ of the default start's
-(its typical effect on a utility below $10^{-4}$, for a normal coefficient) restarts once: the
-optimizer and the polish again from the same point with those standard deviations raised, in
-coordinates taken afresh, and the higher likelihood stands. The level is the default start's
-$1/h_p$ for a normal coefficient; a log-normal's $\sigma$ has no units, and 1 is used, since from
-the default start's 0.5, below the design's truth of 0.70 here, more fits came back. A probe
-along the axis alone cannot do this: with the other parameters at the plateau's values the
-likelihood rose in only 4 of 60 composite fits so stopped, because they must adjust, where the
-restart raised it in 45 of 57. On a simulated stated-preference panel with 200 persons
-($S = 500$), 4 of 40 fits from the default start stopped so, 4.1 to 10.3 log-likelihood units
-below the maximum, and
-the restart reached it in all 4. On composite fits of those data ($S = 200$), 57 of 100
-stopped so, and 54 of them ended at the maximum of the fit from the true parameters; certified
-fits more than 0.01 short of that fit fell from 44 to 6. At 800 persons, all 6 that stopped so
-reached it. Where the variance is zero, the restart comes back: on logit data with two random
-coefficients ($N = 2{,}000$, $S = 200$), 23 of 40 fits stopped so and all 23 ended at zero again,
-as did all 4 of 24 with a random coefficient of zero variance added to the panel. A variance
-that ends at zero warns, with or without a polish: the diagonal's standard error says nothing
-(a clustered one reads about 0.5, the Hessian's about $10^4$), and the usual Wald and
-likelihood ratio distributions do not apply on the boundary. The restart costs about one more
-run of the optimizer on the fits that stop there. Under the profile likelihood, whose constants
-have their own solver, the fit warns without restarting.
+zero over the draws, while the quadratic term is what identifies the variance. If the
+log-likelihood moves with the standard deviation $\sigma$ like $b\, \sigma + \tfrac{1}{2} q\,
+\sigma^2$, with $b < 0 < q$, it falls to a minimum at $\sigma = |b|/q$ and passes its value at
+zero at $\sigma = 2|b|/q$, so the decrement certifies a point below a higher maximum. So a
+polish whose estimates end with $\sigma_p$ below $10^{-4}$ of the default start's (its typical
+effect on a utility below $10^{-4}$, for a normal coefficient) restarts once: the optimizer and
+the polish again from the same point with those standard deviations raised, in coordinates
+taken afresh, and the higher likelihood stands. The level is the default start's $1/h_p$ for a
+normal coefficient; a log-normal's $\sigma$ has no units, and 1 is used, since from the default
+start's 0.5, below the design's truth of 0.70 here, more fits came back. A probe along the axis
+alone cannot do this: with the other parameters at the plateau's values the likelihood rose in
+only 3 of 57 composite fits so stopped, because they must adjust, where the restart raised it in
+45. On a simulated stated-preference panel with 200 persons ($S = 500$), 4 of 40 fits from the
+default start stopped so, 4.1 to 10.3 log-likelihood units below the maximum, and the restart
+reached it in all 4. On composite fits of those data ($S = 200$), 57 of 100 stopped so, and 54
+of them then stood at or above the fit from the true parameters; certified fits more than 0.01
+below that fit fell from 47 to 6. At 800 persons, all 6 that stopped so reached it. Where the
+variance is zero, the restart comes back: on logit data with two random coefficients
+($N = 2{,}000$, $S = 200$), 23 of 40 fits stopped so and all 23 ended at zero again, as did all 4
+of 24 with a random coefficient of zero variance added to the panel. A variance that ends at
+zero warns, with or without a polish: the diagonal's standard error says nothing (a clustered
+one is of order one, the Hessian's about $10^4$), and a test that a variance is zero has a null
+on the boundary, where Wald and likelihood ratio statistics do not have their usual distributions
+(Self and Liang 1987). The restart took 0.5 to 1 times the first fit's time at the median and
+2.4 at most, on the fits that stop there, and where the first point stands the variance evaluates
+its matrix once more; `polish_control = list(restart = FALSE)` turns it off. Under the profile
+likelihood, whose constants have their own solver, the fit warns without restarting.
 
 The variance is computed afterwards at the polished estimates, by `se_method`, through
 §5.6. Since every stop is decided at the point whose curvature the polish has just

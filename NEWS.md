@@ -740,7 +740,10 @@ designs of their own, described where they appear.
   limit 0.011 short. Where both are certified they agree to about 1e-9. The price:
   `"bhhh"`'s scales are fixed at the start values, and nest parameters that end
   far from their start of 0.5 can slow the optimizer (12% more evaluations over
-  the test suite's nested logit fits, one of them 540 against 29). As for the
+  the test suite's nested logit fits, one of them 540 against 29), and a fit stopped
+  after a handful of evaluations leaves the polish farther from the maximum. The
+  scales read each dissimilarity at 0.01 at least, since one started near its bound
+  would otherwise be frozen there. As for the
   mixed logit, settings in parameter units in `control` and custom optimizers act
   on the scaled coordinates, and `scale_vars = "none"` restores the 0.2.x path.
   `run_mnlogit(scale_vars = )` no longer holds a scaled copy of `X` (on 8.7
@@ -788,14 +791,14 @@ designs of their own, described where they appear.
   pass and one Cholesky factorization, 3 to 13% of the fit and its variance;
   with `scale_vars = "none"` the optimizer stopped up to 9.2 log-likelihood
   units short, a gap the polish closed in 1 to 6 steps (up to a tenth of the
-  fit). The nested logit's default fit reached its 1,000-evaluation limit on
-  three of the four designs, 0.35 and 15.8 units short on the census-style
-  ones (up to 6.7 standard errors); a Newton polish certified the maximum
-  there in 3 and 5 steps, for about a tenth of the fit's time, and in one
-  step on the claims-style ones. Stopping the optimizer sooner
+  fit). The nested logit under `scale_vars = "none"` reached its
+  1,000-evaluation limit on three of the four designs, 0.35 and 15.8 units short
+  on the census-style ones (up to 6.7 standard errors); a Newton polish certified
+  the maximum there in 3 and 5 steps, for about a tenth of the fit's time, and in
+  one step on the claims-style ones. Stopping the optimizer sooner
   (`control = list(maxeval = 100)`) and polishing took about a fifth of the
-  time of the default fit and its polish, and with `scale_vars = "bhhh"` the
-  optimizer stopped at the maximum in 50 to 66 evaluations on three of the
+  time of that fit and its polish, and with `scale_vars = "bhhh"`, its default,
+  the optimizer stopped at the maximum in 50 to 66 evaluations on three of the
   four designs. (Times are modeled from the kernels' calls and per-pass
   costs, the machine being loaded by other work.) So `polish = "newton"`
   after the optimizer's own stop is the recommended check for a reportable
@@ -1622,21 +1625,24 @@ released versions unless it says otherwise.
   standard deviation at zero is not zero, so where it is negative, zero is a
   local maximum, often below a higher one. On a stated-preference panel of 200
   persons, 4 fits of 40 stopped there, 4.1 to 10.3 log-likelihood units below the
-  maximum, certified; on composite fits of those data, 55 of 100, 44 of them short
-  by a median of 1.5 and up to 7.7. The polish now restarts once from such a point
-  (a standard deviation below 10^-4 of the default start's): the optimizer and the
-  polish again from the same point with those standard deviations raised, a normal
-  coefficient's to the default start's, a log-normal's to 1, in coordinates taken
-  afresh, the higher likelihood standing and `fit$optimizer$polish$restart`
-  recording it. All 4 panel fits then reached the maximum; so did 54 of the 57
-  composite fits that restarted, and certified composite fits more than 0.01 short
-  of the maximum fell from 44 to 6. On logit data, whose variances are zero, all 23
-  such fits of 40 came back. A standard deviation that ends at zero now warns, with
-  or without a polish (class `choicer_variance_plateau`): its diagonal's standard
-  error says nothing (a clustered one reads about 0.5, a Hessian one about 10^4).
-  Estimates move only under a polish, on fits that stop there, to a higher
-  likelihood; such a fit costs about one more run of the optimizer.
-  `concentrate_out_asc = "profile_likelihood"` warns without restarting.
+  maximum, certified; on composite fits of those data, 57 of 100, and 47 certified
+  fits stood more than 0.01 below the fit from the true parameters, by a median of
+  1.5 and up to 7.7. The polish now restarts once from such a point (a standard
+  deviation below 10^-4 of the default start's): the optimizer and the polish again
+  from the same point with those standard deviations raised, a normal coefficient's
+  to the default start's, a log-normal's to 1, in coordinates taken afresh, the
+  higher likelihood standing and `fit$optimizer$polish$restart` recording it. All 4
+  panel fits then reached the maximum; 54 of the 57 composite fits stood at or above
+  the fit from the true parameters, and certified fits below it fell from 47 to 6.
+  On logit data, whose variances are zero, all 23 such fits of 40 ended at zero
+  again. A standard deviation that ends at zero now warns, with or without a polish
+  (class `choicer_variance_plateau`): its diagonal's standard error says nothing (a
+  clustered one is of order one, a Hessian one about 10^4). Estimates move only under
+  a polish, on fits that stop there, to a higher likelihood. The restart took 0.5 to
+  1 times the first fit's time at the median and 2.4 at most, and where the first
+  point stands the variance evaluates its matrix once more; `polish_control =
+  list(restart = FALSE)` turns it off. `concentrate_out_asc = "profile_likelihood"`
+  warns without restarting.
 - `prepare_mxl_data(covariate_cols = NULL)` stopped with "length(alt_idx) ==
   nrow(X) is not TRUE". It now returns a design of no columns, and `run_mxlogit()`
   fits a mixed logit whose every coefficient is random (`covariate_cols = NULL`),
