@@ -223,9 +223,10 @@ its cap, whoever set it (nloptr's 5, \code{maxeval}, and 6,
 phase checks its point, one pass of the Hessian that the variance reuses
 except under \code{se_method = "bhhh"} or \code{"numeric"}, and a point
 nothing certified keeps its code and warns (class
-\code{choicer_optimizer_capped}), giving the decrement, roughly the
-log-likelihood still to gain; a nested logit can stay far from the maximum
-until its last evaluations.
+\code{choicer_optimizer_capped}). A nested logit can stay far from the
+maximum until its last evaluations; where the Hessian is positive definite
+the warning gives the Newton decrement, roughly the log-likelihood still to
+gain under weights of mean one, and far off it mostly is not.
 \code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
 deliberate short run.
 }

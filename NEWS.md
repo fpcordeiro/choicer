@@ -1626,7 +1626,7 @@ released versions unless it says otherwise.
   point so certified takes the success code, `fit$message` keeping the optimizer's; any
   other keeps the failure code and warns (class `choicer_optimizer_failed`),
   saying whether the estimates are the start values. Estimates and variances do
-  not change.
+  not change, but for rounding at a bound that binds.
 - A fit stopped at an optimizer's cap (`maxeval` or `maxtime` under nloptr,
   `maxit` under optim) passed in silence but for its code, wherever it stopped:
   in a simulated nested logit (N = 5,000), 90% of the evaluations it needed left
@@ -1639,11 +1639,18 @@ released versions unless it says otherwise.
   `fit$optimizer$polish` records it. `concentrate_out_asc = "blp"` reads its outer
   decrement instead, in the outer objective's own curvature as after a failure code. A point certified, by this check or by a polish, takes the
   success code without a warning; any other keeps its code and warns (class
-  `choicer_optimizer_capped`), giving the Newton decrement, roughly the
-  log-likelihood still to gain. No estimate or standard error moves, but a capped
-  `polish = "none"` fit now carries that record, and one certified counts as
-  converged in `monte_carlo()`. A deliberate short run can use
-  `suppressWarnings(classes = "choicer_optimizer_capped")`.
+  `choicer_optimizer_capped`), giving the Newton decrement where the Hessian is
+  positive definite, roughly the log-likelihood still to gain under weights of mean
+  one. No estimate or standard error moves, but for rounding at a bound that binds,
+  where the check reads the point clipped to the bound. A capped `polish = "none"`
+  fit now carries that record, and one certified counts as converged in
+  `monte_carlo()`. A check that stops with an error (a Hessian over
+  `choicer.max_memory`) says so in this warning, as it now does after a failure code,
+  in place of `choicer_polish_failed`. A deliberate short run can use
+  `suppressWarnings(classes = "choicer_optimizer_capped")`. One log-likelihood does
+  move, to the right value: `optim`'s `CG` stopped at `maxit` returns its line
+  search's value with another point's parameters, which `fit$loglik` stored (-461.7
+  for a point at -481.3), and the check now reads it at the estimates.
 - The mixed logit's Newton polish certified a false stop. Where a random
   coefficient's standard deviation goes to zero its log-Cholesky diagonal goes to
   minus infinity, its score vanishes with it, and the decrement falls below any

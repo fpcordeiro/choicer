@@ -550,7 +550,8 @@ test_that("a polish that certifies a capped point is silent; one that does not w
 test_that("the warning gives the decrement, or names the start values", {
   d <- ofail_data(N = 200L, scale = 1)
   r <- cap_caught(cap_fit("mnl", d, control = list(maxeval = 4L)))
-  expect_match(r$said, "\\(Newton decrement [0-9.e+-]+, roughly the log-likelihood still to gain\\)")
+  expect_match(r$said, paste0("\\(Newton decrement [0-9.e+-]+, roughly the log-likelihood ",
+                              "still to gain under weights of mean one\\)"))
   # The decrement tracks what the point falls short of the maximum
   best <- suppressMessages(cap_fit("mnl", d, polish = "newton"))
   gap <- as.numeric(logLik(best)) - as.numeric(logLik(r$fit))
@@ -558,14 +559,47 @@ test_that("the warning gives the decrement, or names the start values", {
   expect_lt(r$fit$optimizer$polish$decrement, 1.5 * gap)
   # one evaluation, at the start values
   r <- cap_caught(cap_fit("nl", d, control = list(maxeval = 1L)))
-  expect_match(r$said, "returned the start values, so the estimates are not a maximum", fixed = TRUE)
-  # without the optimizer's message
+  expect_match(r$said, "returned the start values, which nothing certifies as a maximum", fixed = TRUE)
+  # optim names its cap: BFGS says nothing, L-BFGS-B an internal state
   w <- tryCatch(
-    choicer:::.warn_optimizer_stop(list(par = 1, convergence = 1L, message = ""),
+    choicer:::.warn_optimizer_stop(list(par = 1, convergence = 1L, message = "NEW_X"),
                                    "optim", 0, NULL, "bhhh", FALSE),
     warning = function(c) c)
   expect_s3_class(w, CAPPED)
-  expect_match(conditionMessage(w), "stopped at its cap (code 1)", fixed = TRUE)
+  expect_match(conditionMessage(w), "stopped at its cap (maxit, code 1)", fixed = TRUE)
+  for (m in CAP_MODELS) {
+    said <- character()
+    withCallingHandlers(
+      suppressWarnings(cap_fit(m, d, optimizer = "optim", control = list(maxit = 2L))),
+      message = function(c) {
+        said <<- c(said, conditionMessage(c))
+        invokeRestart("muffleMessage")
+      })
+    expect_true(any(grepl("stopped at its cap (maxit, code 1): a Newton phase", said, fixed = TRUE)))
+  }
+})
+
+test_that("the decrement is labelled by the curvature it reads", {
+  d <- ofail_data(N = 200L, scale = 1)
+  r <- cap_caught(cap_fit("mnl", d, control = list(maxeval = 3L), polish = "bhhh",
+                          polish_control = list(max_iter = 1L)))
+  expect_match(r$said, "(BHHH decrement ", fixed = TRUE)
+  expect_false(grepl("still to gain", r$said, fixed = TRUE))
+  r <- cap_caught(cap_fit("mxl", d, concentrate_out_asc = "blp", control = list(maxeval = 3L)))
+  if (is.na(r$fit$optimizer$concentration$decrement)) {
+    expect_false(grepl("decrement", r$said, fixed = TRUE))
+  } else {
+    expect_match(r$said, "(outer decrement ", fixed = TRUE)
+    expect_false(grepl("still to gain", r$said, fixed = TRUE))
+  }
+  # Under weights, it is the gain over the mean weight
+  d$wt <- rep(1000, nrow(d))
+  r <- cap_caught(suppressWarnings(
+    cap_fit("mnl", d, weights_col = "wt", control = list(maxeval = 3L))))
+  best <- suppressWarnings(suppressMessages(cap_fit("mnl", d, weights_col = "wt", polish = "newton")))
+  gap <- as.numeric(logLik(best)) - as.numeric(logLik(r$fit))
+  expect_gt(r$fit$optimizer$polish$decrement, 0.5 * gap / 1000)
+  expect_lt(r$fit$optimizer$polish$decrement, 1.5 * gap / 1000)
 })
 
 test_that("nloptr's time cap and optim's iteration cap take the same check", {
@@ -600,6 +634,20 @@ test_that("nloptr's time cap and optim's iteration cap take the same check", {
     expect_identical(fit$convergence, 0L)
     expect_identical(fit$optimizer$polish$optimizer$convergence, 1L)
   }
+})
+
+test_that("a capped fit stores the log-likelihood at its estimates", {
+  # optim's CG, stopped at maxit, returns its line search's value with another
+  # point's parameters
+  d <- ofail_data(N = 200L, scale = 1)
+  r <- cap_caught(cap_fit("mnl", d, optimizer = "optim", scale_vars = "none",
+                          control = list(method = "CG", maxit = 3L)))
+  expect_identical(r$fit$convergence, 1L)
+  dat <- r$fit$data
+  at_estimates <- choicer:::mnl_loglik_gradient_parallel(
+    theta = unname(coef(r$fit)), X = dat$X, alt_idx = dat$alt_idx, choice_idx = dat$choice_idx,
+    M = dat$M, weights = dat$weights, use_asc = TRUE, include_outside_option = FALSE)$objective
+  expect_equal(as.numeric(logLik(r$fit)), -at_estimates, tolerance = 1e-12)
 })
 
 test_that("the profile likelihood and \"blp\" judge a cap as they judge a failure", {
@@ -651,22 +699,32 @@ test_that("a \"blp\" cap is judged by the objective's own curvature under any se
   expect_lt(ok$optimizer$concentration$decrement, 1e-8)
 })
 
-test_that("a check that cannot run leaves the cap's warning, not the polish's", {
+test_that("a check that cannot run says so, in the cap's warning and not the polish's", {
   d <- ofail_data(N = 200L, scale = 1)
-  local_mocked_bindings(mnl_loglik_hessian_parallel = function(...) stop("no room"),
-                        .package = "choicer")
-  # (the variance needs that Hessian as well, and says so in its own warning)
-  r <- cap_caught(suppressWarnings(cap_fit("mnl", d, control = list(maxeval = 3L)),
-                                   classes = "choicer_vcov_failed"),
-                  class = c(CAPPED, "choicer_polish_failed"))
-  expect_length(r$said, 1L)
-  expect_match(r$said, "stopped at its cap", fixed = TRUE)
-  expect_match(r$fit$optimizer$polish$error, "no room", fixed = TRUE)
-  expect_identical(r$fit$convergence, 5L)
-  # A polish the fit asked for still says so
-  r <- cap_caught(suppressWarnings(cap_fit("mnl", d, control = list(maxeval = 3L), polish = "newton"),
-                                   classes = c("choicer_vcov_failed", CAPPED)),
-                  class = "choicer_polish_failed")
-  expect_length(r$said, 1L)
-  expect_match(r$said, "The Newton polish stopped with an error", fixed = TRUE)
+  no_room <- function(...) stop("no room")
+  kernel <- list(mnl = list(mnl_loglik_hessian_parallel = no_room),
+                 nl = list(nl_loglik_hessian_parallel = no_room),
+                 mxl = list(mxl_hessian_parallel = no_room))
+  for (m in CAP_MODELS) {
+    local({
+      do.call(local_mocked_bindings, c(kernel[[m]], list(.package = "choicer", .env = environment())))
+      # (the variance needs that Hessian as well, and says so in its own warning)
+      r <- cap_caught(suppressWarnings(cap_fit(m, d, control = list(maxeval = 3L)),
+                                       classes = "choicer_vcov_failed"),
+                      class = c(CAPPED, "choicer_polish_failed"))
+      expect_length(r$said, 1L)
+      expect_match(r$said, "stopped at its cap", fixed = TRUE)
+      expect_match(r$said, "the check of no steps stopped with an error: no room", fixed = TRUE)
+      # a polish would meet the same error
+      expect_false(grepl("polish", r$said, fixed = TRUE))
+      expect_match(r$fit$optimizer$polish$error, "no room", fixed = TRUE)
+      expect_identical(r$fit$convergence, 5L)
+      # A polish the fit asked for still says so
+      r <- cap_caught(suppressWarnings(
+        cap_fit(m, d, control = list(maxeval = 3L), polish = "newton"),
+        classes = c("choicer_vcov_failed", CAPPED)), class = "choicer_polish_failed")
+      expect_length(r$said, 1L)
+      expect_match(r$said, "The Newton polish stopped with an error", fixed = TRUE)
+    })
+  }
 })

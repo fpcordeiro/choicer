@@ -1080,11 +1080,13 @@
 #'   nothing certified keeps the failure code and warns (class
 #'   \code{choicer_optimizer_failed}). So too an optimizer stopped at its cap,
 #'   whoever set it (nloptr's 5, \code{maxeval}, and 6, \code{maxtime}; optim's
-#'   1, \code{maxit}; no custom optimizer): the same check reads its point, one
+#'   1, \code{maxit}; no custom optimizer): the same check reads its point (a
 #'   pass of the Hessian that the variance reuses except under
-#'   \code{se_method = "bhhh"}, and a point nothing certified keeps its code and
-#'   warns (class \code{choicer_optimizer_capped}), giving the decrement, roughly
-#'   the log-likelihood still to gain.
+#'   \code{se_method = "bhhh"}; under \code{"blp"}, the outer decrement), and a
+#'   point nothing certified keeps its code and warns (class
+#'   \code{choicer_optimizer_capped}), giving the Newton decrement where the
+#'   Hessian is positive definite, roughly the log-likelihood still to gain under
+#'   weights of mean one.
 #'   \code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
 #'   deliberate short run. With
 #'   \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
