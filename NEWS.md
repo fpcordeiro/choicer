@@ -1627,6 +1627,23 @@ released versions unless it says otherwise.
   other keeps the failure code and warns (class `choicer_optimizer_failed`),
   saying whether the estimates are the start values. Estimates and variances do
   not change.
+- A fit stopped at an optimizer's cap (`maxeval` or `maxtime` under nloptr,
+  `maxit` under optim) passed in silence but for its code, wherever it stopped:
+  in a simulated nested logit (N = 5,000), 90% of the evaluations it needed left
+  it 21 standard errors and about 690 log-likelihood units short, where a
+  multinomial or mixed logit was within 1e-4 standard errors. `run_mnlogit()`,
+  `run_nestlogit()` and `run_mxlogit()` now take a cap as they take a failure code,
+  whoever set it. Without a polish, a Newton phase of no steps checks the point:
+  one pass of the Hessian, which the variance reuses except under
+  `se_method = "bhhh"` (and `"numeric"` in the nested logit), and
+  `fit$optimizer$polish` records it. `concentrate_out_asc = "blp"` reads its outer
+  decrement instead, in the outer objective's own curvature as after a failure code. A point certified, by this check or by a polish, takes the
+  success code without a warning; any other keeps its code and warns (class
+  `choicer_optimizer_capped`), giving the Newton decrement, roughly the
+  log-likelihood still to gain. No estimate or standard error moves, but a capped
+  `polish = "none"` fit now carries that record, and one certified counts as
+  converged in `monte_carlo()`. A deliberate short run can use
+  `suppressWarnings(classes = "choicer_optimizer_capped")`.
 - The mixed logit's Newton polish certified a false stop. Where a random
   coefficient's standard deviation goes to zero its log-Cholesky diagonal goes to
   minus infinity, its score vanishes with it, and the decrement falls below any

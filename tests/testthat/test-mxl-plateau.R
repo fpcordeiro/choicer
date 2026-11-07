@@ -41,8 +41,9 @@ plat_start <- function(d, L = -16) {
 }
 
 plat_fit <- function(d, ...) {
-  suppressMessages(choicer::run_mxlogit(d, "id", "alt", "choice", "x", "w", rc_mean = TRUE,
-                                        S = 50L, ...))
+  # (some start next to a plateau on purpose, after one evaluation)
+  suppressWarnings(classes = "choicer_optimizer_capped", suppressMessages(
+    choicer::run_mxlogit(d, "id", "alt", "choice", "x", "w", rc_mean = TRUE, S = 50L, ...)))
 }
 
 test_that(".mxl_variance_plateau() reads the default start's level, not pinned parameters", {
@@ -163,7 +164,7 @@ test_that("the restart raises a normal's level and a log-normal's to 1, in fresh
     d, "id", "alt", "choice", "x", c("w", "w2"), rc_dist = c(0L, 1L), rc_mean = TRUE, S = 50L,
     theta_init = start, polish = "newton", control = list(maxeval = 1L),
     polish_control = list(max_iter = 0L))),
-    classes = "choicer_variance_plateau")
+    classes = c("choicer_variance_plateau", "choicer_optimizer_capped"))
   expect_length(starts, 2L)
   L <- fit$param_map$sigma
   expect_equal(starts[[2L]][L[2L]], 0)
@@ -290,7 +291,7 @@ test_that("the Cholesky diagonal is read under correlated coefficients", {
   fit <- suppressWarnings(suppressMessages(choicer::run_mxlogit(
     d, "id", "alt", "choice", "x", c("w", "w2"), rc_mean = TRUE, rc_correlation = TRUE, S = 50L,
     theta_init = start, control = list(maxeval = 1L), polish = "newton",
-    polish_control = list(max_iter = 0L))), classes = PLATEAU)
+    polish_control = list(max_iter = 0L))), classes = c(PLATEAU, "choicer_optimizer_capped"))
   r <- fit$optimizer$polish$restart
   expect_identical(r$parameters, "L_22")
 })

@@ -46,8 +46,9 @@ test_that("polish = \"none\" is the fit without a polish, bit for bit", {
   set_omp_threads(1L)
   on.exit(set_omp_threads(2L), add = TRUE)
   dt <- mxp_data()
-  f0 <- mxp_fit(dt, control = MXP_LOOSE)
-  f1 <- mxp_fit(dt, control = MXP_LOOSE, polish = "none",
+  # (stopped by a tolerance: a cap takes a check of no steps, with its record)
+  f0 <- mxp_fit(dt, control = list(xtol_rel = 1e-3))
+  f1 <- mxp_fit(dt, control = list(xtol_rel = 1e-3), polish = "none",
                 polish_control = list(max_iter = 3L))
   expect_true(identical(mxp_strip(f1), mxp_strip(f0), num.eq = FALSE,
                         single.NA = FALSE))

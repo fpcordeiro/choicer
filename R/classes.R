@@ -610,8 +610,8 @@ normalize_optim_result <- function(result) {
 #' long, is too far off for its ten reductions, and at the maximum where
 #' rounding leaves nothing to gain) and optim's 10 (a degenerate simplex), 51
 #' and 52 (L-BFGS-B's warning and error, its abnormal line search among them).
-#' Caps on the evaluations or the time are not failures, and a custom
-#' optimizer's codes follow no convention.
+#' Caps on the evaluations or the time are not failures
+#' (`.optimizer_capped()`), and a custom optimizer's codes follow no convention.
 #'
 #' @param opt `run_optimizer()`'s result.
 #' @param optimizer The `optimizer` argument.
@@ -626,13 +626,32 @@ normalize_optim_result <- function(result) {
          FALSE)
 }
 
+#' Whether an optimizer stopped at its cap on the evaluations or the time
+#'
+#' nloptr's 5 (`maxeval`) and 6 (`maxtime`), optim's 1 (`maxit`), whoever set
+#' the cap. A custom optimizer's codes follow no convention.
+#'
+#' @param opt `run_optimizer()`'s result.
+#' @param optimizer The `optimizer` argument.
+#' @returns TRUE or FALSE.
+#' @noRd
+.optimizer_capped <- function(opt, optimizer) {
+  if (is.function(optimizer)) return(FALSE)
+  code <- opt$convergence
+  switch(optimizer %||% "nloptr",
+         nloptr = isTRUE(code %in% c(5L, 6L)),
+         optim = isTRUE(code == 1L),
+         FALSE)
+}
+
 #' Whether a fit without a polish should check the optimizer's stop
 #'
 #' An optimizer that reports a failure may have returned its start values or
-#' stopped at the maximum, and its code cannot tell which. So a fit without a
-#' polish takes a Newton phase of no steps there (`polish_control$max_iter` =
-#' 0), one pass of the Hessian, which certifies the point or leaves the code
-#' for `.warn_optimizer_failed()`.
+#' stopped at the maximum, and its code cannot tell which; one stopped at its
+#' cap may be anywhere on the way, and a nested logit can be far off until the
+#' last evaluations. So a fit without a polish takes a Newton phase of no steps
+#' there (`polish_control$max_iter` = 0), one pass of the Hessian, which
+#' certifies the point or leaves the code for `.warn_optimizer_stop()`.
 #'
 #' @param polish The fit's `polish`.
 #' @param opt `run_optimizer()`'s result.
@@ -640,19 +659,24 @@ normalize_optim_result <- function(result) {
 #' @returns TRUE or FALSE; TRUE says so in a message.
 #' @noRd
 .check_optimizer_stop <- function(polish, opt, optimizer) {
-  if (polish != "none" || !.optimizer_failed(opt, optimizer)) return(FALSE)
-  message("The optimizer reports a failure (",
+  if (polish != "none") return(FALSE)
+  failed <- .optimizer_failed(opt, optimizer)
+  if (!failed && !.optimizer_capped(opt, optimizer)) return(FALSE)
+  message(if (failed) "The optimizer reports a failure (" else "The optimizer stopped at its cap (",
           paste(as.character(opt$message), collapse = "; "),
           "): a Newton phase of no steps checks the point it returned.")
   TRUE
 }
 
-#' Warn of an optimizer's failure that nothing certified
+#' Warn of an optimizer's failure or cap that nothing certified
 #'
 #' Called after the polish, which sets a success code on the point it
-#' certifies (class `choicer_optimizer_failed`). The estimates are named as
-#' the start values where they are, to within the rounding of the optimizer's
-#' coordinates.
+#' certifies (classes `choicer_optimizer_failed` and
+#' `choicer_optimizer_capped`). The estimates are named as the start values
+#' where they are, to within the rounding of the optimizer's coordinates. At a
+#' cap the decrement is read as the log-likelihood still to gain, which it
+#' tracked in the study of capped fits (a ratio to the gap of 0.64 to 1.01,
+#' median 1.00).
 #'
 #' @param opt The optimizer's result, as the polish left it.
 #' @param optimizer The `optimizer` argument.
@@ -666,36 +690,51 @@ normalize_optim_result <- function(result) {
 #'   optimizer works in natural units, without a round trip.
 #' @returns NULL, invisibly.
 #' @noRd
-.warn_optimizer_failed <- function(opt, optimizer, start, record, scale_vars,
-                                   polish_asked,
-                                   decrement = record$decrement %||% NA_real_,
-                                   can_polish = TRUE, scale = NULL) {
-  if (!.optimizer_failed(opt, optimizer)) return(invisible(NULL))
+.warn_optimizer_stop <- function(opt, optimizer, start, record, scale_vars,
+                                 polish_asked,
+                                 decrement = record$decrement %||% NA_real_,
+                                 can_polish = TRUE, scale = NULL) {
+  failed <- .optimizer_failed(opt, optimizer)
+  if (!failed && !.optimizer_capped(opt, optimizer)) return(invisible(NULL))
   said <- paste(as.character(record$optimizer$message %||% opt$message), collapse = "; ")
   code <- record$optimizer$convergence %||% opt$convergence
   stuck <- isTRUE(all(abs(opt$par - start) <= 1e-12 * (abs(start) + (scale %||% 0))))
   warning(warningCondition(paste0(
-    "The optimizer reports a failure (", if (nzchar(said)) said else paste("code", code), ")",
+    if (failed) "The optimizer reports a failure (" else "The optimizer stopped at its cap (",
+    if (nzchar(said)) said else paste("code", code), ")",
     if (stuck) {
       " and returned the start values, so the estimates are not a maximum of the likelihood"
     } else {
       " and its point is not certified as a maximum of the likelihood"
     },
     if (!is.na(decrement)) {
-      paste0(" (Newton decrement ", format(signif(decrement, 3)), ")")
+      paste0(" (Newton decrement ", format(signif(decrement, 3)),
+             if (!failed) ", roughly the log-likelihood still to gain", ")")
     },
     ". ",
-    if (scale_vars == "none") {
-      "scale_vars = \"none\" works in the parameters' own units: try scale_vars = \"bhhh\". "
-    },
-    if (polish_asked) {
-      "Start elsewhere (theta_init), or allow the polish more steps (polish_control)."
-    } else if (can_polish) {
-      paste0("Fit with polish = \"newton\", which goes on from this point, or ",
-             "start elsewhere (theta_init).")
+    if (!failed) {
+      paste0("Raise the cap (control)",
+             if (polish_asked) {
+               ", or allow the polish more steps (polish_control)."
+             } else if (can_polish) {
+               ", or fit with polish = \"newton\", which goes on from this point."
+             } else {
+               "."
+             })
     } else {
-      "Start elsewhere (theta_init)."
-    }), class = "choicer_optimizer_failed"))
+      paste0(
+        if (scale_vars == "none") {
+          "scale_vars = \"none\" works in the parameters' own units: try scale_vars = \"bhhh\". "
+        },
+        if (polish_asked) {
+          "Start elsewhere (theta_init), or allow the polish more steps (polish_control)."
+        } else if (can_polish) {
+          paste0("Fit with polish = \"newton\", which goes on from this point, or ",
+                 "start elsewhere (theta_init).")
+        } else {
+          "Start elsewhere (theta_init)."
+        })
+    }), class = if (failed) "choicer_optimizer_failed" else "choicer_optimizer_capped"))
   invisible(NULL)
 }
 
@@ -1294,6 +1333,9 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #'   whether a never-chosen reference can have a finite estimate there (the
 #'   nested logit's base alternative in a nest whose dissimilarity exceeds
 #'   1), where the rule for constants that diverge together does not apply.
+#' @param asked Whether the fit asked for this polish. A check the fit did not
+#'   ask for (`.check_optimizer_stop()`) leaves an error to its record and its
+#'   message, and to `.warn_optimizer_stop()`'s warning.
 #' @returns List: `opt`, the result updated (the polish's point and value
 #'   where it has one, its code and message); `record`, the
 #'   `fit$optimizer$polish` record; `curvature`, the last curvature where
@@ -1303,7 +1345,7 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 .polish_fit <- function(polish, opt, elapsed, param_names, model_f, curv_f,
                         lower, upper, scale, control, held, keep_curvature,
                         unbounded, asc_idx, alt_mapping, anchors, weights,
-                        optimizer, certify_f = NULL, ref_open = NULL) {
+                        optimizer, certify_f = NULL, ref_open = NULL, asked = TRUE) {
   stopifnot(polish %in% c("newton", "bhhh"))
   w_bar <- mean(weights)
   pc <- control
@@ -1383,7 +1425,7 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
           " after ", its, " (", dec, ")",
           if (!pol$converged) paste0(": ", pol$message), ", ",
           convertTime(t_pol))
-  if (!is.null(pol$error)) {
+  if (!is.null(pol$error) && asked) {
     warning(warningCondition(paste0(
       "The ", label, " stopped with an error, so the estimates are its ",
       "last accepted point (the optimizer's solution when it took no ",

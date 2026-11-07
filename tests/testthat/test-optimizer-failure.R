@@ -4,7 +4,10 @@
 # or warn (class choicer_optimizer_failed). The optimizer is mocked where the
 # path matters, so that these do not depend on where L-BFGS's line search
 # gives up; the one real failure is a first step one gradient long on badly
-# scaled columns.
+# scaled columns. A cap on the evaluations or the time takes the same check and
+# its own warning (class choicer_optimizer_capped), at the end of this file:
+# helper-fit-warnings.R muffles that class elsewhere, so these call
+# choicer::run_*().
 
 # The real nloptr adapter (read once, before any mock), relabelled: code -1 at
 # whatever point it stops
@@ -72,7 +75,7 @@ test_that("run_nestlogit() warns where L-BFGS fails at the start, and its defaul
   expect_false(choicer:::.is_converged(fit))
   # the default, "bhhh", and a polish from "none" reach the same maximum,
   # without a warning
-  expect_identical(eval(formals(run_nestlogit)$scale_vars)[1L], "bhhh")
+  expect_identical(eval(formals(choicer::run_nestlogit)$scale_vars)[1L], "bhhh")
   ok <- suppressMessages(expect_no_warning(
     run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest", polish = "newton")))
   expect_identical(ok$scale_vars, "bhhh")
@@ -379,8 +382,8 @@ test_that(".blp_outer_hessian() differences the outer gradient", {
 test_that("the start values are named only where the estimates are them", {
   warned <- function(par, start, scale = NULL) {
     w <- tryCatch(
-      choicer:::.warn_optimizer_failed(list(par = par, convergence = -1L, message = "M"),
-                                       "nloptr", start, NULL, "bhhh", FALSE, scale = scale),
+      choicer:::.warn_optimizer_stop(list(par = par, convergence = -1L, message = "M"),
+                                     "nloptr", start, NULL, "bhhh", FALSE, scale = scale),
       warning = function(c) conditionMessage(c))
     grepl("returned the start values", w, fixed = TRUE)
   }
@@ -397,8 +400,8 @@ test_that("the start values are named only where the estimates are them", {
 
 test_that("the warning reads without an optimizer's message", {
   w <- tryCatch(
-    choicer:::.warn_optimizer_failed(list(par = 1, convergence = 10L, message = ""),
-                                     "optim", 0, NULL, "bhhh", FALSE),
+    choicer:::.warn_optimizer_stop(list(par = 1, convergence = 10L, message = ""),
+                                   "optim", 0, NULL, "bhhh", FALSE),
     warning = function(c) conditionMessage(c))
   expect_match(w, "a failure (code 10)", fixed = TRUE)
 })
@@ -420,4 +423,250 @@ test_that("optim's abnormal line search is checked as well", {
   }
   expect_no_warning(suppressMessages(
     run_mnlogit(d, "id", "alt", "choice", c("x", "z"), optimizer = custom)))
+})
+
+# --- A cap on the evaluations or the time -------------------------------------
+
+CAPPED <- "choicer_optimizer_capped"
+CAP_MODELS <- c("mnl", "nl", "mxl")
+CAP_SAYS <- "NLOPT_MAXEVAL_REACHED: Optimization stopped because maxeval (above) was reached."
+
+# The real adapters (read once, before any mock), relabelled: a cap at whatever
+# point they stop
+real_optim <- choicer:::run_optim
+cap_after_run <- function(theta_init, eval_f, lower, upper, control) {
+  r <- real_nloptr(theta_init, eval_f, lower, upper, control)
+  r$convergence <- 5L
+  r$message <- CAP_SAYS
+  r
+}
+cap_after_optim <- function(theta_init, eval_f, lower, upper, control) {
+  r <- real_optim(theta_init, eval_f, lower, upper, control)
+  r$convergence <- 1L
+  r
+}
+
+cap_fit <- function(model, d, ...) {
+  suppressWarnings(classes = "choicer_variance_plateau", switch(model,
+    mnl = choicer::run_mnlogit(d, "id", "alt", "choice", c("x", "z"), ...),
+    nl = choicer::run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest", ...),
+    mxl = choicer::run_mxlogit(d, "id", "alt", "choice", "z", "x", S = 20L, seed = 3L, ...)))
+}
+
+# The fit and the messages of its warnings of `class`
+cap_caught <- function(expr, class = CAPPED) {
+  said <- character()
+  fit <- withCallingHandlers(suppressMessages(expr), warning = function(w) {
+    if (inherits(w, class)) {
+      said <<- c(said, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  })
+  list(fit = fit, said = said)
+}
+
+test_that(".optimizer_capped() reads each optimizer's caps", {
+  capped <- choicer:::.optimizer_capped
+  for (code in 5:6) {
+    expect_true(capped(list(convergence = code), "nloptr"))
+    expect_true(capped(list(convergence = code), NULL))
+  }
+  # successes, and the failures
+  for (code in c(-5:-1, 1:4)) expect_false(capped(list(convergence = code), "nloptr"))
+  expect_true(capped(list(convergence = 1L), "optim"))
+  for (code in c(0L, 10L, 51L, 52L)) expect_false(capped(list(convergence = code), "optim"))
+  # a custom optimizer's codes follow no convention
+  expect_false(capped(list(convergence = 5L), function(...) NULL))
+  expect_false(capped(list(convergence = NA_integer_), "nloptr"))
+})
+
+test_that("a fit stopped at its cap is checked, keeps its code and warns", {
+  set_omp_threads(1L)  # bit for bit, below
+  on.exit(set_omp_threads(2L), add = TRUE)
+  d <- ofail_data(N = 200L, scale = 1)
+  # the same evaluations through a custom optimizer, whose code says nothing
+  # and takes no check: the optimizer's own point
+  custom <- function(theta_init, eval_f, lower, upper, control) {
+    real_nloptr(theta_init, eval_f, lower, upper, control)
+  }
+  for (m in CAP_MODELS) {
+    r <- cap_caught(cap_fit(m, d, control = list(maxeval = 3L)))
+    expect_length(r$said, 1L)
+    expect_match(r$said, paste0("stopped at its cap (", CAP_SAYS, ")"), fixed = TRUE)
+    expect_match(r$said, "not certified as a maximum of the likelihood", fixed = TRUE)
+    expect_match(r$said, "Raise the cap (control), or fit with polish = \"newton\"", fixed = TRUE)
+    fit <- r$fit
+    expect_identical(fit$convergence, 5L)
+    # the check's record: no steps, nothing certified
+    pol <- fit$optimizer$polish
+    expect_identical(pol$iterations, 0L)
+    expect_false(pol$converged)
+    expect_identical(pol$optimizer$convergence, 5L)
+    expect_false(choicer:::.is_converged(fit))
+    # the check moved nothing
+    own <- expect_no_warning(suppressMessages(cap_fit(m, d, optimizer = custom,
+                                                      control = list(maxeval = 3L))))
+    expect_identical(own$convergence, 5L)
+    expect_null(own$optimizer$polish)
+    expect_true(identical(coef(fit), coef(own), num.eq = FALSE))
+    expect_true(identical(fit$se, own$se, num.eq = FALSE))
+  }
+})
+
+test_that("a cap at the maximum is certified, without a warning", {
+  d <- ofail_data(N = 200L, scale = 1)
+  local_mocked_bindings(run_nloptr = cap_after_run, .package = "choicer")
+  for (m in CAP_MODELS) {
+    fit <- expect_no_warning(suppressMessages(cap_fit(m, d, control = list(xtol_rel = 1e-12))))
+    expect_identical(fit$convergence, 1L)
+    expect_match(fit$message, paste0("the optimizer: ", CAP_SAYS), fixed = TRUE)
+    pol <- fit$optimizer$polish
+    expect_identical(pol$iterations, 0L)
+    expect_true(pol$converged)
+    expect_identical(pol$optimizer$convergence, 5L)
+    expect_true(choicer:::.is_converged(fit))
+  }
+})
+
+test_that("a polish that certifies a capped point is silent; one that does not warns", {
+  d <- ofail_data(N = 200L, scale = 1)
+  for (m in CAP_MODELS) {
+    ok <- expect_no_warning(suppressMessages(cap_fit(m, d, control = list(maxeval = 3L),
+                                                     polish = "newton",
+                                                     polish_control = list(max_iter = 100L))))
+    expect_identical(ok$convergence, 1L)
+    expect_true(ok$optimizer$polish$converged)
+    expect_gt(ok$optimizer$polish$iterations, 0L)
+    r <- cap_caught(cap_fit(m, d, control = list(maxeval = 3L), polish = "newton",
+                            polish_control = list(max_iter = 1L)))
+    expect_length(r$said, 1L)
+    expect_match(r$said, "Raise the cap (control), or allow the polish more steps (polish_control)",
+                 fixed = TRUE)
+    expect_identical(r$fit$convergence, 5L)
+    expect_false(r$fit$optimizer$polish$converged)
+  }
+})
+
+test_that("the warning gives the decrement, or names the start values", {
+  d <- ofail_data(N = 200L, scale = 1)
+  r <- cap_caught(cap_fit("mnl", d, control = list(maxeval = 4L)))
+  expect_match(r$said, "\\(Newton decrement [0-9.e+-]+, roughly the log-likelihood still to gain\\)")
+  # The decrement tracks what the point falls short of the maximum
+  best <- suppressMessages(cap_fit("mnl", d, polish = "newton"))
+  gap <- as.numeric(logLik(best)) - as.numeric(logLik(r$fit))
+  expect_gt(r$fit$optimizer$polish$decrement, 0.5 * gap)
+  expect_lt(r$fit$optimizer$polish$decrement, 1.5 * gap)
+  # one evaluation, at the start values
+  r <- cap_caught(cap_fit("nl", d, control = list(maxeval = 1L)))
+  expect_match(r$said, "returned the start values, so the estimates are not a maximum", fixed = TRUE)
+  # without the optimizer's message
+  w <- tryCatch(
+    choicer:::.warn_optimizer_stop(list(par = 1, convergence = 1L, message = ""),
+                                   "optim", 0, NULL, "bhhh", FALSE),
+    warning = function(c) c)
+  expect_s3_class(w, CAPPED)
+  expect_match(conditionMessage(w), "stopped at its cap (code 1)", fixed = TRUE)
+})
+
+test_that("nloptr's time cap and optim's iteration cap take the same check", {
+  d <- ofail_data(N = 200L, scale = 1)
+  at_time <- function(theta_init, eval_f, lower, upper, control) {
+    r <- real_nloptr(theta_init, eval_f, lower, upper, list(maxeval = 3L))
+    r$convergence <- 6L
+    r$message <- "NLOPT_MAXTIME_REACHED: Optimization stopped because maxtime (above) was reached."
+    r
+  }
+  local({
+    local_mocked_bindings(run_nloptr = at_time, .package = "choicer")
+    for (m in CAP_MODELS) {
+      r <- cap_caught(cap_fit(m, d))
+      expect_match(r$said, "stopped at its cap (NLOPT_MAXTIME_REACHED", fixed = TRUE)
+      expect_identical(r$fit$convergence, 6L)
+    }
+  })
+  for (m in CAP_MODELS) {
+    r <- cap_caught(cap_fit(m, d, optimizer = "optim", control = list(maxit = 2L)))
+    expect_match(r$said, "stopped at its cap", fixed = TRUE)
+    expect_identical(r$fit$convergence, 1L)
+    expect_identical(r$fit$optimizer$polish$optimizer$convergence, 1L)
+    expect_false(choicer:::.is_converged(r$fit))
+  }
+  # at the maximum: certified, optim's success code
+  local_mocked_bindings(run_optim = cap_after_optim, .package = "choicer")
+  for (m in CAP_MODELS) {
+    fit <- expect_no_warning(suppressMessages(cap_fit(
+      m, d, optimizer = "optim",
+      control = if (m == "mnl") list(reltol = 1e-14) else list(factr = 10))))
+    expect_identical(fit$convergence, 0L)
+    expect_identical(fit$optimizer$polish$optimizer$convergence, 1L)
+  }
+})
+
+test_that("the profile likelihood and \"blp\" judge a cap as they judge a failure", {
+  d <- ofail_data(N = 150L, scale = 1)
+  for (conc in c("profile_likelihood", "blp")) {
+    r <- cap_caught(cap_fit("mxl", d, concentrate_out_asc = conc, control = list(maxeval = 2L)))
+    expect_length(r$said, 1L)
+    expect_match(r$said, "stopped at its cap", fixed = TRUE)
+    expect_identical(r$fit$convergence, 5L)
+    # "blp" takes no polish, so the warning offers none
+    expect_identical(grepl("polish", r$said, fixed = TRUE), conc != "blp")
+    expect_identical(is.null(r$fit$optimizer$polish), conc == "blp")
+  }
+  local_mocked_bindings(run_nloptr = cap_after_run, .package = "choicer")
+  prof <- expect_no_warning(suppressMessages(
+    cap_fit("mxl", d, concentrate_out_asc = "profile_likelihood", control = list(xtol_rel = 1e-12))))
+  expect_identical(prof$convergence, 1L)
+  blp_ok <- expect_no_warning(suppressMessages(
+    cap_fit("mxl", d, concentrate_out_asc = "blp", control = list(xtol_rel = 1e-12))))
+  expect_null(blp_ok$optimizer$polish)
+  expect_lt(blp_ok$optimizer$concentration$decrement, 1e-8)
+  expect_identical(blp_ok$convergence, 1L)
+  expect_match(blp_ok$message, "NLOPT_MAXEVAL_REACHED", fixed = TRUE)
+})
+
+test_that("a \"blp\" cap is judged by the objective's own curvature under any se_method", {
+  # at a stationary minimum along the share constraint: not certified
+  cap_at_start <- function(theta_init, eval_f, lower, upper, control) {
+    list(par = theta_init, value = eval_f(theta_init)$objective, convergence = 5L,
+         message = CAP_SAYS, iterations = 12L, raw = list())
+  }
+  for (design in c("normal", "lognormal")) {
+    pt <- blp_stationary_min(design)
+    local_mocked_bindings(run_nloptr = cap_at_start, .package = "choicer")
+    for (se in c("hessian", "bhhh")) {
+      r <- cap_caught(pt$fit_at(pt$start, se))
+      expect_length(r$said, 1L)
+      expect_identical(r$fit$convergence, 5L)
+      expect_identical(r$fit$optimizer$concentration$decrement, NA_real_)
+    }
+  }
+  # at the maximum: certified under "bhhh" too
+  d <- ofail_data(N = 150L, scale = 1)
+  local_mocked_bindings(run_nloptr = cap_after_run, .package = "choicer")
+  ok <- expect_no_warning(suppressMessages(cap_fit(
+    "mxl", d, concentrate_out_asc = "blp", se_method = "bhhh",
+    control = list(xtol_rel = 1e-12))))
+  expect_identical(ok$convergence, 1L)
+  expect_lt(ok$optimizer$concentration$decrement, 1e-8)
+})
+
+test_that("a check that cannot run leaves the cap's warning, not the polish's", {
+  d <- ofail_data(N = 200L, scale = 1)
+  local_mocked_bindings(mnl_loglik_hessian_parallel = function(...) stop("no room"),
+                        .package = "choicer")
+  # (the variance needs that Hessian as well, and says so in its own warning)
+  r <- cap_caught(suppressWarnings(cap_fit("mnl", d, control = list(maxeval = 3L)),
+                                   classes = "choicer_vcov_failed"),
+                  class = c(CAPPED, "choicer_polish_failed"))
+  expect_length(r$said, 1L)
+  expect_match(r$said, "stopped at its cap", fixed = TRUE)
+  expect_match(r$fit$optimizer$polish$error, "no room", fixed = TRUE)
+  expect_identical(r$fit$convergence, 5L)
+  # A polish the fit asked for still says so
+  r <- cap_caught(suppressWarnings(cap_fit("mnl", d, control = list(maxeval = 3L), polish = "newton"),
+                                   classes = c("choicer_vcov_failed", CAPPED)),
+                  class = "choicer_polish_failed")
+  expect_length(r$said, 1L)
+  expect_match(r$said, "The Newton polish stopped with an error", fixed = TRUE)
 })

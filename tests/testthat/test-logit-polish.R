@@ -117,8 +117,9 @@ test_that("polish = \"none\" ignores polish_control and records no polish", {
   on.exit(set_omp_threads(2L), add = TRUE)
   for (model in c("mnl", "nl")) {
     dt <- lp_dat(model, 11L)
-    f0 <- lp_fit(model, dt, control = LP_LOOSE)
-    f1 <- lp_fit(model, dt, control = LP_LOOSE, polish = "none",
+    # (stopped by a tolerance: a cap takes a check of no steps, with its record)
+    f0 <- lp_fit(model, dt, control = list(xtol_rel = 1e-3))
+    f1 <- lp_fit(model, dt, control = list(xtol_rel = 1e-3), polish = "none",
                  polish_control = list(max_iter = 3L))
     expect_true(identical(lp_strip(f1), lp_strip(f0), num.eq = FALSE,
                           single.NA = FALSE), label = model)

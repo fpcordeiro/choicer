@@ -519,7 +519,9 @@ test_that("the mixed logit's memory check stopping the variance keeps the estima
     suppressWarnings(classes = "choicer_unbounded_constants",
                      suppressMessages(vf_capture(run_mxlogit(
                        input_data = input, eta_draws = eta,
-                       control = list(maxeval = 20L)
+                       # (stopped by a tolerance: at a cap, a check of no steps
+                       # would need the Hessian before the variance does)
+                       control = list(xtol_rel = 1e-2)
                      ))))
   }
   # What the gradient (with the B pass's diagonal) and the Hessian need, from
@@ -552,7 +554,7 @@ test_that("the mixed logit's memory check stopping the variance keeps the estima
   expect_null(fit$vcov)
   expect_match(fit$variance_error, "^The Hessian needs about [0-9.]+ MB even with one thread")
   # With the limit lifted, vcov(type = "hessian") is the successful fit's
-  # variance, bit for bit (an information that 20 evaluations leave
+  # variance, bit for bit (an information that the loose tolerance leaves
   # indefinite says so in a message)
   expect_identical(suppressMessages(vcov(fit, type = "hessian")), ref$vcov)
 })

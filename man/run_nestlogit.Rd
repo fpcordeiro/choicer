@@ -217,7 +217,17 @@ which its code cannot tell. Without a polish, a Newton phase of no steps
 then checks its point: \code{fit$optimizer$polish} records it
 (\code{iterations} 0), and a point it certifies takes the success code
 as above. A point no polish certified keeps the failure code and warns
-(class \code{choicer_optimizer_failed}).
+(class \code{choicer_optimizer_failed}). So too an optimizer stopped at
+its cap, whoever set it (nloptr's 5, \code{maxeval}, and 6,
+\code{maxtime}; optim's 1, \code{maxit}; no custom optimizer): the same
+phase checks its point, one pass of the Hessian that the variance reuses
+except under \code{se_method = "bhhh"} or \code{"numeric"}, and a point
+nothing certified keeps its code and warns (class
+\code{choicer_optimizer_capped}), giving the decrement, roughly the
+log-likelihood still to gain; a nested logit can stay far from the maximum
+until its last evaluations.
+\code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
+deliberate short run.
 }
 \description{
 Estimates a nested logit model via maximum likelihood.

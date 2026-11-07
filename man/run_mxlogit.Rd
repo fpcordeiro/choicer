@@ -477,7 +477,15 @@ it certifies takes the success code as above; under
 decrement below \code{polish_control}'s \code{tol_decrement} does, in the
 outer objective's own curvature (below). A point
 nothing certified keeps the failure code and warns (class
-\code{choicer_optimizer_failed}). With
+\code{choicer_optimizer_failed}). So too an optimizer stopped at its cap,
+whoever set it (nloptr's 5, \code{maxeval}, and 6, \code{maxtime}; optim's
+1, \code{maxit}; no custom optimizer): the same check reads its point, one
+pass of the Hessian that the variance reuses except under
+\code{se_method = "bhhh"}, and a point nothing certified keeps its code and
+warns (class \code{choicer_optimizer_capped}), giving the decrement, roughly
+the log-likelihood still to gain.
+\code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
+deliberate short run. With
 \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
 describes the optimizer over the other parameters, and
 \code{fit$optimizer$concentration} records the inner solves:
@@ -524,8 +532,8 @@ weight, \eqn{g}{g} the total gradient in \eqn{\theta_c}{theta_c} and
 \eqn{\tilde I}{It} the curvature along the share constraint, from the
 fit's variance: the BHHH matrix's under \code{se_method = "bhhh"};
 \code{NA} without a variance, or where that curvature is not positive
-definite. Where the optimizer reports a failure, it is the decrement in
-the outer objective's own Hessian whatever \code{se_method}, from central
+definite. Where the optimizer reports a failure or stops at its cap, it
+is the decrement in the outer objective's own Hessian whatever \code{se_method}, from central
 differences of the outer gradient, two solves of the constants per
 continuous parameter: \eqn{\tilde I}{It} omits the constants' score times
 the curvature of the constants in \eqn{\theta_c}{theta_c}, a score that is
