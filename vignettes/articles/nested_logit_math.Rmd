@@ -803,8 +803,8 @@ of individuals chose next to that of one most chose. Inverted as it is, such a m
 be refused as computationally singular although only the units make it so (`solve()`
 refuses a matrix whose estimated reciprocal condition number falls below the machine
 epsilon, and the units alone can push it there), and a sandwich built on it can lose
-digits. Every fit, whatever the coordinates its optimizer used (`scale_vars`, `"none"` by
-default here; §1.5 of the [mixed logit article](mixed_logit_math.html)), therefore inverts
+digits. Every fit, whatever the coordinates its optimizer used (`scale_vars`, `"bhhh"` by
+default; §1.5 of the [mixed logit article](mixed_logit_math.html)), therefore inverts
 the equilibrated matrix:
 
 $$
@@ -944,8 +944,8 @@ denominator, which leaves the chosen probability finite and too high. The optimi
 see that report.
 
 **Scales and the variance.** The maximum step and the stall rule are measured in the
-optimizer's coordinates $m$ (§1.5 of the mixed logit article). Under the nested logit's
-default `scale_vars = "none"` those would be the parameters' own units, so the scales come
+optimizer's coordinates $m$ (§1.5 of the mixed logit article). Under
+`scale_vars = "none"` those would be the parameters' own units, so the scales come
 instead from the BHHH diagonal at the optimizer's solution projected onto the bound, as
 `"bhhh"` takes them at the start values: one pass of the gradient kernel. With half of the
 covariates rescaled by $10^3$ and the other half by $10^{-3}$, 20 steps at unit scales left
@@ -959,15 +959,15 @@ of `"sandwich"` and `"cluster"`; after `"bhhh"`, the BHHH matrix of `"bhhh"`.
 **On census- and claims-style designs** (2,504 and 2,602 alternatives in 50 nests, with
 24,560 and 245,031 choice situations; 499 and 500 alternatives with 17,339 and 153,721;
 ten covariates; constants without a finite estimate removed; single runs at eleven
-threads, times modeled from the kernels' calls), the default fit reached its limit of
-1,000 evaluations on three of the four designs: 0.35 and 15.8 log-likelihood units short of
-the maximum on the census-style ones (up to 6.7 standard errors), $8 \times 10^{-5}$ on the
-smaller claims-style one; the larger stopped by its tolerance, $2 \times 10^{-7}$ short.
-The Newton polish certified the maximum in 3 and 5 steps on the census-style designs, for
-about a tenth of the fit's time, and in one step on the claims-style ones. Stopping the
-optimizer after 100 evaluations and polishing took about a fifth of the time of the default
-fit and its polish, and `scale_vars = "bhhh"` stopped at the maximum in 50 to 66
-evaluations on three of the four designs.
+threads, times modeled from the kernels' calls), the fit under `scale_vars = "none"` reached
+its limit of 1,000 evaluations on three of the four designs: 0.35 and 15.8 log-likelihood
+units short of the maximum on the census-style ones (up to 6.7 standard errors),
+$8 \times 10^{-5}$ on the smaller claims-style one; the larger stopped by its tolerance,
+$2 \times 10^{-7}$ short. The Newton polish certified the maximum in 3 and 5 steps on the
+census-style designs, for about a tenth of the fit's time, and in one step on the
+claims-style ones. Stopping the optimizer after 100 evaluations and polishing took about a
+fifth of the time of that fit and its polish, and the default, `scale_vars = "bhhh"`,
+stopped at the maximum in 50 to 66 evaluations on three of the four designs.
 
 *Code reference: `run_polish()`, `.polish_held()`, `.polish_anchors()`, `.polish_fit()`
 and `.polish_scales()` in [R/classes.R](https://github.com/fpcordeiro/choicer/blob/main/R/classes.R);

@@ -623,14 +623,15 @@ test_that("Scenario 7 — Unknown se_method is rejected; bhhh/sandwich accepted"
     run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "nonsense"),
     regexp = "arg"
   )
-  # bhhh and sandwich are now valid SE methods for NL.
-  fit_b <- suppressMessages(
+  # bhhh and sandwich are now valid SE methods for NL. (Choices at random: the
+  # optimizer's stop is not this test's subject.)
+  fit_b <- suppressWarnings(suppressMessages(
     run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "bhhh")
-  )
+  ), classes = "choicer_optimizer_failed")
   expect_equal(fit_b$se_method, "bhhh")
-  fit_s <- suppressMessages(
+  fit_s <- suppressWarnings(suppressMessages(
     run_nestlogit(dt, "id", "alt", "choice", "x1", "nest", se_method = "sandwich")
-  )
+  ), classes = "choicer_optimizer_failed")
   expect_equal(fit_s$se_method, "sandwich")
 })
 

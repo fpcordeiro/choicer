@@ -52,12 +52,13 @@ test_that(".optimizer_failed() reads each optimizer's failure codes", {
   expect_false(failed(list(convergence = NA_integer_), "nloptr"))
 })
 
-test_that("run_nestlogit() warns where L-BFGS fails at the start, and the coordinates fix it", {
+test_that("run_nestlogit() warns where L-BFGS fails at the start, and its default avoids it", {
   skip_on_cran()  # the optimizer's real path
   d <- ofail_data()
-  # the fit's own default, "none": a first step one gradient long
+  # "none", the parameters' own units: a first step one gradient long
   expect_warning(
-    fit <- suppressMessages(run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest")),
+    fit <- suppressMessages(run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest",
+                                          scale_vars = "none")),
     class = "choicer_optimizer_failed")
   expect_identical(fit$convergence, -1L)
   expect_match(fit$message, "NLOPT_FAILURE", fixed = TRUE)
@@ -69,13 +70,16 @@ test_that("run_nestlogit() warns where L-BFGS fails at the start, and the coordi
   expect_false(pol$converged)
   expect_identical(pol$optimizer$convergence, -1L)
   expect_false(choicer:::.is_converged(fit))
-  # scale_vars = "bhhh" and a polish both reach the same maximum, without a warning
-  ok <- suppressMessages(run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest",
-                                       scale_vars = "bhhh", polish = "newton"))
+  # the default, "bhhh", and a polish from "none" reach the same maximum,
+  # without a warning
+  expect_identical(eval(formals(run_nestlogit)$scale_vars)[1L], "bhhh")
+  ok <- suppressMessages(expect_no_warning(
+    run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest", polish = "newton")))
+  expect_identical(ok$scale_vars, "bhhh")
   expect_true(ok$optimizer$polish$converged)
   expect_gt(as.numeric(logLik(ok)), as.numeric(logLik(fit)) + 1)
   pol2 <- suppressMessages(run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest",
-                                         polish = "newton"))
+                                         scale_vars = "none", polish = "newton"))
   expect_equal(as.numeric(logLik(pol2)), as.numeric(logLik(ok)), tolerance = 1e-8)
   expect_true(pol2$optimizer$polish$converged)
   expect_identical(pol2$optimizer$polish$optimizer$convergence, -1L)
@@ -150,9 +154,15 @@ test_that("a polish that does not certify the point keeps the code and warns", {
 
 test_that("a fit without a failure code takes no check", {
   d <- ofail_data(N = 200L, scale = 1)
+  # (a success code, whatever the real optimizer's last step)
+  local_mocked_bindings(run_nloptr = function(theta_init, eval_f, lower, upper, control) {
+    r <- real_nloptr(theta_init, eval_f, lower, upper, control)
+    r$convergence <- 3L
+    r
+  }, .package = "choicer")
   fit <- expect_no_warning(suppressMessages(run_mnlogit(d, "id", "alt", "choice", c("x", "z"))))
   expect_null(fit$optimizer$polish)
-  expect_true(fit$convergence %in% 1:4)
+  expect_identical(fit$convergence, 3L)
 })
 
 test_that("run_mxlogit() checks the optimizer's stop, the profile likelihood and \"blp\" too", {
@@ -193,6 +203,47 @@ test_that("run_mxlogit() checks the optimizer's stop, the profile likelihood and
   expect_warning(blp_far <- fit_with(concentrate_out_asc = "blp"), "returned the start values",
                  class = "choicer_optimizer_failed")
   expect_identical(blp_far$convergence, -1L)
+})
+
+test_that("a \"blp\" point is not certified where the outer curvature is not positive definite", {
+  d <- ofail_data(N = 150L, scale = 1)
+  # at this start the curvature along the share constraint is indefinite, where
+  # the decrement's formula can read negative
+  local_mocked_bindings(run_nloptr = fail_at_start, .package = "choicer")
+  expect_warning(
+    fit <- suppressMessages(run_mxlogit(
+      d, "id", "alt", "choice", "z", "x", S = 20L, seed = 3L, concentrate_out_asc = "blp",
+      theta_init = c(-1.879, 0.367, 0, 0, 0))),
+    class = "choicer_optimizer_failed")
+  expect_identical(fit$convergence, -1L)
+  expect_identical(fit$optimizer$concentration$decrement, NA_real_)
+})
+
+test_that("the start values are named only where the estimates are them", {
+  warned <- function(par, start, scale = NULL) {
+    w <- tryCatch(
+      choicer:::.warn_optimizer_failed(list(par = par, convergence = -1L, message = "M"),
+                                       "nloptr", start, NULL, "bhhh", FALSE, scale = scale),
+      warning = function(c) conditionMessage(c))
+    grepl("returned the start values", w, fixed = TRUE)
+  }
+  expect_true(warned(c(0, 0.5), c(0, 0.5)))
+  # the coordinates' round trip, within rounding of the parameter's scale
+  expect_true(warned(c(1e-25, 0.5 * (1 + 1e-15)), c(0, 0.5), scale = c(1e-12, 1)))
+  # a small move on a parameter of small scale is a move
+  expect_false(warned(c(7e-13, 0.5), c(0, 0.5), scale = c(1e-12, 1)))
+  # without coordinates, any move is one
+  expect_false(warned(c(1e-20, 0.5), c(0, 0.5)))
+  # a point that is not finite is not the start
+  expect_false(warned(c(NaN, NaN), c(0, 0.5)))
+})
+
+test_that("the warning reads without an optimizer's message", {
+  w <- tryCatch(
+    choicer:::.warn_optimizer_failed(list(par = 1, convergence = 10L, message = ""),
+                                     "optim", 0, NULL, "bhhh", FALSE),
+    warning = function(c) conditionMessage(c))
+  expect_match(w, "a failure (code 10)", fixed = TRUE)
 })
 
 test_that("optim's abnormal line search is checked as well", {

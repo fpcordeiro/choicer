@@ -149,12 +149,16 @@ conventional random-utility range `0 < lambda <= 1`. Refit plausible alternative
 fit, diversion, elasticities, WTP, and welfare—not just the coefficient table.
 
 With many alternatives, certify the optimizer's stop with `polish = "newton"`
-before reading the standard errors. In the default coordinates
+before reading the standard errors. In the parameters' own units
 (`scale_vars = "none"`) the optimizer can reach its evaluation limit short of
 the maximum: on simulated census-style designs with 2,500 and 2,600
 alternatives in 50 nests it stopped 0.35 and 15.8 log-likelihood units short,
 and the polish found and certified the maximum in 3 and 5 Newton steps, for
-about a tenth of the fit's time. `fit$optimizer$polish` says whether it
+about a tenth of the fit's time. The default, `scale_vars = "bhhh"`, stopped at
+the maximum in 50 to 66 evaluations on three of four census- and claims-style
+designs, and it does not stop at the start values where the covariates' units
+make the optimizer's first step too long, as `"none"` can.
+`fit$optimizer$polish` says whether it
 converged, and why not. The nested logit's log-likelihood is not concave, so a
 certified maximum is local: where the polish drives a dissimilarity to its
 bound, refit from other starts, and where they all end there, the

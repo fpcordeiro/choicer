@@ -372,7 +372,8 @@ test_that("a never-chosen constant is held only while its nest's dissimilarity i
   on.exit(set_omp_threads(2L), add = TRUE)
   fit_mc <- function(...) {
     suppressMessages(suppressWarnings(run_nestlogit(
-      mc2, "id", "mode", "choice", c("gcost", "wait"), nest_col = "nest", ...),
+      mc2, "id", "mode", "choice", c("gcost", "wait"), nest_col = "nest",
+      scale_vars = "none", ...),
       classes = "choicer_unbounded_constants"))
   }
   # from a stop with lambda above 1: the constant is moved, not held (here
@@ -421,8 +422,10 @@ test_that("a moved constant whose nest ends at or below 1 is not certified", {
   dt <- lp_dat("nl", 91L)
   dt[alt == 8L, choice := 0L]
   dt <- dt[id %in% dt[choice == 1L, id]]
+  # (in natural units: the custom optimizer below returns natural parameters)
   fit_n <- function(...) {
-    suppressWarnings(lp_fit("nl", dt, ...), classes = "choicer_unbounded_constants")
+    suppressWarnings(lp_fit("nl", dt, scale_vars = "none", ...),
+                     classes = "choicer_unbounded_constants")
   }
   f0 <- fit_n(control = LP_LOOSE)
   th <- unname(coef(f0))
@@ -583,7 +586,7 @@ test_that("optim and a custom optimizer hand their solution to the polish", {
       list(par = th, value = NA_real_, convergence = 0L)
     }
     seen <- NULL
-    f <- lp_fit("nl", dt, optimizer = outside, polish = "newton")
+    f <- lp_fit("nl", dt, optimizer = outside, polish = "newton", scale_vars = "none")
     expect_identical(seen[k], 1e-16)
     expect_true(all(coef(f)[f$param_map$lambda] >= 1e-16))
     expect_null(f$optimizer$polish$error)
@@ -602,7 +605,7 @@ test_that("a BHHH pass for the steps' scales that fails leaves them at 1", {
       polish_fn(theta, eval_f, curv_f, ...)
     })
   dt <- lp_dat("nl", 133L)
-  fit <- lp_fit("nl", dt, control = LP_LOOSE, polish = "newton",
+  fit <- lp_fit("nl", dt, control = LP_LOOSE, polish = "newton", scale_vars = "none",
                 polish_control = LP_STEPS)
   p <- fit$optimizer$polish
   # (no scales: run_polish() takes 1 for each)
