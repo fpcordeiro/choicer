@@ -174,7 +174,17 @@
 #'   then checks its point: \code{fit$optimizer$polish} records it
 #'   (\code{iterations} 0), and a point it certifies takes the success code
 #'   as above. A point no polish certified keeps the failure code and warns
-#'   (class \code{choicer_optimizer_failed}).
+#'   (class \code{choicer_optimizer_failed}). So too an optimizer stopped at
+#'   its cap, whoever set it (nloptr's 5, \code{maxeval}, and 6,
+#'   \code{maxtime}; optim's 1, \code{maxit}; no custom optimizer): the same
+#'   phase checks its point, one pass of the Hessian that the variance reuses
+#'   except under \code{se_method = "bhhh"} or \code{"numeric"}, and a point
+#'   nothing certified keeps its code and warns (class
+#'   \code{choicer_optimizer_capped}), giving the decrement, roughly the
+#'   log-likelihood still to gain; a nested logit can stay far from the maximum
+#'   until its last evaluations.
+#'   \code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
+#'   deliberate short run.
 #' @section Newton phase (polish):
 #' The polish does not change the estimator. From wherever the optimizer
 #' stopped, it takes Newton steps on the curvature of the log-likelihood and
@@ -546,8 +556,8 @@ run_nestlogit <- function(
   # trial point, the dissimilarities kept above their bound; under scale_vars
   # = "none" the steps' scales come from one BHHH pass at the optimizer's
   # solution. The estimator is unchanged. Where the optimizer
-  # reports a failure and no polish was asked for, a phase of no steps checks
-  # its point.
+  # reports a failure or stops at its cap and no polish was asked for, a phase
+  # of no steps checks its point.
   polish_record <- NULL
   curv <- NULL
   polish_asked <- polish != "none"
@@ -633,7 +643,8 @@ run_nestlogit <- function(
                       alt_mapping = input_data$alt_mapping,
                       anchors = setup$anchors,
                       weights = input_data$weights, optimizer = optimizer,
-                      certify_f = certify_f, ref_open = ref_open)
+                      certify_f = certify_f, ref_open = ref_open,
+                      asked = polish_asked)
     opt <- pf$opt
     polish_record <- pf$record
     curv <- pf$curvature
@@ -642,8 +653,8 @@ run_nestlogit <- function(
     # after the variance frees it
     pf <- NULL
   }
-  .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
-                         polish_asked, scale = if (scale_vars != "none") map$scale)
+  .warn_optimizer_stop(opt, optimizer, theta_init, polish_record, scale_vars,
+                       polish_asked, scale = if (scale_vars != "none") map$scale)
 
   # Estimates in natural units
   theta_hat <- opt$par

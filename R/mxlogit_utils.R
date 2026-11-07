@@ -1078,7 +1078,15 @@
 #'   decrement below \code{polish_control}'s \code{tol_decrement} does, in the
 #'   outer objective's own curvature (below). A point
 #'   nothing certified keeps the failure code and warns (class
-#'   \code{choicer_optimizer_failed}). With
+#'   \code{choicer_optimizer_failed}). So too an optimizer stopped at its cap,
+#'   whoever set it (nloptr's 5, \code{maxeval}, and 6, \code{maxtime}; optim's
+#'   1, \code{maxit}; no custom optimizer): the same check reads its point, one
+#'   pass of the Hessian that the variance reuses except under
+#'   \code{se_method = "bhhh"}, and a point nothing certified keeps its code and
+#'   warns (class \code{choicer_optimizer_capped}), giving the decrement, roughly
+#'   the log-likelihood still to gain.
+#'   \code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
+#'   deliberate short run. With
 #'   \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
 #'   describes the optimizer over the other parameters, and
 #'   \code{fit$optimizer$concentration} records the inner solves:
@@ -1125,8 +1133,8 @@
 #'   \eqn{\tilde I}{It} the curvature along the share constraint, from the
 #'   fit's variance: the BHHH matrix's under \code{se_method = "bhhh"};
 #'   \code{NA} without a variance, or where that curvature is not positive
-#'   definite. Where the optimizer reports a failure, it is the decrement in
-#'   the outer objective's own Hessian whatever \code{se_method}, from central
+#'   definite. Where the optimizer reports a failure or stops at its cap, it
+#'   is the decrement in the outer objective's own Hessian whatever \code{se_method}, from central
 #'   differences of the outer gradient, two solves of the constants per
 #'   continuous parameter: \eqn{\tilde I}{It} omits the constants' score times
 #'   the curvature of the constants in \eqn{\theta_c}{theta_c}, a score that is
@@ -1939,9 +1947,9 @@ run_mxlogit <- function(
   # objective's curvature) of the same draws, in natural units
   # (.polish_fit()); under scale_vars = "none" the steps' scales come from one
   # BHHH pass at the optimizer's solution. The estimator is unchanged. Where
-  # the optimizer reports a failure and no polish was asked for, a phase of no
-  # steps checks its point ("blp" has no such phase: its outer decrement
-  # checks it, below, with the variance).
+  # the optimizer reports a failure or stops at its cap and no polish was asked
+  # for, a phase of no steps checks its point ("blp" has no such phase: its
+  # outer decrement checks it, below, with the variance).
   polish_record <- NULL
   curv <- NULL
   polish_asked <- polish != "none"
@@ -1986,7 +1994,8 @@ run_mxlogit <- function(
                   asc_idx = param_map$asc,
                   alt_mapping = input_data$alt_mapping,
                   anchors = setup$anchors,
-                  weights = input_data$weights, optimizer = optimizer)
+                  weights = input_data$weights, optimizer = optimizer,
+                  asked = polish_asked)
     }
     pf <- polish_from(opt, elapsed)
     opt <- pf$opt
@@ -2089,10 +2098,10 @@ run_mxlogit <- function(
                            can_restart = !profile && !blp)
   }
 
-  # (a share-matching fit's failure is judged with the variance, below)
+  # (a share-matching fit's stop is judged with the variance, below)
   if (!blp) {
-    .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
-                           polish_asked, scale = if (scale_vars != "none") map$scale)
+    .warn_optimizer_stop(opt, optimizer, theta_init, polish_record, scale_vars,
+                         polish_asked, scale = if (scale_vars != "none") map$scale)
   }
 
   # Estimate at the optimum (natural units)
@@ -2217,8 +2226,8 @@ run_mxlogit <- function(
       fit$optimizer$concentration$decrement <- .blp_outer_decrement(vcov_result$It, g_c, w_bar)
     }
   }
-  # The optimizer's failure code at the share constraint's maximum: the outer
-  # decrement certifies the point, where the curvature is positive definite and
+  # The optimizer's failure code or cap at the share constraint's maximum: the
+  # outer decrement certifies the point, where the curvature is positive definite and
   # the decrement below polish_control's tolerance. The curvature is the outer
   # objective's own, whatever the standard errors, from central differences of
   # its gradient (.blp_outer_hessian()): the variance's curvature along the
@@ -2226,7 +2235,7 @@ run_mxlogit <- function(
   # delta(theta_c), which can turn a minimum's curvature positive, and under
   # "bhhh" it is the BHHH matrix's. The steps are 1e-3 of the BHHH diagonal's
   # scales at the estimate, as the polish takes them.
-  if (blp && .optimizer_failed(opt, optimizer)) {
+  if (blp && (.optimizer_failed(opt, optimizer) || .optimizer_capped(opt, optimizer))) {
     oh <- tryCatch(
       .blp_outer_hessian(blp_solve, opt$par[c_idx], s_hat,
                          1e-3 * .polish_scales(model_f, opt$par)[c_idx],
@@ -2245,9 +2254,9 @@ run_mxlogit <- function(
                             paste(as.character(opt$message), collapse = "; "))
       fit$convergence <- if (identical(optimizer %||% "nloptr", "nloptr")) 1L else 0L
     } else {
-      .warn_optimizer_failed(opt, optimizer, theta_init, NULL, scale_vars, FALSE,
-                             decrement = dec %||% NA_real_, can_polish = FALSE,
-                             scale = if (scale_vars != "none") map$scale)
+      .warn_optimizer_stop(opt, optimizer, theta_init, NULL, scale_vars, FALSE,
+                           decrement = dec %||% NA_real_, can_polish = FALSE,
+                           scale = if (scale_vars != "none") map$scale)
     }
   }
   fit["vcov"] <- list(vcov_result$vcov)

@@ -716,8 +716,9 @@ test_that("concentrate_out_asc = \"none\" is the fit without it, bit for bit", {
     fit$optimizer$elapsed_time <- NULL
     fit
   }
-  f0 <- prf_fit(dt, control = list(maxeval = 20L))
-  f1 <- prf_fit(dt, control = list(maxeval = 20L), concentrate_out_asc = "none",
+  # (stopped by a tolerance: a cap takes a check of no steps, with its record)
+  f0 <- prf_fit(dt, control = list(xtol_rel = 1e-3))
+  f1 <- prf_fit(dt, control = list(xtol_rel = 1e-3), concentrate_out_asc = "none",
                 concentrate_control = list(max_iter = 3L))
   expect_true(identical(strip(f1), strip(f0), num.eq = FALSE, single.NA = FALSE))
   expect_named(f0$optimizer, c("name", "control", "elapsed_time", "iterations"))

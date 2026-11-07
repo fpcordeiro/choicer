@@ -403,12 +403,15 @@ fit_two_starts <- function(fit_fun, theta0, what = "the fit", tol = 1e-6) {
 # is TRUE. Why (S2, DESIGN.md): on the population designs L-BFGS needed 500-900
 # iterations on the claims, and F5's warm fits reached the same maximum, within
 # 2e-5 SE, at 1/3 to 1/13 of its time. A warning raised by steps that were not
-# certified stays the caller's.
+# certified stays the caller's, but for the cap's (choicer_optimizer_capped):
+# this cap is the route's own, and the steps' message says what became of it.
 fit_newton <- function(fit_fun, start, what = "the fit", max_iter = 30L) {
   t0 <- proc.time()[["elapsed"]]
-  fit <- tryCatch(require_converged(fit_fun(theta_init = start, control = list(maxeval = 1L),
-                                            polish_control = list(max_iter = max_iter)), what),
-                  error = function(e) conditionMessage(e))
+  fit <- tryCatch(require_converged(
+    suppressWarnings(fit_fun(theta_init = start, control = list(maxeval = 1L),
+                             polish_control = list(max_iter = max_iter)),
+                     classes = "choicer_optimizer_capped"), what),
+    error = function(e) conditionMessage(e))
   if (!is.character(fit)) return(structure(fit, newton_only = TRUE))
   failed_sec <- proc.time()[["elapsed"]] - t0
   steps_error <- fit

@@ -1802,7 +1802,7 @@ sample's own shares (§5.8: the share equations average each situation's probabi
 the draws, the score weights each draw by its posterior given the choices). The term is
 $O_p(\sqrt N)$ against the $O(N)$ of $\tilde{\mathcal I}$, which is why the variance can omit
 it, but it can turn a minimum's curvature positive. So where the optimizer reports a failure
-and the certificate decides whether the point is a maximum, the decrement is taken in the
+or stops at its cap and the certificate decides whether the point is a maximum, the decrement is taken in the
 objective's own Hessian, from central differences of its gradient (two solves of the
 constants per continuous parameter), whatever the standard errors. `logLik()`, AIC
 and BIC are the likelihood at the constrained estimate, and a likelihood-ratio test between
