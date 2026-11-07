@@ -644,6 +644,21 @@ normalize_optim_result <- function(result) {
          FALSE)
 }
 
+#' What an optimizer said of its stop, for a message
+#'
+#' optim stopped at `maxit` says nothing under BFGS, and an internal state
+#' ("NEW_X") under L-BFGS-B, so its cap is named.
+#'
+#' @param message,code The optimizer's message and code.
+#' @param optimizer The `optimizer` argument.
+#' @returns A string.
+#' @noRd
+.optimizer_said <- function(message, code, optimizer) {
+  if (identical(optimizer, "optim") && isTRUE(code == 1L)) return("maxit, code 1")
+  said <- paste(as.character(message), collapse = "; ")
+  if (nzchar(said)) said else paste("code", code)
+}
+
 #' Whether a fit without a polish should check the optimizer's stop
 #'
 #' An optimizer that reports a failure may have returned its start values or
@@ -663,7 +678,7 @@ normalize_optim_result <- function(result) {
   failed <- .optimizer_failed(opt, optimizer)
   if (!failed && !.optimizer_capped(opt, optimizer)) return(FALSE)
   message(if (failed) "The optimizer reports a failure (" else "The optimizer stopped at its cap (",
-          paste(as.character(opt$message), collapse = "; "),
+          .optimizer_said(opt$message, opt$convergence, optimizer),
           "): a Newton phase of no steps checks the point it returned.")
   TRUE
 }
@@ -674,9 +689,12 @@ normalize_optim_result <- function(result) {
 #' certifies (classes `choicer_optimizer_failed` and
 #' `choicer_optimizer_capped`). The estimates are named as the start values
 #' where they are, to within the rounding of the optimizer's coordinates. At a
-#' cap the decrement is read as the log-likelihood still to gain, which it
-#' tracked in the study of capped fits (a ratio to the gap of 0.64 to 1.01,
-#' median 1.00).
+#' cap the Newton decrement is read as the log-likelihood still to gain, under
+#' weights of mean one, which it tracked in the study of capped fits (a ratio to
+#' the gap of 0.64 to 1.01, median 1.00; up to 2.5 after an evaluation or two);
+#' a BHHH or outer decrement was not studied so. A check the fit did not ask for
+#' that stopped with an error says so here, and a polish, which would meet the
+#' same error, is not offered.
 #'
 #' @param opt The optimizer's result, as the polish left it.
 #' @param optimizer The `optimizer` argument.
@@ -684,7 +702,8 @@ normalize_optim_result <- function(result) {
 #' @param record The polish's record, or NULL.
 #' @param scale_vars The fit's `scale_vars`.
 #' @param polish_asked Whether the fit asked for a polish.
-#' @param decrement The decrement at the point returned, or NA.
+#' @param decrement The decrement at the point returned, or NA: without a
+#'   record, the outer decrement of `concentrate_out_asc = "blp"`.
 #' @param can_polish Whether the model allows a polish.
 #' @param scale The coordinates' scales (`map$scale`), or NULL where the
 #'   optimizer works in natural units, without a round trip.
@@ -696,20 +715,27 @@ normalize_optim_result <- function(result) {
                                  can_polish = TRUE, scale = NULL) {
   failed <- .optimizer_failed(opt, optimizer)
   if (!failed && !.optimizer_capped(opt, optimizer)) return(invisible(NULL))
-  said <- paste(as.character(record$optimizer$message %||% opt$message), collapse = "; ")
-  code <- record$optimizer$convergence %||% opt$convergence
+  said <- .optimizer_said(record$optimizer$message %||% opt$message,
+                          record$optimizer$convergence %||% opt$convergence, optimizer)
   stuck <- isTRUE(all(abs(opt$par - start) <= 1e-12 * (abs(start) + (scale %||% 0))))
+  check_error <- if (!polish_asked) record$error
+  if (!is.null(check_error)) can_polish <- FALSE
+  newton <- identical(record$method, "newton")
   warning(warningCondition(paste0(
     if (failed) "The optimizer reports a failure (" else "The optimizer stopped at its cap (",
-    if (nzchar(said)) said else paste("code", code), ")",
+    said, ")",
     if (stuck) {
-      " and returned the start values, so the estimates are not a maximum of the likelihood"
+      " and returned the start values, which nothing certifies as a maximum of the likelihood"
     } else {
       " and its point is not certified as a maximum of the likelihood"
     },
-    if (!is.na(decrement)) {
-      paste0(" (Newton decrement ", format(signif(decrement, 3)),
-             if (!failed) ", roughly the log-likelihood still to gain", ")")
+    if (!is.null(check_error)) {
+      paste0(" (the check of no steps stopped with an error: ", check_error, ")")
+    } else if (!is.na(decrement)) {
+      paste0(" (", if (is.null(record)) "outer" else if (newton) "Newton" else "BHHH", " decrement ",
+             format(signif(decrement, 3)),
+             if (!failed && newton) ", roughly the log-likelihood still to gain under weights of mean one",
+             ")")
     },
     ". ",
     if (!failed) {
@@ -1334,8 +1360,8 @@ run_polish <- function(theta, eval_f, curv_f, lower = NULL, upper = NULL,
 #'   nested logit's base alternative in a nest whose dissimilarity exceeds
 #'   1), where the rule for constants that diverge together does not apply.
 #' @param asked Whether the fit asked for this polish. A check the fit did not
-#'   ask for (`.check_optimizer_stop()`) leaves an error to its record and its
-#'   message, and to `.warn_optimizer_stop()`'s warning.
+#'   ask for (`.check_optimizer_stop()`) leaves an error to its record, its
+#'   message and `.warn_optimizer_stop()`'s warning, which says so.
 #' @returns List: `opt`, the result updated (the polish's point and value
 #'   where it has one, its code and message); `record`, the
 #'   `fit$optimizer$polish` record; `curvature`, the last curvature where

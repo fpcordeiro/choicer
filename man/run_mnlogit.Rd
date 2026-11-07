@@ -199,7 +199,8 @@ its cap, whoever set it (nloptr's 5, \code{maxeval}, and 6,
 phase checks its point, one pass of the Hessian that the variance reuses
 except under \code{se_method = "bhhh"}, and a point nothing certified
 keeps its code and warns (class \code{choicer_optimizer_capped}), giving
-the decrement, roughly the log-likelihood still to gain.
+the Newton decrement where the Hessian is positive definite, roughly the
+log-likelihood still to gain under weights of mean one.
 \code{suppressWarnings(classes = "choicer_optimizer_capped")} silences a
 deliberate short run.
 }
