@@ -1198,6 +1198,24 @@ label_matrix <- function(mat, alt_mapping) {
   X
 }
 
+#' Stop where a model needs a covariate and none is named
+#'
+#' The multinomial and nested logit kernels and the hierarchical Bayes
+#' samplers take no design of zero columns; the mixed logit (where every
+#' coefficient is random) and the multinomial probit with constants do.
+#'
+#' @param cols The covariates' names.
+#' @param what The argument, for the message.
+#' @returns NULL, invisibly.
+#' @noRd
+.need_covariates <- function(cols, what = "covariate_cols") {
+  if (!length(cols)) {
+    stop("`", what, "` must name at least one column: this model needs a covariate.",
+         call. = FALSE)
+  }
+  invisible(NULL)
+}
+
 #' Whether prepared choice situations are in ascending-id order
 #'
 #' The cross-sectional prepared order is ascending id; a panel mixed logit

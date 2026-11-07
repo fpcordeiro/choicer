@@ -618,7 +618,7 @@ run_nestlogit <- function(
     pf <- NULL
   }
   .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
-                         polish_asked)
+                         polish_asked, scale = if (scale_vars != "none") map$scale)
 
   # Estimates in natural units
   theta_hat <- opt$par

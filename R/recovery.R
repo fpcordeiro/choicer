@@ -11,8 +11,8 @@
 # Different optimizers use incompatible convergence codes. nloptr returns
 # positive integers for success (1-4 = tolerance-based stop), stats::optim
 # returns 0 on success. Custom optimizers are treated permissively. A sampler
-# (MNP, HB) has no stop code: a fit it returned counts, and its own R-hat check
-# warns at fit time.
+# (MNP, HB) has no stop code: a fit it returned counts. Its chains' mixing is
+# read elsewhere (HB's fit-time check warns; MNP has none).
 .is_converged <- function(fit) {
   if (inherits(fit, c("choicer_mnp", "choicer_hb"))) return(TRUE)
   code <- fit$convergence
@@ -306,8 +306,12 @@ print.choicer_recovery <- function(x, print_asc = attr(x, "print_asc") %||% 20L,
 #' `choicer_sim` and returns a fitted object, wrapping any data-preparation,
 #' draws, or optimizer-control setup. The samplers' fits (`choicer_mnp`,
 #' `choicer_hb`) have no likelihood and no optimizer's code: their reps carry
-#' `loglik = NA`, and `converged` is `TRUE` for a fit returned (their
-#' convergence check warns at fit time).
+#' `loglik = NA`, and `converged` is `TRUE` for a fit returned, so it says
+#' nothing about the chains' mixing (hierarchical Bayes fits warn of that at
+#' fit time; [rhat()] and [ess()] read any fit's draws). Where the truth
+#' differs by replication (hierarchical Bayes alternative effects, drawn by
+#' seed), `summary()` shows its mean in `true` and compares each replication
+#' with its own, and `sd_est` includes the truth's variation.
 #'
 #' @param sim_fun Function of `seed` returning a `choicer_sim`.
 #' @param fit_fun Function of a `choicer_sim` returning a fitted object that
@@ -428,7 +432,10 @@ summary.choicer_mc <- function(object, level = 0.95, print_asc = 20L, ...) {
                   value = keep[["true"]] >= keep[["estimate"]] - half_width &
                     keep[["true"]] <= keep[["estimate"]] + half_width)
 
+  # (by parameter, not by truth: hierarchical Bayes alternative effects are
+  # drawn anew per seed, and each rep is compared with its own)
   agg <- keep[, .(
+    true       = mean(true),
     R_success  = .N,
     mean_est   = mean(estimate, na.rm = TRUE),
     median_est = stats::median(estimate, na.rm = TRUE),
@@ -437,7 +444,7 @@ summary.choicer_mc <- function(object, level = 0.95, print_asc = 20L, ...) {
     bias       = mean(estimate - true, na.rm = TRUE),
     rmse       = sqrt(mean((estimate - true)^2, na.rm = TRUE)),
     coverage   = mean(covers, na.rm = TRUE)
-  ), by = .(parameter, group, true)]
+  ), by = .(parameter, group)]
   data.table::setcolorder(agg, c("parameter", "group", "true", "R_success",
                                  "mean_est", "median_est", "sd_est", "mean_se",
                                  "bias", "rmse", "coverage"))

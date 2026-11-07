@@ -496,7 +496,7 @@ run_mnlogit <- function(
     pf <- NULL
   }
   .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
-                         polish_asked)
+                         polish_asked, scale = if (scale_vars != "none") map$scale)
 
   theta_hat <- opt$par
   names(theta_hat) <- param_names
@@ -674,6 +674,7 @@ prepare_mnl_data <- function(
   cs_provenance <- attr(data, "choice_sampling")
 
   # Check if all relevant variables are available
+  .need_covariates(covariate_cols)
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
   if (!is.null(weights) && !is.null(weights_col)) {
     stop("Supply only one of `weights` or `weights_col`.")

@@ -195,6 +195,7 @@ test_that("summary.choicer_mc() computes coverage at `level`", {
     z_vs_true = z, lower_ci = NA_real_, upper_ci = NA_real_,
     covers = (1 >= est - qnorm(0.975) * se) & (1 <= est + qnorm(0.975) * se),
     loglik = -1, converged = TRUE, time_sec = 0, error = NA_character_)
+  covers0 <- data.table::copy(reps$covers)
   mc <- structure(list(replications = reps,
                        meta = list(R = 10L, seed = 1L, seeds = 1:10, parallel = FALSE)),
                   class = "choicer_mc")
@@ -209,7 +210,7 @@ test_that("summary.choicer_mc() computes coverage at `level`", {
   expect_equal(recovery_table(mc, level = 0.5)$summary$coverage, 2 / 9)
   expect_identical(summary(mc, level = 0.5)$level, 0.5)
   # summary() leaves the object's reps as they were
-  expect_identical(mc$replications$covers, reps$covers)
+  expect_identical(mc$replications$covers, covers0)
 })
 
 # --- monte_carlo() on the samplers' fits --------------------------------------
@@ -242,5 +243,10 @@ test_that("monte_carlo() runs on MNP and HB fits, which have no likelihood", {
     R = 2L, seed = 7L, progress = FALSE))
   expect_true(all(is.na(hb$replications$error)))
   expect_true(all(is.na(hb$replications$loglik)))
-  expect_gt(nrow(summary(hb)$summary), 0L)
+  # One row per alternative effect across the reps, whose truth differs by seed
+  s_hb <- summary(hb)$summary
+  delta <- s_hb[group == "delta"]
+  expect_identical(anyDuplicated(delta$parameter), 0L)
+  expect_true(all(delta$R_success == 2L))
+  expect_true(all(is.finite(delta$sd_est)))
 })
