@@ -43,7 +43,9 @@
 #' @param theta_init Optional initial parameter vector in natural units,
 #'   ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one
 #'   per nest of two or more alternatives) and the constants. If \code{NULL}:
-#'   0 for the coefficients and constants, 0.5 for each nest parameter.
+#'   0 for the coefficients and constants, 0.5 for each nest parameter. A nest
+#'   parameter started below \eqn{10^{-4}}{1e-4} warns: from there the optimizer
+#'   can stop far from the maximum whatever its code says.
 #' @param param_names Optional vector of parameter names, which must be
 #'   unique. If \code{NULL}, default names are generated.
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
@@ -97,8 +99,9 @@
 #'   \code{"bhhh"} scales every parameter, nest parameters included, by the
 #'   inverse square root of the diagonal of the BHHH (outer product of
 #'   gradients) matrix at the start values, rounded to a power of two, from one
-#'   extra gradient pass. Its scales are fixed at the start values, so when the
-#'   nest parameters end far from their start (0.5) they can slow the optimizer.
+#'   extra gradient pass, which reads each nest parameter at 0.01 at least. Its
+#'   scales are fixed at the start values, so when the nest parameters end far
+#'   from their start (0.5) they can slow the optimizer.
 #'   With \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
 #'   coefficients \code{X} would have with every column divided by the chosen
 #'   scale (each coefficient times its column's scale), to improve the
@@ -110,7 +113,8 @@
 #'   choice-based samples of 2,000 and all 8 random samples of 50,000, where
 #'   \code{"bhhh"} reached the maximum in about 50 evaluations. Where the
 #'   diagonal is unusable (no finite, positive entry), the parameters are left
-#'   unscaled, with a message. With any choice but \code{"none"}, the
+#'   unscaled, with a message, as where the likelihood overflows at the start
+#'   values. With any choice but \code{"none"} (so by default), the
 #'   optimizer, a custom one included, works in the scaled coordinates
 #'   (\code{theta_init}, in natural units, and the nest parameters' lower bound
 #'   of 1e-16 are mapped), so settings in parameter units in \code{control}
@@ -490,10 +494,31 @@ run_nestlogit <- function(
     .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
   }
   if (scale_vars != "none") .check_theta_init(theta_init, n_params)
-  t_bpass <- system.time(
-    opg0 <- if (scale_vars == "bhhh") model_f(theta_init, opg_diag = TRUE)$opg_diag,
-    gcFirst = FALSE
-  )
+  # A start that near the bound overwhelms any coordinates: a likelihood falling
+  # like 1/lambda drives the first steps to dissimilarities in the thousands, or
+  # the line search gives up, and the optimizer's code need not say so.
+  if (length(theta_init) == n_params && any(theta_init[param_map$lambda] < 1e-4)) {
+    warning("A nest parameter starts below 1e-4 (theta_init), where the optimizer can ",
+            "stop far from the maximum whatever its convergence code says: start from a ",
+            "larger value (the default is 0.5).", call. = FALSE)
+  }
+  # (The pass reads each dissimilarity at 0.01 at least: near its bound its OPG
+  # entry grows so large that its scale would freeze it where it starts. A start
+  # that overflows has no scales to give.)
+  t_bpass <- system.time(if (scale_vars == "bhhh") {
+    at <- theta_init
+    at[param_map$lambda] <- pmax(at[param_map$lambda], 0.01)
+    g0 <- model_f(at, opg_diag = TRUE)
+    if (isTRUE(g0$overflow)) {
+      message("scale_vars = \"bhhh\": the likelihood overflows at the start ",
+              "values (check theta_init); the parameters are left unscaled.")
+      opg0 <- rep(1, n_params)
+    } else {
+      opg0 <- g0$opg_diag
+    }
+  } else {
+    opg0 <- NULL
+  }, gcFirst = FALSE)
   map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
                          opg_diag = opg0)
 

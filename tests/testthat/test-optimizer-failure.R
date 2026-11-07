@@ -85,6 +85,53 @@ test_that("run_nestlogit() warns where L-BFGS fails at the start, and its defaul
   expect_identical(pol2$optimizer$polish$optimizer$convergence, -1L)
 })
 
+test_that("the NL's scales do not freeze a dissimilarity started near its bound", {
+  skip_on_cran()  # the optimizer's real path
+  set.seed(11)
+  N <- 800L
+  J <- 5L
+  id <- rep(seq_len(N), each = J)
+  x1 <- rnorm(N * J)
+  x2 <- 100 * rnorm(N * J)
+  u <- 0.8 * x1 - 0.01 * x2 + rep(c(0, 0.3, -0.2, 0.5, 0.1), N) - log(-log(runif(N * J)))
+  d <- data.table::data.table(id = id, alt = rep(seq_len(J), N), x1 = x1, x2 = x2,
+                              nest = rep(c(1L, 1L, 2L, 2L, 3L), N),
+                              choice = as.integer(u == ave(u, id, FUN = max)))
+  nl <- function(...) suppressMessages(
+    run_nestlogit(d, "id", "alt", "choice", c("x1", "x2"), nest_col = "nest", ...))
+  best <- nl(polish = "newton")
+  expect_true(best$optimizer$polish$converged)
+  m <- coef(suppressMessages(run_mnlogit(d, "id", "alt", "choice", c("x1", "x2"))))
+  lam <- best$param_map$lambda
+  start <- numeric(length(coef(best)))
+  start[best$param_map$beta] <- m[c("x1", "x2")]
+  start[best$param_map$asc] <- m[grep("^ASC", names(m))]
+  for (low in c(1e-2, 1e-3, 1e-4)) {
+    start[lam] <- low
+    fit <- expect_no_warning(nl(theta_init = start))
+    expect_equal(fit$loglik, best$loglik, tolerance = 1e-6)
+  }
+  # below that no coordinates save the fit, and it says so before the optimizer
+  start[lam] <- 1e-6
+  expect_warning(nl(theta_init = start), "A nest parameter starts below 1e-4", fixed = TRUE)
+  # a start well inside is read as it is
+  expect_equal(nl(theta_init = unname(coef(best)))$loglik, best$loglik, tolerance = 1e-6)
+})
+
+test_that("the NL's BHHH pass leaves the scales at 1 where the start overflows", {
+  d <- ofail_data(N = 200L, scale = 1)
+  real <- choicer:::nl_loglik_gradient_parallel
+  local_mocked_bindings(nl_loglik_gradient_parallel = function(...) {
+    r <- real(...)
+    if (isTRUE(list(...)$opg_diag)) r$overflow <- TRUE
+    r
+  }, .package = "choicer")
+  expect_message(
+    fit <- run_nestlogit(d, "id", "alt", "choice", c("x", "z"), nest_col = "nest"),
+    "overflows at the start values", fixed = TRUE)
+  expect_true(all(fit$param_scale == 1))
+})
+
 test_that("the warning says what happened at the start values", {
   d <- ofail_data(N = 200L, scale = 1)
   local_mocked_bindings(run_nloptr = fail_at_start, .package = "choicer")

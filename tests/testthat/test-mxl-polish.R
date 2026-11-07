@@ -356,7 +356,7 @@ test_that("the polish gets the fit's coordinates, bounds and settings", {
   expect_false(all(seen$scale == 1))
   expect_identical(unname(seen$lower), rep(-Inf, n))
   expect_identical(unname(seen$upper), c(2, rep(Inf, n - 1L)))
-  expect_identical(seen$control, .polish_control(list(max_iter = 3L)))
+  expect_identical(seen$control, .polish_control(list(max_iter = 3L), restart = TRUE))
   expect_identical(seen$method, "bhhh")
   expect_identical(seen$fixed, integer())
 })

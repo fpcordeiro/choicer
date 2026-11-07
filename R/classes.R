@@ -707,13 +707,17 @@ normalize_optim_result <- function(result) {
 #' `run_nestlogit()`: a named list whose entries replace the defaults,
 #' `max_iter` (20; a whole number, 0 certifies the start without stepping),
 #' `tol_decrement` (1e-8, in log-likelihood units) and `tol_step` (1e-12,
-#' relative). A NULL entry keeps the default.
+#' relative); in the mixed logit also `restart` (`TRUE`: from a zero-variance
+#' plateau, run the optimizer and the polish once more). A NULL entry keeps the
+#' default.
 #'
 #' @param control A named list, or NULL.
+#' @param restart Whether the model has the `restart` setting.
 #' @returns The complete settings.
 #' @noRd
-.polish_control <- function(control) {
+.polish_control <- function(control, restart = FALSE) {
   ctl <- list(max_iter = 20L, tol_decrement = 1e-8, tol_step = 1e-12)
+  if (restart) ctl$restart <- TRUE
   if (is.null(control)) return(ctl)
   if (!is.list(control)) stop("`polish_control` must be a list.", call. = FALSE)
   nms <- names(control)
@@ -743,6 +747,9 @@ normalize_optim_result <- function(result) {
     if (!is.numeric(v) || length(v) != 1L || !is.finite(v) || v <= 0) {
       stop("`polish_control$", nm, "` must be a positive number.", call. = FALSE)
     }
+  }
+  if (restart && !(isTRUE(ctl$restart) || isFALSE(ctl$restart))) {
+    stop("`polish_control$restart` must be TRUE or FALSE.", call. = FALSE)
   }
   ctl
 }

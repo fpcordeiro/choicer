@@ -370,9 +370,11 @@ and weights.}
 without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8}, in
 log-likelihood units of weights with mean one: the decrement is taken
 over the mean weight, so that the rule does not depend on the weights'
-scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
+scale), \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
 shorter than this, relative to the parameters' magnitudes plus their
-scales in the optimizer's coordinates, stops the polish unconverged).}
+scales in the optimizer's coordinates, stops the polish unconverged) and
+\code{restart} (\code{TRUE}: run the optimizer and the polish once more from
+a zero-variance plateau; see the section below).}
 
 \item{concentrate_out_asc}{How the alternative-specific constants are
 estimated (see the section below). \code{"none"} (default): with the
@@ -620,15 +622,16 @@ its column's typical step), a log-normal's to 1, in coordinates taken afresh.
 The higher likelihood stands. On a stated-preference panel of 200 persons, 4
 of 40 fits stopped so, 4.1 to 10.3 log-likelihood units below the maximum, and
 the restart reached it in all 4. On composite fits of those data, 57 of 100
-stopped so, and 54 of them ended at the maximum of the fit from the true
-parameters; certified fits more than 0.01 short of it fell from 44 to 6. On
-logit data, whose variances are zero, 23 of 40 stopped so and all 23 came back.
-Where a variance ends at zero the fit warns (class
+stopped so, and 54 of them then stood at or above the fit from the true
+parameters; certified fits more than 0.01 below it fell from 47 to 6. On logit
+data, whose variances are zero, 23 of 40 stopped so and all 23 ended at zero
+again. Where a variance ends at zero the fit warns (class
 \code{choicer_variance_plateau}), with or without a polish: the standard
-error of that diagonal says nothing (a clustered one reads about 0.5 where
-the Hessian's reads \eqn{10^4}{1e4}), and the variance is on the boundary of
-its parameter space. A restart costs about one more run of the optimizer on
-the fits that stop there. Under
+error of that diagonal says nothing (a clustered one is of order one where
+the Hessian's reads \eqn{10^4}{1e4}). The restart took 0.5 to 1 times the first
+fit's time at the median and 2.4 at most, on the fits that stop there, and
+where the first point stands the variance evaluates its matrix once more;
+\code{polish_control = list(restart = FALSE)} turns it off. Under
 \code{concentrate_out_asc = "profile_likelihood"} the fit warns without
 restarting. A parameter without usable curvature (no
 information at the point, or a curvature that has all but vanished, giving
