@@ -725,18 +725,24 @@ designs of their own, described where they appear.
 
 - **`scale_vars` in the multinomial and nested logits.** `run_mnlogit()` now
   defaults to `scale_vars = "bhhh"`, as `run_mxlogit()` does (above), and
-  `run_nestlogit()` gains `scale_vars` (its last argument) and keeps `"none"`.
-  With the default optimizer, the multinomial logit reached the maximum in 26
-  and 39 evaluations on the claims- and census-style designs (509 and 2,521
-  parameters), against 787 and 1,358 with `"none"`; on that census-style
-  design with its columns rescaled by 10^3 and 10^-3, `"none"` reported
-  convergence 1,920 log-likelihood units short, where `"bhhh"` took 38
-  evaluations. The nested logit keeps `"none"`: its `"bhhh"` scales are fixed
-  at the start values, and nest parameters that end far from their start of
-  0.5 can mislead the optimizer (14% more iterations over the test suite's
-  nested logit fits, one of them 540 against 29). As for the mixed logit,
-  settings in parameter units in `control` and custom optimizers act on the
-  scaled coordinates, and `scale_vars = "none"` restores the 0.2.x path.
+  `run_nestlogit()` gains `scale_vars` (its last argument), with the same
+  default. With the default optimizer, the multinomial logit reached the
+  maximum in 26 and 39 evaluations on the claims- and census-style designs (509
+  and 2,521 parameters), against 787 and 1,358 with `"none"`; on that
+  census-style design with its columns rescaled by 10^3 and 10^-3, `"none"`
+  reported convergence 1,920 log-likelihood units short, where `"bhhh"` took 38
+  evaluations. In the nested logit, on a mode-choice design whose covariates span
+  units to hundreds, `"none"` returned the start values in 100 of 180 WESML fits
+  of choice-based samples of 2,000 (up to 1,712 log-likelihood units short), 13 of
+  30 random samples of 2,000 and all 8 of 50,000 (up to 40,585 short), where
+  `"bhhh"` failed in none, in about 50 evaluations; on a school-choice design of
+  40 schools it took 58 evaluations against about 155, one fit of 36 reaching the
+  limit 0.011 short. Where both are certified they agree to about 1e-9. The price:
+  `"bhhh"`'s scales are fixed at the start values, and nest parameters that end
+  far from their start of 0.5 can slow the optimizer (12% more evaluations over
+  the test suite's nested logit fits, one of them 540 against 29). As for the
+  mixed logit, settings in parameter units in `control` and custom optimizers act
+  on the scaled coordinates, and `scale_vars = "none"` restores the 0.2.x path.
   `run_mnlogit(scale_vars = )` no longer holds a scaled copy of `X` (on 8.7
   million rows and 10 columns, a scaled fit's peak heap fell from 1.39 to
   0.10 GB, an unscaled fit's being 0.08 GB). With `optimizer = "optim"`,
@@ -765,7 +771,7 @@ designs of their own, described where they appear.
   P_k), which can be positive above 1, so the constant can then have a finite
   estimate, and a polish whose held constant's nest ends above 1, or whose
   moved one's ends at or below 1, does not report convergence. Under
-  `scale_vars = "none"`, the nested logit's default, the steps' scales come
+  `scale_vars = "none"` the steps' scales come
   from one BHHH pass at the optimizer's solution, as for the mixed logit
   (with half of the covariates rescaled by 10^3 and the other half by 10^-3,
   20 steps at unit scales left a decrement of 1,054 to 2,060, where 8 or 9 at
@@ -1591,31 +1597,56 @@ released versions unless it says otherwise.
   alternatives before still do: the check reads the codes the preparations
   build.
 - An optimizer that reported a failure passed in silence. L-BFGS's line search
-  gives up (`NLOPT_FAILURE`, code -1) where its first trial step, one gradient
-  long, is too far off for its ten reductions, and `run_mnlogit()`,
-  `run_nestlogit()` and `run_mxlogit()` then returned the start values as the
-  estimates, with standard errors at them and only `fit$convergence` to tell:
-  in about half of the WESML nested logit fits of a choice-based sample of
-  2,000 travellers from `run_nestlogit()`'s default coordinates, about 1,600
-  log-likelihood units short. The same code also comes at the maximum, where
-  rounding leaves the line search nothing to gain and the estimates are right.
-  So a fit whose optimizer reports a failure (nloptr's negative codes; optim's
-  10, 51 and 52) now checks its point: without a polish, by a Newton phase of
-  no steps, one pass of the Hessian, recorded in `fit$optimizer$polish`
-  (`iterations` 0), and under `concentrate_out_asc = "blp"` by the outer
-  decrement. A point so certified takes the success code, `fit$message` keeping
-  the optimizer's; any other keeps the failure code and warns (class
-  `choicer_optimizer_failed`), saying whether the estimates are the start
-  values. Estimates and variances do not change.
-- `prepare_mxl_data(covariate_cols = NULL)` stopped with
-  "length(alt_idx) == nrow(X) is not TRUE", and so did `prepare_mnl_data()`
-  and `prepare_nl_data()` without covariates, with `prepare_mnp_data()` failing
-  in `cbind()`. They now return a design of no columns, and `run_mxlogit()` fits
-  a mixed logit whose every coefficient is random (`covariate_cols = NULL`), the
-  kernels' stop on no fixed coefficients lifted: it gives the likelihood, its
+  gives up (`NLOPT_FAILURE`, code -1) where its first trial step is too far off
+  for its ten reductions, and `run_mnlogit()`, `run_nestlogit()` and
+  `run_mxlogit()` then returned the start values as the estimates, with
+  standard errors at them and only `fit$convergence` to tell. Under
+  `run_nestlogit()`'s former default coordinates that was 100 of 180 WESML fits
+  of choice-based samples of 2,000 travellers, up to 1,712 log-likelihood units
+  short, and all 8 random samples of 50,000 (see "Defaults that move estimates").
+  The same code also comes at the maximum, where rounding leaves the line search
+  nothing to gain and the estimates are right. So a fit whose optimizer reports a
+  failure (nloptr's negative codes; optim's 10, 51 and 52) now checks its point:
+  without a polish, by a Newton phase of no steps, one pass of the Hessian,
+  recorded in `fit$optimizer$polish` (`iterations` 0), and under
+  `concentrate_out_asc = "blp"` by the outer decrement, now `NA` where the
+  curvature along the share constraint is not positive definite. A point so
+  certified takes the success code, `fit$message` keeping the optimizer's; any
+  other keeps the failure code and warns (class `choicer_optimizer_failed`),
+  saying whether the estimates are the start values. Estimates and variances do
+  not change.
+- The mixed logit's Newton polish certified a false stop. Where a random
+  coefficient's standard deviation goes to zero its log-Cholesky diagonal goes to
+  minus infinity, its score vanishes with it, and the decrement falls below any
+  tolerance; with finitely many draws the likelihood's first derivative in the
+  standard deviation at zero is not zero, so where it is negative, zero is a
+  local maximum, often below a higher one. On a stated-preference panel of 200
+  persons, 4 fits of 40 stopped there, 4.1 to 10.3 log-likelihood units below the
+  maximum, certified; on composite fits of those data, 55 of 100, 44 of them short
+  by a median of 1.5 and up to 7.7. The polish now restarts once from such a point
+  (a standard deviation below 10^-4 of the default start's): the optimizer and the
+  polish again from the same point with those standard deviations raised, a normal
+  coefficient's to the default start's, a log-normal's to 1, in coordinates taken
+  afresh, the higher likelihood standing and `fit$optimizer$polish$restart`
+  recording it. All 4 panel fits then reached the maximum; so did 54 of the 57
+  composite fits that restarted, and certified composite fits more than 0.01 short
+  of the maximum fell from 44 to 6. On logit data, whose variances are zero, all 23
+  such fits of 40 came back. A standard deviation that ends at zero now warns, with
+  or without a polish (class `choicer_variance_plateau`): its diagonal's standard
+  error says nothing (a clustered one reads about 0.5, a Hessian one about 10^4).
+  Estimates move only under a polish, on fits that stop there, to a higher
+  likelihood; such a fit costs about one more run of the optimizer.
+  `concentrate_out_asc = "profile_likelihood"` warns without restarting.
+- `prepare_mxl_data(covariate_cols = NULL)` stopped with "length(alt_idx) ==
+  nrow(X) is not TRUE". It now returns a design of no columns, and `run_mxlogit()`
+  fits a mixed logit whose every coefficient is random (`covariate_cols = NULL`),
+  the kernels' stop on no fixed coefficients lifted: it gives the likelihood, its
   derivatives and the post-estimation results of the same model with a fixed
-  column held at 0. The multinomial and nested logit kernels still need a
-  covariate.
+  column held at 0. The preparations of the models that need a covariate
+  (`prepare_mnl_data()`, `prepare_nl_data()`, `prepare_hmnl_data()`,
+  `prepare_hmnp_data()`, and `prepare_mnp_data(use_asc = FALSE)`) also stopped
+  without one, on internal errors; they now say so by name. `prepare_mnp_data()`
+  with constants returns their design.
 - `ess()` and `mcse()` returned `NA`, with integer-overflow warnings, for chains
   longer than about 65,000 draws: the autocovariance divided by the integer
   product of the FFT's length and the half-chain's.
@@ -1625,8 +1656,11 @@ released versions unless it says otherwise.
   gives the same numbers. `recovery_table()` of such a result inherits this.
 - `monte_carlo()` stopped at the first multinomial probit or hierarchical Bayes
   fit, calling `logLik()`, which those fits do not have, outside its error
-  handling. Their replications now carry `loglik = NA` and `converged = TRUE`,
-  a sampler having no stop code (its convergence check warns at fit time).
+  handling. Their replications now carry `loglik = NA` and `converged = TRUE`, a
+  sampler having no stop code, so the column says nothing about the chains'
+  mixing (read `rhat()` and `ess()`). `summary()` now gives one row per parameter
+  where the truth differs by replication (hierarchical Bayes alternative effects),
+  each replication compared with its own.
 
 # choicer 0.2.1
 
