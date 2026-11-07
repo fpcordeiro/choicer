@@ -748,9 +748,12 @@ test_that("constants that diverge together leave the polish unconverged", {
   dt <- data.table::as.data.table(sim$data)
   dt <- dt[id %in% dt[alt != 0L & choice == 1L, id] & alt != 0L]
   fit_o <- function(...) {
-    expect_warning(fit <- mxp_fit(dt, control = list(maxeval = 200L),
-                                  polish = "newton", ...),
-                   class = "choicer_unbounded_constants")
+    # (the line search can give up where constants diverge, a warning of its own)
+    suppressWarnings(
+      expect_warning(fit <- mxp_fit(dt, control = list(maxeval = 200L),
+                                    polish = "newton", ...),
+                     class = "choicer_unbounded_constants"),
+      classes = "choicer_optimizer_failed")
     fit
   }
   # a decrement below tol_decrement at the optimizer's solution
