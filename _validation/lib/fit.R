@@ -325,13 +325,14 @@ fit_diag <- function(fit) {
 # decrement (1/2 grad' I~^-1 grad over the mean weight, from the fit's
 # variance) below `tol_decrement`, 1e-8 log-likelihood units, the Newton
 # polish's default. The error makes run_unit() record a failed rep. nloptr's
-# code alone cannot tell: NLOPT_FAILURE (-1) returns the start values
-# without a warning (choicer's NL from its default start on D2's WESML
-# samples, about half the fits), and it also comes at the optimum (an MNL in
-# F8, decrement 1e-14 there), which the polish certifies, and a "blp" fit
-# of the MXL article's §5.9 Monte Carlo, decrement 2.5e-14, which the
-# outer decrement certifies (fit_diag()$converged stays FALSE there, the
-# code -1 is kept). The polish's message, whose text carries the decrement,
+# code alone cannot tell: NLOPT_FAILURE (-1) comes at the start values (the NL
+# under scale_vars = "none" on D2's WESML samples, about half the fits) and at
+# the optimum (an MNL in F8, decrement 1e-14 there; a "blp" fit of the MXL
+# article's §5.9 Monte Carlo, decrement 2.5e-14). choicer now checks that
+# point itself and warns where nothing certifies it, so fit_diag()$converged
+# reads the verdict (a certified point takes the success code). A "blp"
+# decrement is NA where the curvature along the share constraint is not
+# positive definite. The polish's message, whose text carries the decrement,
 # is muffled (fit_diag() keeps the decrement); other messages pass.
 require_converged <- function(expr, what = "the fit", tol_decrement = 1e-8) {
   fit <- withCallingHandlers(expr, message = function(m) {

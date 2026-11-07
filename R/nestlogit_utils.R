@@ -91,20 +91,24 @@
 #'   instead.
 #' @param scale_vars How the optimizer's coordinates are scaled. The choice
 #'   does not change the estimator; it changes how fast, and whether, the
-#'   optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
-#'   (sample standard deviation), \code{"mad"} (\code{stats::mad}),
-#'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
-#'   \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
+#'   optimizer reaches the maximum. One of \code{"bhhh"} (default),
+#'   \code{"none"}, \code{"sd"} (sample standard deviation), \code{"mad"}
+#'   (\code{stats::mad}), or \code{"iqr"} (\code{stats::IQR(x) / 1.349}).
+#'   \code{"bhhh"} scales every parameter, nest parameters included, by the
+#'   inverse square root of the diagonal of the BHHH (outer product of
+#'   gradients) matrix at the start values, rounded to a power of two, from one
+#'   extra gradient pass. Its scales are fixed at the start values, so when the
+#'   nest parameters end far from their start (0.5) they can slow the optimizer.
+#'   With \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
 #'   coefficients \code{X} would have with every column divided by the chosen
 #'   scale (each coefficient times its column's scale), to improve the
 #'   conditioning of its problem; the nest parameters and constants keep their
-#'   scale, and the data are not divided. \code{"bhhh"} scales every parameter,
-#'   nest parameters included, by the inverse square root of the diagonal of
-#'   the BHHH (outer product of gradients) matrix at the start values, rounded
-#'   to a power of two, from one extra gradient pass. Its scales are fixed at
-#'   the start values, so when the nest parameters end far from their start
-#'   (0.5) they can mislead the optimizer, which then converges more slowly
-#'   than without them; hence \code{"none"} is the default here. Where the
+#'   scale, and the data are not divided. Under \code{"none"} the optimizer
+#'   works in the parameters' own units, where its line search can give up on
+#'   the first step: on a mode-choice design whose covariates span units to
+#'   hundreds, it returned the start values, with a warning, in 100 of 180
+#'   choice-based samples of 2,000 and all 8 random samples of 50,000, where
+#'   \code{"bhhh"} reached the maximum in about 50 evaluations. Where the
 #'   diagonal is unusable (no finite, positive entry), the parameters are left
 #'   unscaled, with a message. With any choice but \code{"none"}, the
 #'   optimizer, a custom one included, works in the scaled coordinates
@@ -198,21 +202,17 @@
 #' choice situation identifies (a nest never offered with two of its
 #' alternatives) has a gradient and a curvature of rounding size: the Newton
 #' polish can move it and certify the other parameters, its standard error
-#' then huge or \code{NA}. In the default coordinates
-#' (\code{scale_vars = "none"}) the optimizer can stop far from the maximum
-#' of a model with many constants: in a study on census-style designs
-#' (2,500 alternatives in 50 nests, 25,000 and 245,000 choice situations) it
-#' reached its 1,000-evaluation limit 0.35 and 15.8 log-likelihood units
-#' short (up to 6.7 standard errors), and \code{polish = "newton"} certified
-#' the maximum in 3 and 5 steps, for about a tenth of the fit's time; on
-#' claims-style designs (500 alternatives) it stopped closer, and one step
-#' certified it. For a reportable fit with many constants,
-#' \code{polish = "newton"} after the optimizer's own stop is the
-#' recommended check. Stopping the optimizer sooner
-#' (\code{control = list(maxeval = 100)}) and polishing took about a fifth
-#' of the time on those designs, and with \code{scale_vars = "bhhh"} the
-#' optimizer stopped at the maximum in 50 to 66 evaluations on three of the
-#' four. In the default coordinates, which are the parameters' own units,
+#' then huge or \code{NA}. In a study on census-style designs (2,500
+#' alternatives in 50 nests, 25,000 and 245,000 choice situations), with
+#' \code{scale_vars = "none"} the optimizer reached its 1,000-evaluation limit
+#' 0.35 and 15.8 log-likelihood units short (up to 6.7 standard errors), and
+#' \code{polish = "newton"} certified the maximum in 3 and 5 steps, for about a
+#' tenth of the fit's time; on claims-style designs (500 alternatives) it
+#' stopped closer, and one step certified it. With \code{scale_vars = "bhhh"}
+#' the optimizer stopped at the maximum in 50 to 66 evaluations on three of the
+#' four. For a reportable fit with many constants, \code{polish = "newton"}
+#' after the optimizer's own stop is the recommended check. Under
+#' \code{scale_vars = "none"}, whose coordinates are the parameters' own units,
 #' the steps' scales come from one BHHH pass at the optimizer's solution
 #' projected onto the bound (one gradient evaluation).
 #'
@@ -283,7 +283,7 @@ run_nestlogit <- function(
     se_method = c("hessian", "numeric", "bhhh", "sandwich", "cluster"),
     cluster_col = NULL,
     nloptr_opts = NULL,
-    scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
+    scale_vars = c("bhhh", "none", "sd", "mad", "iqr"),
     polish = c("none", "newton", "bhhh"),
     polish_control = list()
 ) {
@@ -519,8 +519,8 @@ run_nestlogit <- function(
   # ("newton") or the BHHH matrix ("bhhh", its weights unsquared), in natural
   # units (.polish_fit()), on the raw objective, whose overflow flag fails a
   # trial point, the dissimilarities kept above their bound; under scale_vars
-  # = "none" (the default) the steps' scales come from one BHHH pass at the
-  # optimizer's solution. The estimator is unchanged. Where the optimizer
+  # = "none" the steps' scales come from one BHHH pass at the optimizer's
+  # solution. The estimator is unchanged. Where the optimizer
   # reports a failure and no polish was asked for, a phase of no steps checks
   # its point.
   polish_record <- NULL
