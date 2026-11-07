@@ -36,6 +36,25 @@
   list(sim = sim, d = d)
 }
 
+# --- Chains past the integer range of the autocovariance's divisor ----------
+
+test_that("ess() and mcse() work past 65,000 draws (the FFT's divisor is a double)", {
+  n <- 70000L
+  x <- .ar1_series(0.5, n = n, seed = 21)
+  # the half-chain's lag-0 autocovariance is its mean squared deviation; L * n
+  # would be above 2^31 - 1 here
+  h <- x[seq_len(n %/% 2L), 1L]
+  expect_gt(as.numeric(stats::nextn(2L * length(h))) * length(h), .Machine$integer.max)
+  gam <- expect_no_warning(choicer:::.fft_autocov(h))
+  expect_equal(gam[1L], mean((h - mean(h))^2))
+  # AR(1) with phi = 0.5: ESS = n (1 - phi) / (1 + phi) = n / 3
+  e <- expect_no_warning(ess(x))
+  expect_true(all(is.finite(e)))
+  expect_equal(unname(e[1L]), n / 3, tolerance = 0.1)
+  m <- expect_no_warning(mcse(x))
+  expect_true(all(is.finite(m)))
+})
+
 # --- 1. ess(): closed-form AR(1) validation (no coda dependency) ------------
 
 test_that("ess() bulk matches closed-form AR(1) ESS within tolerance", {

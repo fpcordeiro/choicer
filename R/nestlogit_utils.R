@@ -43,7 +43,9 @@
 #' @param theta_init Optional initial parameter vector in natural units,
 #'   ordered as the coefficients, the nest parameters (\code{Lambda_<k>}, one
 #'   per nest of two or more alternatives) and the constants. If \code{NULL}:
-#'   0 for the coefficients and constants, 0.5 for each nest parameter.
+#'   0 for the coefficients and constants, 0.5 for each nest parameter. A nest
+#'   parameter started below \eqn{10^{-4}}{1e-4} warns: from there the optimizer
+#'   can stop far from the maximum whatever its code says.
 #' @param param_names Optional vector of parameter names, which must be
 #'   unique. If \code{NULL}, default names are generated.
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
@@ -91,22 +93,28 @@
 #'   instead.
 #' @param scale_vars How the optimizer's coordinates are scaled. The choice
 #'   does not change the estimator; it changes how fast, and whether, the
-#'   optimizer reaches the maximum. One of \code{"none"} (default), \code{"sd"}
-#'   (sample standard deviation), \code{"mad"} (\code{stats::mad}),
-#'   \code{"iqr"} (\code{stats::IQR(x) / 1.349}), or \code{"bhhh"}. With
-#'   \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
+#'   optimizer reaches the maximum. One of \code{"bhhh"} (default),
+#'   \code{"none"}, \code{"sd"} (sample standard deviation), \code{"mad"}
+#'   (\code{stats::mad}), or \code{"iqr"} (\code{stats::IQR(x) / 1.349}).
+#'   \code{"bhhh"} scales every parameter, nest parameters included, by the
+#'   inverse square root of the diagonal of the BHHH (outer product of
+#'   gradients) matrix at the start values, rounded to a power of two, from one
+#'   extra gradient pass, which reads each nest parameter at 0.01 at least. Its
+#'   scales are fixed at the start values, so when the nest parameters end far
+#'   from their start (0.5) they can slow the optimizer.
+#'   With \code{"sd"}, \code{"mad"} or \code{"iqr"}, the optimizer works on the
 #'   coefficients \code{X} would have with every column divided by the chosen
 #'   scale (each coefficient times its column's scale), to improve the
 #'   conditioning of its problem; the nest parameters and constants keep their
-#'   scale, and the data are not divided. \code{"bhhh"} scales every parameter,
-#'   nest parameters included, by the inverse square root of the diagonal of
-#'   the BHHH (outer product of gradients) matrix at the start values, rounded
-#'   to a power of two, from one extra gradient pass. Its scales are fixed at
-#'   the start values, so when the nest parameters end far from their start
-#'   (0.5) they can mislead the optimizer, which then converges more slowly
-#'   than without them; hence \code{"none"} is the default here. Where the
+#'   scale, and the data are not divided. Under \code{"none"} the optimizer
+#'   works in the parameters' own units, where its line search can give up on
+#'   the first step: on a mode-choice design whose covariates span units to
+#'   hundreds, it returned the start values, with a warning, in 100 of 180
+#'   choice-based samples of 2,000 and all 8 random samples of 50,000, where
+#'   \code{"bhhh"} reached the maximum in about 50 evaluations. Where the
 #'   diagonal is unusable (no finite, positive entry), the parameters are left
-#'   unscaled, with a message. With any choice but \code{"none"}, the
+#'   unscaled, with a message, as where the likelihood overflows at the start
+#'   values. With any choice but \code{"none"} (so by default), the
 #'   optimizer, a custom one included, works in the scaled coordinates
 #'   (\code{theta_init}, in natural units, and the nest parameters' lower bound
 #'   of 1e-16 are mapped), so settings in parameter units in \code{control}
@@ -159,6 +167,14 @@
 #'   the optimizer's, the polish's reason appended to the message. A polish
 #'   that stops with an error (the Hessian's memory check, say) keeps its
 #'   last accepted point and warns (class \code{choicer_polish_failed}).
+#'   An optimizer that reports a failure (nloptr's negative codes, such as
+#'   \code{NLOPT_FAILURE} where L-BFGS's line search gives up, and optim's 10,
+#'   51 and 52) may have returned its start values or stopped at the maximum,
+#'   which its code cannot tell. Without a polish, a Newton phase of no steps
+#'   then checks its point: \code{fit$optimizer$polish} records it
+#'   (\code{iterations} 0), and a point it certifies takes the success code
+#'   as above. A point no polish certified keeps the failure code and warns
+#'   (class \code{choicer_optimizer_failed}).
 #' @section Newton phase (polish):
 #' The polish does not change the estimator. From wherever the optimizer
 #' stopped, it takes Newton steps on the curvature of the log-likelihood and
@@ -190,21 +206,17 @@
 #' choice situation identifies (a nest never offered with two of its
 #' alternatives) has a gradient and a curvature of rounding size: the Newton
 #' polish can move it and certify the other parameters, its standard error
-#' then huge or \code{NA}. In the default coordinates
-#' (\code{scale_vars = "none"}) the optimizer can stop far from the maximum
-#' of a model with many constants: in a study on census-style designs
-#' (2,500 alternatives in 50 nests, 25,000 and 245,000 choice situations) it
-#' reached its 1,000-evaluation limit 0.35 and 15.8 log-likelihood units
-#' short (up to 6.7 standard errors), and \code{polish = "newton"} certified
-#' the maximum in 3 and 5 steps, for about a tenth of the fit's time; on
-#' claims-style designs (500 alternatives) it stopped closer, and one step
-#' certified it. For a reportable fit with many constants,
-#' \code{polish = "newton"} after the optimizer's own stop is the
-#' recommended check. Stopping the optimizer sooner
-#' (\code{control = list(maxeval = 100)}) and polishing took about a fifth
-#' of the time on those designs, and with \code{scale_vars = "bhhh"} the
-#' optimizer stopped at the maximum in 50 to 66 evaluations on three of the
-#' four. In the default coordinates, which are the parameters' own units,
+#' then huge or \code{NA}. In a study on census-style designs (2,500
+#' alternatives in 50 nests, 25,000 and 245,000 choice situations), with
+#' \code{scale_vars = "none"} the optimizer reached its 1,000-evaluation limit
+#' 0.35 and 15.8 log-likelihood units short (up to 6.7 standard errors), and
+#' \code{polish = "newton"} certified the maximum in 3 and 5 steps, for about a
+#' tenth of the fit's time; on claims-style designs (500 alternatives) it
+#' stopped closer, and one step certified it. With \code{scale_vars = "bhhh"}
+#' the optimizer stopped at the maximum in 50 to 66 evaluations on three of the
+#' four. For a reportable fit with many constants, \code{polish = "newton"}
+#' after the optimizer's own stop is the recommended check. Under
+#' \code{scale_vars = "none"}, whose coordinates are the parameters' own units,
 #' the steps' scales come from one BHHH pass at the optimizer's solution
 #' projected onto the bound (one gradient evaluation).
 #'
@@ -275,7 +287,7 @@ run_nestlogit <- function(
     se_method = c("hessian", "numeric", "bhhh", "sandwich", "cluster"),
     cluster_col = NULL,
     nloptr_opts = NULL,
-    scale_vars = c("none", "sd", "mad", "iqr", "bhhh"),
+    scale_vars = c("bhhh", "none", "sd", "mad", "iqr"),
     polish = c("none", "newton", "bhhh"),
     polish_control = list()
 ) {
@@ -431,24 +443,28 @@ run_nestlogit <- function(
   nest_of_row <- function(rows) {
     input_data$nest_idx[input_data$alt_mapping[["alt_int"]][rows]]
   }
-  never <- if (polish != "none" && !is.null(unbounded)) {
-    unbounded$never[unbounded$never >= 2L]
-  } else integer()
-  moves <- if (length(never)) {
-    multi <- tabulate(input_data$nest_idx) > 1L
-    param_map$asc[never[multi[nest_of_row(never)]] - 1L]
-  } else integer()
-  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
-                       n_units = length(input_data$M), lower = theta_lb,
-                       moves = moves)
   # Where the reference is never chosen, the alternatives that anchor the
   # constants against a common rise (.polish_anchors(); the release below
   # frees only never-chosen constants, which anchor nothing)
-  anchors <- .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
-                             input_data$alt_mapping,
-                             list(alt_idx = input_data$alt_idx,
-                                  choice_idx = input_data$choice_idx,
-                                  M = input_data$M))
+  polish_setup <- function(polish) {
+    never <- if (polish != "none" && !is.null(unbounded)) {
+      unbounded$never[unbounded$never >= 2L]
+    } else integer()
+    moves <- if (length(never)) {
+      multi <- tabulate(input_data$nest_idx) > 1L
+      param_map$asc[never[multi[nest_of_row(never)]] - 1L]
+    } else integer()
+    held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                         n_units = length(input_data$M), lower = theta_lb,
+                         moves = moves)
+    list(never = never, held = held,
+         anchors = .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
+                                   input_data$alt_mapping,
+                                   list(alt_idx = input_data$alt_idx,
+                                        choice_idx = input_data$choice_idx,
+                                        M = input_data$M)))
+  }
+  setup <- polish_setup(polish)
 
   # The model's objective, gradient and overflow flag at theta; `...` takes
   # opg_diag
@@ -478,10 +494,31 @@ run_nestlogit <- function(
     .assert_scales_ok(sX, scale_vars, "fixed-coefficient")
   }
   if (scale_vars != "none") .check_theta_init(theta_init, n_params)
-  t_bpass <- system.time(
-    opg0 <- if (scale_vars == "bhhh") model_f(theta_init, opg_diag = TRUE)$opg_diag,
-    gcFirst = FALSE
-  )
+  # A start that near the bound overwhelms any coordinates: a likelihood falling
+  # like 1/lambda drives the first steps to dissimilarities in the thousands, or
+  # the line search gives up, and the optimizer's code need not say so.
+  if (length(theta_init) == n_params && any(theta_init[param_map$lambda] < 1e-4)) {
+    warning("A nest parameter starts below 1e-4 (theta_init), where the optimizer can ",
+            "stop far from the maximum whatever its convergence code says: start from a ",
+            "larger value (the default is 0.5).", call. = FALSE)
+  }
+  # (The pass reads each dissimilarity at 0.01 at least: near its bound its OPG
+  # entry grows so large that its scale would freeze it where it starts. A start
+  # that overflows has no scales to give.)
+  t_bpass <- system.time(if (scale_vars == "bhhh") {
+    at <- theta_init
+    at[param_map$lambda] <- pmax(at[param_map$lambda], 0.01)
+    g0 <- model_f(at, opg_diag = TRUE)
+    if (isTRUE(g0$overflow)) {
+      message("scale_vars = \"bhhh\": the likelihood overflows at the start ",
+              "values (check theta_init); the parameters are left unscaled.")
+      opg0 <- rep(1, n_params)
+    } else {
+      opg0 <- g0$opg_diag
+    }
+  } else {
+    opg0 <- NULL
+  }, gcFirst = FALSE)
   map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX,
                          opg_diag = opg0)
 
@@ -507,11 +544,21 @@ run_nestlogit <- function(
   # ("newton") or the BHHH matrix ("bhhh", its weights unsquared), in natural
   # units (.polish_fit()), on the raw objective, whose overflow flag fails a
   # trial point, the dissimilarities kept above their bound; under scale_vars
-  # = "none" (the default) the steps' scales come from one BHHH pass at the
-  # optimizer's solution. The estimator is unchanged.
+  # = "none" the steps' scales come from one BHHH pass at the optimizer's
+  # solution. The estimator is unchanged. Where the optimizer
+  # reports a failure and no polish was asked for, a phase of no steps checks
+  # its point.
   polish_record <- NULL
   curv <- NULL
+  polish_asked <- polish != "none"
+  if (.check_optimizer_stop(polish, opt, optimizer)) {
+    polish <- "newton"
+    polish_control$max_iter <- 0L
+    setup <- polish_setup(polish)
+  }
   if (polish != "none") {
+    held <- setup$held
+    never <- setup$never
     curv_kernel <- if (polish == "newton") nl_loglik_hessian_parallel else nl_bhhh_parallel
     curv_f <- function(theta) {
       curv_kernel(
@@ -584,7 +631,7 @@ run_nestlogit <- function(
                       keep_curvature = reuse, unbounded = unbounded,
                       asc_idx = param_map$asc,
                       alt_mapping = input_data$alt_mapping,
-                      anchors = anchors,
+                      anchors = setup$anchors,
                       weights = input_data$weights, optimizer = optimizer,
                       certify_f = certify_f, ref_open = ref_open)
     opt <- pf$opt
@@ -595,6 +642,8 @@ run_nestlogit <- function(
     # after the variance frees it
     pf <- NULL
   }
+  .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
+                         polish_asked, scale = if (scale_vars != "none") map$scale)
 
   # Estimates in natural units
   theta_hat <- opt$par

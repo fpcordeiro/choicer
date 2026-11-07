@@ -603,6 +603,102 @@ normalize_optim_result <- function(result) {
   )
 }
 
+#' Whether an optimizer's own code reports a failure
+#'
+#' nloptr's negative codes (NLOPT_FAILURE, -1, comes when L-BFGS's line search
+#' gives up: from the start values where the first trial step, one gradient
+#' long, is too far off for its ten reductions, and at the maximum where
+#' rounding leaves nothing to gain) and optim's 10 (a degenerate simplex), 51
+#' and 52 (L-BFGS-B's warning and error, its abnormal line search among them).
+#' Caps on the evaluations or the time are not failures, and a custom
+#' optimizer's codes follow no convention.
+#'
+#' @param opt `run_optimizer()`'s result.
+#' @param optimizer The `optimizer` argument.
+#' @returns TRUE or FALSE.
+#' @noRd
+.optimizer_failed <- function(opt, optimizer) {
+  if (is.function(optimizer)) return(FALSE)
+  code <- opt$convergence
+  switch(optimizer %||% "nloptr",
+         nloptr = isTRUE(code < 0L),
+         optim = isTRUE(code %in% c(10L, 51L, 52L)),
+         FALSE)
+}
+
+#' Whether a fit without a polish should check the optimizer's stop
+#'
+#' An optimizer that reports a failure may have returned its start values or
+#' stopped at the maximum, and its code cannot tell which. So a fit without a
+#' polish takes a Newton phase of no steps there (`polish_control$max_iter` =
+#' 0), one pass of the Hessian, which certifies the point or leaves the code
+#' for `.warn_optimizer_failed()`.
+#'
+#' @param polish The fit's `polish`.
+#' @param opt `run_optimizer()`'s result.
+#' @param optimizer The `optimizer` argument.
+#' @returns TRUE or FALSE; TRUE says so in a message.
+#' @noRd
+.check_optimizer_stop <- function(polish, opt, optimizer) {
+  if (polish != "none" || !.optimizer_failed(opt, optimizer)) return(FALSE)
+  message("The optimizer reports a failure (",
+          paste(as.character(opt$message), collapse = "; "),
+          "): a Newton phase of no steps checks the point it returned.")
+  TRUE
+}
+
+#' Warn of an optimizer's failure that nothing certified
+#'
+#' Called after the polish, which sets a success code on the point it
+#' certifies (class `choicer_optimizer_failed`). The estimates are named as
+#' the start values where they are, to within the rounding of the optimizer's
+#' coordinates.
+#'
+#' @param opt The optimizer's result, as the polish left it.
+#' @param optimizer The `optimizer` argument.
+#' @param start The start values, in natural units.
+#' @param record The polish's record, or NULL.
+#' @param scale_vars The fit's `scale_vars`.
+#' @param polish_asked Whether the fit asked for a polish.
+#' @param decrement The decrement at the point returned, or NA.
+#' @param can_polish Whether the model allows a polish.
+#' @param scale The coordinates' scales (`map$scale`), or NULL where the
+#'   optimizer works in natural units, without a round trip.
+#' @returns NULL, invisibly.
+#' @noRd
+.warn_optimizer_failed <- function(opt, optimizer, start, record, scale_vars,
+                                   polish_asked,
+                                   decrement = record$decrement %||% NA_real_,
+                                   can_polish = TRUE, scale = NULL) {
+  if (!.optimizer_failed(opt, optimizer)) return(invisible(NULL))
+  said <- paste(as.character(record$optimizer$message %||% opt$message), collapse = "; ")
+  code <- record$optimizer$convergence %||% opt$convergence
+  stuck <- isTRUE(all(abs(opt$par - start) <= 1e-12 * (abs(start) + (scale %||% 0))))
+  warning(warningCondition(paste0(
+    "The optimizer reports a failure (", if (nzchar(said)) said else paste("code", code), ")",
+    if (stuck) {
+      " and returned the start values, so the estimates are not a maximum of the likelihood"
+    } else {
+      " and its point is not certified as a maximum of the likelihood"
+    },
+    if (!is.na(decrement)) {
+      paste0(" (Newton decrement ", format(signif(decrement, 3)), ")")
+    },
+    ". ",
+    if (scale_vars == "none") {
+      "scale_vars = \"none\" works in the parameters' own units: try scale_vars = \"bhhh\". "
+    },
+    if (polish_asked) {
+      "Start elsewhere (theta_init), or allow the polish more steps (polish_control)."
+    } else if (can_polish) {
+      paste0("Fit with polish = \"newton\", which goes on from this point, or ",
+             "start elsewhere (theta_init).")
+    } else {
+      "Start elsewhere (theta_init)."
+    }), class = "choicer_optimizer_failed"))
+  invisible(NULL)
+}
+
 # --- The Newton phase (polish) -----------------------------------------------
 
 #' Settings of the Newton phase
@@ -611,13 +707,17 @@ normalize_optim_result <- function(result) {
 #' `run_nestlogit()`: a named list whose entries replace the defaults,
 #' `max_iter` (20; a whole number, 0 certifies the start without stepping),
 #' `tol_decrement` (1e-8, in log-likelihood units) and `tol_step` (1e-12,
-#' relative). A NULL entry keeps the default.
+#' relative); in the mixed logit also `restart` (`TRUE`: from a zero-variance
+#' plateau, run the optimizer and the polish once more). A NULL entry keeps the
+#' default.
 #'
 #' @param control A named list, or NULL.
+#' @param restart Whether the model has the `restart` setting.
 #' @returns The complete settings.
 #' @noRd
-.polish_control <- function(control) {
+.polish_control <- function(control, restart = FALSE) {
   ctl <- list(max_iter = 20L, tol_decrement = 1e-8, tol_step = 1e-12)
+  if (restart) ctl$restart <- TRUE
   if (is.null(control)) return(ctl)
   if (!is.list(control)) stop("`polish_control` must be a list.", call. = FALSE)
   nms <- names(control)
@@ -647,6 +747,9 @@ normalize_optim_result <- function(result) {
     if (!is.numeric(v) || length(v) != 1L || !is.finite(v) || v <= 0) {
       stop("`polish_control$", nm, "` must be a positive number.", call. = FALSE)
     }
+  }
+  if (restart && !(isTRUE(ctl$restart) || isFALSE(ctl$restart))) {
+    stop("`polish_control$restart` must be TRUE or FALSE.", call. = FALSE)
   }
   ctl
 }

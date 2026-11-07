@@ -399,6 +399,17 @@ maximum sits there: on F4's quick cell (200 persons, S = 200, R = 300) the compo
 lost in 239 fits and 20 kept fits still ended on a plateau; on F3's, 1 of 300, whose SE alone takes
 L_11's SE ratio to 716. That is one reason the quick tier does not gate L_11 at those rungs.
 
+Those measurements predate package finding 3's fix, a restart from raised standard deviations.
+With it, from the default start: panel at 200 persons, 4 of 40 restarted and all 4 reached θ0's
+maximum; composite at 200, 57 of 100 restarted, 54 then stood at or above θ0's fit, and certified fits
+more than 0.01 below it fell from 47 to 6; composite at 800 (S = 200), 6 of 24 restarted and all
+reached it. On
+data whose variances are zero the restart came back: logit data 23 of 40, D1's panel with a random
+coefficient on `irr` 4 of 24. At F4's quick cell (R = 100, the whole quick tier 249 of 249 on that
+build) the composite's default start failed in 25 reps, each a polish stopped at `max_iter`, and lost
+in 8, against 82 failed or lost before; the panel's lost in 11, by a median of 0.66 and at most 2.0;
+7 kept composite fits end on a plateau and warn. So the two starts of S1 still earn their cost.
+
 **F4's simulation variance.** On the panel at 3.2k persons, 12 datasets, against a reference at S =
 3,200 (each dataset's Hessian SE the unit): the bias at S = 500 is at most about 0.1 SE: L_11's
 −0.100 ± 0.091 in the ladder's fit, L_21's −0.109 ± 0.076 in F4's own, every other parameter below
@@ -504,21 +515,30 @@ rather than serialized through it.
   comparisons (0 of 10 still allows a missed-maximum rate up to about 26%), and the census `"blp"` fits
   start once, from the truth.
 
-## Package findings (for one follow-up session after this branch)
+## Package findings
 
-1. nloptr's NLOPT_FAILURE (code −1) returns the start values without a warning, in the MNL and NL
-   (and once at the optimum in 150 MNL fits).
+Found by this suite and fixed in the follow-up PR, each with its evidence in that PR and in `NEWS.md`.
+The two decisions (items 2 and 3) were the user's, on measured evidence.
+
+1. nloptr's NLOPT_FAILURE (code −1) returned the start values without a warning, in the MNL and NL
+   (and once at the optimum in 150 MNL fits). **Fixed:** a failure code without a polish takes a Newton
+   phase of no steps; a certified point takes the success code, any other keeps the code and warns
+   (`choicer_optimizer_failed`).
 2. `run_nestlogit()`'s default `scale_vars = "none"` failed at the start in about half of D2's WESML
-   NL fits (code −1); `"bhhh"` failed in 0 of 120.
-3. The mixed logit's Newton polish certifies points on a zero-variance plateau (an L diagonal near
-   −19, SE ≈ 10^4), and the default start reaches them often in composite fits of panel data.
-4. `prepare_mxl_data(covariate_cols = NULL)` fails ("length(alt_idx) == nrow(X) is not TRUE").
+   NL fits (code −1); `"bhhh"` failed in 0 of 120. **Fixed:** `"bhhh"` is the default. F1 and F8 still pass
+   it explicitly.
+3. The mixed logit's Newton polish certified points on a zero-variance plateau (an L diagonal near
+   −19, SE ≈ 10^4), and the default start reached them often in composite fits of panel data. **Fixed:**
+   a polish restarts once from such a point and keeps the higher likelihood; a variance that ends at
+   zero warns (`choicer_variance_plateau`). See "The default start's plateaus".
+4. `prepare_mxl_data(covariate_cols = NULL)` failed ("length(alt_idx) == nrow(X) is not TRUE").
+   **Fixed:** it returns a design of no columns, and `run_mxlogit()` fits a model whose every coefficient
+   is random; the preparations of models that need a covariate stop by name.
 5. `sample_by_choice(frac_per_alt =)` keeps round(f · available) per stratum, i.e. quotas, not
-   Bernoulli sampling: worth a sentence in its documentation.
-6. `ess()` and `mcse()` return NA for chains longer than about 65,000 draws: `.fft_autocov()`
-   (`R/hb_diagnostics.R:64`) divides by `L * n`, an integer product (`nextn()` returns an integer)
-   that overflows; `as.numeric(L) * n` fixes it.
-7. From the plan: `summary.choicer_mc(level =)` is ignored; `monte_carlo()` on MNP/HB fits calls
-   `logLik` outside its `tryCatch`.
-8. From the quick tier's confirmation: at F4's small rung the composite fit's default start lost to θ0 in
-   239 of 300 reps, and 20 kept fits ended on a plateau (the same family as item 3).
+   Bernoulli sampling. **Documented.**
+6. `ess()` and `mcse()` returned NA for chains longer than about 65,000 draws: `.fft_autocov()`
+   divided by `L * n`, an integer product (`nextn()` returns an integer) that overflows. **Fixed.**
+7. `summary.choicer_mc(level =)` was ignored; `monte_carlo()` on MNP/HB fits called `logLik` outside
+   its `tryCatch`. **Fixed**, and `summary()` gives one row per parameter where the truth differs by rep.
+8. At F4's small rung the composite fit's default start lost to θ0 in 239 of 300 reps, and 20 kept
+   fits ended on a plateau (the same family as item 3). **Reduced by item 3's fix:** below.

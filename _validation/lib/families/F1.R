@@ -35,7 +35,7 @@ f1_estimands <- function(fit, sim) {
 # Both fits are polished by Newton and must converge (require_converged(),
 # lib/fit.R). The unrestricted fit of the LR test starts at the MNL's
 # estimate with Lambda_1 = 1, in the "bhhh" coordinates (D2's covariates
-# span units to hundreds: from its default start, scale_vars = "none" can
+# span units to hundreds: from the NL's default start, scale_vars = "none" can
 # fail); its lambda and decrement go to diag$lr_nl.
 f1_ml <- function(sim, cell, seed) {
   fit <- require_converged(choicer::run_mnlogit(sim$data, "id", "alt", "choice", D2_X,

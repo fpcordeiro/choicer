@@ -54,7 +54,8 @@ Mutually exclusive with \code{input_data}.}
 
 \item{choice_col}{Name of the column indicating chosen alternative (1/0).}
 
-\item{covariate_cols}{Vector of column names for fixed covariates. None
+\item{covariate_cols}{Vector of column names for fixed covariates; \code{NULL}
+where every coefficient is random. None
 may take a name the model gives its parameters, or prints for them in
 \code{summary()}: \code{L_<i><j>} and \code{Sigma_<i><j>}, with
 \code{use_asc = TRUE} \code{ASC_<label>}, and with
@@ -369,9 +370,11 @@ and weights.}
 without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8}, in
 log-likelihood units of weights with mean one: the decrement is taken
 over the mean weight, so that the rule does not depend on the weights'
-scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
+scale), \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
 shorter than this, relative to the parameters' magnitudes plus their
-scales in the optimizer's coordinates, stops the polish unconverged).}
+scales in the optimizer's coordinates, stops the polish unconverged) and
+\code{restart} (\code{TRUE}: run the optimizer and the polish once more from
+a zero-variance plateau; see the section below).}
 
 \item{concentrate_out_asc}{How the alternative-specific constants are
 estimated (see the section below). \code{"none"} (default): with the
@@ -451,13 +454,29 @@ out of the last steps for want of usable curvature), \code{improvement}
 (the log-likelihood gained), \code{error}, \code{elapsed_time} (the
 polish's seconds, which \code{fit$optimizer$elapsed_time} includes), and
 \code{optimizer}, the optimizer's own \code{convergence},
-\code{message}, \code{iterations} and \code{elapsed_time}. A converged
+\code{message}, \code{iterations} and \code{elapsed_time}. Where the
+polish restarted from a zero-variance plateau (see the section), the
+record, of the point that stands, also has \code{restart}:
+\code{parameters}, \code{adopted}, \code{gain} (the log-likelihood
+gained by the restart, negative where it ended lower), \code{converged},
+\code{optimizer_iterations} and \code{polish_iterations} (the restart's),
+\code{error} and \code{elapsed_time}. A converged
 polish sets \code{convergence} to the optimizer's success code (1 for
 nloptr, 0 for optim and a custom optimizer) and leads \code{message}
 with its verdict; otherwise both keep the optimizer's, the polish's
 reason appended to the message. A polish that stops with an error (the
 Hessian's memory check, say) keeps its last accepted point and warns
-(class \code{choicer_polish_failed}). With
+(class \code{choicer_polish_failed}). An optimizer that reports a failure
+(nloptr's negative codes, such as \code{NLOPT_FAILURE} where L-BFGS's line
+search gives up, and optim's 10, 51 and 52) may have returned its start
+values or stopped at the maximum, which its code cannot tell. Without a
+polish, a Newton phase of no steps then checks its point:
+\code{fit$optimizer$polish} records it (\code{iterations} 0), and a point
+it certifies takes the success code as above; under
+\code{concentrate_out_asc = "blp"}, which takes no polish, the outer
+decrement below \code{polish_control}'s \code{tol_decrement} does. A point
+nothing certified keeps the failure code and warns (class
+\code{choicer_optimizer_failed}). With
 \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
 describes the optimizer over the other parameters, and
 \code{fit$optimizer$concentration} records the inner solves:
@@ -586,13 +605,35 @@ reference is never chosen and the constants held or bounded above anchor
 all the others, which stops their rise: each other constant's alternative
 is offered in a choice situation that chooses an alternative whose
 constant is held or bounded above, or one anchored so. A random coefficient
-whose variance's maximum is at zero drives its log-Cholesky diagonal
+whose variance's local maximum is at zero drives its log-Cholesky diagonal
 toward \eqn{-\infty} by Newton steps of \eqn{\frac{1}{2}}{1/2} to 1, each
 shrinking the decrement by a factor of about \eqn{e}: \code{"newton"} may
 certify a point where the variance is negligible but that diagonal, and
 its standard error, depend on \code{tol_decrement}; \code{"bhhh"}, whose
 curvature in that direction vanishes faster, comes to hold the diagonal
-and stops unconverged. A parameter without usable curvature (no
+and stops unconverged. Such a point (a standard deviation below
+\eqn{10^{-4}}{1e-4} of the default start's) can be a false stop: the first
+derivative of a simulated likelihood in a standard deviation at zero is not
+zero with finitely many draws, and where it is negative, zero is a local
+maximum, often below a higher one. So the polish restarts once from there:
+the optimizer and the polish again from the same point with those standard
+deviations raised, a normal coefficient's to the default start's (one over
+its column's typical step), a log-normal's to 1, in coordinates taken afresh.
+The higher likelihood stands. On a stated-preference panel of 200 persons, 4
+of 40 fits stopped so, 4.1 to 10.3 log-likelihood units below the maximum, and
+the restart reached it in all 4. On composite fits of those data, 57 of 100
+stopped so, and 54 of them then stood at or above the fit from the true
+parameters; certified fits more than 0.01 below it fell from 47 to 6. On logit
+data, whose variances are zero, 23 of 40 stopped so and all 23 ended at zero
+again. Where a variance ends at zero the fit warns (class
+\code{choicer_variance_plateau}), with or without a polish: the standard
+error of that diagonal says nothing (a clustered one is of order one where
+the Hessian's reads \eqn{10^4}{1e4}). The restart took 0.5 to 1 times the first
+fit's time at the median and 2.4 at most, on the fits that stop there, and
+where the first point stands the variance evaluates its matrix once more;
+\code{polish_control = list(restart = FALSE)} turns it off. Under
+\code{concentrate_out_asc = "profile_likelihood"} the fit warns without
+restarting. A parameter without usable curvature (no
 information at the point, or a curvature that has all but vanished, giving
 a step more than 100 times its scale in the optimizer's coordinates) is
 held for the step and stops the polish unconverged. Under

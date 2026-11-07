@@ -97,11 +97,7 @@
   theta <- rep(0, n_params)
   K_w <- ncol(W)
   if (!K_w) return(theta)
-  diag_idx <- if (rc_correlation) {
-    param_map$sigma[cumsum(seq_len(K_w))]
-  } else {
-    param_map$sigma
-  }
+  diag_idx <- .mxl_diag_idx(param_map, K_w, rc_correlation)
   if (!is.double(W)) storage.mode(W) <- "double"
   s <- design_column_step(W)
   ok <- is.finite(s) & s > 0
@@ -110,6 +106,87 @@
   log_L[rc_dist[seq_len(K_w)] %in% 1L] <- log(0.5)
   theta[diag_idx] <- log_L
   theta
+}
+
+#' The positions of the log-Cholesky diagonal in theta
+#'
+#' @param param_map The fit's parameter map.
+#' @param K_w Number of random coefficients.
+#' @param rc_correlation Whether L is lower triangular (else diagonal).
+#' @returns Integer positions, one per random coefficient.
+#' @noRd
+.mxl_diag_idx <- function(param_map, K_w, rc_correlation) {
+  if (rc_correlation) param_map$sigma[cumsum(seq_len(K_w))] else param_map$sigma
+}
+
+#' The log-Cholesky diagonals on a zero-variance plateau
+#'
+#' A diagonal L_pp is on the plateau where its standard deviation exp(L_pp) is
+#' numerically zero: below 1e-4 of the default start's level (`levels`), so
+#' that its typical effect on a utility is below 1e-4 for a normal coefficient,
+#' whose start is one over its column's typical step. The likelihood is flat
+#' there because the score in L_pp is the standard deviation times the score in
+#' the standard deviation, so it and the curvature vanish together, while the
+#' Newton decrement falls below any tolerance on the way down. In the study
+#' behind this rule (a stated-preference panel, its composite likelihood, logit
+#' data), no certified fit had a diagonal between about 6.5 and 14.4 log units
+#' below that level. A diagonal pinned, or bounded above below that line, is the
+#' caller's.
+#'
+#' @param theta Parameters, in natural units.
+#' @param levels The default start (`.mxl_default_start()`).
+#' @param diag_idx `.mxl_diag_idx()`.
+#' @param lower,upper Bounds.
+#' @returns The positions in theta of the diagonals on the plateau.
+#' @noRd
+.mxl_variance_plateau <- function(theta, levels, diag_idx, lower, upper) {
+  cut <- levels[diag_idx] + log(1e-4)
+  diag_idx[which(theta[diag_idx] < cut & upper[diag_idx] >= cut & lower[diag_idx] < upper[diag_idx])]
+}
+
+#' Warn of a variance at zero
+#'
+#' Class `choicer_variance_plateau`: the fit's estimates stand, but the
+#' diagonal's standard error says nothing, and the point may be a local maximum
+#' of a simulated likelihood that the draws' asymmetry created. What the restart
+#' can say holds only for the diagonals it raised, and only if it ran.
+#'
+#' @param names,values The parameters' names and values.
+#' @param restart The polish's restart record, or NULL.
+#' @param can_restart Whether `polish = "newton"` would restart.
+#' @returns NULL, invisibly.
+#' @noRd
+.warn_variance_plateau <- function(names, values, restart, can_restart) {
+  many <- length(names) > 1L
+  ran <- !is.null(restart) && is.null(restart$error) && all(names %in% restart$parameters)
+  local <- "It can be a local maximum below a higher one: "
+  warning(warningCondition(paste0(
+    "The log-Cholesky diagonal", if (many) "s ", if (!many) " ",
+    paste0(names, " (", format(signif(values, 3)), ")", collapse = ", "),
+    if (many) " have" else " has", " gone to minus infinity: the variance of ",
+    if (many) "those random coefficients" else "that random coefficient",
+    ", given those before ", if (many) "them" else "it",
+    ", is numerically zero. The score of such a diagonal vanishes with it, so ",
+    "its standard error says nothing and the Newton decrement cannot tell this ",
+    "point from a maximum. ",
+    if (ran && restart$adopted) {
+      paste0("A restart from a larger standard deviation raised the likelihood by ",
+             format(signif(restart$gain, 3)), " and ended here again.")
+    } else if (ran) {
+      "A restart from a larger standard deviation found no higher likelihood."
+    } else if (!is.null(restart$error)) {
+      paste0("The restart from a larger standard deviation stopped with an error (",
+             restart$error, "), so it says nothing: ", local, "start elsewhere (theta_init).")
+    } else if (!is.null(restart)) {
+      paste0(local, "it went there during a restart from a larger standard deviation of ",
+             paste(restart$parameters, collapse = ", "), ". Start elsewhere (theta_init).")
+    } else if (can_restart) {
+      paste0(local, "fit with polish = \"newton\", which restarts once from it, or start ",
+             "elsewhere (theta_init).")
+    } else {
+      paste0(local, "start elsewhere (theta_init).")
+    }), class = "choicer_variance_plateau"))
+  invisible(NULL)
 }
 
 #' The profile likelihood's requirements on the constants
@@ -381,7 +458,8 @@
 #' @param id_col Name of the column identifying choice situations.
 #' @param alt_col Name of the column identifying alternatives.
 #' @param choice_col Name of the column indicating chosen alternative (1/0).
-#' @param covariate_cols Vector of column names for fixed covariates. None
+#' @param covariate_cols Vector of column names for fixed covariates; \code{NULL}
+#'   where every coefficient is random. None
 #'   may take a name the model gives its parameters, or prints for them in
 #'   \code{summary()}: \code{L_<i><j>} and \code{Sigma_<i><j>}, with
 #'   \code{use_asc = TRUE} \code{ASC_<label>}, and with
@@ -669,9 +747,11 @@
 #' without stepping), \code{tol_decrement} (\eqn{10^{-8}}{1e-8}, in
 #' log-likelihood units of weights with mean one: the decrement is taken
 #' over the mean weight, so that the rule does not depend on the weights'
-#' scale) and \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
+#' scale), \code{tol_step} (\eqn{10^{-12}}{1e-12}: a step
 #' shorter than this, relative to the parameters' magnitudes plus their
-#' scales in the optimizer's coordinates, stops the polish unconverged).
+#' scales in the optimizer's coordinates, stops the polish unconverged) and
+#' \code{restart} (\code{TRUE}: run the optimizer and the polish once more from
+#' a zero-variance plateau; see the section below).
 #' @param concentrate_out_asc How the alternative-specific constants are
 #'   estimated (see the section below). \code{"none"} (default): with the
 #'   other parameters, by the optimizer. \code{"profile_likelihood"}: the
@@ -764,13 +844,35 @@
 #' all the others, which stops their rise: each other constant's alternative
 #' is offered in a choice situation that chooses an alternative whose
 #' constant is held or bounded above, or one anchored so. A random coefficient
-#' whose variance's maximum is at zero drives its log-Cholesky diagonal
+#' whose variance's local maximum is at zero drives its log-Cholesky diagonal
 #' toward \eqn{-\infty} by Newton steps of \eqn{\frac{1}{2}}{1/2} to 1, each
 #' shrinking the decrement by a factor of about \eqn{e}: \code{"newton"} may
 #' certify a point where the variance is negligible but that diagonal, and
 #' its standard error, depend on \code{tol_decrement}; \code{"bhhh"}, whose
 #' curvature in that direction vanishes faster, comes to hold the diagonal
-#' and stops unconverged. A parameter without usable curvature (no
+#' and stops unconverged. Such a point (a standard deviation below
+#' \eqn{10^{-4}}{1e-4} of the default start's) can be a false stop: the first
+#' derivative of a simulated likelihood in a standard deviation at zero is not
+#' zero with finitely many draws, and where it is negative, zero is a local
+#' maximum, often below a higher one. So the polish restarts once from there:
+#' the optimizer and the polish again from the same point with those standard
+#' deviations raised, a normal coefficient's to the default start's (one over
+#' its column's typical step), a log-normal's to 1, in coordinates taken afresh.
+#' The higher likelihood stands. On a stated-preference panel of 200 persons, 4
+#' of 40 fits stopped so, 4.1 to 10.3 log-likelihood units below the maximum, and
+#' the restart reached it in all 4. On composite fits of those data, 57 of 100
+#' stopped so, and 54 of them then stood at or above the fit from the true
+#' parameters; certified fits more than 0.01 below it fell from 47 to 6. On logit
+#' data, whose variances are zero, 23 of 40 stopped so and all 23 ended at zero
+#' again. Where a variance ends at zero the fit warns (class
+#' \code{choicer_variance_plateau}), with or without a polish: the standard
+#' error of that diagonal says nothing (a clustered one is of order one where
+#' the Hessian's reads \eqn{10^4}{1e4}). The restart took 0.5 to 1 times the first
+#' fit's time at the median and 2.4 at most, on the fits that stop there, and
+#' where the first point stands the variance evaluates its matrix once more;
+#' \code{polish_control = list(restart = FALSE)} turns it off. Under
+#' \code{concentrate_out_asc = "profile_likelihood"} the fit warns without
+#' restarting. A parameter without usable curvature (no
 #' information at the point, or a curvature that has all but vanished, giving
 #' a step more than 100 times its scale in the optimizer's coordinates) is
 #' held for the step and stops the polish unconverged. Under
@@ -953,13 +1055,29 @@
 #'   (the log-likelihood gained), \code{error}, \code{elapsed_time} (the
 #'   polish's seconds, which \code{fit$optimizer$elapsed_time} includes), and
 #'   \code{optimizer}, the optimizer's own \code{convergence},
-#'   \code{message}, \code{iterations} and \code{elapsed_time}. A converged
+#'   \code{message}, \code{iterations} and \code{elapsed_time}. Where the
+#'   polish restarted from a zero-variance plateau (see the section), the
+#'   record, of the point that stands, also has \code{restart}:
+#'   \code{parameters}, \code{adopted}, \code{gain} (the log-likelihood
+#'   gained by the restart, negative where it ended lower), \code{converged},
+#'   \code{optimizer_iterations} and \code{polish_iterations} (the restart's),
+#'   \code{error} and \code{elapsed_time}. A converged
 #'   polish sets \code{convergence} to the optimizer's success code (1 for
 #'   nloptr, 0 for optim and a custom optimizer) and leads \code{message}
 #'   with its verdict; otherwise both keep the optimizer's, the polish's
 #'   reason appended to the message. A polish that stops with an error (the
 #'   Hessian's memory check, say) keeps its last accepted point and warns
-#'   (class \code{choicer_polish_failed}). With
+#'   (class \code{choicer_polish_failed}). An optimizer that reports a failure
+#'   (nloptr's negative codes, such as \code{NLOPT_FAILURE} where L-BFGS's line
+#'   search gives up, and optim's 10, 51 and 52) may have returned its start
+#'   values or stopped at the maximum, which its code cannot tell. Without a
+#'   polish, a Newton phase of no steps then checks its point:
+#'   \code{fit$optimizer$polish} records it (\code{iterations} 0), and a point
+#'   it certifies takes the success code as above; under
+#'   \code{concentrate_out_asc = "blp"}, which takes no polish, the outer
+#'   decrement below \code{polish_control}'s \code{tol_decrement} does. A point
+#'   nothing certified keeps the failure code and warns (class
+#'   \code{choicer_optimizer_failed}). With
 #'   \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
 #'   describes the optimizer over the other parameters, and
 #'   \code{fit$optimizer$concentration} records the inner solves:
@@ -1087,7 +1205,7 @@ run_mxlogit <- function(
   if (!is.null(cluster_col) && se_method_default) se_method <- "cluster"
   scale_vars <- match.arg(scale_vars)
   polish <- match.arg(polish)
-  polish_control <- .polish_control(polish_control)
+  polish_control <- .polish_control(polish_control, restart = TRUE)
   concentrate_out_asc <- match.arg(concentrate_out_asc)
   concentrate_control <- .concentrate_control(concentrate_control,
                                               concentrate_out_asc)
@@ -1168,9 +1286,9 @@ run_mxlogit <- function(
   if (has_data) {
     # Convenience workflow: validate required column-name arguments
     if (is.null(id_col) || is.null(alt_col) || is.null(choice_col) ||
-        is.null(covariate_cols) || is.null(random_var_cols)) {
+        is.null(random_var_cols)) {
       stop("Convenience workflow requires: id_col, alt_col, choice_col, ",
-           "covariate_cols, and random_var_cols.")
+           "and random_var_cols.")
     }
     # WESML provenance present but no weights supplied: auto-adopt the recorded
     # weight column, or error -- never silently fit unweighted under a WESML label.
@@ -1378,19 +1496,23 @@ run_mxlogit <- function(
                                            asc_upper = upper[param_map$asc])
   }
   # The constants a polish holds, and, for "bhhh", the rank of the BHHH
-  # matrix of the likelihood units against the parameters it moves
-  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
-                       n_units = length(.unit_first(input_data)),
-                       units = if (is.null(input_data$Ti)) "choice situations"
-                               else "decision makers",
-                       lower = lower, upper = upper)
-  # Where the reference is never chosen, the alternatives that anchor the
-  # constants against a common rise (.polish_anchors()), before the draws
-  anchors <- .polish_anchors(polish, unbounded, held, upper, param_map$asc,
-                             input_data$alt_mapping,
-                             list(alt_idx = input_data$alt_idx,
-                                  choice_idx = input_data$choice_idx,
-                                  M = input_data$M))
+  # matrix of the likelihood units against the parameters it moves; where the
+  # reference is never chosen, the alternatives that anchor the constants
+  # against a common rise (.polish_anchors()), before the draws
+  polish_setup <- function(polish) {
+    held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                         n_units = length(.unit_first(input_data)),
+                         units = if (is.null(input_data$Ti)) "choice situations"
+                                 else "decision makers",
+                         lower = lower, upper = upper)
+    list(held = held,
+         anchors = .polish_anchors(polish, unbounded, held, upper, param_map$asc,
+                                   input_data$alt_mapping,
+                                   list(alt_idx = input_data$alt_idx,
+                                        choice_idx = input_data$choice_idx,
+                                        M = input_data$M)))
+  }
+  setup <- polish_setup(polish)
 
   # Store-mode draws: their checks and the size warning before the column
   # scales below, the cube itself after them
@@ -1477,9 +1599,10 @@ run_mxlogit <- function(
   # outside the box (the optimizer refuses a start outside it), with a
   # message. A supplied theta_init is used as given.
   start_default <- is.null(theta_init)
+  start_levels <- NULL
   if (start_default) {
-    theta_init <- .mxl_default_start(n_params, param_map, input_data$W,
-                                     rc_dist, rc_correlation)
+    theta_init <- start_levels <- .mxl_default_start(n_params, param_map, input_data$W,
+                                                     rc_dist, rc_correlation)
     moved <- theta_init < lower | theta_init > upper
     if (any(moved)) {
       # Parameters pinned by lower == upper are moved without a word.
@@ -1617,19 +1740,22 @@ run_mxlogit <- function(
   # "bhhh": the BHHH diagonal at the start values, from one gradient pass;
   # unusable where the likelihood overflows there (unit entries: the identity).
   if (scale_vars != "none") .check_theta_init(theta_init, n_params)
-  opg0 <- NULL
-  t_bpass <- system.time(if (scale_vars == "bhhh") {
-    g0 <- model_f(theta_init, opg_diag = TRUE)
-    if (isTRUE(g0$overflow)) {
-      message("scale_vars = \"bhhh\": the likelihood overflows at the start ",
-              "values (check theta_init); the parameters are left unscaled.")
-      opg0 <- rep(1, n_params)
-    } else {
-      opg0 <- g0$opg_diag
+  coordinates_at <- function(theta, where = "the start values (check theta_init)") {
+    opg0 <- NULL
+    if (scale_vars == "bhhh") {
+      g0 <- model_f(theta, opg_diag = TRUE)
+      if (isTRUE(g0$overflow)) {
+        message("scale_vars = \"bhhh\": the likelihood overflows at ", where,
+                "; the parameters are left unscaled.")
+        opg0 <- rep(1, n_params)
+      } else {
+        opg0 <- g0$opg_diag
+      }
     }
-  }, gcFirst = FALSE)
-  map <- .coordinate_map(scale_vars, param_map, n_params, sX = sX, sW = sW,
-                         rc_correlation = rc_correlation, opg_diag = opg0)
+    .coordinate_map(scale_vars, param_map, n_params, sX = sX, sW = sW,
+                    rc_correlation = rc_correlation, opg_diag = opg0)
+  }
+  t_bpass <- system.time(map <- coordinates_at(theta_init), gcFirst = FALSE)
 
   # Run the optimizer in the map's coordinates on the objective with the
   # kernel's overflow sentinel kept above the path
@@ -1802,9 +1928,18 @@ run_mxlogit <- function(
   # ("newton") or the BHHH matrix ("bhhh", its weights unsquared, the
   # objective's curvature) of the same draws, in natural units
   # (.polish_fit()); under scale_vars = "none" the steps' scales come from one
-  # BHHH pass at the optimizer's solution. The estimator is unchanged.
+  # BHHH pass at the optimizer's solution. The estimator is unchanged. Where
+  # the optimizer reports a failure and no polish was asked for, a phase of no
+  # steps checks its point ("blp" has no such phase: its outer decrement
+  # checks it, below, with the variance).
   polish_record <- NULL
   curv <- NULL
+  polish_asked <- polish != "none"
+  if (!blp && .check_optimizer_stop(polish, opt, optimizer)) {
+    polish <- "newton"
+    polish_control$max_iter <- 0L
+    setup <- polish_setup(polish)
+  }
   if (polish != "none") {
     curv_kernel <- if (polish == "newton") mxl_hessian_parallel else mxl_bhhh_parallel
     curv_f <- function(theta) {
@@ -1832,15 +1967,18 @@ run_mxlogit <- function(
     # buffers (the squared weights; the cluster kernel's 8 (U + 2G) bytes and
     # labels) outweigh the Hessian kernel's.
     reuse <- switch(polish, newton = se_method != "bhhh", bhhh = se_method == "bhhh")
-    pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
-                      lower = lower, upper = upper,
-                      scale = if (scale_vars != "none") map$scale,
-                      control = polish_control, held = held,
-                      keep_curvature = reuse, unbounded = unbounded,
-                      asc_idx = param_map$asc,
-                      alt_mapping = input_data$alt_mapping,
-                      anchors = anchors,
-                      weights = input_data$weights, optimizer = optimizer)
+    polish_from <- function(opt, elapsed) {
+      .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
+                  lower = lower, upper = upper,
+                  scale = if (scale_vars != "none") map$scale,
+                  control = polish_control, held = setup$held,
+                  keep_curvature = reuse, unbounded = unbounded,
+                  asc_idx = param_map$asc,
+                  alt_mapping = input_data$alt_mapping,
+                  anchors = setup$anchors,
+                  weights = input_data$weights, optimizer = optimizer)
+    }
+    pf <- polish_from(opt, elapsed)
     opt <- pf$opt
     polish_record <- pf$record
     curv <- pf$curvature
@@ -1848,6 +1986,103 @@ run_mxlogit <- function(
     # the list's reference to a kept curvature, dropped so that curv <- NULL
     # after the variance frees it
     pf <- NULL
+  }
+
+  # A diagonal on a zero-variance plateau: the decrement cannot tell a false
+  # stop, where the draws' asymmetry makes zero a local maximum below a higher
+  # one, from a variance whose maximum is at zero. A restart can: from the same
+  # point with those standard deviations raised, the optimizer and the polish
+  # climb to the higher maximum, or come back. The higher likelihood stands (by
+  # more than 1e-6 over the mean weight, so that the same point met twice leaves
+  # the first fit as it was). The level is the default start's for a normal
+  # coefficient, one over its column's step; a log-normal's standard deviation
+  # has no units, and from 1 the study's fits came back less often than from the
+  # default start's 0.5 (3 of 37 still short of the maximum, against 10). The
+  # coordinates are taken afresh: "bhhh"'s scales at the first start can be
+  # wrong for this one. Only a polish asked for restarts (polish_control$restart,
+  # which a fit that takes hours may turn off): a profile fit's constants have
+  # their own solver, and a fit without a polish has not asked to spend a Newton
+  # phase.
+  diag_idx <- .mxl_diag_idx(param_map, K_w, rc_correlation)
+  if (is.null(start_levels)) {
+    start_levels <- .mxl_default_start(n_params, param_map, input_data$W, rc_dist,
+                                       rc_correlation)
+  }
+  on_plateau <- function(par) .mxl_variance_plateau(par, start_levels, diag_idx, lower, upper)
+  restart_record <- NULL
+  low <- on_plateau(opt$par)
+  if (polish_asked && !profile && polish_control$restart && length(low)) {
+    low_names <- paste(param_names[low], collapse = ", ")
+    message("The log-Cholesky diagonal", if (length(low) > 1L) "s ", if (length(low) == 1L) " ",
+            low_names, " went to minus infinity: restarting from a larger standard deviation.")
+    from <- opt$par
+    from[low] <- ifelse(rc_dist[match(low, diag_idx)] %in% 1L, 0, start_levels[low])
+    from <- pmin(pmax(from, lower), upper)
+    # (held while the restart runs, the first point's curvature would add to its
+    # peak; the variance evaluates it again where the first point stands)
+    curv <- NULL
+    map_first <- map
+    polish_failed <- NULL
+    t_restart <- system.time(second <- tryCatch({
+      map <- coordinates_at(from, "the restart's start")
+      t_opt <- system.time(opt2 <- .optimize_in_coordinates(
+        map = if (scale_vars != "none") map, optimizer = optimizer, theta_init = from,
+        eval_f = .lift_sentinel(model_f), lower = lower, upper = upper, control = control
+      ), gcFirst = FALSE)
+      # (an error in this polish speaks only of a point that stands: below)
+      withCallingHandlers(polish_from(opt2, t_opt), choicer_polish_failed = function(w) {
+        polish_failed <<- w
+        invokeRestart("muffleWarning")
+      })
+    }, error = function(e) conditionMessage(e)), gcFirst = FALSE)
+    elapsed <- elapsed + t_restart
+    failed <- is.character(second)
+    gain <- if (failed) NA_real_ else opt$value - second$opt$value
+    adopted <- isTRUE(gain > 1e-6 * mean(input_data$weights))
+    restart_record <- list(
+      parameters = param_names[low], adopted = adopted, gain = gain,
+      converged = if (!failed) second$record$converged,
+      optimizer_iterations = if (!failed) second$record$optimizer$iterations,
+      polish_iterations = if (!failed) second$record$iterations,
+      error = if (failed) second,
+      elapsed_time = t_restart[["elapsed"]])
+    message("Restart: ", if (failed) {
+      paste0("stopped with an error, so the first point stands: ", second)
+    } else if (adopted) {
+      paste0("the log-likelihood rose by ", format(signif(gain, 3)))
+    } else {
+      "no higher log-likelihood, so the first point stands"
+    })
+    if (adopted) {
+      opt <- second$opt
+      polish_record <- second$record
+      curv <- second$curvature
+      if (!is.null(polish_failed)) warning(polish_failed)
+    } else {
+      map <- map_first
+    }
+    opt$message <- paste0(paste(as.character(opt$message), collapse = "; "),
+                          "; a restart from a larger standard deviation of ", low_names,
+                          if (failed) {
+                            paste0(" stopped with an error: ", restart_record$error)
+                          } else if (adopted) {
+                            paste0(" raised the log-likelihood by ", format(signif(gain, 3)))
+                          } else {
+                            " found no higher log-likelihood"
+                          })
+    polish_record$restart <- restart_record
+    second <- NULL
+  }
+  low <- on_plateau(opt$par)
+  if (length(low)) {
+    .warn_variance_plateau(param_names[low], opt$par[low], restart_record,
+                           can_restart = !profile && !blp)
+  }
+
+  # (a share-matching fit's failure is judged with the variance, below)
+  if (!blp) {
+    .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
+                           polish_asked, scale = if (scale_vars != "none") map$scale)
   }
 
   # Estimate at the optimum (natural units)
@@ -1965,10 +2200,29 @@ run_mxlogit <- function(
   if (blp && !is.null(vcov_result$It)) {
     # The outer convergence certificate: half the total gradient's squared
     # length in the curvature along the share constraint, over the mean weight
+    # (NA where that curvature is not positive definite: no certificate then,
+    # as for the polish's decrement)
     g_c <- s_hat$gradient[c_idx]
-    fit$optimizer$concentration$decrement <- tryCatch(
-      0.5 * sum(g_c * solve(vcov_result$It, g_c)) / mean(input_data$weights),
-      error = function(e) NA_real_)
+    fit$optimizer$concentration$decrement <- tryCatch({
+      chol(vcov_result$It)
+      0.5 * sum(g_c * solve(vcov_result$It, g_c)) / mean(input_data$weights)
+    }, error = function(e) NA_real_)
+  }
+  # The optimizer's failure code at the share constraint's maximum: the outer
+  # decrement certifies the point, where the curvature is positive definite and
+  # the decrement below polish_control's tolerance
+  if (blp && .optimizer_failed(opt, optimizer)) {
+    dec <- fit$optimizer$concentration$decrement
+    if (isTRUE(dec < polish_control$tol_decrement)) {
+      fit$message <- paste0("Outer decrement ", format(signif(dec, 3)),
+                            " below tol_decrement; the optimizer: ",
+                            paste(as.character(opt$message), collapse = "; "))
+      fit$convergence <- if (identical(optimizer %||% "nloptr", "nloptr")) 1L else 0L
+    } else {
+      .warn_optimizer_failed(opt, optimizer, theta_init, NULL, scale_vars, FALSE,
+                             decrement = dec %||% NA_real_, can_polish = FALSE,
+                             scale = if (scale_vars != "none") map$scale)
+    }
   }
   fit["vcov"] <- list(vcov_result$vcov)
   fit["se"] <- list(vcov_result$se)
@@ -1999,7 +2253,8 @@ run_mxlogit <- function(
 #' @param id_col Name of the column identifying choice situations
 #' @param alt_col Name of the column identifying alternatives
 #' @param choice_col Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)
-#' @param covariate_cols Vector of names of columns to be used as covariates
+#' @param covariate_cols Vector of names of columns to be used as covariates;
+#'   \code{NULL} where every coefficient is random
 #' @param random_var_cols Vector of names of columns to be used as random variables
 #' @param weights Optional vector of weights, one per choice situation in the
 #'   prepared order (ascending id; see Details). If NULL, equal weights are

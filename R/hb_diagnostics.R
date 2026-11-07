@@ -60,7 +60,8 @@
   Ff <- stats::fft(padded)
   S <- Ff * Conj(Ff)
   ac <- Re(stats::fft(S, inverse = TRUE))
-  ac[seq_len(n)] / (L * n)
+  # (nextn() returns an integer: L * n would overflow from about 32,768 draws)
+  ac[seq_len(n)] / (as.numeric(L) * n)
 }
 
 #' Rank-normalized ESS (Geyer initial monotone sequence) for one parameter

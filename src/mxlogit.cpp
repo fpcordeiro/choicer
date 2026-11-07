@@ -620,7 +620,9 @@ inline void mxl_unit_score_cont(const MxlUnitData& ud, MxlUnitScratch& sc,
   const int K_w = ud.W.n_cols;
 
   // Beta block (X_u loaded by mxl_unit_load)
-  score.subvec(par.idx_beta_start, par.idx_mu_start - 1) = sc.X_u.t() * sc.d_bar;
+  if (par.idx_mu_start > par.idx_beta_start) {
+    score.subvec(par.idx_beta_start, par.idx_mu_start - 1) = sc.X_u.t() * sc.d_bar;
+  }
 
   if (K_w > 0) {
     // Mu block (only if rc_mean)
@@ -1420,8 +1422,10 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
             zc_a.zeros();
 
             // beta sub-block
-            zc_a.subvec(idx_beta_start, idx_mu_start - 1) =
-                sc.X_u.row(row - sc.r0).t();
+            if (idx_mu_start > idx_beta_start) {
+              zc_a.subvec(idx_beta_start, idx_mu_start - 1) =
+                  sc.X_u.row(row - sc.r0).t();
+            }
 
             // mu sub-block  (nonzero only when rc_mean)
             if (rc_mean) {

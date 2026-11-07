@@ -148,6 +148,14 @@
 #'   the optimizer's, the polish's reason appended to the message. A polish
 #'   that stops with an error (the Hessian's memory check, say) keeps its
 #'   last accepted point and warns (class \code{choicer_polish_failed}).
+#'   An optimizer that reports a failure (nloptr's negative codes, such as
+#'   \code{NLOPT_FAILURE} where L-BFGS's line search gives up, and optim's 10,
+#'   51 and 52) may have returned its start values or stopped at the maximum,
+#'   which its code cannot tell. Without a polish, a Newton phase of no steps
+#'   then checks its point: \code{fit$optimizer$polish} records it
+#'   (\code{iterations} 0), and a point it certifies takes the success code
+#'   as above. A point no polish certified keeps the failure code and warns
+#'   (class \code{choicer_optimizer_failed}).
 #' @section Newton phase (polish):
 #' The polish does not change the estimator. From wherever the optimizer
 #' stopped, it takes Newton steps on the curvature of the log-likelihood and
@@ -366,15 +374,19 @@ run_mnlogit <- function(
   # inside alternatives; with "bhhh", the BHHH matrix of the choice situations
   # must have the rank of the parameters it moves.
   unbounded <- if (n_asc > 0) .warn_unbounded_constants(input_list$alt_mapping)
-  held <- .polish_held(polish, unbounded, param_map$asc, n_params,
-                       n_units = length(input_list$M))
   # Where the reference is never chosen, the alternatives that anchor the
   # constants against a common rise (.polish_anchors())
-  anchors <- .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
-                             input_list$alt_mapping,
-                             list(alt_idx = input_list$alt_idx,
-                                  choice_idx = input_list$choice_idx,
-                                  M = input_list$M))
+  polish_setup <- function(polish) {
+    held <- .polish_held(polish, unbounded, param_map$asc, n_params,
+                         n_units = length(input_list$M))
+    list(held = held,
+         anchors = .polish_anchors(polish, unbounded, held, NULL, param_map$asc,
+                                   input_list$alt_mapping,
+                                   list(alt_idx = input_list$alt_idx,
+                                        choice_idx = input_list$choice_idx,
+                                        M = input_list$M)))
+  }
+  setup <- polish_setup(polish)
 
   # --- The optimizer's coordinates: column scales (scale_vars) ----------------
   # scale_vars chooses the optimizer's coordinates, theta = m * theta_t + c
@@ -439,9 +451,17 @@ run_mnlogit <- function(
   # ("newton") or the BHHH matrix ("bhhh", its weights unsquared), in natural
   # units (.polish_fit()), on the raw objective, whose overflow flag fails a
   # trial point; under scale_vars = "none" the steps' scales come from one
-  # BHHH pass at the optimizer's solution. The estimator is unchanged.
+  # BHHH pass at the optimizer's solution. The estimator is unchanged. Where
+  # the optimizer reports a failure and no polish was asked for, a phase of no
+  # steps checks its point.
   polish_record <- NULL
   curv <- NULL
+  polish_asked <- polish != "none"
+  if (.check_optimizer_stop(polish, opt, optimizer)) {
+    polish <- "newton"
+    polish_control$max_iter <- 0L
+    setup <- polish_setup(polish)
+  }
   if (polish != "none") {
     curv_kernel <- if (polish == "newton") mnl_loglik_hessian_parallel else mnl_bhhh_parallel
     curv_f <- function(theta) {
@@ -461,11 +481,11 @@ run_mnlogit <- function(
     pf <- .polish_fit(polish, opt, elapsed, param_names, model_f, curv_f,
                       lower = NULL, upper = NULL,
                       scale = if (scale_vars != "none") map$scale,
-                      control = polish_control, held = held,
+                      control = polish_control, held = setup$held,
                       keep_curvature = reuse, unbounded = unbounded,
                       asc_idx = param_map$asc,
                       alt_mapping = input_list$alt_mapping,
-                      anchors = anchors,
+                      anchors = setup$anchors,
                       weights = input_list$weights, optimizer = optimizer)
     opt <- pf$opt
     polish_record <- pf$record
@@ -475,6 +495,8 @@ run_mnlogit <- function(
     # after the variance frees it
     pf <- NULL
   }
+  .warn_optimizer_failed(opt, optimizer, theta_init, polish_record, scale_vars,
+                         polish_asked, scale = if (scale_vars != "none") map$scale)
 
   theta_hat <- opt$par
   names(theta_hat) <- param_names
@@ -652,6 +674,7 @@ prepare_mnl_data <- function(
   cs_provenance <- attr(data, "choice_sampling")
 
   # Check if all relevant variables are available
+  .need_covariates(covariate_cols)
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
   if (!is.null(weights) && !is.null(weights_col)) {
     stop("Supply only one of `weights` or `weights_col`.")

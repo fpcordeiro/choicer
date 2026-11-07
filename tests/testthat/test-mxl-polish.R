@@ -356,7 +356,7 @@ test_that("the polish gets the fit's coordinates, bounds and settings", {
   expect_false(all(seen$scale == 1))
   expect_identical(unname(seen$lower), rep(-Inf, n))
   expect_identical(unname(seen$upper), c(2, rep(Inf, n - 1L)))
-  expect_identical(seen$control, .polish_control(list(max_iter = 3L)))
+  expect_identical(seen$control, .polish_control(list(max_iter = 3L), restart = TRUE))
   expect_identical(seen$method, "bhhh")
   expect_identical(seen$fixed, integer())
 })
@@ -748,9 +748,12 @@ test_that("constants that diverge together leave the polish unconverged", {
   dt <- data.table::as.data.table(sim$data)
   dt <- dt[id %in% dt[alt != 0L & choice == 1L, id] & alt != 0L]
   fit_o <- function(...) {
-    expect_warning(fit <- mxp_fit(dt, control = list(maxeval = 200L),
-                                  polish = "newton", ...),
-                   class = "choicer_unbounded_constants")
+    # (the line search can give up where constants diverge, a warning of its own)
+    suppressWarnings(
+      expect_warning(fit <- mxp_fit(dt, control = list(maxeval = 200L),
+                                    polish = "newton", ...),
+                     class = "choicer_unbounded_constants"),
+      classes = "choicer_optimizer_failed")
     fit
   }
   # a decrement below tol_decrement at the optimizer's solution

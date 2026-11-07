@@ -490,9 +490,9 @@ test_that("a scaled nested logit's start values must have one value per paramete
     fixed = TRUE)
 })
 
-test_that("\"bhhh\" is the mixed and multinomial logits' default, \"none\" the nested logit's", {
+test_that("\"bhhh\" is every logit's default", {
   default <- function(f) eval(formals(f)$scale_vars)[1L]
-  expect_identical(default(run_mxlogit), "bhhh")
+  expect_identical(default(choicer::run_mxlogit), "bhhh")
   expect_identical(default(run_mnlogit), "bhhh")
-  expect_identical(default(run_nestlogit), "none")
+  expect_identical(default(run_nestlogit), "bhhh")
 })

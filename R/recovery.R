@@ -10,8 +10,11 @@
 # Convergence dispatch ---------------------------------------------------------
 # Different optimizers use incompatible convergence codes. nloptr returns
 # positive integers for success (1-4 = tolerance-based stop), stats::optim
-# returns 0 on success. Custom optimizers are treated permissively.
+# returns 0 on success. Custom optimizers are treated permissively. A sampler
+# (MNP, HB) has no stop code: a fit it returned counts. Its chains' mixing is
+# read elsewhere (HB's fit-time check warns; MNP has none).
 .is_converged <- function(fit) {
+  if (inherits(fit, c("choicer_mnp", "choicer_hb"))) return(TRUE)
   code <- fit$convergence
   if (is.null(code) || length(code) != 1L || !is.finite(code)) return(FALSE)
   nm <- fit$optimizer$name %||% "nloptr"
@@ -300,11 +303,19 @@ print.choicer_recovery <- function(x, print_asc = attr(x, "print_asc") %||% 20L,
 #' Each iteration calls `sim_fun(seed = seed + r - 1L)`, then `fit_fun(sim)`.
 #' Write `sim_fun` as a closure that captures `N`, `J`, and other DGP settings
 #' and forwards `seed`. Write `fit_fun` as a closure that takes a
-#' `choicer_sim` and returns a fitted `choicer_fit` object, wrapping any
-#' data-preparation, draws, or optimizer-control setup.
+#' `choicer_sim` and returns a fitted object, wrapping any data-preparation,
+#' draws, or optimizer-control setup. The samplers' fits (`choicer_mnp`,
+#' `choicer_hb`) have no likelihood and no optimizer's code: their reps carry
+#' `loglik = NA`, and `converged` is `TRUE` for a fit returned, so it says
+#' nothing about the chains' mixing (hierarchical Bayes fits warn of that at
+#' fit time; [rhat()] and [ess()] read any fit's draws). Where the truth
+#' differs by replication (hierarchical Bayes alternative effects, drawn by
+#' seed), `summary()` shows its mean in `true` and compares each replication
+#' with its own, and `sd_est` includes the truth's variation.
 #'
 #' @param sim_fun Function of `seed` returning a `choicer_sim`.
-#' @param fit_fun Function of a `choicer_sim` returning a `choicer_fit`.
+#' @param fit_fun Function of a `choicer_sim` returning a fitted object that
+#'   [recovery_table()] accepts.
 #' @param R Number of replications.
 #' @param seed Base integer seed. Replication `r` uses `seed + r - 1L`.
 #' @param parallel Logical; if `TRUE` and `future.apply` is available, run
@@ -362,7 +373,8 @@ monte_carlo <- function(sim_fun, fit_fun, R = 100, seed = 1L,
     rt[, `:=`(
       rep_id    = r,
       seed      = seeds[r],
-      loglik    = as.numeric(stats::logLik(fit)),
+      # no likelihood on the samplers' fits (MNP, HB)
+      loglik    = if (inherits(fit, "choicer_fit")) as.numeric(stats::logLik(fit)) else NA_real_,
       converged = .is_converged(fit),
       time_sec  = elapsed,
       error     = NA_character_
@@ -413,7 +425,17 @@ summary.choicer_mc <- function(object, level = 0.95, print_asc = 20L, ...) {
   reps <- object$replications
   keep <- reps[!is.na(parameter) & converged == TRUE]
 
+  # Coverage at `level`, from each rep's estimate and SE: the reps' own
+  # `covers` is recovery_table()'s, at its default 0.95
+  half_width <- stats::qnorm(1 - (1 - level) / 2) * keep[["se"]]
+  data.table::set(keep, j = "covers",
+                  value = keep[["true"]] >= keep[["estimate"]] - half_width &
+                    keep[["true"]] <= keep[["estimate"]] + half_width)
+
+  # (by parameter, not by truth: hierarchical Bayes alternative effects are
+  # drawn anew per seed, and each rep is compared with its own)
   agg <- keep[, .(
+    true       = mean(true),
     R_success  = .N,
     mean_est   = mean(estimate, na.rm = TRUE),
     median_est = stats::median(estimate, na.rm = TRUE),
@@ -422,7 +444,7 @@ summary.choicer_mc <- function(object, level = 0.95, print_asc = 20L, ...) {
     bias       = mean(estimate - true, na.rm = TRUE),
     rmse       = sqrt(mean((estimate - true)^2, na.rm = TRUE)),
     coverage   = mean(covers, na.rm = TRUE)
-  ), by = .(parameter, group, true)]
+  ), by = .(parameter, group)]
   data.table::setcolorder(agg, c("parameter", "group", "true", "R_success",
                                  "mean_est", "median_est", "sd_est", "mean_se",
                                  "bias", "rmse", "coverage"))

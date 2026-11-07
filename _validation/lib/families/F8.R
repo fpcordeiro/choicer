@@ -132,9 +132,9 @@ f8_estimands <- function(fit, sim) {
 
 # One method's fit and record. `weighted` fits the WESML weights with the
 # sandwich; `nested` fits the NL with the ground nest in the "bhhh"
-# coordinates (with run_nestlogit()'s default "none", 18 and 15 of 30 WESML
-# fits (quota, random) stopped at the start with NLOPT_FAILURE; with
-# "bhhh", none of 120 NL fits did, and the log-likelihoods agreed to 2e-9
+# coordinates, run_nestlogit()'s default since the finding (with "none", 18 and
+# 15 of 30 WESML fits (quota, random) stopped at the start with NLOPT_FAILURE;
+# with "bhhh", none of 120 NL fits did, and the log-likelihoods agreed to 2e-9
 # where both converged), multi-start on every 10th rep. Every fit is
 # polished by Newton and must converge (require_converged(), lib/fit.R).
 # est$gated: every coefficient under random sizes from the MNL population
