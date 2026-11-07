@@ -651,7 +651,8 @@ normalize_optim_result <- function(result) {
 #'
 #' Called after the polish, which sets a success code on the point it
 #' certifies (class `choicer_optimizer_failed`). The estimates are named as
-#' the start values where they are.
+#' the start values where they are, to within the rounding of the optimizer's
+#' coordinates.
 #'
 #' @param opt The optimizer's result, as the polish left it.
 #' @param optimizer The `optimizer` argument.
@@ -661,18 +662,20 @@ normalize_optim_result <- function(result) {
 #' @param polish_asked Whether the fit asked for a polish.
 #' @param decrement The decrement at the point returned, or NA.
 #' @param can_polish Whether the model allows a polish.
+#' @param scale The coordinates' scales (`map$scale`), or NULL where the
+#'   optimizer works in natural units, without a round trip.
 #' @returns NULL, invisibly.
 #' @noRd
 .warn_optimizer_failed <- function(opt, optimizer, start, record, scale_vars,
                                    polish_asked,
                                    decrement = record$decrement %||% NA_real_,
-                                   can_polish = TRUE) {
+                                   can_polish = TRUE, scale = NULL) {
   if (!.optimizer_failed(opt, optimizer)) return(invisible(NULL))
-  said <- record$optimizer$message %||% opt$message
-  stuck <- all(abs(opt$par - start) <= 1e-10 * (abs(start) + 1))
+  said <- paste(as.character(record$optimizer$message %||% opt$message), collapse = "; ")
+  code <- record$optimizer$convergence %||% opt$convergence
+  stuck <- isTRUE(all(abs(opt$par - start) <= 1e-12 * (abs(start) + (scale %||% 0))))
   warning(warningCondition(paste0(
-    "The optimizer reports a failure (",
-    paste(as.character(said), collapse = "; "), ")",
+    "The optimizer reports a failure (", if (nzchar(said)) said else paste("code", code), ")",
     if (stuck) {
       " and returned the start values, so the estimates are not a maximum of the likelihood"
     } else {
@@ -683,8 +686,7 @@ normalize_optim_result <- function(result) {
     },
     ". ",
     if (scale_vars == "none") {
-      paste0("Under scale_vars = \"none\" its first trial step is one gradient ",
-             "long in the parameters' own units: try scale_vars = \"bhhh\". ")
+      "scale_vars = \"none\" works in the parameters' own units: try scale_vars = \"bhhh\". "
     },
     if (polish_asked) {
       "Start elsewhere (theta_init), or allow the polish more steps (polish_control)."

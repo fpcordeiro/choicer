@@ -1994,14 +1994,17 @@ run_mxlogit <- function(
   if (blp && !is.null(vcov_result$It)) {
     # The outer convergence certificate: half the total gradient's squared
     # length in the curvature along the share constraint, over the mean weight
+    # (NA where that curvature is not positive definite: no certificate then,
+    # as for the polish's decrement)
     g_c <- s_hat$gradient[c_idx]
-    fit$optimizer$concentration$decrement <- tryCatch(
-      0.5 * sum(g_c * solve(vcov_result$It, g_c)) / mean(input_data$weights),
-      error = function(e) NA_real_)
+    fit$optimizer$concentration$decrement <- tryCatch({
+      chol(vcov_result$It)
+      0.5 * sum(g_c * solve(vcov_result$It, g_c)) / mean(input_data$weights)
+    }, error = function(e) NA_real_)
   }
   # The optimizer's failure code at the share constraint's maximum: the outer
-  # decrement certifies the point, where it can be computed and is below
-  # polish_control's tolerance
+  # decrement certifies the point, where the curvature is positive definite and
+  # the decrement below polish_control's tolerance
   if (blp && .optimizer_failed(opt, optimizer)) {
     dec <- fit$optimizer$concentration$decrement
     if (isTRUE(dec < polish_control$tol_decrement)) {
@@ -2011,7 +2014,8 @@ run_mxlogit <- function(
       fit$convergence <- if (identical(optimizer %||% "nloptr", "nloptr")) 1L else 0L
     } else {
       .warn_optimizer_failed(opt, optimizer, theta_init, NULL, scale_vars, FALSE,
-                             decrement = dec %||% NA_real_, can_polish = FALSE)
+                             decrement = dec %||% NA_real_, can_polish = FALSE,
+                             scale = if (scale_vars != "none") map$scale)
     }
   }
   fit["vcov"] <- list(vcov_result$vcov)

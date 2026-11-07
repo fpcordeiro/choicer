@@ -96,6 +96,7 @@
     include_outside_option = TRUE
 ) {
   ## Preliminary housekeeping --------------------------------------------------
+  .need_covariates(c(covariate_cols, cf_residual_col))
   needed <- unique(c(person_col, id_col, alt_col, choice_col, covariate_cols,
                      alt_covariate_cols, cf_residual_col))
   # Names first: they need no data, and reading the data can stop for a

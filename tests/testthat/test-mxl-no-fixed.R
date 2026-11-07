@@ -15,21 +15,32 @@ nofix_data <- function(N = 120L, J = 3L, seed = 2L) {
              choice = as.integer(u == ave(u, id, FUN = max)))
 }
 
-test_that("the preparations return an empty X, row for row, without covariates", {
+test_that("prepare_mxl_data() returns an empty X, row for row, without covariates", {
   d <- nofix_data()
   n <- nrow(d)
   for (cols in list(NULL, character(0))) {
-    for (input in list(prepare_mxl_data(d, "id", "alt", "choice", cols, "w1"),
-                       prepare_mnl_data(d, "id", "alt", "choice", cols),
-                       prepare_nl_data(d, "id", "alt", "choice", cols, "nest"))) {
-      expect_identical(dim(input$X), c(n, 0L))
-      expect_type(input$X, "double")
-      expect_length(input$alt_idx, n)
-    }
+    input <- prepare_mxl_data(d, "id", "alt", "choice", cols, "w1")
+    expect_identical(dim(input$X), c(n, 0L))
+    expect_type(input$X, "double")
+    expect_length(input$alt_idx, n)
   }
   # the multinomial probit's design holds the constants then
   mnp <- prepare_mnp_data(d, "id", "alt", "choice", NULL)
   expect_identical(ncol(mnp$X), 2L)
+})
+
+test_that("the preparations of models that need a covariate stop by name", {
+  d <- nofix_data()
+  msg <- "`covariate_cols` must name at least one column"
+  for (cols in list(NULL, character(0))) {
+    expect_error(prepare_mnl_data(d, "id", "alt", "choice", cols), msg, fixed = TRUE)
+    expect_error(prepare_nl_data(d, "id", "alt", "choice", cols, "nest"), msg, fixed = TRUE)
+    expect_error(prepare_mnp_data(d, "id", "alt", "choice", cols, use_asc = FALSE), msg, fixed = TRUE)
+    expect_error(prepare_hmnl_data(d, "id", "alt", "choice", cols, person_col = "person"),
+                 msg, fixed = TRUE)
+    expect_error(prepare_hmnp_data(d, "id", "alt", "choice", cols, person_col = "person"),
+                 msg, fixed = TRUE)
+  }
 })
 
 test_that("an all-random mixed logit equals the model with a fixed column held at 0", {

@@ -325,7 +325,9 @@ prepare_mnp_data <- function(
     use_asc = TRUE
 ) {
   ## Preliminary housekeeping --------------------------------------------------
-  # Check if all relevant variables are available
+  # Check if all relevant variables are available (with constants, the design
+  # has columns without covariates)
+  if (!use_asc) .need_covariates(covariate_cols)
   needed <- c(id_col, alt_col, choice_col, covariate_cols)
   # Names first: they need no data, and reading the data can stop for a
   # missing bit64.
