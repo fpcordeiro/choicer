@@ -266,6 +266,74 @@ test_that("a \"blp\" point is not certified where the outer curvature is not pos
   expect_identical(fit$optimizer$concentration$decrement, NA_real_)
 })
 
+test_that("a \"blp\" stationary point that is not a maximum is not certified under any se_method", {
+  # One random coefficient, its standard deviation near zero: there the outer
+  # gradient vanishes at a minimum of the log-likelihood along the share
+  # constraint. The BHHH matrix of se_method = "bhhh" is positive definite
+  # there too, so its decrement (about 1e-27) certified the point.
+  set.seed(1)
+  N <- 300L
+  J <- 3L
+  w <- rnorm(N * J)
+  u <- rep(rnorm(N, sd = 2), each = J) * w - log(-log(runif(N * J)))
+  id <- rep(seq_len(N), each = J)
+  d <- data.table::data.table(id = id, alt = rep(seq_len(J), N), w = w,
+                              choice = as.integer(u == ave(u, id, FUN = max)))
+  fit_at <- function(start = NULL, se = "hessian", control = list()) {
+    suppressMessages(run_mxlogit(
+      d, "id", "alt", "choice", NULL, "w", S = 20L, draws = "generate", seed = 17L,
+      concentrate_out_asc = "blp", theta_init = start, se_method = se,
+      scale_vars = "none", control = control))
+  }
+  f <- suppressWarnings(fit_at(control = list(maxeval = 1L)))
+  gp <- choicer:::.mxl_gen_params(f$draws_info, N = N)
+  inner <- choicer:::.mxl_blp_setup(
+    f$data, isTRUE(f$include_outside_option), gp$eta_draws,
+    list(seed = gp$gen_seed, scramble = gp$gen_scramble, S = gp$gen_S),
+    f$rc_dist, f$rc_correlation, f$rc_mean, f$param_map, f$n_params,
+    f$share_targets, choicer:::.concentrate_control(list(), "blp"))
+  solve_at <- function(x) inner$solve(x, unname(coef(f)[f$param_map$asc]), 2000L)
+  x <- stats::uniroot(function(x) solve_at(x)$gradient[1], c(-6, -4), tol = 1e-12)$root
+  s <- solve_at(x)
+  # (the negated log-likelihood's second derivative along the constraint)
+  curv <- (solve_at(x + 1e-3)$gradient[1] - solve_at(x - 1e-3)$gradient[1]) / 2e-3
+  expect_lt(curv, 0)
+
+  local_mocked_bindings(run_nloptr = fail_at_start, .package = "choicer")
+  for (se in c("hessian", "bhhh")) {
+    expect_warning(fit <- fit_at(c(x, s$delta), se), class = "choicer_optimizer_failed")
+    expect_identical(fit$convergence, -1L)
+    expect_identical(fit$optimizer$concentration$decrement, NA_real_)
+  }
+})
+
+test_that("a \"blp\" maximum is certified under se_method = \"bhhh\" by the Hessian's decrement", {
+  d <- ofail_data(N = 150L, scale = 1)
+  fit_with <- function(...) {
+    suppressMessages(run_mxlogit(d, "id", "alt", "choice", "z", "x", S = 20L, seed = 3L,
+                                 concentrate_out_asc = "blp", keep_data = TRUE, ...))
+  }
+  local_mocked_bindings(run_nloptr = fail_after_run, .package = "choicer")
+  hess <- expect_no_warning(fit_with())
+  bhhh <- expect_no_warning(fit_with(se_method = "bhhh"))
+  expect_identical(bhhh$convergence, 1L)
+  expect_equal(unname(coef(bhhh)), unname(coef(hess)), tolerance = 1e-10)
+  # the check's decrement is the Hessian's, as under se_method = "hessian"
+  expect_equal(bhhh$optimizer$concentration$decrement,
+               hess$optimizer$concentration$decrement, tolerance = 1e-8)
+  expect_lt(bhhh$optimizer$concentration$decrement, 1e-8)
+  # and the curvature the check takes is the one the Hessian's variance forms
+  expect_equal(choicer:::.blp_outer_curvature(hess),
+               choicer:::.blp_fit_vcov(hess, "hessian")$It, tolerance = 1e-12)
+  # where the variance fails before forming its curvature, the check evaluates it
+  local_mocked_bindings(.blp_fit_vcov = function(...) stop("no variance here"),
+                        .package = "choicer")
+  expect_warning(novc <- fit_with(), "no variance here", class = "choicer_vcov_failed")
+  expect_identical(novc$convergence, 1L)
+  expect_equal(novc$optimizer$concentration$decrement,
+               hess$optimizer$concentration$decrement, tolerance = 1e-8)
+})
+
 test_that("the start values are named only where the estimates are them", {
   warned <- function(par, start, scale = NULL) {
     w <- tryCatch(

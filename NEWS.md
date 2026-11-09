@@ -1613,7 +1613,11 @@ released versions unless it says otherwise.
   without a polish, by a Newton phase of no steps, one pass of the Hessian,
   recorded in `fit$optimizer$polish` (`iterations` 0), and under
   `concentrate_out_asc = "blp"` by the outer decrement, now `NA` where the
-  curvature along the share constraint is not positive definite. A point so
+  curvature along the share constraint is not positive definite. That
+  curvature is the Hessian's whatever `se_method`: the BHHH matrix, which
+  `"bhhh"`'s variance takes, is positive semidefinite at a minimum or a saddle
+  of the likelihood too, so under `"bhhh"` the check evaluates the Hessian, and
+  `fit$optimizer$concentration$decrement` reports it. A point so
   certified takes the success code, `fit$message` keeping the optimizer's; any
   other keeps the failure code and warns (class `choicer_optimizer_failed`),
   saying whether the estimates are the start values. Estimates and variances do

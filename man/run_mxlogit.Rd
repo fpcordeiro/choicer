@@ -474,7 +474,8 @@ polish, a Newton phase of no steps then checks its point:
 \code{fit$optimizer$polish} records it (\code{iterations} 0), and a point
 it certifies takes the success code as above; under
 \code{concentrate_out_asc = "blp"}, which takes no polish, the outer
-decrement below \code{polish_control}'s \code{tol_decrement} does. A point
+decrement below \code{polish_control}'s \code{tol_decrement} does, in the
+Hessian's curvature whatever \code{se_method} (below). A point
 nothing certified keeps the failure code and warns (class
 \code{choicer_optimizer_failed}). With
 \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
@@ -521,8 +522,13 @@ put that alternative's share below its target), \code{decrement}
 (\eqn{g^\top \tilde I^{-1} g / 2}{g' It^(-1) g / 2} over the mean
 weight, \eqn{g}{g} the total gradient in \eqn{\theta_c}{theta_c} and
 \eqn{\tilde I}{It} the curvature along the share constraint, from the
-fit's variance: the BHHH matrix's under \code{se_method = "bhhh"}, and the
-decrement \code{NA} without a variance) and \code{elapsed_time}.
+fit's variance: the BHHH matrix's under \code{se_method = "bhhh"};
+\code{NA} without a variance, or where that curvature is not positive
+definite. Where the optimizer reports a failure, it is the Hessian's
+whatever \code{se_method}, which the check evaluates where the variance
+has none: the BHHH matrix is positive semidefinite at a minimum or a
+saddle of the likelihood too, so it certifies no maximum) and
+\code{elapsed_time}.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.

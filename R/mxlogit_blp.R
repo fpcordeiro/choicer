@@ -789,14 +789,7 @@
     }
   }
   if (is.null(gp)) gp <- .mxl_gen_params(object$draws_info, N = U)
-  args <- list(theta = theta, X = d$X, W = d$W, alt_idx = d$alt_idx,
-               choice_idx = d$choice_idx, M = d$M, weights = d$weights,
-               eta_draws = gp$eta_draws, rc_dist = object$rc_dist,
-               rc_correlation = object$rc_correlation, rc_mean = object$rc_mean,
-               use_asc = TRUE,
-               include_outside_option = isTRUE(object$include_outside_option),
-               gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble,
-               gen_S = gp$gen_S, Ti = d$Ti)
+  args <- .blp_kernel_args(object, gp)
   model_based <- type %in% c("hessian", "bhhh")
   jac <- do.call(mxl_blp_jacobian_parallel,
                  c(args, list(variance = sample && model_based)))
@@ -837,6 +830,83 @@
   }
   .blp_vcov(info, jac, switch(type, robust = "sandwich", type), tv, meat, n_c,
             D = if (!(sample && model_based)) D)
+}
+
+#' The likelihood kernels' arguments at a share-matching fit's estimate
+#'
+#' @param object A fitted `choicer_mxl` with `share_targets` and its data.
+#' @param gp Draw arguments from `.mxl_gen_params()`.
+#' @returns A named list of the kernels' arguments, the constants included.
+#' @noRd
+.blp_kernel_args <- function(object, gp) {
+  d <- object[["data"]]
+  list(theta = object$coefficients, X = d$X, W = d$W, alt_idx = d$alt_idx,
+       choice_idx = d$choice_idx, M = d$M, weights = d$weights,
+       eta_draws = gp$eta_draws, rc_dist = object$rc_dist,
+       rc_correlation = object$rc_correlation, rc_mean = object$rc_mean,
+       use_asc = TRUE,
+       include_outside_option = isTRUE(object$include_outside_option),
+       gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble,
+       gen_S = gp$gen_S, Ti = d$Ti)
+}
+
+#' The Hessian's curvature along the share constraint
+#'
+#' It = I_cc + D' I_dc + I_cd D + D' I_dd D, with I the negated Hessian of
+#' the weighted log-likelihood at the estimate and D = d delta / d theta_c', as
+#' `.blp_vcov()` forms it from the Hessian (`se_method` `"hessian"`,
+#' `"sandwich"` and `"cluster"`). The outer certificate takes it whatever the
+#' standard errors: the BHHH matrix of `"bhhh"` is positive semidefinite at
+#' any point, a minimum or a saddle of the likelihood included, and so does not
+#' tell a maximum. With the sample's own shares It is the Hessian of the
+#' concentrated log-likelihood; with supplied targets, where the constants'
+#' score is not zero in the sample, it omits that score times the curvature of
+#' delta(theta_c).
+#'
+#' @param object A fitted `choicer_mxl` with `share_targets` and its data.
+#' @param gp Draw arguments from `.mxl_gen_params()`, or NULL.
+#' @returns It (n_c x n_c), or NULL where the share Jacobian on the constants
+#'   is not positive definite.
+#' @noRd
+.blp_outer_curvature <- function(object, gp = NULL) {
+  n <- length(object$coefficients)
+  n_c <- n - length(object$param_map$asc)
+  ci <- seq_len(n_c)
+  di <- n_c + seq_len(n - n_c)
+  if (is.null(gp)) {
+    gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(object[["data"]])))
+  }
+  args <- .blp_kernel_args(object, gp)
+  jac <- do.call(mxl_blp_jacobian_parallel, c(args, list(variance = FALSE)))
+  s1 <- spd_solve(jac$jacobian, jac$jacobian[di, ci, drop = FALSE],
+                  .jacobi_scale_of(diag(jac$jacobian)[di]), n_c)
+  if (s1$info != 0L) return(NULL)
+  D <- -s1$x
+  rm(s1, jac)
+  info <- do.call(mxl_hessian_parallel, args)
+  I_dc <- info[di, ci, drop = FALSE]
+  I_dd_D <- info[di, di, drop = FALSE] %*% D
+  DI <- crossprod(D, I_dc)
+  It <- info[ci, ci, drop = FALSE] + DI + t(DI) + crossprod(D, I_dd_D)
+  (It + t(It)) / 2
+}
+
+#' The outer decrement of a share-matching fit
+#'
+#' Half the total gradient's squared length in the curvature along the share
+#' constraint, over the mean weight: NA where that curvature is not positive
+#' definite (no certificate then, as for the polish's decrement).
+#'
+#' @param It The curvature along the constraint.
+#' @param g_c The total gradient in theta_c (of the negated log-likelihood).
+#' @param w_bar The mean weight.
+#' @returns A number, or NA.
+#' @noRd
+.blp_outer_decrement <- function(It, g_c, w_bar) {
+  tryCatch({
+    chol(It)
+    0.5 * sum(g_c * solve(It, g_c)) / w_bar
+  }, error = function(e) NA_real_)
 }
 
 #' The share-matching constants' inner solve for a model and its draws

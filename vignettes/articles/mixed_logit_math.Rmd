@@ -1794,7 +1794,13 @@ omits its own.
 C_\delta^{-1} g_\delta$ at the estimate (the derivative of $-\ell$ with respect to each free
 constant's target count: positive where the micro data would put that alternative's share
 below its target) and the outer certificate
-$\frac12 \nabla^\top \tilde{\mathcal I}^{-1} \nabla$ over the mean weight. `logLik()`, AIC
+$\frac12 \nabla^\top \tilde{\mathcal I}^{-1} \nabla$ over the mean weight. Where the
+optimizer reports a failure, that certificate decides whether the point is a maximum, and
+$\tilde{\mathcal I}$ is then the Hessian's whatever the standard errors: the BHHH matrix is
+positive semidefinite at a minimum or a saddle of $\ell$ too. With the sample's own shares
+the Hessian's $\tilde{\mathcal I}$ is the concentrated log-likelihood's curvature; with
+supplied targets, where the constants' score is not zero in the sample, it omits that score
+times the curvature of $\delta(\theta_c)$. `logLik()`, AIC
 and BIC are the likelihood at the constrained estimate, and a likelihood-ratio test between
 such fits is not $\chi^2$. `conditional_tastes()`'s identities rest on the scores of $\mu$
 and $\Sigma$ being zero, which they are not here. `predict(type = "shares")` and `blp(fit,
