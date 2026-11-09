@@ -605,6 +605,12 @@ print.choicer_mc_summary <- function(x, print_asc = x$print_asc %||% 20L, ...) {
 #' components) where a small number of reps with vanishing SE inflate the
 #' raw z-moments without indicating an estimator defect.
 #'
+#' Where the truth differs by replication (hierarchical Bayes alternative
+#' effects, drawn by seed), `true` shows its mean and every diagnostic measures
+#' each estimate from its own truth: `bias` is the mean error, `sd_emp` the
+#' error's standard deviation, without the spread of the truths, and `z` and the
+#' coverage are the replication's own.
+#'
 #' @param mc A `choicer_mc` object returned by [monte_carlo()].
 #' @param level Confidence level for the Wilson bands on coverage rates.
 #'   Defaults to `0.95`.
@@ -662,9 +668,10 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
     ))
   }
 
-  # Parameters are identified by (parameter, group, true). The same parameter
-  # name in different DGP arms would collide, but within a choicer_mc those
-  # are a single scenario so (parameter, true) uniquely identifies a row.
+  # Parameters are identified by (parameter, group). The same parameter name in
+  # different DGP arms would collide, but within a choicer_mc those are a single
+  # scenario. The truth may still differ by replication (hierarchical Bayes
+  # alternative effects, drawn by seed).
   keep <- reps[!is.na(parameter) & converged == TRUE]
   R_total <- reps[, data.table::uniqueN(rep_id)]
 
@@ -678,27 +685,34 @@ mc_asymptotics <- function(mc, level = 0.95, se_col = "se",
   rows <- keep[, {
     est <- estimate
     se_i <- get(se_col)
-    tru <- true[1]
+    # `tru` is the truth, or its mean where it differs by replication. `est_c`
+    # then moves each estimate by its truth's distance from that mean: est_c -
+    # tru is the replication's own error, and the spread of est_c the
+    # estimator's, without the truth's. A truth common to all, NA or infinite
+    # included, leaves the estimates as they are.
+    common <- data.table::uniqueN(true) == 1L
+    tru <- if (common) true[1] else mean(true, na.rm = TRUE)
+    est_c <- if (common) est else est - (true - tru)
     n <- .N
     mean_est <- mean(est, na.rm = TRUE)
-    sd_emp   <- stats::sd(est, na.rm = TRUE)
+    sd_emp   <- stats::sd(est_c, na.rm = TRUE)
     mean_se  <- mean(se_i, na.rm = TRUE)
-    bias_v   <- mean_est - tru
+    bias_v   <- mean(est_c, na.rm = TRUE) - tru
     bias_mc_se <- bias_v / (sd_emp / sqrt(n))
     se_ratio <- if (is.finite(sd_emp) && sd_emp > 0) mean_se / sd_emp else NA_real_
     se_med   <- stats::median(se_i, na.rm = TRUE)
     se_ratio_med <- if (is.finite(sd_emp) && sd_emp > 0) se_med / sd_emp else NA_real_
 
     # Winsorized diagnostics
-    est_w <- .winsorize(est)
+    est_w <- .winsorize(est_c)
     se_w_vec <- .winsorize(se_i)
     sd_emp_w <- stats::sd(est_w, na.rm = TRUE)
     bias_w   <- mean(est_w, na.rm = TRUE) - tru
     mean_se_w <- mean(se_w_vec, na.rm = TRUE)
     se_ratio_w <- if (is.finite(sd_emp_w) && sd_emp_w > 0) mean_se_w / sd_emp_w else NA_real_
 
-    # z vs truth
-    z <- (est - tru) / se_i
+    # z vs each replication's truth
+    z <- (est - true) / se_i
     z <- z[is.finite(z)]
     n_z <- length(z)
 

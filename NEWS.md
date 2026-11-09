@@ -1667,6 +1667,12 @@ released versions unless it says otherwise.
   mixing (read `rhat()` and `ess()`). `summary()` now gives one row per parameter
   where the truth differs by replication (hierarchical Bayes alternative effects),
   each replication compared with its own.
+- `mc_asymptotics()` took the first replication's truth for all of them, so that
+  where the truth differs by replication (hierarchical Bayes alternative effects,
+  drawn by seed) its bias, z statistics and coverage were against the wrong value,
+  and its empirical SD included the truth's spread. Each estimate is now measured
+  from its own truth, and `true` shows their mean. A truth common to all
+  replications gives the same numbers.
 
 # choicer 0.2.1
 
