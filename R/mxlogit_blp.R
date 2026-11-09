@@ -789,7 +789,14 @@
     }
   }
   if (is.null(gp)) gp <- .mxl_gen_params(object$draws_info, N = U)
-  args <- .blp_kernel_args(object, gp)
+  args <- list(theta = theta, X = d$X, W = d$W, alt_idx = d$alt_idx,
+               choice_idx = d$choice_idx, M = d$M, weights = d$weights,
+               eta_draws = gp$eta_draws, rc_dist = object$rc_dist,
+               rc_correlation = object$rc_correlation, rc_mean = object$rc_mean,
+               use_asc = TRUE,
+               include_outside_option = isTRUE(object$include_outside_option),
+               gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble,
+               gen_S = gp$gen_S, Ti = d$Ti)
   model_based <- type %in% c("hessian", "bhhh")
   jac <- do.call(mxl_blp_jacobian_parallel,
                  c(args, list(variance = sample && model_based)))
@@ -832,72 +839,59 @@
             D = if (!(sample && model_based)) D)
 }
 
-#' The likelihood kernels' arguments at a share-matching fit's estimate
+#' The outer objective's Hessian of a share-matching fit, by differences
 #'
-#' @param object A fitted `choicer_mxl` with `share_targets` and its data.
-#' @param gp Draw arguments from `.mxl_gen_params()`.
-#' @returns A named list of the kernels' arguments, the constants included.
+#' Central differences of the outer gradient (the total derivative of the
+#' negated log-likelihood along delta(theta_c), `.mxl_blp_solver()`'s), one
+#' pair of solves of the constants per continuous parameter, each started
+#' along the estimate's implicit derivative: the curvature of the objective
+#' the optimizer minimized. The curvature along the share constraint that the
+#' variance takes, It = T' I T with T = (identity; D), omits the constants'
+#' score times the curvature of delta(theta_c), and that score is not zero
+#' where the shares match, whatever the targets: the share equations average
+#' each situation's choice probabilities over the draws, while the score
+#' weights each draw by its posterior given the situation's choices. Under
+#' `se_method = "bhhh"` It is also the BHHH matrix's, positive semidefinite
+#' at any point.
+#'
+#' @param solve The inner solve, `.mxl_blp_solver()`'s function.
+#' @param theta_c The continuous parameters at the estimate.
+#' @param at The solve's record there (its `delta` and `extra`).
+#' @param h The steps, one per continuous parameter.
+#' @param max_iter The solves' evaluations of the shares.
+#' @returns List: `hessian`, the differences' symmetrized matrix (n_c x n_c),
+#'   or NULL with `why`, the reason, where a solve failed.
 #' @noRd
-.blp_kernel_args <- function(object, gp) {
-  d <- object[["data"]]
-  list(theta = object$coefficients, X = d$X, W = d$W, alt_idx = d$alt_idx,
-       choice_idx = d$choice_idx, M = d$M, weights = d$weights,
-       eta_draws = gp$eta_draws, rc_dist = object$rc_dist,
-       rc_correlation = object$rc_correlation, rc_mean = object$rc_mean,
-       use_asc = TRUE,
-       include_outside_option = isTRUE(object$include_outside_option),
-       gen_seed = gp$gen_seed, gen_scramble = gp$gen_scramble,
-       gen_S = gp$gen_S, Ti = d$Ti)
-}
-
-#' The Hessian's curvature along the share constraint
-#'
-#' It = I_cc + D' I_dc + I_cd D + D' I_dd D, with I the negated Hessian of
-#' the weighted log-likelihood at the estimate and D = d delta / d theta_c', as
-#' `.blp_vcov()` forms it from the Hessian (`se_method` `"hessian"`,
-#' `"sandwich"` and `"cluster"`). The outer certificate takes it whatever the
-#' standard errors: the BHHH matrix of `"bhhh"` is positive semidefinite at
-#' any point, a minimum or a saddle of the likelihood included, and so does not
-#' tell a maximum. With the sample's own shares It is the Hessian of the
-#' concentrated log-likelihood; with supplied targets, where the constants'
-#' score is not zero in the sample, it omits that score times the curvature of
-#' delta(theta_c).
-#'
-#' @param object A fitted `choicer_mxl` with `share_targets` and its data.
-#' @param gp Draw arguments from `.mxl_gen_params()`, or NULL.
-#' @returns It (n_c x n_c), or NULL where the share Jacobian on the constants
-#'   is not positive definite.
-#' @noRd
-.blp_outer_curvature <- function(object, gp = NULL) {
-  n <- length(object$coefficients)
-  n_c <- n - length(object$param_map$asc)
-  ci <- seq_len(n_c)
-  di <- n_c + seq_len(n - n_c)
-  if (is.null(gp)) {
-    gp <- .mxl_gen_params(object$draws_info, N = length(.unit_first(object[["data"]])))
+.blp_outer_hessian <- function(solve, theta_c, at, h, max_iter) {
+  n_c <- length(theta_c)
+  best <- list(theta_c = theta_c, extra = at$extra)
+  H <- matrix(0, n_c, n_c)
+  for (k in seq_len(n_c)) {
+    th <- list(theta_c, theta_c)
+    th[[1L]][k] <- theta_c[k] + h[k]
+    th[[2L]][k] <- theta_c[k] - h[k]
+    g <- vector("list", 2L)
+    for (i in 1:2) {
+      r <- solve(th[[i]], at$delta, max_iter, best)
+      if (!isTRUE(r$converged)) {
+        return(list(hessian = NULL,
+                    why = r$error %||% r$message %||% "the solve did not converge"))
+      }
+      g[[i]] <- r$gradient[seq_len(n_c)]
+    }
+    H[, k] <- (g[[1L]] - g[[2L]]) / (th[[1L]][k] - th[[2L]][k])
   }
-  args <- .blp_kernel_args(object, gp)
-  jac <- do.call(mxl_blp_jacobian_parallel, c(args, list(variance = FALSE)))
-  s1 <- spd_solve(jac$jacobian, jac$jacobian[di, ci, drop = FALSE],
-                  .jacobi_scale_of(diag(jac$jacobian)[di]), n_c)
-  if (s1$info != 0L) return(NULL)
-  D <- -s1$x
-  rm(s1, jac)
-  info <- do.call(mxl_hessian_parallel, args)
-  I_dc <- info[di, ci, drop = FALSE]
-  I_dd_D <- info[di, di, drop = FALSE] %*% D
-  DI <- crossprod(D, I_dc)
-  It <- info[ci, ci, drop = FALSE] + DI + t(DI) + crossprod(D, I_dd_D)
-  (It + t(It)) / 2
+  list(hessian = (H + t(H)) / 2, why = NULL)
 }
 
 #' The outer decrement of a share-matching fit
 #'
-#' Half the total gradient's squared length in the curvature along the share
-#' constraint, over the mean weight: NA where that curvature is not positive
+#' Half the total gradient's squared length in a curvature of the outer
+#' objective (the variance's along the share constraint, or the differences'
+#' Hessian), over the mean weight: NA where that curvature is not positive
 #' definite (no certificate then, as for the polish's decrement).
 #'
-#' @param It The curvature along the constraint.
+#' @param It The curvature.
 #' @param g_c The total gradient in theta_c (of the negated log-likelihood).
 #' @param w_bar The mean weight.
 #' @returns A number, or NA.

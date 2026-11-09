@@ -1076,7 +1076,7 @@
 #'   it certifies takes the success code as above; under
 #'   \code{concentrate_out_asc = "blp"}, which takes no polish, the outer
 #'   decrement below \code{polish_control}'s \code{tol_decrement} does, in the
-#'   Hessian's curvature whatever \code{se_method} (below). A point
+#'   outer objective's own curvature (below). A point
 #'   nothing certified keeps the failure code and warns (class
 #'   \code{choicer_optimizer_failed}). With
 #'   \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
@@ -1125,11 +1125,15 @@
 #'   \eqn{\tilde I}{It} the curvature along the share constraint, from the
 #'   fit's variance: the BHHH matrix's under \code{se_method = "bhhh"};
 #'   \code{NA} without a variance, or where that curvature is not positive
-#'   definite. Where the optimizer reports a failure, it is the Hessian's
-#'   whatever \code{se_method}, which the check evaluates where the variance
-#'   has none: the BHHH matrix is positive semidefinite at a minimum or a
-#'   saddle of the likelihood too, so it certifies no maximum) and
-#'   \code{elapsed_time}.
+#'   definite. Where the optimizer reports a failure, it is the decrement in
+#'   the outer objective's own Hessian whatever \code{se_method}, from central
+#'   differences of the outer gradient, two solves of the constants per
+#'   continuous parameter: \eqn{\tilde I}{It} omits the constants' score times
+#'   the curvature of the constants in \eqn{\theta_c}{theta_c}, a score that is
+#'   not zero where the shares match (the share equations average the choice
+#'   probabilities over the draws, the score weights each draw by its
+#'   posterior), so it can be positive definite at a minimum, and the BHHH
+#'   matrix is positive semidefinite at any point) and \code{elapsed_time}.
 #' @references Revelt, D. and Train, K. (1998). Mixed logit with repeated
 #'   choices: households' choices of appliance efficiency level.
 #'   \emph{Review of Economics and Statistics} 80(4), 647-657.
@@ -2184,12 +2188,11 @@ run_mxlogit <- function(
   # the variance would otherwise evaluate at the same point (curv, above). An
   # error here (a kernel's memory check, say) returns the estimates without a
   # variance, with a warning (.vcov_failed()).
-  gp_fit <- list(eta_draws = eta_draws, gen_seed = gen_seed_cpp,
-                 gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp)
   vcov_result <- tryCatch(
     .assemble_score_vcov(
       fit, type = if (se_method == "sandwich") "robust" else se_method,
-      gp = gp_fit,
+      gp = list(eta_draws = eta_draws, gen_seed = gen_seed_cpp,
+                gen_scramble = gen_scramble_cpp, gen_S = gen_S_cpp),
       what = "`cluster_col`",
       bread = if (polish == "newton") curv,
       bhhh = if (polish == "bhhh") curv
@@ -2216,22 +2219,25 @@ run_mxlogit <- function(
   }
   # The optimizer's failure code at the share constraint's maximum: the outer
   # decrement certifies the point, where the curvature is positive definite and
-  # the decrement below polish_control's tolerance. The curvature is the
-  # Hessian's whatever the standard errors: under "bhhh" the variance's is the
-  # BHHH matrix's, positive semidefinite at any point, a minimum or a saddle of
-  # the likelihood included, so the check evaluates the Hessian, as it does
-  # where the variance failed before forming its curvature.
+  # the decrement below polish_control's tolerance. The curvature is the outer
+  # objective's own, whatever the standard errors, from central differences of
+  # its gradient (.blp_outer_hessian()): the variance's curvature along the
+  # constraint omits the constants' score times the curvature of
+  # delta(theta_c), which can turn a minimum's curvature positive, and under
+  # "bhhh" it is the BHHH matrix's. The steps are 1e-3 of the BHHH diagonal's
+  # scales at the estimate, as the polish takes them.
   if (blp && .optimizer_failed(opt, optimizer)) {
-    if (se_method == "bhhh" || is.null(vcov_result$It)) {
-      It_h <- tryCatch(.blp_outer_curvature(fit, gp_fit), error = function(e) {
-        message("The outer certificate's Hessian stopped with an error: ",
-                conditionMessage(e))
-        NULL
-      })
-      fit$optimizer$concentration$decrement <-
-        if (is.null(It_h)) NA_real_ else .blp_outer_decrement(It_h, g_c, w_bar)
-      rm(It_h)
+    oh <- tryCatch(
+      .blp_outer_hessian(blp_solve, opt$par[c_idx], s_hat,
+                         1e-3 * .polish_scales(model_f, opt$par)[c_idx],
+                         concentrate_control$max_iter),
+      error = function(e) list(hessian = NULL, why = conditionMessage(e)))
+    if (!is.null(oh$why)) {
+      message("The outer certificate's differences could not be formed: ", oh$why, ".")
     }
+    fit$optimizer$concentration$decrement <-
+      if (is.null(oh$hessian)) NA_real_ else .blp_outer_decrement(oh$hessian, g_c, w_bar)
+    rm(oh)
     dec <- fit$optimizer$concentration$decrement
     if (isTRUE(dec < polish_control$tol_decrement)) {
       fit$message <- paste0("Outer decrement ", format(signif(dec, 3)),
