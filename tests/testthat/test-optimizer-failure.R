@@ -266,11 +266,13 @@ test_that("a \"blp\" point is not certified where the outer curvature is not pos
   expect_identical(fit$optimizer$concentration$decrement, NA_real_)
 })
 
-test_that("a \"blp\" stationary point that is not a maximum is not certified under any se_method", {
-  # One random coefficient, its standard deviation near zero: there the outer
-  # gradient vanishes at a minimum of the log-likelihood along the share
-  # constraint. The BHHH matrix of se_method = "bhhh" is positive definite
-  # there too, so its decrement (about 1e-27) certified the point.
+# One random coefficient, its standard deviation near zero: there the outer
+# gradient of "blp" vanishes at a minimum of the log-likelihood along the share
+# constraint. The BHHH matrix of se_method = "bhhh" is positive definite there
+# too, so its decrement (about 1e-27) certified the point. Returns the fit
+# from a start (`fit_at`), that point (`start`) and the negated
+# log-likelihood's second derivative along the constraint there (`curv`).
+blp_stationary_min <- function() {
   set.seed(1)
   N <- 300L
   J <- 3L
@@ -280,7 +282,7 @@ test_that("a \"blp\" stationary point that is not a maximum is not certified und
   d <- data.table::data.table(id = id, alt = rep(seq_len(J), N), w = w,
                               choice = as.integer(u == ave(u, id, FUN = max)))
   fit_at <- function(start = NULL, se = "hessian", control = list()) {
-    suppressMessages(run_mxlogit(
+    suppressMessages(choicer::run_mxlogit(
       d, "id", "alt", "choice", NULL, "w", S = 20L, draws = "generate", seed = 17L,
       concentrate_out_asc = "blp", theta_init = start, se_method = se,
       scale_vars = "none", control = control))
@@ -294,14 +296,16 @@ test_that("a \"blp\" stationary point that is not a maximum is not certified und
     f$share_targets, choicer:::.concentrate_control(list(), "blp"))
   solve_at <- function(x) inner$solve(x, unname(coef(f)[f$param_map$asc]), 2000L)
   x <- stats::uniroot(function(x) solve_at(x)$gradient[1], c(-6, -4), tol = 1e-12)$root
-  s <- solve_at(x)
-  # (the negated log-likelihood's second derivative along the constraint)
   curv <- (solve_at(x + 1e-3)$gradient[1] - solve_at(x - 1e-3)$gradient[1]) / 2e-3
-  expect_lt(curv, 0)
+  list(fit_at = fit_at, start = c(x, solve_at(x)$delta), curv = curv)
+}
 
+test_that("a \"blp\" stationary point that is not a maximum is not certified under any se_method", {
+  pt <- blp_stationary_min()
+  expect_lt(pt$curv, 0)
   local_mocked_bindings(run_nloptr = fail_at_start, .package = "choicer")
   for (se in c("hessian", "bhhh")) {
-    expect_warning(fit <- fit_at(c(x, s$delta), se), class = "choicer_optimizer_failed")
+    expect_warning(fit <- pt$fit_at(pt$start, se), class = "choicer_optimizer_failed")
     expect_identical(fit$convergence, -1L)
     expect_identical(fit$optimizer$concentration$decrement, NA_real_)
   }
