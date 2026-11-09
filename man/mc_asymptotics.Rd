@@ -91,6 +91,12 @@ additional \code{pass_z_w} flag (Winsorized skew within the same band as
 two flags are designed for boundary scenarios (e.g., near-zero variance
 components) where a small number of reps with vanishing SE inflate the
 raw z-moments without indicating an estimator defect.
+
+Where the truth differs by replication (hierarchical Bayes alternative
+effects, drawn by seed), \code{true} shows its mean and every diagnostic measures
+each estimate from its own truth: \code{bias} is the mean error, \code{sd_emp} the
+error's standard deviation, without the spread of the truths, and \code{z} and the
+coverage are the replication's own.
 }
 \examples{
 \donttest{

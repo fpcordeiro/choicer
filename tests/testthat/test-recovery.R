@@ -250,3 +250,33 @@ test_that("monte_carlo() runs on MNP and HB fits, which have no likelihood", {
   expect_true(all(delta$R_success == 2L))
   expect_true(all(is.finite(delta$sd_est)))
 })
+
+test_that("mc_asymptotics() reads HB alternative effects against each replication's truth", {
+  skip_on_cran()
+  # The alternative effects' truth is drawn by seed, so it differs by
+  # replication; mc_asymptotics() must agree with the replication rows. Taking
+  # the first replication's truth for all of them reported a bias of 0.97 and a
+  # coverage of 0.25 for an effect whose replications all cover theirs.
+  hb <- suppressWarnings(suppressMessages(monte_carlo(
+    function(seed) simulate_hmnl_data(N = 40, T = 2, J = 3, seed = seed),
+    function(sim) {
+      run_hmnlogit(sim$data, "task", "alt", "choice", c("x1", "x2"), person_col = "pid",
+                   alt_covariate_cols = "z1", mcmc = list(R = 200, burn = 50))
+    },
+    R = 4L, seed = 7L, progress = FALSE)))
+  reps <- hb$replications[group == "delta"]
+  expect_true(all(reps[, data.table::uniqueN(true), by = parameter]$V1 == 4L))
+  ref <- reps[, list(true = mean(true), bias = mean(estimate - true),
+                     sd_emp = stats::sd(estimate - true),
+                     mean_z = mean((estimate - true) / se),
+                     cov95 = mean(covers)), by = parameter]
+  a <- data.table::as.data.table(suppressMessages(mc_asymptotics(hb)))[group == "delta"]
+  a <- a[match(ref$parameter, a$parameter)]
+  expect_identical(a$parameter, ref$parameter)
+  expect_equal(a$true, ref$true)
+  expect_equal(a$bias, ref$bias)
+  expect_equal(a$sd_emp, ref$sd_emp)
+  expect_equal(a$bias_mc_se, ref$bias / (ref$sd_emp / 2))
+  expect_equal(a$mean_z, ref$mean_z)
+  expect_equal(a$cov95, ref$cov95)
+})

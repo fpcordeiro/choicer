@@ -212,6 +212,67 @@ test_that("mc_asymptotics handles multiple parameters independently", {
   expect_true(all(out$pass_se_ratio))
 })
 
+test_that("mc_asymptotics measures each estimate from its replication's truth", {
+  # A truth drawn by seed (hierarchical Bayes alternative effects): the errors
+  # are the estimator's, the truth's spread is not. Taking the first
+  # replication's truth for all of them moves every one of these.
+  set.seed(2036)
+  R <- 400
+  truth <- stats::rnorm(R, mean = 1, sd = 2)
+  error <- stats::rnorm(R, mean = 0.02, sd = 0.1)
+  ses <- rep(0.1, R)
+
+  mc <- make_fake_choicer_mc(
+    parameter = rep("delta_1", R), group = rep("delta", R),
+    true = truth, estimates = truth + error, ses = ses
+  )
+  out <- mc_asymptotics(mc)
+
+  expect_equal(nrow(out), 1L)
+  expect_equal(out$true, mean(truth))
+  expect_equal(out$mean_est, mean(truth + error))
+  expect_equal(out$bias, mean(error))
+  expect_equal(out$sd_emp, stats::sd(error))
+  expect_equal(out$se_ratio, 0.1 / stats::sd(error))
+  expect_equal(out$bias_mc_se, mean(error) / (stats::sd(error) / sqrt(R)))
+  expect_equal(out$mean_z, mean(error / ses))
+  expect_equal(out$cov95, mean(abs(error / ses) <= stats::qnorm(0.975)))
+  expect_equal(out$sd_emp_w, stats::sd(choicer:::.winsorize(error)))
+  expect_true(out$pass_se_ratio)
+  expect_true(out$pass_cov95)
+})
+
+test_that("mc_asymptotics leaves a truth common to all replications as it was", {
+  set.seed(2037)
+  R <- 200
+  estimates <- stats::rnorm(R, mean = 1.1, sd = 0.3)
+  mc <- single_param_mc(estimates, rep(0.3, R), true = 1.1)
+  out <- mc_asymptotics(mc)
+
+  expect_identical(out$true, 1.1)
+  expect_identical(out$bias, mean(estimates) - 1.1)
+  expect_identical(out$sd_emp, stats::sd(estimates))
+  expect_identical(out$bias_w, mean(choicer:::.winsorize(estimates)) - 1.1)
+  expect_identical(out$mean_z, mean((estimates - 1.1) / 0.3))
+})
+
+test_that("mc_asymptotics keeps the spread where a common truth is not finite", {
+  # (a parameter whose truth the study leaves NA has no bias, but its spread and
+  # its SE ratio are the estimates')
+  set.seed(2038)
+  R <- 200
+  estimates <- stats::rnorm(R, mean = 0.5, sd = 0.1)
+  for (truth in c(NA_real_, -Inf)) {
+    out <- mc_asymptotics(single_param_mc(estimates, rep(0.1, R), true = truth))
+    expect_identical(out$sd_emp, stats::sd(estimates))
+    expect_identical(out$sd_emp_w, stats::sd(choicer:::.winsorize(estimates)))
+    expect_equal(out$se_ratio, 0.1 / stats::sd(estimates))
+    expect_true(out$pass_se_ratio)
+  }
+  expect_true(is.na(mc_asymptotics(single_param_mc(estimates, rep(0.1, R), true = NA_real_))$bias))
+  expect_identical(mc_asymptotics(single_param_mc(estimates, rep(0.1, R), true = -Inf))$bias, Inf)
+})
+
 test_that("mc_asymptotics winsorized columns differ from raw under heavy tails", {
   set.seed(2034)
   R <- 500
