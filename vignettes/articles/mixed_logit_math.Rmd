@@ -1794,13 +1794,17 @@ omits its own.
 C_\delta^{-1} g_\delta$ at the estimate (the derivative of $-\ell$ with respect to each free
 constant's target count: positive where the micro data would put that alternative's share
 below its target) and the outer certificate
-$\frac12 \nabla^\top \tilde{\mathcal I}^{-1} \nabla$ over the mean weight. Where the
-optimizer reports a failure, that certificate decides whether the point is a maximum, and
-$\tilde{\mathcal I}$ is then the Hessian's whatever the standard errors: the BHHH matrix is
-positive semidefinite at a minimum or a saddle of $\ell$ too. With the sample's own shares
-the Hessian's $\tilde{\mathcal I}$ is the concentrated log-likelihood's curvature; with
-supplied targets, where the constants' score is not zero in the sample, it omits that score
-times the curvature of $\delta(\theta_c)$. `logLik()`, AIC
+$\frac12 \nabla^\top \tilde{\mathcal I}^{-1} \nabla$ over the mean weight.
+$\tilde{\mathcal I}$ is not the curvature of $\ell(\theta_c, \delta(\theta_c))$, which adds
+$\sum_j \bar g_{\delta j}\, \partial^2 \delta_j / \partial\theta_c \partial\theta_c^\top$,
+$\bar g_\delta$ the constants' score at the solution. That score is not zero even with the
+sample's own shares (§5.8: the share equations average each situation's probabilities over
+the draws, the score weights each draw by its posterior given the choices). The term is
+$O_p(\sqrt N)$ against the $O(N)$ of $\tilde{\mathcal I}$, which is why the variance can omit
+it, but it can turn a minimum's curvature positive. So where the optimizer reports a failure
+and the certificate decides whether the point is a maximum, the decrement is taken in the
+objective's own Hessian, from central differences of its gradient (two solves of the
+constants per continuous parameter), whatever the standard errors. `logLik()`, AIC
 and BIC are the likelihood at the constrained estimate, and a likelihood-ratio test between
 such fits is not $\chi^2$. `conditional_tastes()`'s identities rest on the scores of $\mu$
 and $\Sigma$ being zero, which they are not here. `predict(type = "shares")` and `blp(fit,

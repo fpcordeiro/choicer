@@ -266,26 +266,36 @@ test_that("a \"blp\" point is not certified where the outer curvature is not pos
   expect_identical(fit$optimizer$concentration$decrement, NA_real_)
 })
 
-# One random coefficient, its standard deviation near zero: there the outer
-# gradient of "blp" vanishes at a minimum of the log-likelihood along the share
-# constraint. The BHHH matrix of se_method = "bhhh" is positive definite there
-# too, so its decrement (about 1e-27) certified the point. Returns the fit
-# from a start (`fit_at`), that point (`start`) and the negated
-# log-likelihood's second derivative along the constraint there (`curv`).
-blp_stationary_min <- function() {
-  set.seed(1)
-  N <- 300L
+# Stationary points of "blp" that are minima of the log-likelihood along the
+# share constraint, with the sample's own shares. "normal": one normal random
+# coefficient, its standard deviation near zero, where the BHHH matrix of
+# se_method = "bhhh" is positive definite too (its decrement, about 1e-27,
+# certified the point). "lognormal": one log-normal coefficient, where the
+# curvature along the constraint that the variance takes is positive definite
+# under the Hessian too (+8.1, against the objective's -5.3): it omits the
+# constants' score times the curvature of delta(theta_c), and that score is not
+# zero where the shares match. Returns the fit from a start (`fit_at`), the
+# point (`start`), the negated log-likelihood's second derivative along the
+# constraint there (`curv`, by differences of the outer gradient) and the
+# variance's curvature along the constraint (`It`, under the Hessian).
+blp_stationary_min <- function(design = c("normal", "lognormal")) {
+  design <- match.arg(design)
+  lognormal <- design == "lognormal"
+  set.seed(if (lognormal) 20L else 1L)
+  N <- if (lognormal) 40L else 300L
   J <- 3L
   w <- rnorm(N * J)
-  u <- rep(rnorm(N, sd = 2), each = J) * w - log(-log(runif(N * J)))
+  b <- if (lognormal) exp(rnorm(N, sd = 1)) else rnorm(N, sd = 2)
+  u <- rep(b, each = J) * w + (if (lognormal) rep(c(0, 1, -1), N) else 0) -
+    log(-log(runif(N * J)))
   id <- rep(seq_len(N), each = J)
   d <- data.table::data.table(id = id, alt = rep(seq_len(J), N), w = w,
                               choice = as.integer(u == ave(u, id, FUN = max)))
   fit_at <- function(start = NULL, se = "hessian", control = list()) {
     suppressMessages(choicer::run_mxlogit(
       d, "id", "alt", "choice", NULL, "w", S = 20L, draws = "generate", seed = 17L,
-      concentrate_out_asc = "blp", theta_init = start, se_method = se,
-      scale_vars = "none", control = control))
+      rc_dist = as.integer(lognormal), concentrate_out_asc = "blp", theta_init = start,
+      se_method = se, scale_vars = "none", control = control))
   }
   f <- suppressWarnings(fit_at(control = list(maxeval = 1L)))
   gp <- choicer:::.mxl_gen_params(f$draws_info, N = N)
@@ -293,25 +303,33 @@ blp_stationary_min <- function() {
     f$data, isTRUE(f$include_outside_option), gp$eta_draws,
     list(seed = gp$gen_seed, scramble = gp$gen_scramble, S = gp$gen_S),
     f$rc_dist, f$rc_correlation, f$rc_mean, f$param_map, f$n_params,
-    f$share_targets, choicer:::.concentrate_control(list(), "blp"))
-  solve_at <- function(x) inner$solve(x, unname(coef(f)[f$param_map$asc]), 2000L)
-  x <- stats::uniroot(function(x) solve_at(x)$gradient[1], c(-6, -4), tol = 1e-12)$root
-  curv <- (solve_at(x + 1e-3)$gradient[1] - solve_at(x - 1e-3)$gradient[1]) / 2e-3
-  list(fit_at = fit_at, start = c(x, solve_at(x)$delta), curv = curv)
+    f$share_targets, choicer:::.concentrate_control(list(tol_shares = 1e-13), "blp"))
+  solve_at <- function(x) inner$solve(x, unname(coef(f)[f$param_map$asc]), 4000L)
+  x <- stats::uniroot(function(x) solve_at(x)$gradient[1],
+                      if (lognormal) c(1.5, 1.75) else c(-6, -4), tol = 1e-12)$root
+  curv <- (solve_at(x + 1e-4)$gradient[1] - solve_at(x - 1e-4)$gradient[1]) / 2e-4
+  f$coefficients[] <- c(x, solve_at(x)$delta)
+  list(fit_at = fit_at, start = unname(coef(f)), curv = curv,
+       It = choicer:::.blp_fit_vcov(f, "hessian")$It[1, 1])
 }
 
 test_that("a \"blp\" stationary point that is not a maximum is not certified under any se_method", {
-  pt <- blp_stationary_min()
-  expect_lt(pt$curv, 0)
-  local_mocked_bindings(run_nloptr = fail_at_start, .package = "choicer")
-  for (se in c("hessian", "bhhh")) {
-    expect_warning(fit <- pt$fit_at(pt$start, se), class = "choicer_optimizer_failed")
-    expect_identical(fit$convergence, -1L)
-    expect_identical(fit$optimizer$concentration$decrement, NA_real_)
+  for (design in c("normal", "lognormal")) {
+    pt <- blp_stationary_min(design)
+    expect_lt(pt$curv, 0)
+    # (the variance's curvature along the constraint reads positive at the
+    # log-normal's minimum)
+    if (design == "lognormal") expect_gt(pt$It, 0)
+    local_mocked_bindings(run_nloptr = fail_at_start, .package = "choicer")
+    for (se in c("hessian", "bhhh")) {
+      expect_warning(fit <- pt$fit_at(pt$start, se), class = "choicer_optimizer_failed")
+      expect_identical(fit$convergence, -1L)
+      expect_identical(fit$optimizer$concentration$decrement, NA_real_)
+    }
   }
 })
 
-test_that("a \"blp\" maximum is certified under se_method = \"bhhh\" by the Hessian's decrement", {
+test_that("a \"blp\" maximum is certified by the objective's own curvature under any se_method", {
   d <- ofail_data(N = 150L, scale = 1)
   fit_with <- function(...) {
     suppressMessages(run_mxlogit(d, "id", "alt", "choice", "z", "x", S = 20L, seed = 3L,
@@ -320,22 +338,42 @@ test_that("a \"blp\" maximum is certified under se_method = \"bhhh\" by the Hess
   local_mocked_bindings(run_nloptr = fail_after_run, .package = "choicer")
   hess <- expect_no_warning(fit_with())
   bhhh <- expect_no_warning(fit_with(se_method = "bhhh"))
+  expect_identical(hess$convergence, 1L)
   expect_identical(bhhh$convergence, 1L)
-  expect_equal(unname(coef(bhhh)), unname(coef(hess)), tolerance = 1e-10)
-  # the check's decrement is the Hessian's, as under se_method = "hessian"
+  expect_lt(hess$optimizer$concentration$decrement, 1e-8)
+  # the same check whatever the standard errors
   expect_equal(bhhh$optimizer$concentration$decrement,
-               hess$optimizer$concentration$decrement, tolerance = 1e-8)
-  expect_lt(bhhh$optimizer$concentration$decrement, 1e-8)
-  # and the curvature the check takes is the one the Hessian's variance forms
-  expect_equal(choicer:::.blp_outer_curvature(hess),
-               choicer:::.blp_fit_vcov(hess, "hessian")$It, tolerance = 1e-12)
-  # where the variance fails before forming its curvature, the check evaluates it
+               hess$optimizer$concentration$decrement, tolerance = 1e-6)
+  # and where the variance fails
   local_mocked_bindings(.blp_fit_vcov = function(...) stop("no variance here"),
                         .package = "choicer")
   expect_warning(novc <- fit_with(), "no variance here", class = "choicer_vcov_failed")
   expect_identical(novc$convergence, 1L)
   expect_equal(novc$optimizer$concentration$decrement,
-               hess$optimizer$concentration$decrement, tolerance = 1e-8)
+               hess$optimizer$concentration$decrement, tolerance = 1e-6)
+})
+
+test_that(".blp_outer_hessian() differences the outer gradient", {
+  # gradient A theta + theta^2 / 2 (and a constant's entry, dropped): Hessian
+  # A + diag(theta), which central differences of a quadratic reach exactly
+  A <- matrix(c(4, 1, 0, 1, 3, -1, 0, -1, 2), 3L)
+  th0 <- c(0.3, -1, 2)
+  calls <- 0L
+  solve <- function(theta_c, delta0, max_iter, best) {
+    calls <<- calls + 1L
+    stopifnot(identical(best$theta_c, th0), identical(delta0, 0.5))
+    list(converged = TRUE, gradient = c(A %*% theta_c + theta_c^2 / 2, 99))
+  }
+  oh <- choicer:::.blp_outer_hessian(solve, th0, list(delta = 0.5, extra = NULL),
+                                     rep(1e-3, 3L), 10L)
+  expect_null(oh$why)
+  expect_equal(oh$hessian, A + diag(th0), tolerance = 1e-10)
+  expect_identical(calls, 6L)
+  # a solve that fails leaves no Hessian, and says why
+  fails <- function(...) list(converged = FALSE, message = "the share inversion stopped")
+  oh <- choicer:::.blp_outer_hessian(fails, th0, list(delta = 0.5), rep(1e-3, 3L), 10L)
+  expect_null(oh$hessian)
+  expect_identical(oh$why, "the share inversion stopped")
 })
 
 test_that("the start values are named only where the estimates are them", {

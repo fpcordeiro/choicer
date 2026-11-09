@@ -1613,12 +1613,17 @@ released versions unless it says otherwise.
   without a polish, by a Newton phase of no steps, one pass of the Hessian,
   recorded in `fit$optimizer$polish` (`iterations` 0), and under
   `concentrate_out_asc = "blp"` by the outer decrement, now `NA` where the
-  curvature along the share constraint is not positive definite. That
-  curvature is the Hessian's whatever `se_method`: the BHHH matrix, which
-  `"bhhh"`'s variance takes, is positive semidefinite at a minimum or a saddle
-  of the likelihood too, so under `"bhhh"` the check evaluates the Hessian, and
-  `fit$optimizer$concentration$decrement` reports it. A point so
-  certified takes the success code, `fit$message` keeping the optimizer's; any
+  outer objective's curvature is not positive definite. That curvature is the
+  objective's own whatever `se_method`, from central differences of the outer
+  gradient (two solves of the constants per continuous parameter), and
+  `fit$optimizer$concentration$decrement` reports its decrement. The variance's
+  curvature along the share constraint would not do: it omits the constants'
+  score times the curvature of the constants in the other parameters, a score
+  that is not zero where the shares match (the share equations average the
+  choice probabilities over the draws, the score weights each draw by its
+  posterior), and under `"bhhh"` it is the BHHH matrix's, positive semidefinite
+  at any point. Both certified a stationary minimum of the log-likelihood. A
+  point so certified takes the success code, `fit$message` keeping the optimizer's; any
   other keeps the failure code and warns (class `choicer_optimizer_failed`),
   saying whether the estimates are the start values. Estimates and variances do
   not change.

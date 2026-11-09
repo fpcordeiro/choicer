@@ -475,7 +475,7 @@ polish, a Newton phase of no steps then checks its point:
 it certifies takes the success code as above; under
 \code{concentrate_out_asc = "blp"}, which takes no polish, the outer
 decrement below \code{polish_control}'s \code{tol_decrement} does, in the
-Hessian's curvature whatever \code{se_method} (below). A point
+outer objective's own curvature (below). A point
 nothing certified keeps the failure code and warns (class
 \code{choicer_optimizer_failed}). With
 \code{concentrate_out_asc = "profile_likelihood"}, \code{fit$optimizer}
@@ -524,11 +524,15 @@ weight, \eqn{g}{g} the total gradient in \eqn{\theta_c}{theta_c} and
 \eqn{\tilde I}{It} the curvature along the share constraint, from the
 fit's variance: the BHHH matrix's under \code{se_method = "bhhh"};
 \code{NA} without a variance, or where that curvature is not positive
-definite. Where the optimizer reports a failure, it is the Hessian's
-whatever \code{se_method}, which the check evaluates where the variance
-has none: the BHHH matrix is positive semidefinite at a minimum or a
-saddle of the likelihood too, so it certifies no maximum) and
-\code{elapsed_time}.
+definite. Where the optimizer reports a failure, it is the decrement in
+the outer objective's own Hessian whatever \code{se_method}, from central
+differences of the outer gradient, two solves of the constants per
+continuous parameter: \eqn{\tilde I}{It} omits the constants' score times
+the curvature of the constants in \eqn{\theta_c}{theta_c}, a score that is
+not zero where the shares match (the share equations average the choice
+probabilities over the draws, the score weights each draw by its
+posterior), so it can be positive definite at a minimum, and the BHHH
+matrix is positive semidefinite at any point) and \code{elapsed_time}.
 }
 \description{
 Estimates a mixed logit model via simulated maximum likelihood.
