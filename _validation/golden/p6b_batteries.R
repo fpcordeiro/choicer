@@ -169,12 +169,14 @@ run_scale_kern <- function() {
 }
 
 # A fit's recorded outcome: the stripped value, warnings and messages without
-# the optimizer's run time (it varies run to run). Fits are called by name, so
-# that the stored call holds the symbol, not the function (whose body differs
-# between builds).
+# the optimizer's run time or the polish's (they vary run to run; a fit stopped
+# at its cap takes a polish of no steps). Fits are called by name, so that the
+# stored call holds the symbol, not the function (whose body differs between
+# builds).
 p6b_fit_val <- function(expr) {
   v <- p2_val(expr)
   v$messages <- v$messages[!startsWith(v$messages, "Optimization run time")]
+  v$messages <- sub(", [0-9]+h:[0-9]+m:[0-9.]+s\n?$", "", v$messages)
   v
 }
 
