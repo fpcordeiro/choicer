@@ -59,11 +59,23 @@ inline double mnl_thread_bytes(const ChoiceLayout& lay, const int K,
 // utilities into w.v shifted by their maximum, and the log of the denominator
 // returned: fill_choice_utilities() and stable_softmax(), on the thread's
 // arrays (stable_softmax_n() applies Armadillo's operations in its order).
-inline double mnl_softmax(const arma::vec& base_util, const ChoiceLayout& lay,
+// The utilities, X_i beta plus the rows' ASCs, are formed here, on X in
+// place, straight into w.v (BaseUtil).
+inline double mnl_softmax(const BaseUtil& base_util, const ChoiceLayout& lay,
                           const choicer_off i, const bool include_outside_option,
                           MnlWork& w) {
   const int m_i = lay.m(i);
-  const double* bu = base_util.memptr() + lay.row_off[i];
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+  double* v = w.v;
+  if (include_outside_option) v[0] = 0.0;
+  base_util.rows(static_cast<arma::uword>(lay.row_off[i]), m_i, v + o);
+  return stable_softmax_n(v, w.p, m_i + o);
+}
+
+// The same from utilities already formed, bu (m_i entries, left as they are):
+// mnl_predict(), which returns them.
+inline double mnl_softmax(const double* bu, const int m_i,
+                          const bool include_outside_option, MnlWork& w) {
   double* v = w.v;
   if (include_outside_option) {
     v[0] = 0.0;
@@ -215,7 +227,7 @@ CHOICER_ALWAYS_INLINE void mnl_situation_map(const ChoiceLayout& lay,
 // row order at scale 1.0, as scatter_delta_grad() adds them into the
 // n_params-vector.
 inline void mnl_situation_score(const arma::mat& X, const ChoiceLayout& lay,
-                                const arma::vec& base_util, const choicer_off i,
+                                const BaseUtil& base_util, const choicer_off i,
                                 const bool include_outside_option,
                                 const MnlSituationMap& mp, MnlWork& w,
                                 arma::vec& s_c) {
@@ -250,7 +262,7 @@ inline void mnl_situation_score(const arma::mat& X, const ChoiceLayout& lay,
 // kernel's loop as it was.
 template <bool OpgDiag>
 static void mnl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
-                              const arma::vec& base_util,
+                              const BaseUtil& base_util,
                               const arma::vec& weights, const int K,
                               const int n_params, const bool use_asc,
                               const bool include_outside_option,
@@ -448,23 +460,20 @@ Rcpp::List mnl_loglik_gradient_parallel(
   validate_choices(lay, include_outside_option, nullptr);
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
-  // diagonal, the constants' scores and the terms), X beta, the sums, the
-  // negated gradient and R's copies of it and of the diagonal. The pass
-  // allocates every thread's sums and buffers on the primary thread, for the
-  // team checked here.
+  // diagonal, the constants' scores and the terms), the sums, the negated
+  // gradient and R's copies of it and of the diagonal. The pass allocates
+  // every thread's sums and buffers on the primary thread, for the team
+  // checked here.
   const int n_threads = situation_team(lay);
   kernel_check_memory(
       "gradient", n_threads,
       mnl_thread_bytes(lay, K, n_params, opg_diag ? 3.0 : 1.0) +
           sizeof(OpgDiagTerms) + 3.0 * sizeof(std::vector<double>) +
           (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m)) + 8.0 * K : 0.0),
-      [&](const int) {
-        return 8.0 * static_cast<double>(lay.n_rows) +
-               (opg_diag ? 40.0 : 24.0) * n_params;
-      });
+      [&](const int) { return (opg_diag ? 40.0 : 24.0) * n_params; });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the pass
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -582,8 +591,8 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
   validate_choices(lay, include_outside_option, "mnl_bhhh_parallel");
 
   // Memory: each thread's slot map, compact score, a column of the update
-  // (every parameter, for the dense fallback) and situation buffers; X beta,
-  // the result and the threads' accumulators
+  // (every parameter, for the dense fallback) and situation buffers; the
+  // result and the threads' accumulators
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = situation_team(lay);
@@ -591,12 +600,11 @@ Rcpp::NumericMatrix mnl_bhhh_parallel(
                       mnl_map_bytes(J_d, lay.max_m, K) + 8.0 * (K + a_max + n_params + 32.0) +
                           mnl_thread_bytes(lay, K, n_params, 0.0),
                       [&](const int t) {
-                        return 8.0 * static_cast<double>(lay.n_rows) +
-                               sym_acc_need(n_params, K, t, acc_bytes);
+                        return sym_acc_need(n_params, K, t, acc_bytes);
                       });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // The result and the threads' accumulators, slot maps and buffers, all
   // allocated here on the primary thread
@@ -739,8 +747,8 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
 
   // Memory: per thread its slot map, compact score, situation buffers and
   // cluster sum, and its share of the chunks' cut parts (two per chunk, four
-  // chunks per thread); shared X beta, the result and the accumulators, and
-  // the sort's and the chunks' arrays.
+  // chunks per thread); shared, the result and the accumulators, and the
+  // sort's and the chunks' arrays.
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = kernel_team_threads(N);
@@ -749,8 +757,7 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
                           mnl_thread_bytes(lay, K, n_params, 0.0) +
                           9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
-                        return 8.0 * static_cast<double>(lay.n_rows) +
-                               sym_acc_need(n_params, K, t, acc_bytes) +
+                        return sym_acc_need(n_params, K, t, acc_bytes) +
                                8.0 * (static_cast<double>(N) + 2.0 * G +
                                       4.0 * t + 2.0);
                       });
@@ -785,8 +792,9 @@ Rcpp::NumericMatrix mnl_cluster_meat_parallel(
     for (; c < n_chunks; ++c) chunk[c] = N;
   }
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the loop (the
+  // situations come in the clusters' order, not X's)
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // The result and the threads' accumulators, slot maps, score buffers and
   // cluster sums, and the chunks' partial sums of their cut clusters (two per
@@ -912,17 +920,16 @@ arma::mat mnl_scores_parallel(
                bytes / 1073741824.0, N, n_params, max_bytes / 1073741824.0);
   }
 
-  // Memory: each thread's score and situation buffers; X beta, the N x n
-  // matrix and its copy into R
+  // Memory: each thread's score and situation buffers; the N x n matrix and
+  // its copy into R
   const int n_threads = situation_team(lay);
   kernel_check_memory("score matrix", n_threads,
                       mnl_thread_bytes(lay, K, n_params, 1.0), [&](const int) {
-                        return 8.0 * static_cast<double>(lay.n_rows) +
-                               16.0 * static_cast<double>(N) * n_params;
+                        return 16.0 * static_cast<double>(N) * n_params;
                       });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Output: one row per choice situation (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
@@ -1028,10 +1035,11 @@ Rcpp::List mnl_predict(
   const ChoiceLayout lay = choice_layout_build(X, alt_idx, M, use_asc, par.delta);
   const choicer_off N = lay.N;
 
-  // Pre-compute base utility for all individuals (single BLAS call). Every
-  // row belongs to one situation, so these are the utilities returned (the
-  // situations' copies of them made the same vector).
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the loop, into the
+  // vector returned: every row belongs to one situation, so each situation
+  // writes its own rows of it.
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
+  arma::vec utility(X.n_rows);
 
   // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
@@ -1052,8 +1060,10 @@ Rcpp::List mnl_predict(
       const int m_i = lay.m(i);
       const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
 
-      // Vector of choice probabilities
-      mnl_softmax(base_util, lay, i, include_outside_option, w);
+      // The situation's utilities, then its vector of choice probabilities
+      const double* u_i =
+          base_util.rows(start_idx, m_i, utility.memptr() + start_idx);
+      mnl_softmax(u_i, m_i, include_outside_option, w);
       std::copy(w.p + o, w.p + o + m_i, P_all.memptr() + start_idx);
     } // end of i loop
   }
@@ -1061,7 +1071,7 @@ Rcpp::List mnl_predict(
   // Return predicted choice probabilities and utilities
   return Rcpp::List::create(
     Rcpp::Named("choice_prob") = P_all,
-    Rcpp::Named("utility")  = base_util
+    Rcpp::Named("utility")  = utility
   );
 }
 
@@ -1076,12 +1086,12 @@ struct MnlSharesWork {
                                      static_cast<int>(work.size()))) {}
 };
 
-// Prediction of shares (internal function), from the base utilities of all
-// rows (X * beta plus the rows' ASCs), into `shares` (num_alts entries).
-// denominator is shares_denominator(weights), which the callers check before
-// they form the utilities.
+// Prediction of shares (internal function), from the base utilities (X * beta
+// plus the rows' ASCs, formed a situation at a time), into `shares` (num_alts
+// entries). denominator is shares_denominator(weights), which the caller
+// checks first.
 static void mnl_predict_shares_internal(
-    const arma::vec& base_util,        // sum(M) x 1 vector of base utilities
+    const BaseUtil& base_util,         // the base utilities, a situation at a time
     const ChoiceLayout& lay,           // layout of the stacked design
     const arma::vec& weights,          // N x 1 vector with weights for each observation
     const double denominator,          // sum of the weights
@@ -1197,8 +1207,7 @@ arma::vec mnl_predict_shares(
   const int num_alts = compute_J_total(lay.J, include_outside_option);
 
   const double denominator = shares_denominator(weights);
-  const arma::vec base_util =
-      compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
   MnlSharesWork ws(lay, num_alts);
   arma::vec global_shares(num_alts);
   mnl_predict_shares_internal(base_util, lay, weights, denominator, num_alts,
@@ -1219,7 +1228,8 @@ arma::vec mnl_predict_shares(
 // alike, and the sums are not compensated), and A_jj = sum w P_j (1 - P_j) and C_jb = sum w P_j P_b, b the
 // outside option or the situation's component's reference, in statements of
 // their own (a product shared with the shares' would change how GCC fuses
-// theirs). X beta is formed once per call and the threads' sums are added in
+// theirs). X beta is formed once per call, a row at a time as the kernels
+// form their base utilities (BaseUtil), and the threads' sums are added in
 // thread order. Where a situation lists a code twice, A and C take the
 // situation's total probability of each code (the derivative's exact terms).
 //
@@ -1519,7 +1529,12 @@ Rcpp::List mnl_blp_solve(
   const bool kahan = blp_compensate(ctl, static_cast<double>(lay.N), situation_team(lay));
   const bool kahan_w = blp_compensate_serial(ctl, static_cast<double>(lay.N));
   const double W = kahan_w ? blp_weight_sum(weights) : shares_denominator(weights);
-  const arma::vec Xb = X * beta;  // once: only delta changes across passes
+  // X beta, once: only delta changes across passes. Formed as the kernels
+  // form their base utilities, so that a pass's are those of
+  // mnl_predict_shares() whatever the BLAS.
+  arma::vec Xb(X.n_rows);
+  BaseUtil(X, beta, lay, false, delta).rows(0, static_cast<int>(lay.n_rows),
+                                             Xb.memptr());
 
   blp_check_start(delta, weights);
   const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
@@ -1712,7 +1727,7 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
 
   // Memory: each thread's slot map, a situation's blocks (BB, BD, the means
   // and K products), the non-finite-weight records, the NaN rows' marks and
-  // situation buffers; X beta, the result and the threads' accumulators
+  // situation buffers; the result and the threads' accumulators
   const int J_d = n_params - K;  // free constants
   const double a_max = std::min<double>(J_d, static_cast<double>(lay.max_m));
   const int n_threads = situation_team(lay);
@@ -1721,12 +1736,11 @@ Rcpp::NumericMatrix mnl_loglik_hessian_parallel(
                           8.0 * (K * (K + 2.0) + (K + 1.0) * a_max + (K + a_max + 1.0) + 64.0) +
                           7.0 * n_params + 128.0 + mnl_thread_bytes(lay, K, n_params, 0.0),
                       [&](const int t) {
-                        return 8.0 * static_cast<double>(lay.n_rows) +
-                               sym_acc_need(n_params, K, t, acc_bytes);
+                        return sym_acc_need(n_params, K, t, acc_bytes);
                       });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // The result and the threads' accumulators, slot maps, block buffers and
   // non-finite-weight records, all allocated here on the primary thread
@@ -1862,8 +1876,8 @@ static inline std::vector<std::vector<int>> mnl_global_maps(const ChoiceLayout& 
 
 // The memory of an elasticity or diversion-ratio kernel with t threads, an
 // upper bound: per thread its MnlWork, its map and n_vecs padded vectors of
-// J_total (its sums); shared, X beta, the J x J sums (dense_acc_need()), a
-// vector of J_total (the summed denominators) and the threads' totals.
+// J_total (its sums); shared, the J x J sums (dense_acc_need()), a vector of
+// J_total (the summed denominators) and the threads' totals.
 static inline void mnl_dense_check_memory(const char* what, const ChoiceLayout& lay,
                                           const int n_threads, const int J_total,
                                           const double n_vecs, const bool outside,
@@ -1874,7 +1888,7 @@ static inline void mnl_dense_check_memory(const char* what, const ChoiceLayout& 
       mnl_thread_bytes(lay, 0, J_total, n_vecs) +
           sizeof(int) * (static_cast<double>(lay.max_m) + 1.0 + 32.0),
       [&](const int t) {
-        return 8.0 * (static_cast<double>(lay.n_rows) + J_total + t) +
+        return 8.0 * (static_cast<double>(J_total) + t) +
                dense_acc_need(J_n, t, acc_bytes, outside);
       });
 }
@@ -1883,7 +1897,7 @@ static inline void mnl_dense_check_memory(const char* what, const ChoiceLayout& 
 // weighted elasticities added into acc, its weight into its thread's total.
 template <bool Shared>
 static void mnl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
-                                const arma::vec& base_util,
+                                const BaseUtil& base_util,
                                 const arma::vec& weights, const int var_idx,
                                 const double beta_k,
                                 const bool include_outside_option,
@@ -2031,17 +2045,17 @@ Rcpp::NumericMatrix mnl_elasticities_parallel(
   const int J_total = compute_J_total(J_inside, include_outside_option);
   check_alternative_count(J_total);
 
-  // Memory: each thread's working arrays and map; X beta and the J x J sums
+  // Memory: each thread's working arrays and map; the J x J sums
   const int n_threads = situation_team(lay);
   mnl_dense_check_memory("elasticity matrix", lay, n_threads, J_total, 0.0,
                          include_outside_option, acc_bytes);
 
-  // The J x J sums first (an R allocation), then X beta
+  // The J x J sums (an R allocation)
   DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
                acc_bytes);
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the pass
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Every thread's working arrays, map and total weight
   std::vector<MnlWork> work = mnl_work(lay, 0, n_threads);
@@ -2073,7 +2087,7 @@ Rcpp::NumericMatrix mnl_elasticities_parallel(
 // The diversion-ratio kernel's pass over the choice situations: each one's
 // weighted numerators added into acc, its denominators into its thread's.
 template <bool Shared>
-static void mnl_diversion_pass(const ChoiceLayout& lay, const arma::vec& base_util,
+static void mnl_diversion_pass(const ChoiceLayout& lay, const BaseUtil& base_util,
                                const arma::vec& weights,
                                const bool include_outside_option,
                                std::vector<MnlWork>& work,
@@ -2190,18 +2204,18 @@ Rcpp::NumericMatrix mnl_diversion_ratios_parallel(
   const int J_total = compute_J_total(J_inside, include_outside_option);
   check_alternative_count(J_total);
 
-  // Memory: each thread's working arrays, map and denominators; X beta, the
-  // J x J numerators and the denominators' sum
+  // Memory: each thread's working arrays, map and denominators; the J x J
+  // numerators and the denominators' sum
   const int n_threads = situation_team(lay);
   mnl_dense_check_memory("diversion-ratio matrix", lay, n_threads, J_total, 1.0,
                          include_outside_option, acc_bytes);
 
-  // The J x J sums first (an R allocation), then X beta
+  // The J x J sums (an R allocation)
   DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
                acc_bytes);
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, par.beta, lay, use_asc, par.delta);
+  // Base utilities, formed a situation at a time inside the pass
+  const BaseUtil base_util(X, par.beta, lay, use_asc, par.delta);
 
   // Accumulators
   // numerator(k, j) = sum_n w_n * P_nj * P_nk  (for k != j), into acc

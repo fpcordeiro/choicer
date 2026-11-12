@@ -892,6 +892,37 @@ designs of their own, described where they appear.
   contraction since replaced: "Share inversion", above) took 41-48% of the
   time they took with the probabilities computed over every nest.
   Results are unchanged, bit for bit at one thread.
+- **The multinomial and nested logits' utilities.** Their compiled routines
+  formed X beta for every stacked row in one BLAS call ahead of their loops
+  over choice situations. That call read and wrote a vector as long as the
+  design once per covariate and did not speed up with the threads: on a
+  census-style design of 9.8 million rows and ten covariates it took 0.03 s
+  at one thread and at eleven, where it was two thirds of a multinomial logit
+  gradient evaluation. Each situation's utilities are now formed inside the
+  loop, from its rows of the design in place, by the thread that then uses
+  those rows. Nothing as long as the design is formed per evaluation (it was
+  8 bytes a row: 8 GB at 10^9 rows), and the routines' memory estimates no
+  longer count it. On that design (245,031 situations, 2,611 parameters), on a
+  claims-style one (153,721 situations, 8.7 million rows, 509 parameters) and
+  on 2.5 million four-alternative situations, a multinomial logit gradient
+  evaluation took 30%, 34% and 1% less time at one thread, 58%, 70% and 29%
+  less at five, and 72%, 76% and 32% less at eleven (0.050 to 0.014 s on the
+  census-style design); predicted shares took 35%, 38% and 4% less at one
+  thread and 76%, 77% and 63% less at eleven. A nested logit gradient
+  evaluation took 12% and 4% less at one thread on the census-style and
+  four-alternative designs (150 and two nests), 36% and 19% less at five and
+  42% and 24% less at eleven. The Hessians and BHHH matrices, whose work per
+  situation is larger, took up to 34% less at five and eleven threads; at one
+  thread they range from 10% less (the multinomial logit's BHHH matrix on the
+  census-style design) to slightly more (its Hessian on four alternatives:
+  2% to 6% more over three runs). (Medians of alternated runs on an 11-core
+  laptop whose BLAS is OpenBLAS.) Estimates, variances and predictions are
+  unchanged, bit for bit at one thread, on our reference battery (OpenBLAS on
+  arm64). A row's utility no longer depends on the BLAS that R is linked to:
+  where a BLAS summed a row's terms in another order, or took a design of one
+  row through another routine (as OpenBLAS does with eight or more
+  covariates), results move in their last bits. `blp()`'s multinomial and
+  nested logit share inversions form X beta the same way, once per call.
 - **Elasticities and diversion ratios with many alternatives.**
   `elasticities()` and `diversion_ratios()` of multinomial, nested and mixed
   logit fits add each choice situation's terms into one J x J matrix per

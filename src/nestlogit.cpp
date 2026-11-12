@@ -156,7 +156,8 @@ static inline NlSituationMaps nl_situation_maps(const int J_d, const int K_l,
 // nests), so that no loop over situations allocates (as MnlWork in
 // mnlogit.cpp): the probability buffers (NlProbs), each row's nest, the sums
 // of P(j|k) V_j by nest (zero between situations), the nests the situation
-// offers with their slots (nl_offered_nests()), the
+// offers with their slots (nl_offered_nests()), the situation's utilities
+// (BaseUtil forms them here, on X in place), the
 // V-space gradient, a copy of X_i for the products X_i' v that do not reach
 // BLAS (xt_times()), a K-vector for a product added into a sum afterwards,
 // and the covariate of an elasticity.
@@ -169,7 +170,8 @@ struct NlThreadBuffers {
   std::vector<int> nests;        // the situation's nests
   int n_nests = 0;
   AlignedBuffer buf;
-  double *grad = nullptr, *xk = nullptr, *xi = nullptr, *kv = nullptr;
+  double *v = nullptr, *grad = nullptr, *xk = nullptr, *xi = nullptr;
+  double *kv = nullptr;
 
   NlThreadBuffers(const choicer_off max_m, const int n_nests_, const int K)
       : pr(max_m, n_nests_), nest0(static_cast<std::size_t>(max_m) + 32),
@@ -180,8 +182,9 @@ struct NlThreadBuffers {
     const std::size_t m1 = aligned_len(static_cast<std::size_t>(max_m) + 1);
     const std::size_t mk = aligned_len(static_cast<std::size_t>(max_m) *
                                        static_cast<std::size_t>(K));
-    buf = AlignedBuffer(2 * m1 + mk + aligned_len(static_cast<std::size_t>(K)));
-    grad = buf.data;
+    buf = AlignedBuffer(3 * m1 + mk + aligned_len(static_cast<std::size_t>(K)));
+    v = buf.data;
+    grad = v + m1;
     xk = grad + m1;
     xi = xk + m1;
     kv = xi + mk;
@@ -208,7 +211,7 @@ static inline double nl_thread_bytes(const ChoiceLayout& lay, const int K,
   const double m = static_cast<double>(lay.max_m);
   return sizeof(NlThreadBuffers) + sizeof(double) * (5.0 * m + 7.0 * n_nests + 16.0) +
          sizeof(int) * (m + 2.0 * n_nests + 96.0) +
-         AlignedBuffer::bytes(2.0 * (m + 8.0) + (m * K + 7.0) + (K + 7.0)) +
+         AlignedBuffer::bytes(3.0 * (m + 8.0) + (m * K + 7.0) + (K + 7.0)) +
          sizeof(double) * n_vecs * (static_cast<double>(n_params) + 16.0);
 }
 
@@ -571,7 +574,7 @@ static inline void nl_situation_score(const arma::mat& X,
 // (and was clamped to -1e10).
 template <bool OpgDiag>
 static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
-                             const int* nest, const arma::vec& base_util,
+                             const int* nest, const BaseUtil& base_util,
                              const arma::vec& lambda, const int n_nests,
                              const arma::ivec& nest_k_to_theta_idx,
                              const arma::vec& weights, const int K,
@@ -634,8 +637,8 @@ static void nl_gradient_pass(const arma::mat& X, const ChoiceLayout& lay,
 
       // --- 2. Calculate Utilities and Probabilities ---
 
-      // V_ij = X_ij * beta + delta_j (pre-computed)
-      const double* V_inside = base_util.memptr() + start_idx;
+      // V_ij = X_ij * beta + delta_j, formed here on X in place
+      const double* V_inside = base_util.rows(start_idx, m_i, b.v);
 
       // Per-individual probability block (shared helper), over the nests
       // the situation offers
@@ -857,10 +860,10 @@ Rcpp::List nl_loglik_gradient_parallel(
   validate_choices(lay, include_outside_option, nullptr);
 
   // Memory: each thread's sums and situation buffers (with opg_diag also its
-  // diagonal, the constants' scores and the terms), X beta, the sums, the
-  // negated gradient and R's copies of it and of the diagonal. The pass
-  // allocates every thread's sums and buffers on the primary thread, for the
-  // team checked here.
+  // diagonal, the constants' scores and the terms), the sums, the negated
+  // gradient and R's copies of it and of the diagonal. The pass allocates
+  // every thread's sums and buffers on the primary thread, for the team
+  // checked here.
   const int n_threads = situation_team(lay);
   kernel_check_memory(
       "gradient", n_threads,
@@ -868,13 +871,10 @@ Rcpp::List nl_loglik_gradient_parallel(
           sizeof(OpgDiagTerms) + 3.0 * sizeof(std::vector<double>) +
           (opg_diag ? 16.0 * (K + static_cast<double>(lay.max_m) + n_nests) + 8.0 * K
                     : 0.0),
-      [&](const int) {
-        return 8.0 * static_cast<double>(lay.n_rows) +
-               (opg_diag ? 40.0 : 24.0) * n_params;
-      });
+      [&](const int) { return (opg_diag ? 40.0 : 24.0) * n_params; });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // Prepare global accumulators
   double global_loglik = 0.0;
@@ -1010,8 +1010,8 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
   validate_choices(lay, include_outside_option, "nl_bhhh_parallel");
 
   // Memory: each thread's slot map, compact score, a column of the update
-  // (every parameter, for the dense fallback) and situation buffers; X beta,
-  // the result and the threads' accumulators (in a shared result, the rows
+  // (every parameter, for the dense fallback) and situation buffers; the
+  // result and the threads' accumulators (in a shared result, the rows
   // nl_acc_rows() keeps private)
   const int K_l = delta_start_idx - K;  // dissimilarities
   const bool has_delta = use_asc && delta_length > 0;
@@ -1023,14 +1023,14 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
                       nl_map_bytes(J_d, K_l, lay.max_m, K) + 8.0 * (blk_max + n_params + 64.0) +
                           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
                       [&](const int t) {
-                        return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
+                        return 4.0 * K_l +
                                sym_acc_need(n_params,
                                             nl_acc_rows(n_params, K, K_l, t, acc_bytes),
                                             t, acc_bytes);
                       });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // Each dissimilarity's nest
   std::vector<int> lam_nest(static_cast<std::size_t>(K_l) + 1);
@@ -1074,8 +1074,8 @@ Rcpp::NumericMatrix nl_bhhh_parallel(
       const double w_i      = weights[i];
       nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
 
-      // V_ij = X_ij * beta + delta_j (pre-computed)
-      const double* V_inside = base_util.memptr() + start_idx;
+      // V_ij = X_ij * beta + delta_j, formed here on X in place
+      const double* V_inside = base_util.rows(start_idx, m_i, b.v);
 
       // Per-individual probability block (shared helper), over the nests
       // the situation offers
@@ -1196,8 +1196,8 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
 
   // Memory: per thread its slot map, compact score, situation buffers and
   // cluster sum, and its share of the chunks' cut parts (two per chunk, four
-  // chunks per thread); shared X beta, the result and the accumulators, and
-  // the sort's and the chunks' arrays.
+  // chunks per thread); shared, the result and the accumulators, and the
+  // sort's and the chunks' arrays.
   const int K_l = delta_start_idx - K;  // dissimilarities
   const bool has_delta = use_asc && delta_length > 0;
   const int J_d = has_delta ? delta_length : 0;  // free constants
@@ -1209,7 +1209,7 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
                           nl_thread_bytes(lay, K, n_nests, n_params, 0.0) +
                           9.0 * ClusterSum::bytes(n_params),
                       [&](const int t) {
-                        return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
+                        return 4.0 * K_l +
                                sym_acc_need(n_params,
                                             nl_acc_rows(n_params, K, K_l, t, acc_bytes),
                                             t, acc_bytes) +
@@ -1247,8 +1247,9 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
     for (; c < n_chunks; ++c) chunk[c] = N;
   }
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the loop (the
+  // situations come in the clusters' order, not X's)
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // Each dissimilarity's nest
   std::vector<int> lam_nest(static_cast<std::size_t>(K_l) + 1);
@@ -1301,7 +1302,7 @@ Rcpp::NumericMatrix nl_cluster_meat_parallel(
         const int m_i = lay.m(i);
         const arma::uword start_idx = static_cast<arma::uword>(lay.row_off[i]);
         nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
-        const double* V_inside = base_util.memptr() + start_idx;
+        const double* V_inside = base_util.rows(start_idx, m_i, b.v);
         nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
                            offered, b);
         const int chosen_alt_idx = lay.choice[i];
@@ -1413,18 +1414,17 @@ arma::mat nl_scores_parallel(
                bytes / 1073741824.0, N, n_params, max_bytes / 1073741824.0);
   }
 
-  // Memory: each thread's score and situation buffers; X beta, the N x n
-  // matrix and its copy into R
+  // Memory: each thread's score and situation buffers; the N x n matrix and
+  // its copy into R
   const int n_threads = situation_team(lay);
   kernel_check_memory("score matrix", n_threads,
                       nl_thread_bytes(lay, K, n_nests, n_params, 1.0),
                       [&](const int) {
-                        return 8.0 * static_cast<double>(lay.n_rows) +
-                               16.0 * static_cast<double>(N) * n_params;
+                        return 16.0 * static_cast<double>(N) * n_params;
                       });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // Output: one row per choice situation (each written by exactly one
   // iteration, so no accumulator or critical section is needed).
@@ -1460,8 +1460,8 @@ arma::mat nl_scores_parallel(
       int* nest_idx0_i      = b.nest0.data(); // m_i
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
 
-      // V_ij = X_ij * beta + delta_j (pre-computed)
-      const double* V_inside = base_util.memptr() + start_idx;
+      // V_ij = X_ij * beta + delta_j, formed here on X in place
+      const double* V_inside = base_util.rows(start_idx, m_i, b.v);
 
       // Per-individual probability block (shared helper), over the nests
       // the situation offers
@@ -2033,7 +2033,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
   // Memory: each thread's slot map, X_i, the sums of the nests a situation
   // offers (four numbers, two K-vectors and a packed K x K triangle each),
   // the chosen nest's Q (a packed triangle), a column of Q_i, its weighted
-  // copy, d_V and situation buffers; X beta, the result and the threads'
+  // copy, d_V and situation buffers; the result and the threads'
   // accumulators (in a shared result, the rows nl_acc_rows() keeps private)
   const int K_l = delta_start_idx - K;  // dissimilarities
   const bool has_delta = use_asc && delta_length > 0;
@@ -2049,13 +2049,13 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
           8.0 * (m_max * K + off_max * stride + Kp + 3.0 * m_max + 3.0 * K + 96.0) +
           nl_thread_bytes(lay, K, n_nests, n_params, 0.0),
       [&](const int t) {
-        return 8.0 * static_cast<double>(lay.n_rows) + 4.0 * K_l +
+        return 4.0 * K_l +
                sym_acc_need(n_params, nl_acc_rows(n_params, K, K_l, t, acc_bytes),
                             t, acc_bytes);
       });
 
-  // Pre-compute base utility for all individuals (single BLAS call)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the loop
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // Each dissimilarity's nest
   std::vector<int> lam_nest(static_cast<std::size_t>(K_l) + 1);
@@ -2113,7 +2113,7 @@ Rcpp::NumericMatrix nl_loglik_hessian_parallel(
       const arma::uword end_idx   = start_idx + m_i - 1;
       const double w_i    = weights[i];
       nl_gather_nests(nest0, lay.alt + lay.row_off[i], nest, m_i);
-      const double* V_inside     = base_util.memptr() + start_idx;
+      const double* V_inside     = base_util.rows(start_idx, m_i, b_t.v);
 
       // Step 2b: Compute probabilities, over the nests the situation offers
       // (in increasing order, as the sums below take them)
@@ -2422,9 +2422,11 @@ Rcpp::List nl_predict(
   const choicer_off N = lay.N;
   const int* nest = nest_idx.begin(); // alternative a is in nest nest[a] - 1
 
-  // Every row belongs to one situation, so these are the utilities returned
-  // (the situations' copies of them made the same vector)
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the loop, into the
+  // vector returned: every row belongs to one situation, so each situation
+  // writes its own rows of it
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
+  arma::vec utility(X.n_rows);
 
   // Preallocate predicted values, and every thread's working arrays
   arma::vec P_all = arma::zeros(X.n_rows);
@@ -2449,7 +2451,8 @@ Rcpp::List nl_predict(
 
       int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
-      const double* V_inside = base_util.memptr() + start_idx;
+      const double* V_inside =
+          base_util.rows(start_idx, m_i, utility.memptr() + start_idx);
 
       nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
                          offered, b);
@@ -2459,7 +2462,7 @@ Rcpp::List nl_predict(
 
   return Rcpp::List::create(
     Rcpp::Named("choice_prob") = P_all,
-    Rcpp::Named("utility")     = base_util
+    Rcpp::Named("utility")     = utility
   );
 }
 
@@ -2475,13 +2478,13 @@ struct NlSharesWork {
 };
 
 // Predicted NL market shares (file-local internal), from the base utilities
-// of all rows (X * beta plus the rows' ASCs), into `shares`: weighted shares
-// of length num_alts (index 0 = outside option when present, then inside alts
-// in order). nest holds the 1-based nest codes of the alternatives, and
-// denominator is shares_denominator(weights), which the callers check before
-// they form the utilities.
+// (X * beta plus the rows' ASCs, formed a situation at a time), into
+// `shares`: weighted shares of length num_alts (index 0 = outside option when
+// present, then inside alts in order). nest holds the 1-based nest codes of
+// the alternatives, and denominator is shares_denominator(weights), which the
+// caller checks first.
 static void nl_predict_shares_internal(
-    const arma::vec& base_util,
+    const BaseUtil& base_util,
     const ChoiceLayout& lay,
     const int* nest,
     const arma::vec& lambda,
@@ -2520,7 +2523,7 @@ static void nl_predict_shares_internal(
       const AltCodes0 alt_idx0_i{lay.alt + lay.row_off[i]};
       int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
-      const double* V_inside = base_util.memptr() + start_idx;
+      const double* V_inside = base_util.rows(start_idx, m_i, b.v);
 
       nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
                          offered, b);
@@ -2608,7 +2611,7 @@ arma::vec nl_predict_shares(
   const int num_alts = compute_J_total(lay.J, include_outside_option);
 
   const double denominator = shares_denominator(weights);
-  const arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
   NlSharesWork ws(lay, n_nests, num_alts);
   arma::vec shares(num_alts);
   nl_predict_shares_internal(base_util, lay, nest_idx.begin(), lambda, weights,
@@ -2625,9 +2628,8 @@ arma::vec nl_predict_shares(
 
 // The memory of an NL elasticity or diversion-ratio kernel with t threads,
 // an upper bound: per thread its NlThreadBuffers, its map and n_vecs padded
-// vectors of J_total (its sums); shared, X beta, the J x J sums
-// (dense_acc_need()), a vector of J_total (the summed denominators) and the
-// threads' totals.
+// vectors of J_total (its sums); shared, the J x J sums (dense_acc_need()), a
+// vector of J_total (the summed denominators) and the threads' totals.
 static inline void nl_dense_check_memory(const char* what, const ChoiceLayout& lay,
                                          const int n_nests, const int n_threads,
                                          const int J_total, const double n_vecs,
@@ -2638,7 +2640,7 @@ static inline void nl_dense_check_memory(const char* what, const ChoiceLayout& l
       nl_thread_bytes(lay, 0, n_nests, J_total, n_vecs) +
           sizeof(int) * (static_cast<double>(lay.max_m) + 32.0),
       [&](const int t) {
-        return 8.0 * (static_cast<double>(lay.n_rows) + J_total + t) +
+        return 8.0 * (static_cast<double>(J_total) + t) +
                dense_acc_need(J_n, t, acc_bytes, outside);
       });
 }
@@ -2647,7 +2649,7 @@ static inline void nl_dense_check_memory(const char* what, const ChoiceLayout& l
 // weighted elasticities added into acc, its weight into its thread's total.
 template <bool Shared>
 static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
-                               const int* nest, const arma::vec& base_util,
+                               const int* nest, const BaseUtil& base_util,
                                const arma::vec& lambda, const int n_nests,
                                const arma::vec& weights, const int var_idx,
                                const double beta_k,
@@ -2681,7 +2683,7 @@ static void nl_elasticity_pass(const arma::mat& X, const ChoiceLayout& lay,
 
       int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
-      const double* V_inside = base_util.memptr() + start_idx;
+      const double* V_inside = base_util.rows(start_idx, m_i, b.v);
 
       nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
                          offered, b);
@@ -2821,16 +2823,17 @@ Rcpp::NumericMatrix nl_elasticities_parallel(
   const int J_total = compute_J_total(J_inside, include_outside_option);
   check_alternative_count(J_total);
 
-  // Memory: each thread's working arrays and map; X beta and the J x J sums
+  // Memory: each thread's working arrays and map; the J x J sums
   const int n_threads = situation_team(lay);
   nl_dense_check_memory("elasticity matrix", lay, n_nests, n_threads, J_total,
                         0.0, include_outside_option, acc_bytes);
 
-  // The J x J sums first (an R allocation), then X beta
+  // The J x J sums (an R allocation)
   DenseAcc acc(J_total, n_threads, include_outside_option, "elasticity",
                acc_bytes);
 
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the pass
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // Every thread's working arrays, map and total weight
   std::vector<NlThreadBuffers> bufs = nl_thread_buffers(lay.max_m, n_nests, 0, n_threads);
@@ -2862,7 +2865,7 @@ Rcpp::NumericMatrix nl_elasticities_parallel(
 // weighted numerators added into acc, its denominators into its thread's.
 template <bool Shared>
 static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
-                              const arma::vec& base_util, const arma::vec& lambda,
+                              const BaseUtil& base_util, const arma::vec& lambda,
                               const int n_nests, const arma::vec& weights,
                               const bool include_outside_option,
                               std::vector<NlThreadBuffers>& bufs,
@@ -2894,7 +2897,7 @@ static void nl_diversion_pass(const ChoiceLayout& lay, const int* nest,
 
       int* nest_idx0_i = b.nest0.data();
       nl_gather_nests(nest_idx0_i, lay.alt + lay.row_off[i], nest, m_i);
-      const double* V_inside = base_util.memptr() + start_idx;
+      const double* V_inside = base_util.rows(start_idx, m_i, b.v);
 
       nl_situation_probs(V_inside, m_i, lambda, n_nests, include_outside_option,
                          offered, b);
@@ -3029,17 +3032,18 @@ Rcpp::NumericMatrix nl_diversion_ratios_parallel(
   const int J_total = compute_J_total(J_inside, include_outside_option);
   check_alternative_count(J_total);
 
-  // Memory: each thread's working arrays, map and denominators; X beta, the
-  // J x J numerators and the denominators' sum
+  // Memory: each thread's working arrays, map and denominators; the J x J
+  // numerators and the denominators' sum
   const int n_threads = situation_team(lay);
   nl_dense_check_memory("diversion-ratio matrix", lay, n_nests, n_threads,
                         J_total, 1.0, include_outside_option, acc_bytes);
 
-  // The J x J sums first (an R allocation), then X beta
+  // The J x J sums (an R allocation)
   DenseAcc acc(J_total, n_threads, include_outside_option, "diversion-ratio",
                acc_bytes);
 
-  arma::vec base_util = compute_base_util(X, beta, lay, use_asc, delta);
+  // Base utilities, formed a situation at a time inside the pass
+  const BaseUtil base_util(X, beta, lay, use_asc, delta);
 
   // numerator(k, j) = sum_i w_i * (-dP_ik/dV_ij), k != j, into acc
   // denominator(j)  = sum_i w_i * (dP_ij/dV_ij), by thread
@@ -3440,7 +3444,12 @@ Rcpp::List nl_blp_solve(
   const bool kahan = blp_compensate(ctl, static_cast<double>(lay.N), situation_team(lay));
   const bool kahan_w = blp_compensate_serial(ctl, static_cast<double>(lay.N));
   const double W = kahan_w ? blp_weight_sum(weights) : shares_denominator(weights);
-  const arma::vec Xb = X * beta;  // once: only delta changes across passes
+  // X beta, once: only delta changes across passes. Formed as the kernels
+  // form their base utilities, so that a pass's are those of
+  // nl_predict_shares() whatever the BLAS.
+  arma::vec Xb(X.n_rows);
+  BaseUtil(X, beta, lay, false, delta).rows(0, static_cast<int>(lay.n_rows),
+                                             Xb.memptr());
 
   blp_check_start(delta, weights);
   const BlpComponents comp = blp_components(lay, weights.memptr(), W, J,
