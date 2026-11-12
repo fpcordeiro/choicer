@@ -32,6 +32,26 @@
 // message.
 // ============================================================================
 
+// A helper the per-unit loops call for every unit, inlined where the
+// compiler would rather call it (GCC and clang; Armadillo's guard for its
+// own arma_inline).
+#if defined(__GNUC__)
+#define CHOICER_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define CHOICER_ALWAYS_INLINE inline
+#endif
+
+// A helper that kernels which must agree bit for bit all call: compiled apart
+// from its callers and called, never inlined into them (GCC and clang), so
+// that no caller's loop changes how the compiler contracts the helper's
+// products into its sums (see mxl_unit_add() in mxlogit.cpp, and
+// BaseUtil::rows() below).
+#if defined(__GNUC__)
+#define CHOICER_NOINLINE __attribute__((noinline))
+#else
+#define CHOICER_NOINLINE
+#endif
+
 // Defined in mxlogit.cpp (exported via Rcpp attributes).
 arma::mat build_L_mat(const arma::vec& L_params, const int K_w,
                       const bool rc_correlation);
@@ -386,38 +406,165 @@ inline MxlParams parse_mxl_theta(const arma::vec& theta,
 }
 
 // ----------------------------------------------------------------------------
-// Base utility, pre-computed for all stacked rows with single BLAS calls:
-// base_util = X*beta (+ delta scattered by alternative). (The MXL prediction
-// kernels form theirs in mxl_pred_base(), mxlogit.cpp.)
+// Base utility of the MNL and NL kernels, X beta plus each row's ASC, formed a
+// choice situation at a time inside the kernels' loops over the situations,
+// on X in place: nothing of the stacked length per evaluation, and no pass
+// over X ahead of the loop. (The MXL estimation kernels form theirs per
+// likelihood unit in mxl_unit_load(), the MXL prediction kernels for every
+// row in mxl_pred_base(); both in mxlogit.cpp.)
 //
-// The MNL and NL forms read the alternative codes in place: X * beta in a
-// single BLAS call, then each row's ASC added to its base utility, the one
-// addition per element that += delta.elem(alt_idx0) made (in parallel above
-// 10^6 rows; every element is independent, so the sums are unchanged).
-// add_row_asc() serves callers that keep X * beta across calls (BLP).
+// rows() writes rows r0 .. r0 + m - 1 of it. Each row's sum runs over the
+// columns in order from 0.0, a product and an addition per column, and takes
+// its ASC last: the operations, in the order, of the X * beta in one BLAS
+// call that the kernels formed before their loops (dgemv('N'): y = 0, then
+// y += beta_k x_k a column at a time) and of the ASCs added to it afterwards.
+// Every sum goes through madd(), so a row's value depends neither on its
+// place in the situation, nor on the thread count, nor on the BLAS. It is
+// that call's bit for bit with OpenBLAS on arm64 (the golden battery) and
+// with the reference BLAS's loop where its sums are fused as these are, and
+// can differ in the last bits from a BLAS that orders a row's terms
+// otherwise.
+//
+// The rows go sixteen at a time, then eight, four and two: a block's sums stay
+// in registers while one loop runs over the columns, which compilers turn
+// into vector sums across the block's rows (GCC keeps an array of sums in
+// memory, hence the scalars), so X is read once, as the situation's first
+// touch of its rows, and the sums are never stored between columns. The BLAS
+// call read and wrote the stacked vector once per column and did not speed up
+// with the threads (on an 11-core laptop it was two thirds of an MNL gradient
+// at eleven). The rows that whole blocks leave over are one more block ending
+// at the last row; it forms some rows' sums twice, to the same values.
+//
+// Build it on the primary thread: it checks its operands as the product did,
+// with Armadillo's error (which a beta of the wrong length reaches through
+// the exported contractions). rows() only reads, so every thread may call
+// it. beta, delta and the layout must outlive it.
 // ----------------------------------------------------------------------------
-inline void add_row_asc(arma::vec& base_util, const ChoiceLayout& lay,
-                        const arma::vec& delta) {
-  double* bu = base_util.memptr();
-  const double* d = delta.memptr();
-  const int* alt = lay.alt;
-  const choicer_off n_rows = lay.n_rows;
-#ifdef _OPENMP
-#pragma omp parallel for schedule(static) \
-    if (n_rows > CHOICER_PARALLEL_ROWS)
+
+// acc + b * x, each of BaseUtil's sums. Left to itself, GCC under a tuning
+// that avoids chains of FMAs (--param avoid-fma-max-bits, as the x86-64
+// tunings set it) fuses a loop's sums or not by the loop's shape: BaseUtil's
+// blocks and its single row were not fused alike, and a row's value depended
+// on the block it fell in (g++ with --param avoid-fma-max-bits=256 shows it;
+// test-base-utilities.R). So under GCC the fused multiply-add is asked for by
+// name where the target has one (__FP_FAST_FMA). Elsewhere the plain
+// expression: without the instruction nothing fuses it, and clang contracts
+// it or not in every statement alike, whatever the loop.
+inline double madd(const double acc, const double b, const double x) {
+#if defined(__FP_FAST_FMA) && defined(__GNUC__) && !defined(__clang__)
+  return __builtin_fma(b, x, acc);
+#else
+  return acc + b * x;
 #endif
-  for (choicer_off r = 0; r < n_rows; ++r) {
-    bu[r] += d[alt[r] - 1];
-  }
 }
 
-inline arma::vec compute_base_util(const arma::mat& X, const arma::vec& beta,
-                                   const ChoiceLayout& lay,
-                                   const bool use_asc, const arma::vec& delta) {
-  arma::vec base_util = X * beta;
-  if (use_asc) add_row_asc(base_util, lay, delta);
-  return base_util;
-}
+struct BaseUtil {
+  const double* x;      // X's values, column-major
+  arma::uword ld;       // its rows: the distance between a row's columns
+  int K;                // its columns
+  const double* beta;   // K coefficients
+  const double* delta;  // the padded ASCs by alternative code - 1, or nullptr
+  const int* alt;       // each row's 1-based alternative code
+
+  BaseUtil(const arma::mat& X, const arma::vec& beta_, const ChoiceLayout& lay,
+           const bool use_asc, const arma::vec& delta_)
+      : x(X.memptr()), ld(X.n_rows), K(static_cast<int>(X.n_cols)),
+        beta(beta_.memptr()), delta(use_asc ? delta_.memptr() : nullptr),
+        alt(lay.alt) {
+    if (beta_.n_rows != X.n_cols) {
+      throw std::logic_error(
+          "matrix multiplication: incompatible matrix dimensions: " +
+          std::to_string(X.n_rows) + "x" + std::to_string(X.n_cols) + " and " +
+          std::to_string(beta_.n_rows) + "x" + std::to_string(beta_.n_cols));
+    }
+  }
+
+  // Rows r0 .. r0 + m - 1 into u (m entries, which may be the caller's result
+  // for those rows); returns u. Compiled once and called (CHOICER_NOINLINE):
+  // every kernel of both models then runs the same instructions, and the
+  // blocks are not repeated in each of their loops.
+  CHOICER_NOINLINE const double* rows(const arma::uword r0, const int m,
+                                      double* u) const {
+    const double* c = x + r0;
+    int r = 0;
+    for (; m - r >= 16; r += 16) block16(c + r, u + r);
+    for (; m - r >= 8; r += 8) block8(c + r, u + r);
+    if (r < m) {
+      if (m >= 8) {
+        block8(c + m - 8, u + m - 8);
+      } else if (m >= 4) {
+        block4(c, u);
+        if (m > 4) block4(c + m - 4, u + m - 4);
+      } else if (m >= 2) {
+        block2(c, u);
+        if (m > 2) block2(c + 1, u + 1);
+      } else {
+        double a = 0.0;
+        for (int k = 0; k < K; ++k, c += ld) a = madd(a, beta[k], c[0]);
+        u[0] = a;
+      }
+    }
+    if (delta) {
+      const int* alt_r = alt + r0;
+      for (int j = 0; j < m; ++j) u[j] += delta[alt_r[j] - 1];
+    }
+    return u;
+  }
+
+ private:
+  // A block's rows of X beta: c points at its first row in X's first column.
+  void block16(const double* c, double* u) const {
+    double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+    double a4 = 0.0, a5 = 0.0, a6 = 0.0, a7 = 0.0;
+    double a8 = 0.0, a9 = 0.0, a10 = 0.0, a11 = 0.0;
+    double a12 = 0.0, a13 = 0.0, a14 = 0.0, a15 = 0.0;
+    for (int k = 0; k < K; ++k, c += ld) {
+      const double b = beta[k];
+      a0 = madd(a0, b, c[0]); a1 = madd(a1, b, c[1]);
+      a2 = madd(a2, b, c[2]); a3 = madd(a3, b, c[3]);
+      a4 = madd(a4, b, c[4]); a5 = madd(a5, b, c[5]);
+      a6 = madd(a6, b, c[6]); a7 = madd(a7, b, c[7]);
+      a8 = madd(a8, b, c[8]); a9 = madd(a9, b, c[9]);
+      a10 = madd(a10, b, c[10]); a11 = madd(a11, b, c[11]);
+      a12 = madd(a12, b, c[12]); a13 = madd(a13, b, c[13]);
+      a14 = madd(a14, b, c[14]); a15 = madd(a15, b, c[15]);
+    }
+    u[0] = a0; u[1] = a1; u[2] = a2; u[3] = a3;
+    u[4] = a4; u[5] = a5; u[6] = a6; u[7] = a7;
+    u[8] = a8; u[9] = a9; u[10] = a10; u[11] = a11;
+    u[12] = a12; u[13] = a13; u[14] = a14; u[15] = a15;
+  }
+  void block8(const double* c, double* u) const {
+    double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+    double a4 = 0.0, a5 = 0.0, a6 = 0.0, a7 = 0.0;
+    for (int k = 0; k < K; ++k, c += ld) {
+      const double b = beta[k];
+      a0 = madd(a0, b, c[0]); a1 = madd(a1, b, c[1]);
+      a2 = madd(a2, b, c[2]); a3 = madd(a3, b, c[3]);
+      a4 = madd(a4, b, c[4]); a5 = madd(a5, b, c[5]);
+      a6 = madd(a6, b, c[6]); a7 = madd(a7, b, c[7]);
+    }
+    u[0] = a0; u[1] = a1; u[2] = a2; u[3] = a3;
+    u[4] = a4; u[5] = a5; u[6] = a6; u[7] = a7;
+  }
+  void block4(const double* c, double* u) const {
+    double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+    for (int k = 0; k < K; ++k, c += ld) {
+      const double b = beta[k];
+      a0 = madd(a0, b, c[0]); a1 = madd(a1, b, c[1]);
+      a2 = madd(a2, b, c[2]); a3 = madd(a3, b, c[3]);
+    }
+    u[0] = a0; u[1] = a1; u[2] = a2; u[3] = a3;
+  }
+  void block2(const double* c, double* u) const {
+    double a0 = 0.0, a1 = 0.0;
+    for (int k = 0; k < K; ++k, c += ld) {
+      const double b = beta[k];
+      a0 = madd(a0, b, c[0]); a1 = madd(a1, b, c[1]);
+    }
+    u[0] = a0; u[1] = a1;
+  }
+};
 
 // ----------------------------------------------------------------------------
 // A situation's rows of X, r0 .. r0 + m - 1, copied column-major (m x K) into

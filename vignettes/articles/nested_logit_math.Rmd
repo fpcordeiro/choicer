@@ -721,18 +721,32 @@ This ensures that the NL model degenerates gracefully to MNL on a per-nest basis
 
 *Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
 
-### 5.4 Base Utility Pre-computation
+### 5.4 Base Utilities
 
-Prior to the parallel loop, all systematic utilities $V_{ij} = X_{ij}\beta + \delta_j$ are computed in a single pass:
+The systematic utilities $V_{ij} = X_{ij}\beta + \delta_j$ of an individual's alternatives
+are formed inside the parallel loop, when the individual's turn comes, from its rows of $X$
+in place:
 
 ```
-base_util = X * beta                 // single BLAS dgemm
-if use_asc: base_util += delta[alt_idx0]
+for each individual i (in parallel):
+  V_i = X_i * beta                   // each row's sum over the columns, in order
+  if use_asc: V_i += delta[alt_idx0_i]
 ```
 
-This avoids redundant matrix-vector products inside the per-individual loop.
+Nothing of the stacked length is formed per evaluation, and the thread that reads an
+individual's rows of $X$ for its utilities is the one that then uses them for its gradient.
+The rows are taken sixteen at a time (then eight, four and two), their sums held in
+registers while one loop runs over the $K$ columns. A single product $X\beta$ ahead of the
+loop, as the kernels formed before 0.3.0, wrote a vector as long as the design once per
+column and did not speed up with the threads.
 
-*Code reference: [src/nestlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/nestlogit.cpp)*
+Each row's sum takes its columns in order from zero (a product and an addition per column,
+fused into one operation where the package is compiled for a processor that has it) and its
+constant last. A row's utility therefore depends neither on the choice set it is stacked
+in, nor on the thread count, nor on the BLAS that R is linked to. The multinomial logit's
+kernels form theirs with the same routine, and so do both models' share inversions.
+
+*Code reference: `BaseUtil` in [src/choicer_internal.h](https://github.com/fpcordeiro/choicer/blob/main/src/choicer_internal.h)*
 
 ### 5.5 OpenMP Parallelization
 

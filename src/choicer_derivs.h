@@ -30,24 +30,8 @@
 // row <= column.
 // ============================================================================
 
-// A helper the per-unit loops call for every unit, inlined where the
-// compiler would rather call it (GCC and clang; Armadillo's guard for its
-// own arma_inline).
-#if defined(__GNUC__)
-#define CHOICER_ALWAYS_INLINE inline __attribute__((always_inline))
-#else
-#define CHOICER_ALWAYS_INLINE inline
-#endif
-
-// A helper that kernels which must agree bit for bit all call: compiled apart
-// from its callers and called, never inlined into them (GCC and clang), so
-// that no caller's loop changes how the compiler contracts the helper's
-// products into its sums (see mxl_unit_add()).
-#if defined(__GNUC__)
-#define CHOICER_NOINLINE __attribute__((noinline))
-#else
-#define CHOICER_NOINLINE
-#endif
+// (CHOICER_ALWAYS_INLINE and CHOICER_NOINLINE, which the helpers here and the
+// kernels use, are defined in choicer_internal.h.)
 
 // Whether the weight w and the n entries of s are all finite, in one pass
 // without an early exit: x - x is 0 for a finite x and NaN otherwise.

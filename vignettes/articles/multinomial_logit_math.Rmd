@@ -1029,6 +1029,17 @@ The implementation parallelizes over choice situations using OpenMP:
   or BHHH matrix (§4.3; one thread adds into the result itself, and above the budget the
   threads share it). All are allocated before the parallel loop, once the kernel's memory
   estimate has been checked, so that no choice situation allocates
+- A situation's utilities, $X_i\beta$ plus its alternatives' constants, are formed inside
+  the loop from its rows of $X$ in place, sixteen rows at a time (then eight, four and two)
+  with their sums held in registers while one loop runs over the $K$ columns. Nothing of
+  the stacked length is formed per evaluation, and the thread that reads a situation's rows
+  for its utilities then uses them for its gradient. (A single product $X\beta$ ahead of
+  the loop, as before 0.3.0, wrote a vector as long as the design once per column and did
+  not speed up with the threads.) Each row's sum takes its columns in order from zero (a
+  product and an addition per column, fused into one operation where the package is
+  compiled for a processor that has it) and its constant last, so a row's utility depends
+  neither on the situation it is stacked in, nor on the thread count, nor on the BLAS that
+  R is linked to
 - The Hessian's and BHHH matrix's triangles are added after the loop in thread order (above
   the budget, the constants' entries atomically during it); the log-likelihood and gradient
   in an order that can vary between calls
@@ -1045,7 +1056,7 @@ The implementation parallelizes over choice situations using OpenMP:
   copies and working arrays) is checked before anything is allocated, as the estimation
   kernels' is; with one thread the sums do not depend on the 2 GiB budget
 
-*Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp)*
+*Code reference: [src/mnlogit.cpp](https://github.com/fpcordeiro/choicer/blob/main/src/mnlogit.cpp); the utilities, `BaseUtil` in [src/choicer_internal.h](https://github.com/fpcordeiro/choicer/blob/main/src/choicer_internal.h)*
 
 ### 12.4 Negated Objectives
 
