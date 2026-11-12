@@ -239,12 +239,20 @@ test_that("theta_init is natural-scale under scale_vars='sd' (warm-start works)"
   dt <- data.table::as.data.table(sim$data)
   ctrl <- list(xtol_rel = 1e-12, maxeval = 5000L)
 
-  # Warm-up fit produces natural-scale coefficients.
+  # Warm-up fit produces natural-scale coefficients, polished so that its point
+  # is certified. Without the polish L-BFGS stops where the variance of w2's
+  # coefficient given w1's goes to zero (L_22 toward minus infinity), with a
+  # Newton decrement of 1.4e-8, above tol_decrement. A restart there can gain a
+  # few ulps of the objective at most, so whether nloptr's line search fails
+  # turns on rounding, which at two threads differs from run to run; a failure
+  # returns the start values, and the fit warns that nothing certifies them
+  # (choicer_optimizer_failed). From the polished point the check that follows
+  # a failure certifies them.
   warmup <- suppressMessages(run_mxlogit(
     data = dt, id_col = "id", alt_col = "alt", choice_col = "choice",
     covariate_cols = c("x1", "x2"), random_var_cols = c("w1", "w2"),
     S = 60L, rc_mean = TRUE, rc_correlation = TRUE, use_asc = TRUE,
-    scale_vars = "none", control = ctrl
+    scale_vars = "none", control = ctrl, polish = "newton"
   ))
   theta_natural <- unname(coef(warmup))
 
