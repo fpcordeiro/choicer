@@ -387,7 +387,21 @@ test_that("a never-chosen constant is held only while its nest's dissimilarity i
   p <- fit$optimizer$polish
   expect_length(p$held, 0L)
   expect_true(p$converged)
-  expect_lt(coef(fit)[["ASC_bus2"]], coef(f0)[["ASC_bus2"]])
+  # How far the optimizer itself takes the constant turns on the last bits of
+  # the utilities: it stops near -31, where the polish has eight steps left,
+  # or goes on to -47, where it has none. So the fall is read from a fixed
+  # stop: the optimizer's point with the constant put back at -20
+  th <- unname(coef(f0))
+  th[names(coef(f0)) == "ASC_bus2"] <- -20
+  stop_at <- function(theta_init, eval_f, lower, upper, control) {
+    list(par = th, value = eval_f(th)$objective, convergence = 0L)
+  }
+  fit <- fit_mc(optimizer = stop_at, polish = "newton",
+                polish_control = list(max_iter = 50L))
+  p <- fit$optimizer$polish
+  expect_length(p$held, 0L)
+  expect_true(p$converged)
+  expect_lt(coef(fit)[["ASC_bus2"]], -20)
   # from a stop with lambda at most 1, held; the polish takes lambda above
   # 1, where the held constant can have a finite estimate: not certified
   f0 <- fit_mc(control = list(maxeval = 3L))
