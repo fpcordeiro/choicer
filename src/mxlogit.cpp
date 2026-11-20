@@ -527,7 +527,9 @@ inline double mxl_situation_probs(const MxlUnitData& ud, MxlUnitScratch& sc,
 //     shifted weights used to normalize omega. Keeping the shift separate
 //     from that sum avoids subtracting a rounded, large-magnitude lse.
 // Fills normalized posterior weights omega and returns lse = log sum_s
-// exp(lambda_s).
+// exp(lambda_s). mxl_hessian_parallel()'s pass 1 repeats the lambda and
+// omega operations of a unit in one batch, in the same order, to keep the
+// probabilities: a change to them here belongs there too.
 inline double mxl_unit_simulate(const MxlUnitData& ud, MxlUnitScratch& sc,
                                 const bool score) {
   const MxlLayout& lay = ud.lay;
@@ -1127,21 +1129,111 @@ inline void mxl_unit_score_local(const MxlUnitData& ud, MxlUnitScratch& sc,
   }
 }
 
-// Bytes of one thread's Hessian buffers at the largest block, m = K_c + a
-// local parameters (a free ASCs, at most min(J_d, rows)): opg_pz and the
-// products (m x m), the stashes G and F (m x S), the K_c x a blocks, the K_c x
-// K_c pieces and the non-finite records; and, for a unit split into draw
-// batches, pass 2's rows of one situation, W_t (m_t x K_w) and W_t Gamma
-// (m_t x S), which the batch budget does not bound.
-inline double mxl_hessian_unit_bytes(const MxlUnitData& ud) {
+// ============================================================================
+// The Hessian with the draws separated from the alternatives (Identity D,
+// §4.4.4 of the mixed logit article)
+//
+// Identities A-C sum over a situation's alternatives a and draws s. The
+// continuous part of the utility gradient splits into z0 = (x, w o mu*'),
+// which does not depend on the draw, and the Cholesky entries
+//   zeta_r(a, s) = w_ap e_r(s),   e_r(s) = f'_p(gamma_ps) dL_pq eta_qs,
+// a covariate of the alternative times a factor of the draw (r = (p, q)); the
+// second derivatives of utility split the same way. So every such sum is a
+// product of the situation's probabilities P_t (rows: alternatives, columns:
+// draws) with small matrices: over the alternatives at each draw,
+//   Q_t = Z_t' P_t,  Z_t = [X_t | W_t | the products w_p w_p2],
+// and over the draws for each alternative,
+//   R_t = [omega | omega o e_r]' P_t'
+// (the posterior probabilities pi_a and A_ar = sum_s omega_s P_as e_r(s)).
+// Identity B's F_t, Identity A's scores and the (z0, z0), (z0, zeta), cd and
+// dd blocks of Identity C come from Q_t and R_t per situation; the (zeta,
+// zeta) block and H_V from the unit's sums over its situations of Q_t's rows
+// (Y, the sums of P w_p w_p2, and b = W' D, the residual sums), once per unit.
+// Nothing of K_c x K_c is formed per alternative and draw. The covariates are
+// centered on the alternative of largest posterior probability first (see
+// the kernel): exact in real arithmetic, and the terms Identities B and C
+// subtract are then small where the probabilities are nearly degenerate.
+// ============================================================================
+
+// The continuous block's layout for Identity D, built once per call on the
+// primary thread: each Cholesky parameter r's row p and column q, with
+// dL_pq / dl_pq and d2L_pq / dl_pq^2; the products w_p w_p2 (p2 <= p) whose
+// sums over the alternatives give the (zeta, zeta) block; and the pairs of
+// Cholesky parameters r2 <= r of one row, H_V's entries.
+struct MxlHessLayout {
+  int K_x = 0, K_w = 0, K_0 = 0;  // fixed and random coefficients; length of z0
+  int n_L = 0, n_w2 = 0, n_z = 0; // Cholesky parameters; products; rows of Z_t
+  std::vector<int> p_of, q_of;    // Cholesky parameter r -> (p, q)
+  std::vector<double> dL, d2L;    // dL_pq / dl_pq and d2L_pq / dl_pq^2
+  std::vector<int> w2_p, w2_p2;   // product j: w_p w_p2, p2 <= p
+  std::vector<int> w2_of;         // p * K_w + p2 (p2 <= p) -> product j
+  std::vector<int> hv_r, hv_r2;   // the pairs r2 <= r of one row
+
+  MxlHessLayout(const MxlParams& par, const int K_x_, const int K_w_,
+                const bool rc_correlation, const bool rc_mean)
+      : K_x(K_x_), K_w(K_w_), K_0(K_x_ + (rc_mean ? K_w_ : 0)),
+        n_L(par.L_size), n_w2(K_w_ * (K_w_ + 1) / 2),
+        n_z(K_x_ + K_w_ + K_w_ * (K_w_ + 1) / 2) {
+    for (int p = 0; p < K_w; ++p) {     // the order of theta's L block
+      for (int q = 0; q <= p; ++q) {
+        if (!rc_correlation && q != p) continue;
+        p_of.push_back(p);
+        q_of.push_back(q);
+        dL.push_back(p == q ? par.L(p, p) : 1.0);
+        d2L.push_back(p == q ? par.L(p, p) : 0.0);
+      }
+    }
+    w2_of.assign(static_cast<std::size_t>(K_w) * K_w, -1);
+    for (int p = 0; p < K_w; ++p) {
+      for (int p2 = 0; p2 <= p; ++p2) {
+        w2_of[p * K_w + p2] = static_cast<int>(w2_p.size());
+        w2_p.push_back(p);
+        w2_p2.push_back(p2);
+      }
+    }
+    for (int r = 0; r < n_L; ++r) {
+      for (int r2 = 0; r2 <= r; ++r2) {
+        if (p_of[r2] != p_of[r]) continue;
+        hv_r.push_back(r);
+        hv_r2.push_back(r2);
+      }
+    }
+  }
+};
+
+// Bytes of one thread's Hessian buffers at the largest unit, m = K_c + a
+// local parameters (a free ASCs, at most min(J_d, rows)), and the largest
+// situation, n_t = m_t + o rows with its outside option: the unit's block and
+// its product (m x m), the stashes G (m x S) and F ((K_c + a_t) x S, a_t <=
+// a), Identity C's buffers in the parameter layout (two K_c x K_c, the cd
+// block K_c x a and the dd vector) and their sums before scaling ((K_0 + n_L)
+// a and K_0 (K_0 + n_L)), with the temporaries of their products and of the
+// mirror (K_0 (K_0 + n_L) and K_c x K_c), the unit's draw factors, residual
+// and product sums and draw weights' square roots (S (2 n_L + 2 + K_w +
+// n_w2)), one situation's sums over the alternatives Q_t (n_z x S), its
+// probabilities and slot sums (2 n_t S), its covariates Z_t, their z0 rows
+// twice and its posterior sums R_t and B_t (n_t (n_z + 2 K_0 + 2 n_L + 1)),
+// the reference covariates (K_x + K_w), two m-vectors and the non-finite
+// records; and, for a unit split into draw batches, the situation's W_t (m_t x
+// K_w) and W_t Gamma (m_t x S), which the batch budget does not bound. (A unit
+// in one batch keeps its probabilities within that budget: the kernel's
+// n_mats.)
+inline double mxl_hessian_unit_bytes(const MxlUnitData& ud,
+                                     const MxlHessLayout& hl) {
   const double K_c = ud.par.idx_delta_start;
   const double J_d = ud.n_params - K_c;
   const double a = std::min(J_d, static_cast<double>(ud.lay.max_unit_rows));
   const double m = K_c + a;
   const double m_t = static_cast<double>(ud.lay.max_m);
-  return sizeof(double) * (2.0 * m * m + 2.0 * m * ud.S + 2.0 * K_c * a +
-                           8.0 * K_c * K_c + 8.0 * m +
-                           m_t * (ud.S + ud.W.n_cols)) +
+  const double n_t = m_t + (ud.include_outside_option ? 1.0 : 0.0);
+  const double S = ud.S, K_0 = hl.K_0, n_L = hl.n_L;
+  return sizeof(double) * (2.0 * m * m + 2.0 * m * S + 3.0 * K_c * K_c +
+                           K_c * a + a + (K_0 + n_L) * a +
+                           2.0 * K_0 * (K_0 + n_L) + 2.0 * m +
+                           S * (2.0 * n_L + 2.0 + hl.K_w + hl.n_w2) +
+                           S * hl.n_z + 2.0 * n_t * S +
+                           n_t * (hl.n_z + 2.0 * K_0 + 2.0 * n_L + 1.0) +
+                           hl.K_x + hl.K_w + m_t * (S + ud.W.n_cols)) +
          5.0 * ud.n_params;
 }
 
@@ -1231,33 +1323,33 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
                        "mxl_hessian_parallel");
   const MxlLayout& lay = ud.lay;
   const int n_params = ud.n_params;
-  const int K_w = W.n_cols;
   const int Sdraw = ud.S;
-  // Reuse the parser's layout when assembling derivatives.
   const MxlParams& par = ud.par;
-  const int idx_beta_start = par.idx_beta_start;
   const int idx_mu_start = par.idx_mu_start;
   const int idx_L_start = par.idx_L_start;
-  const int idx_delta_start = par.idx_delta_start;
-  const arma::mat& L = par.L;
   const arma::vec& dmu_final_dmu = par.dmu_final_dmu;
   const arma::vec& dmu2_final_dmu2 = par.dmu2_final_dmu2;
+  const int o = include_outside_option ? 1 : 0;  // slot of the first inside alt
+  const MxlHessLayout hl(par, X.n_cols, W.n_cols, rc_correlation, rc_mean);
+  const int K_x = hl.K_x, K_w = hl.K_w, K_0 = hl.K_0, K_xw = K_x + K_w,
+            n_L = hl.n_L, n_w2 = hl.n_w2, n_z = hl.n_z;
 
   // Block layout: continuous block c = [beta | mu | L], size Kc = idx_delta_start,
   // then the unit's free ASCs (its slots, see "Compact derivative blocks"):
   // a unit's Hessian lives on its Kc + a_u parameters, a situation's
-  // per-draw pieces on its Kc + a_t. H_V (second derivative of utility
-  // w.r.t. theta) is nonzero only in the (mu, L) x (mu, L) sub-block, which
-  // lives entirely within the continuous block.
-  const int Kc = idx_delta_start;  // size of continuous block
+  // pieces on its Kc + a_t. H_V (second derivative of utility w.r.t. theta)
+  // is nonzero only in the (mu, L) x (mu, L) sub-block, which lives entirely
+  // within the continuous block.
+  const int Kc = par.idx_delta_start;  // size of continuous block
 
   // Per unit u (Louis 1982), with omega_s the posterior draw weights and
   // g_s = sum_t g_ts, H_s = sum_t H_ts the per-draw score and Hessian of
   // lambda_s = sum_t log P_ts(j_t):
   //   H_u = sum_s omega_s (H_s + (g_s - g_bar)(g_s - g_bar)'),  g_bar = sum_s omega_s g_s,
-  //   H_ts = -sum_Pzz_ts + sum_Pz_ts sum_Pz_ts' + sum_diff_H_V_ts.
-  // Pass 1 (the shared draw loop) yields omega; pass 2 accumulates the O3
-  // buffers with omega_s where the cross-section used P_choice_s / P_i_hat.
+  //   H_ts = -sum_a P z z' + (sum_a P z)(sum_a P z)' + sum_a (1{a = j_t} - P) H_V,
+  // the last three sums formed by Identity D (see above). Pass 1 yields omega
+  // and keeps the probabilities; pass 2 forms Identity D's products per
+  // situation, and per unit the blocks that sum over its situations.
 
   // The result and the threads' accumulators, slot maps, non-finite
   // records and a column of a unit's terms (sym_add_block()), all allocated
@@ -1265,7 +1357,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
   const int n_threads = kernel_team_threads(lay.U);
   kernel_check_memory("Hessian", n_threads,
                       ud.scratch_bytes() + mxl_map_bytes(ud) +
-                          mxl_hessian_unit_bytes(ud) + 8.0 * (n_params + 16.0),
+                          mxl_hessian_unit_bytes(ud, hl) + 8.0 * (n_params + 16.0),
                       [&](const int t) { return sym_acc_need(n_params, Kc, t, acc_bytes); });
   SymAcc acc(n_params, n_threads, Kc, "Hessian", acc_bytes);
   MxlUnitMaps maps = mxl_unit_maps(ud, n_threads, Kc);
@@ -1283,53 +1375,37 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
     double* acc_t = acc.base(tid);
     double* col = cols[tid].data();
 
-    // Thread-private scratch — sized per unit or situation, reset inside
-    // loops as needed; Armadillo keeps a member's memory as it shrinks.
+    // Thread-private scratch, sized per unit or situation; Armadillo keeps a
+    // member's memory as it shrinks.
     MxlUnitScratch sc; // unit slices, draws, probabilities P_ts, weights omega
 
-    // Per-(t, s) block accumulators (reset at the start of each situation-draw).
-    // cc: Kc x Kc dense outer-product sum
-    arma::mat sum_Pzz_cc(Kc, Kc);
-    // cd: Kc x a_t; column q accumulates P_a * zc_a for the alternatives in
-    // situation slot q
-    arma::mat sum_Pzz_cd;
-    // dd: diagonal only — stored as a length-a_t vector
-    arma::vec sum_Pzz_dd;
-    // P*z sums
-    arma::vec sum_Pz_c(Kc);
-    arma::vec sum_Pz_d;
-    // gradient components
-    arma::vec g_c(Kc);
-    arma::vec g_d;
-    // H_V in the continuous block (mu,L sub-block; beta and delta rows/cols are zero)
-    arma::mat sum_diff_H_V_cc(Kc, Kc);
-
-    // Per-alt scratch for the continuous-block z vector and its outer product
-    arma::vec zc_a(Kc);
-    arma::mat zz(Kc, Kc);
-
-    // O3: Per-unit block buffers — accumulate the pieces linear in omega_s
-    // across the unit's situations and draws, in unit slots.
-    arma::mat buf_Pzz_cc(Kc, Kc);  // Identity C: Σ_ts ω_s sum_Pzz_cc_ts
-    arma::mat buf_Pzz_cd;          // Identity C: Σ_ts ω_s sum_Pzz_cd_ts (Kc x a_u)
-    arma::vec buf_Pzz_dd;          // Identity C: Σ_ts ω_s sum_Pzz_dd_ts (a_u)
-    arma::mat buf_diff_HV_cc(Kc, Kc);  // Identity C: Σ_ts ω_s sum_diff_H_V_cc_ts
-    // O3: Column stashes for BLAS-3 batching.
-    // G_stash(:,s) = sqrt(ω_s) * (g_s - g_bar), g_s = Σ_t g_ts (unit slots)
-    //   → G Gᵀ = Σ_s ω_s (g_s - g_bar)(g_s - g_bar)ᵀ              (Identity A)
-    // F_stash(:,s) = sqrt(ω_s) * [sum_Pz_c; sum_Pz_d]_ts (situation slots)
-    //   → F Fᵀ = Σ_s ω_s sum_Pz sum_PzT for situation t           (Identity B)
-    // F column s is fully written in draw s of every situation; G is zeroed
-    // per unit and accumulates over the unit's situations.
-    arma::mat G_stash;
-    arma::mat F_stash;
-    arma::mat opg_pz;         // G Gᵀ + Σ_t F_t F_tᵀ, then the unit's Hessian
-    arma::vec g_bar;          // reference score, then mean deviation
-    // Per-unit assembly buffers, reused so that no unit or situation
-    // allocates once the thread has seen a larger one: the products F Fᵀ and
-    // G Gᵀ, and sqrt(ω). The unit's Hessian is assembled in place in opg_pz.
-    arma::mat prod_buf;
+    // The unit: the draw factors e_r(s) (n_L x S) and Mt = [omega; omega o
+    // e_r] ((1 + n_L) x S); pass 1's probabilities, situation t's (m_t + o) x
+    // S block (the inside alternatives, then the outside option) at offset
+    // S (first row + o (t - t0)); over its situations, the residual sums b =
+    // W' D (K_w x S) and the sums of P w_p w_p2 (n_w2 x S).
+    arma::mat E, Mt, bW, Y;
+    arma::vec P_keep;
     arma::rowvec sqrt_omega(Sdraw);
+    // Identity C: its (z0, z0) and (z0, zeta) sums and its cd block over the
+    // unscaled covariates (K_0 of them; mu*' applied at the end), the cd
+    // block's zeta rows, the dd entries; then Identity C and H_V in the
+    // parameter layout.
+    arma::mat U0, V0, cd0, cdL;
+    arma::vec buf_Pzz_dd;
+    arma::mat buf_Pzz_cc(Kc, Kc), buf_diff_HV_cc(Kc, Kc), buf_Pzz_cd;
+    // One situation: its probabilities when formed here (split units), its
+    // covariates Z_t' (n_z x n_t, n_t = m_t + o) centered on cref, Q_t (n_z x
+    // S), R_t ((1 + n_L) x n_t), B_t = w_p(r) o A (n_L x n_t), the slot sums
+    // of P (a_t x S), Z_t's z0 rows and the same times pi.
+    arma::mat P_t, Zt, Q, RT, Bt, SP, Z0, Zpi;
+    arma::vec cref;
+    // Identities A and B and the unit's block:
+    arma::mat G_stash;  // m_u x S: per-draw scores, then centered and scaled
+    arma::mat F_stash;  // (Kc + a_t) x S: sqrt(omega_s) sum_a P z, situation t
+    arma::mat opg_pz;   // G Gᵀ + Σ_t F_t F_tᵀ, then the unit's Hessian
+    arma::mat prod_buf;
+    arma::vec g_bar;    // reference score, then mean deviation
 
 #ifdef _OPENMP
 #pragma omp for schedule(dynamic)
@@ -1337,9 +1413,40 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
     for (mxl_off u = 0; u < lay.U; ++u) {
       const double w_u = weights[lay.unit_first(u)]; // unit weight
 
-      // --- Pass 1: posterior draw weights omega_s of the unit's choices ---
-      mxl_unit_load(ud, u, sc, 1, true, true);
-      const double lse = mxl_unit_simulate(ud, sc, false);
+      // --- Pass 1: the posterior draw weights omega_s of the unit's choices.
+      // A unit in one draw batch keeps its probabilities, within the batch
+      // budget with W_u Gamma_u (n_mats: their R x S, then (R + o T_u) x S);
+      // the draw loop and the weights are mxl_unit_simulate()'s (score =
+      // false), the same operations in the same order. A split unit forms them
+      // again in pass 2.
+      mxl_unit_load(ud, u, sc, o ? 3 : 2, true, true);
+      const bool one_batch = sc.nb == 1;
+      double lse;
+      if (one_batch) {
+        mxl_batch_wgamma(sc, 0, Sdraw);
+        sc.lambda.zeros(Sdraw);
+        P_keep.set_size(static_cast<arma::uword>(sc.R + o * (sc.t1 - sc.t0)) * Sdraw);
+        for (int s = 0; s < Sdraw; ++s) {
+          for (mxl_off t = sc.t0; t < sc.t1; ++t) {
+            const mxl_off first = lay.row_off[t] - sc.r0;
+            const int m = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
+            const int chosen_alt = lay.chosen(t);
+            const double log_denom = mxl_situation_probs(ud, sc, t, s);
+            sc.lambda(s) += sc.V(chosen_alt) - log_denom;
+            double* keep = P_keep.memptr() + (first + o * (t - sc.t0)) * Sdraw +
+                           static_cast<mxl_off>(s) * (m + o);
+            std::copy(sc.P.memptr() + o, sc.P.memptr() + o + m, keep);
+            if (o) keep[m] = sc.P[0];
+          }
+        }
+        lse = log_sum_exp_n(sc.lambda.memptr(), Sdraw);
+        const double lambda_max = direct_max_n(sc.lambda.memptr(), Sdraw);
+        sc.omega = arma::exp(sc.lambda - lambda_max);
+        const double weight_sum = arma::accu(sc.omega);
+        sc.omega /= weight_sum;
+      } else {
+        lse = mxl_unit_simulate(ud, sc, false);
+      }
       // lse is finite whenever the utilities are (log-space probabilities),
       // so this skips only a unit whose utilities overflowed, where its
       // log-likelihood is undefined.
@@ -1351,227 +1458,132 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
       const int a_u = mp.a;
       const int m_u = Kc + a_u;
 
-      // O3: Initialize per-unit block buffers.
-      buf_Pzz_cc.zeros();
-      buf_diff_HV_cc.zeros();
-      buf_Pzz_cd.zeros(Kc, a_u);
+      // The draw factors e_r(s) = f'_p(gamma_ps) dL_pq eta_qs, and Mt
+      E.set_size(n_L, Sdraw);
+      Mt.set_size(1 + n_L, Sdraw);
+      for (int s = 0; s < Sdraw; ++s) {
+        const double om = sc.omega[s];
+        Mt(0, s) = om;
+        for (int r = 0; r < n_L; ++r) {
+          const double e = sc.Dgamma1(hl.p_of[r], s) * (hl.dL[r] * eta_u(hl.q_of[r], s));
+          E(r, s) = e;
+          Mt(1 + r, s) = om * e;
+        }
+        sqrt_omega[s] = std::sqrt(om);
+      }
+
+      U0.zeros(K_0, K_0);
+      V0.zeros(K_0, n_L);
+      cd0.zeros(K_0, a_u);
+      cdL.zeros(n_L, a_u);
       buf_Pzz_dd.zeros(a_u);
+      bW.zeros(K_w, Sdraw);
+      Y.zeros(n_w2, Sdraw);
       G_stash.zeros(m_u, Sdraw);
       opg_pz.zeros(m_u, m_u);
 
-      // --- Pass 2: situations t (outer) x draws s (inner). A unit in one
-      // draw batch reuses pass 1's WGamma; for a longer one each situation's
-      // rows of W_u Gamma_u (m_t x S) are formed in turn, so the thread's
-      // memory grows with the largest choice set rather than the unit.
-      const bool one_batch = sc.nb == 1;
+      // --- Pass 2: situations t ---
       for (mxl_off t = sc.t0; t < sc.t1; ++t) {
         const int m_t = static_cast<int>(lay.row_off[t + 1] - lay.row_off[t]);
-        const int num_choices = include_outside_option ? m_t + 1 : m_t;
-        if (!one_batch) mxl_situation_wgamma(sc, lay.row_off[t] - sc.r0, m_t);
+        const int n_t = m_t + o;                       // with the outside option
+        const mxl_off first = lay.row_off[t] - sc.r0;  // first row in the unit
 
-        // The situation's slots: its per-draw pieces live on Kc + a_t.
+        // The situation's slots: its pieces live on Kc + a_t.
         mxl_situation_map(ud, sc, t, mp);
         const int a_t = mp.a_t;
-        sum_Pzz_cd.set_size(Kc, a_t);
-        sum_Pzz_dd.set_size(a_t);
-        sum_Pz_d.set_size(a_t);
-        g_d.set_size(a_t);
-        F_stash.set_size(Kc + a_t, Sdraw);
+        const int c = lay.chosen(t) - o;     // chosen inside row, or -1
+        const int c_col = c >= 0 ? c : m_t;  // its column of Z_t
+        const int q_c = c >= 0 ? mp.row_sit[c] : -1;
 
-        // chosen alternative index (validated with the layout)
-        const int chosen_alt = lay.chosen(t);
+        // P_t (n_t x S): kept by pass 1, or formed from the situation's rows
+        // of W_u Gamma_u (m_t x S) for a split unit, so that the thread's
+        // memory grows with the largest choice set rather than the unit
+        const double* pt_mem;
+        if (one_batch) {
+          pt_mem = P_keep.memptr() + (first + o * (t - sc.t0)) * Sdraw;
+        } else {
+          mxl_situation_wgamma(sc, first, m_t);
+          P_t.set_size(n_t, Sdraw);
+          for (int s = 0; s < Sdraw; ++s) {
+            mxl_situation_probs(ud, sc, t, s);
+            double* p = P_t.colptr(s);
+            std::copy(sc.P.memptr() + o, sc.P.memptr() + o + m_t, p);
+            if (o) p[m_t] = sc.P[0];
+          }
+          pt_mem = P_t.memptr();
+        }
+        const arma::mat Pv(const_cast<double*>(pt_mem), n_t, Sdraw, false, true);
 
-        // Loop over simulations (draws) s
+        // Sums over the draws for each alternative: its posterior probability
+        // pi_a = RT(0, a) and A_ar = RT(1 + r, a)
+        RT = Mt * Pv.t();
+
+        // Z_t' (n_z x n_t): column a holds x_a and w_a less cref, the
+        // covariates of the alternative of largest posterior probability (the
+        // outside option's are zero), then the products of its centered w.
+        // A shift common to every alternative leaves each draw's logit
+        // covariance of z, and so the Hessian, as it is (the probabilities
+        // sum to one and the residuals to zero), and this one removes the
+        // covariates' common level before the products, so that the terms
+        // Identities B and C subtract are small where the probabilities are
+        // nearly degenerate (§4.4.4).
+        int a_ref = 0;
+        for (int a = 1; a < n_t; ++a) if (RT(0, a) > RT(0, a_ref)) a_ref = a;
+        Zt.set_size(n_z, n_t);
+        for (int a = 0; a < n_t; ++a) {
+          double* z = Zt.colptr(a);
+          if (a < m_t) {
+            const arma::uword i = static_cast<arma::uword>(first + a);
+            for (int k = 0; k < K_x; ++k) z[k] = sc.X_u.at(i, k);
+            for (int p = 0; p < K_w; ++p) z[K_x + p] = sc.W_u.at(i, p);
+          } else {
+            for (int k = 0; k < K_xw; ++k) z[k] = 0.0;
+          }
+        }
+        cref.set_size(K_xw);
+        std::copy(Zt.colptr(a_ref), Zt.colptr(a_ref) + K_xw, cref.memptr());
+        for (int a = 0; a < n_t; ++a) {
+          double* z = Zt.colptr(a);
+          for (int k = 0; k < K_xw; ++k) z[k] -= cref[k];
+          for (int j = 0; j < n_w2; ++j) {
+            z[K_xw + j] = z[K_x + hl.w2_p[j]] * z[K_x + hl.w2_p2[j]];
+          }
+        }
+        // Sums over the alternatives at each draw
+        Q = Zt * Pv;
+
+        // Slot sums of P (an alternative listed twice adds both rows)
+        SP.zeros(a_t, Sdraw);
         for (int s = 0; s < Sdraw; ++s) {
-          // Column views into the batched matrices (zero-copy)
-          const auto eta_i_s                = eta_u.col(s);
-          const auto dgamma_final_dgamma    = sc.Dgamma1.col(s);
-          const auto d2gamma_final_dgamma2  = sc.Dgamma2.col(s);
-          const double omega_s = sc.omega(s);
-
-          // === 3. Utility and probabilities P_ts (as in pass 1) ===
-          mxl_situation_probs(ud, sc, t, s);
-          const arma::vec& P_s = sc.P;
-
-          // === 4. Per-(t, s) Gradient (g_ts) and Hessian (H_ts) — block form ===
-          // Reset per-draw block accumulators.
-          sum_Pzz_cc.zeros();
-          sum_Pz_c.zeros();
-          g_c.zeros();
-          sum_diff_H_V_cc.zeros();
-          if (a_t > 0) {
-            sum_Pzz_cd.zeros();
-            sum_Pzz_dd.zeros();
-            sum_Pz_d.zeros();
-            g_d.zeros();
+          const double* ps = Pv.colptr(s);
+          double* sp = SP.colptr(s);
+          for (int a = 0; a < m_t; ++a) {
+            const int q = mp.row_sit[a];
+            if (q >= 0) sp[q] += ps[a];
           }
+        }
 
-          for (int a = 0; a < num_choices; ++a) {
-            // Determine if this alt contributes a nonzero z (outside option at a==0 skips)
-            if (include_outside_option && a == 0) {
-              // Outside option: z_as == 0 and H_V_as == 0, so this alternative
-              // contributes nothing to the Hessian accumulators — skip entirely.
-              continue;
+        // Identity B: F_t(:, s) = sqrt(omega_s) sum_a P_tas z_tas, one BLAS-3
+        // product per situation (the outer products do not combine across
+        // situations before the product), added into the unit block at the
+        // situation's slots.
+        F_stash.set_size(Kc + a_t, Sdraw);
+        for (int s = 0; s < Sdraw; ++s) {
+          const double sw = sqrt_omega[s];
+          const double* qs = Q.colptr(s);
+          double* f = F_stash.colptr(s);
+          for (int k = 0; k < K_x; ++k) f[k] = sw * qs[k];
+          if (rc_mean) {
+            for (int p = 0; p < K_w; ++p) {
+              f[idx_mu_start + p] = sw * (dmu_final_dmu[p] * qs[K_x + p]);
             }
-
-            const int current_a_idx = include_outside_option ? a - 1 : a;
-            const mxl_off row = lay.row_off[t] + current_a_idx; // stacked row of alt a
-            const arma::rowvec w_ap_row = sc.W_u.row(row - sc.r0);
-
-            // --- Build continuous-block vector zc_a ---
-            zc_a.zeros();
-
-            // beta sub-block
-            if (idx_mu_start > idx_beta_start) {
-              zc_a.subvec(idx_beta_start, idx_mu_start - 1) =
-                  sc.X_u.row(row - sc.r0).t();
-            }
-
-            // mu sub-block  (nonzero only when rc_mean)
-            if (rc_mean) {
-              for (int p = 0; p < K_w; ++p) {
-                zc_a[idx_mu_start + p] = w_ap_row(p) * dmu_final_dmu(p);
-              }
-            }
-
-            // L sub-block
-            if (rc_correlation) {
-              int lp_idx_r = 0;
-              for (int p = 0; p < K_w; ++p) {
-                const double f_p_prime = dgamma_final_dgamma(p);
-                for (int q = 0; q <= p; ++q, ++lp_idx_r) {
-                  const double dLpq_dparam_r = (p == q) ? L(p, p) : 1.0;
-                  zc_a[idx_L_start + lp_idx_r] =
-                      w_ap_row(p) * f_p_prime * dLpq_dparam_r * eta_i_s(q);
-                }
-              }
-            } else { // Diagonal L
-              for (int p = 0; p < K_w; ++p) {
-                zc_a[idx_L_start + p] =
-                    w_ap_row(p) * dgamma_final_dgamma(p) * L(p, p) * eta_i_s(p);
-              }
-            }
-
-            // --- Situation slot of this alt's free ASC (-1: none) ---
-            const int k_sit = mp.row_sit[current_a_idx];
-
-            // --- Accumulate block sums ---
-            const double P_a = P_s(a);
-            const double diff = (a == chosen_alt ? 1.0 : 0.0) - P_a;
-
-            // cc block: P_a * zc_a * zc_a^T  (rank-1 update)
-            zz = zc_a * zc_a.t();
-            sum_Pzz_cc += P_a * zz;
-            sum_Pz_c   += P_a * zc_a;
-            g_c        += diff * zc_a;
-
-            // cd and dd blocks (delta scatter)
-            if (k_sit >= 0) {
-              sum_Pzz_cd.col(k_sit) += P_a * zc_a;
-              sum_Pzz_dd(k_sit)     += P_a;
-              sum_Pz_d(k_sit)       += P_a;
-              g_d(k_sit)            += diff;
-            }
-
-            // H_V accumulation — nonzero only in (mu,L)x(mu,L) within cc block
-            // Reuse same logic as before but write directly into sum_diff_H_V_cc
-            if (rc_mean) {
-              for (int p = 0; p < K_w; ++p) {
-                sum_diff_H_V_cc(idx_mu_start + p, idx_mu_start + p) +=
-                    diff * w_ap_row(p) * dmu2_final_dmu2(p);
-              }
-            }
-            if (rc_correlation) {
-              int lp_idx_r = 0;
-              for (int p = 0; p < K_w; ++p) {
-                const double f_p_prime        = dgamma_final_dgamma(p);
-                const double f_p_double_prime = d2gamma_final_dgamma2(p);
-                for (int q = 0; q <= p; ++q, ++lp_idx_r) {
-                  const int r = idx_L_start + lp_idx_r;
-                  const double dLpq_dparam_r = (p == q) ? L(p, p) : 1.0;
-                  const double d2Lpq_dparam2_r = (p == q) ? L(p, p) : 0.0;
-                  const double dgamma_p_dparam_r = dLpq_dparam_r * eta_i_s(q);
-                  const double d2gamma_p_dparam2_r = d2Lpq_dparam2_r * eta_i_s(q);
-
-                  // Diagonal H_V entry
-                  sum_diff_H_V_cc(r, r) +=
-                      diff * w_ap_row(p) *
-                      (f_p_double_prime * std::pow(dgamma_p_dparam_r, 2) +
-                       f_p_prime * d2gamma_p_dparam2_r);
-
-                  // Off-diagonal L-L entries (same row p, column < q)
-                  for (int q_s = 0; q_s < q; ++q_s) {
-                    const int param_s = idx_L_start + lp_idx_r - (q - q_s);
-                    const double dLpq_s_dparam = (p == q_s) ? L(p, p) : 1.0;
-                    const double dgamma_p_dparam_s = dLpq_s_dparam * eta_i_s(q_s);
-                    const double d2V = diff * w_ap_row(p) * f_p_double_prime *
-                                       dgamma_p_dparam_r * dgamma_p_dparam_s;
-                    sum_diff_H_V_cc(r, param_s) += d2V;
-                    sum_diff_H_V_cc(param_s, r) += d2V;
-                  }
-                }
-              }
-            } else { // Diagonal L
-              for (int p = 0; p < K_w; ++p) {
-                const int r = idx_L_start + p;
-                const double f_p_prime        = dgamma_final_dgamma(p);
-                const double f_p_double_prime = d2gamma_final_dgamma2(p);
-                const double dgamma_p_dparam  = L(p, p) * eta_i_s(p);
-                const double d2gamma_p_dparam = L(p, p) * eta_i_s(p);
-                sum_diff_H_V_cc(r, r) +=
-                    diff * w_ap_row(p) *
-                    (f_p_double_prime * std::pow(dgamma_p_dparam, 2) +
-                     f_p_prime * d2gamma_p_dparam);
-              }
-            }
-          } // end alt loop
-
-          // === 5. O3: Accumulate per-unit buffers (Identity C) and fill
-          //          column stashes G_stash/F_stash (Identities A + B). ===
-          //
-          // Instead of assembling H_ts and accumulating
-          //   hess_term1 += omega_s * ((g_s - g_bar)(g_s - g_bar)T + sum_t H_ts),
-          // we split the linear-in-omega_s and the outer-product pieces:
-          //
-          //   Linear (Identity C): buf_Pzz_cc     += omega_s * sum_Pzz_cc
-          //                        buf_diff_HV_cc += omega_s * sum_diff_H_V_cc
-          //                        (and cd/dd variants, situation slots to
-          //                        unit slots)
-          //   Outer-product (Identity A): G_stash(:,s) += g_ts, centered at
-          //     g_bar and scaled by sqrt(omega_s) after the unit, so that
-          //     G GT = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)T.
-          //   Outer-product (Identity B): F_stash(:,s) = sqrt(omega_s) * [sum_Pz_c; sum_Pz_d]
-          //     so that F FT = Σ_s omega_s sum_Pz sum_PzT after situation t.
-          // Each addition into a unit buffer is the one the dense buffers made
-          // (their other columns gained omega_s * 0), its product formed first
-          // as Armadillo's element-wise update forms it.
-
-          const double sqrt_ws = std::sqrt(omega_s);
-
-          // Identity C — scalar-times-matrix accumulation into per-unit buffers.
-          buf_Pzz_cc    += omega_s * sum_Pzz_cc;
-          buf_diff_HV_cc += omega_s * sum_diff_H_V_cc;
-          for (int q = 0; q < a_t; ++q) {
-            const int k_u = mp.sit_slot[q];
-            buf_Pzz_cd.col(k_u) += omega_s * sum_Pzz_cd.col(q);
-            const double v = sum_Pzz_dd(q) * omega_s;
-            buf_Pzz_dd(k_u) += v;
           }
-
-          // Identity A — accumulate g_s = Σ_t g_ts in column s (g_ts = [g_c; g_d]).
-          G_stash.col(s).head(Kc) += g_c;
-          for (int q = 0; q < a_t; ++q) G_stash(Kc + mp.sit_slot[q], s) += g_d(q);
-
-          // Identity B — fill column s of F_stash with sqrt(omega_s) * [sum_Pz_c; sum_Pz_d].
-          F_stash.col(s).head(Kc) = sqrt_ws * sum_Pz_c;
-          if (a_t > 0) {
-            F_stash.col(s).tail(a_t) = sqrt_ws * sum_Pz_d;
+          for (int r = 0; r < n_L; ++r) {
+            f[idx_L_start + r] = sw * (qs[K_x + hl.p_of[r]] * E(r, s));
           }
-        } // end S loop
-
-        // Identity B for situation t (one BLAS-3 product per situation: the
-        // outer products do not combine across situations before the product),
-        // added into the unit block at the situation's slots.
+          const double* sp = SP.colptr(s);
+          for (int q = 0; q < a_t; ++q) f[Kc + q] = sw * sp[q];
+        }
         nonfinite_rows(F_stash, [&](const int i) {
           return mp.global(mp.unit(i, Kc), Kc);
         }, nf);
@@ -1583,8 +1595,68 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
             opg_pz(mp.unit(i, Kc), uj) += prod_buf(i, j);
           }
         }
+
+        // Identity A: g_ts = sum_a (1{a = j_t} - P_tas) z_tas, accumulated
+        // over the unit's situations; its mu and Cholesky rows through b.
+        const double* zc = Zt.colptr(c_col);
+        for (int s = 0; s < Sdraw; ++s) {
+          const double* qs = Q.colptr(s);
+          double* g = G_stash.colptr(s);
+          double* b = bW.colptr(s);
+          double* y = Y.colptr(s);
+          for (int k = 0; k < K_x; ++k) g[k] += zc[k] - qs[k];
+          for (int p = 0; p < K_w; ++p) b[p] += zc[K_x + p] - qs[K_x + p];
+          for (int j = 0; j < n_w2; ++j) y[j] += qs[K_xw + j];
+          const double* sp = SP.colptr(s);
+          for (int q = 0; q < a_t; ++q) {
+            g[Kc + mp.sit_slot[q]] += (q == q_c ? 1.0 : 0.0) - sp[q];
+          }
+        }
+
+        // Identity C's (z0, z0), (z0, zeta), cd and dd blocks
+        Bt.set_size(n_L, n_t);
+        for (int a = 0; a < n_t; ++a) {
+          const double* ra = RT.colptr(a);
+          const double* z = Zt.colptr(a);
+          double* bt = Bt.colptr(a);
+          for (int r = 0; r < n_L; ++r) bt[r] = z[K_x + hl.p_of[r]] * ra[1 + r];
+        }
+        if (K_0 > 0) {
+          Z0 = Zt.rows(0, K_0 - 1);
+          Zpi = Z0;
+          for (int a = 0; a < n_t; ++a) {
+            const double pi = RT(0, a);
+            double* zp = Zpi.colptr(a);
+            for (int k = 0; k < K_0; ++k) zp[k] *= pi;
+          }
+          U0 += Z0 * Zpi.t();
+          if (n_L > 0) V0 += Z0 * Bt.t();
+        }
+        for (int a = 0; a < m_t; ++a) {
+          const int q = mp.row_sit[a];
+          if (q < 0) continue;
+          const int k = mp.sit_slot[q];
+          const double pi = RT(0, a);
+          const double* z = Zt.colptr(a);
+          double* c0 = cd0.colptr(k);
+          for (int i = 0; i < K_0; ++i) c0[i] += pi * z[i];
+          const double* bt = Bt.colptr(a);
+          double* cl = cdL.colptr(k);
+          for (int r = 0; r < n_L; ++r) cl[r] += bt[r];
+          buf_Pzz_dd[k] += pi;
+        }
         mxl_situation_map_clear(mp);
       } // end situation loop
+
+      // Identity A's mu and Cholesky rows: mu*' o b and b_p(r) e_r
+      for (int s = 0; s < Sdraw; ++s) {
+        const double* b = bW.colptr(s);
+        double* g = G_stash.colptr(s);
+        if (rc_mean) {
+          for (int p = 0; p < K_w; ++p) g[idx_mu_start + p] = dmu_final_dmu[p] * b[p];
+        }
+        for (int r = 0; r < n_L; ++r) g[idx_L_start + r] = b[hl.p_of[r]] * E(r, s);
+      }
 
       // Identity A, centered: G Gᵀ = Σ_s omega_s (g_s - g_bar)(g_s - g_bar)ᵀ.
       // Remove the highest-weight draw's score before computing the mean,
@@ -1594,18 +1666,83 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
       G_stash.each_col() -= g_bar;
       g_bar = G_stash * sc.omega;
       G_stash.each_col() -= g_bar;
-      for (int s = 0; s < Sdraw; ++s) sqrt_omega[s] = std::sqrt(sc.omega[s]);
       G_stash.each_row() %= sqrt_omega;
       nonfinite_rows(G_stash, [&](const int i) { return mp.global(i, Kc); },
                      nf);
       prod_buf = G_stash * G_stash.t();
       opg_pz += prod_buf;
 
-      // === 6. O3: Per-unit finalization — assemble Hessian once from buffers ===
-      // 6a. Assemble hess_term1 block by block, in place in opg_pz:
-      //     hess_term1 = (G Gᵀ + Σ_t F_t F_tᵀ) + (-buf_Pzz) + buf_diff_HV_cc (cc block only)
-      //     This is the batched equivalent of Σ_s omega_s (H_s +
-      //     (g_s - g_bar)(g_s - g_bar)T), the unit's whole Hessian H_u.
+      // Identity C in the parameter layout: the (z0, z0) and (z0, zeta)
+      // blocks with mu*' on the mu rows, the (zeta, zeta) block from Y,
+      // sum_s omega_s e_r e_r2 Y_p(r)p(r2), each block's upper triangle
+      // mirrored; the cd block; and H_V from b,
+      //   (mu_p, mu_p): mu*''_p sum_s omega_s b_ps,
+      //   (L_r, L_r2), one row p: sum_s omega_s h_rr2(s) b_ps.
+      // A draw of weight zero adds nothing to these sums, though its factors
+      // may overflow (a choice probability of zero at that draw, where the
+      // draw is extreme): it is left out, as in exact arithmetic. F_t and G
+      // still take it (with weight zero), so a factor e_r that is itself not
+      // finite flags its parameters' rows there, as before.
+      buf_Pzz_cc.zeros();
+      buf_diff_HV_cc.zeros();
+      for (int j = 0; j < K_0; ++j) {
+        const double sj = j < K_x ? 1.0 : dmu_final_dmu[j - K_x];
+        for (int i = 0; i <= j; ++i) {
+          const double si = i < K_x ? 1.0 : dmu_final_dmu[i - K_x];
+          buf_Pzz_cc(i, j) = si * sj * U0(i, j);
+        }
+        for (int r = 0; r < n_L; ++r) buf_Pzz_cc(j, idx_L_start + r) = sj * V0(j, r);
+      }
+      for (int r = 0; r < n_L; ++r) {
+        for (int r2 = 0; r2 <= r; ++r2) {
+          const double* y = Y.colptr(0) + hl.w2_of[hl.p_of[r] * K_w + hl.p_of[r2]];
+          double v = 0.0;
+          for (int s = 0; s < Sdraw; ++s) {
+            if (sc.omega[s] == 0.0) continue;
+            v += Mt(1 + r, s) * E(r2, s) * y[s * n_w2];
+          }
+          buf_Pzz_cc(idx_L_start + r2, idx_L_start + r) = v;
+        }
+      }
+      buf_Pzz_cc = arma::symmatu(buf_Pzz_cc);
+      if (rc_mean) {
+        for (int p = 0; p < K_w; ++p) {
+          double v = 0.0;
+          for (int s = 0; s < Sdraw; ++s) {
+            if (sc.omega[s] == 0.0) continue;
+            v += sc.omega[s] * bW(p, s);
+          }
+          buf_diff_HV_cc(idx_mu_start + p, idx_mu_start + p) = dmu2_final_dmu2[p] * v;
+        }
+      }
+      for (std::size_t h = 0; h < hl.hv_r.size(); ++h) {
+        const int r = hl.hv_r[h], r2 = hl.hv_r2[h];
+        const int p = hl.p_of[r], q = hl.q_of[r], q2 = hl.q_of[r2];
+        double v = 0.0;
+        for (int s = 0; s < Sdraw; ++s) {
+          if (sc.omega[s] == 0.0) continue;
+          const double f1 = sc.Dgamma1(p, s), f2 = sc.Dgamma2(p, s);
+          const double a1 = hl.dL[r] * eta_u(q, s);  // d gamma_p / d l_r
+          const double hs = r2 == r
+                                ? f2 * (a1 * a1) + f1 * (hl.d2L[r] * eta_u(q, s))
+                                : f2 * a1 * (hl.dL[r2] * eta_u(q2, s));
+          v += sc.omega[s] * hs * bW(p, s);
+        }
+        buf_diff_HV_cc(idx_L_start + r, idx_L_start + r2) = v;
+        buf_diff_HV_cc(idx_L_start + r2, idx_L_start + r) = v;
+      }
+      buf_Pzz_cd.set_size(Kc, a_u);
+      for (int k = 0; k < a_u; ++k) {
+        for (int i = 0; i < K_0; ++i) {
+          buf_Pzz_cd(i, k) = (i < K_x ? 1.0 : dmu_final_dmu[i - K_x]) * cd0(i, k);
+        }
+        for (int r = 0; r < n_L; ++r) buf_Pzz_cd(idx_L_start + r, k) = cdL(r, k);
+      }
+
+      // === Per-unit finalization: assemble the Hessian from the buffers ===
+      // hess_term1 = (G Gᵀ + Σ_t F_t F_tᵀ) + (-buf_Pzz) + buf_diff_HV_cc (cc
+      // block only), the batched equivalent of Σ_s omega_s (H_s +
+      // (g_s - g_bar)(g_s - g_bar)T), the unit's whole Hessian H_u.
 
       // cc block: contributions from OPG, sum-Pz outer product, -Pzz, and H_V.
       opg_pz.submat(0, 0, Kc - 1, Kc - 1) -= buf_Pzz_cc;
@@ -1622,15 +1759,11 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
         opg_pz.submat(Kc, Kc, m_u - 1, m_u - 1).diag() -= buf_Pzz_dd;
       }
 
-      // 6b. Louis identity: H_u = hess_term1, whose centered Identity A
-      //     already subtracts g_bar g_barᵀ. The draw weights are normalized,
-      //     so there is no division by the simulated P_u. Add w_u H_u into
-      //     the accumulator's upper triangle (opg_pz is exactly symmetric), the
-      //     product formed first as Armadillo's element-wise update forms it:
-      //     main's rounding under clang, which contracts within a statement
-      //     only; GCC, which may fuse main's element-wise loop, can round
-      //     these additions differently in the last bit (class T, as are the
-      //     smaller BLAS products).
+      // Louis identity: H_u = hess_term1, whose centered Identity A already
+      // subtracts g_bar g_barᵀ. The draw weights are normalized, so there is
+      // no division by the simulated P_u. Add w_u H_u into the accumulator's
+      // upper triangle (opg_pz is exactly symmetric), each product formed
+      // before it is added (sym_add_block()).
       switch (acc.mode()) {
         case SymMode::Single:
           sym_add_block<SymMode::Single>(acc, acc_t, mp, Kc, opg_pz, w_u, col);
@@ -1665,10 +1798,10 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
 //   H_u,dd = sum_s omega_s (H_s,dd + (g_s - g_bar)(g_s - g_bar)'),
 //   H_s,dd = -sum_t (diag(P_ts) - P_ts P_ts'),   g_s = sum_t (e_jt - P_ts),
 // over the unit's free-constant slots (the probabilities of the rows in a
-// slot summed: an alternative listed twice). It needs no continuous block:
-// no per-alternative K_c-vector and K_c x K_c outer product, which dominate
-// the full Hessian. One pass gives the objective and the gradient by the
-// gradient kernel's own routines (bit for bit at one thread) and then, per
+// slot summed: an alternative listed twice). It needs none of the full
+// Hessian's continuous block (Identity D, above). One pass gives the
+// objective and the gradient by the gradient kernel's own routines (bit for
+// bit at one thread) and then, per
 // unit, the block: per situation F_t (a_t x S, sqrt(omega_s) times the slot
 // probabilities) and F_t F_t'; per unit G (a_u x S, the per-draw scores of
 // the constants), centered as the full kernel centers it, scaled by

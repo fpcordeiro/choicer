@@ -540,7 +540,9 @@ designs of their own, described where they appear.
   evaluations Newton took 1.5 to 10 times as long as the default fit and, on
   the smaller claims-style design, certified another local maximum, 13.4
   log-likelihood units lower. (Times are modeled from the kernels' calls and
-  per-pass costs, the machine being loaded by other work.) So
+  per-pass costs, the machine being loaded by other work. They predate the
+  faster Hessian under "Standard errors with thousands of constants", which
+  shortens every Newton step.) So
   `polish = "newton"` after the optimizer's own stop is the recommended check
   for a reportable fit with many constants; the default stays `"none"`, which
   leaves every fit as it was, bit for bit.
@@ -561,7 +563,7 @@ designs of their own, described where they appear.
   alternatives, and to 91% for an alternative x decision-maker interaction).
   Each solve takes damped Newton steps on the constants' block of the
   information, which an internal kernel forms with the objective and gradient
-  in about three gradient passes (the full Hessian costs 30 to 40), from the
+  in about three gradient passes (the full Hessian in three to four), from the
   constants of the best point the optimizer has reached, until the decrement
   over the mean weight falls below 1e-12 or every constant's score is below
   1e-10 of its alternative's weighted chosen count plus the mean weight
@@ -600,6 +602,42 @@ designs of their own, described where they appear.
   claims-style panel, where a patient's visits involve about 60 of the
   hospitals, the Hessian took about half the time (26 s instead of 55 s for
   15,000 patients).
+- **The analytic Hessian no longer forms an outer product of the parameters
+  per alternative and draw.** It gives the default standard errors, the bread
+  of robust and clustered ones, and every step of `polish = "newton"`. The
+  derivatives of utility separate into a covariate of the alternative times a
+  factor of the draw, so each choice situation's sums over its alternatives
+  and draws are two matrix products of its choice probabilities with small
+  matrices (§4.4.4 of the mixed logit math article). On census-style data
+  with 2,620 parameters (5,000 students, `S = 100`) the Hessian took 0.47 s
+  instead of 4.19 s at one thread and 0.08 s instead of 0.81 s at eleven; with
+  30 fixed coefficients, 0.63 s instead of 12.0 s at one thread; on the
+  claims-style panel (400 patients, 518 parameters), 0.47 s instead of
+  4.92 s at one thread. It now costs three to four evaluations of the
+  gradient, where it cost 30 to 80.
+- Each situation's covariates are first centered on its alternative of largest
+  posterior probability. That leaves the Hessian unchanged in exact arithmetic
+  and keeps its rounding small where the covariates share a large common level
+  or the choice probabilities are nearly degenerate. Against a 60-digit
+  evaluation of the Hessian on our reference battery, its largest error,
+  relative to the larger of one and its largest entry, fell from 3.7e-12 to
+  4.7e-15 on designs with columns of ordinary scale, and from 2.3e-5 to
+  3.4e-16 on designs with columns rescaled by 1e7 and 1e-7. On the battery's
+  fits, whose covariates are of ordinary scale, variances and standard errors
+  move by floating-point rounding only, at most 4e-14 relative, and the
+  estimates of fits with `polish = "newton"` by at most 3.4e-11; in fits whose
+  constants have no finite maximum, where the information is nearly singular,
+  the standard errors move by up to 4.8e-5 relative and the estimates by up
+  to 2.4e-6.
+- **A covariate that varies within no choice situation, with no outside
+  option, now leaves every standard error of a mixed logit NA.** Such a
+  covariate (a decision maker's age entered alone, say) cancels from every
+  utility difference and is not identified. Its row and column of the Hessian
+  are now exactly zero, so the information is singular, and the fit says so
+  and reports NA standard errors; before, rounding gave it a large finite
+  standard error (414,284 in one example) and the other parameters theirs.
+  Interact such a covariate with an alternative's attribute or constant, or
+  drop it.
 - **Robust and clustered variances no longer form the matrix of every decision
   maker's score** (42 GB for 2 million students with 2,620 parameters, held
   twice while it was weighted). The robust meat of `vcov(type = "robust")` and

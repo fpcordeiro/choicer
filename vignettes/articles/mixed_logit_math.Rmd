@@ -665,10 +665,11 @@ $\mu$--$L$ cross derivative.
 The subsections below describe the computational restructuring used by
 `mxl_hessian_parallel`. They cover (i) a block decomposition of the score
 vector and Hessian terms, (ii) buffer accumulation that eliminates the per-draw dense
-matrix allocation, (iii) BLAS-3 batching of two outer-product sums, (iv) the symmetry
-strategy used for final assembly, and (v) the compact block of the parameters a unit's
-likelihood involves, in which (i)–(iv) run, and how the blocks are accumulated into the
-result.
+matrix allocation, (iii) BLAS-3 batching of two outer-product sums, (iv) the separation
+of the draws from the alternatives, which turns every sum over both into matrix products
+of the situation's probabilities with small matrices, (v) the symmetry strategy used for
+final assembly, and (vi) the compact block of the parameters a unit's likelihood
+involves, in which (i)–(v) run, and how the blocks are accumulated into the result.
 
 A reader who has never seen the C++ can understand what the function does and why the
 result is numerically equivalent to the per-draw naive form (§4.1–4.2) from these
@@ -724,9 +725,10 @@ $$
 \mathrm{buf\_diff\_HV} = \sum_{s=1}^{S} P_{is} \cdot \mathrm{sum\_diff\_HV}_{is}.
 $$
 
-Each buffer is updated at the end of draw $s$ with a single scalar-times-matrix addition
-(`buf += P_s * block_s`), replacing the original path that assembled the full $H_{is}$
-and then computed `hess_term1_numerator += P_s * (g_is * g_isᵀ + H_is)`.
+This replaces the original path that assembled the full $H_{is}$ at every draw and then
+computed `hess_term1_numerator += P_s * (g_is * g_isᵀ + H_is)`. The per-draw blocks
+$\mathrm{sum\_Pzz}_{is}$ and $\mathrm{sum\_diff\_HV}_{is}$ are never formed either:
+§4.4.4 reads every buffer off two matrix products per situation.
 
 The block structure of `buf_Pzz` minimizes memory by storing only the three structurally
 distinct sub-blocks:
@@ -800,7 +802,7 @@ $$
 
 because $[G \mid F]^\top = [G^\top;\; F^\top]$ and the block multiply sums over $2S$
 columns with no $G$-$F$ cross term. This is the form implemented in `mxl_hessian_parallel`: `G_stash` and `F_stash` are filled
-column-by-column during the $S$-loop, and `opg_pz` accumulates $F F^\top$ and $G G^\top$ as
+column by column from the products of §4.4.4, and `opg_pz` accumulates $F F^\top$ and $G G^\top$ as
 two separate rank-$S$ BLAS level-3 updates rather than one `join_rows` product (§4.5
 explains why: with `person_col`, $F$ is squared and added once per situation while $G$
 accumulates across situations and is squared once per unit; the two coincide here because
@@ -815,37 +817,174 @@ sweeping all combinations of `rc_dist`, `rc_correlation`, and `rc_mean`, the wor
 element-wise deviation from the per-draw form was $4.588 \times 10^{-13}$, several orders
 of magnitude below the $10^{-6}$ tolerance enforced by the package's equivalence tests.
 
-#### 4.4.4 Optional Per-Draw Batching of `sum_Pzz_cc` — Identity D
+#### 4.4.4 Separating the Draws from the Alternatives — Identity D
 
-Within each draw $s$, the cc sub-block of `sum_Pzz` accumulates per-alternative rank-1
-updates:
+Identities A–C still sum over every alternative $a$ and draw $s$ of the situation. Formed
+term by term, `buf_Pzz_cc` alone takes a $K_c \times K_c$ rank-one update per alternative
+and draw, $O(J_i S K_c^2)$ operations per situation, and these updates dominated the
+kernel: on a school-census design, removing them halved its time with ten fixed
+coefficients ($K_c = 19$) and cut three quarters of it with thirty. The derivatives of
+utility have a structure that turns every such double sum into matrix products of the
+situation's $J_i \times S$ probability matrix with small matrices, so that what remains
+per alternative and draw is the softmax that forms the probabilities.
+
+**The factorization.** Split the continuous part of the utility gradient (§3.4) into the
+coefficients whose derivatives do not depend on the draw and the Cholesky parameters:
 
 $$
-\mathrm{sum\_Pzz\_cc}_{s} = \sum_{a} P_{ia}^s\, z_{c,ia}^s (z_{c,ia}^s)^\top.
+z^s_{c,ia} = \bigl(z^0_{ia},\; \zeta^s_{ia}\bigr),
+\qquad
+z^0_{ia} = \bigl(X_{ia},\; W_{ia} \odot \mu^{*\prime}\bigr) \in \mathbb{R}^{K_0},
+\qquad
+\zeta^s_{ia,r} = W_{iap}\; e^s_{ir},
+\qquad
+e^s_{ir} = f_p'(\gamma^s_{ip})\, a^s_{ir},
 $$
 
-This can equivalently be expressed as a single matrix product:
+where $K_0 = K_x + \mathbf{1}_{\mathrm{rc\_mean}} K_w$, $\mu^{*\prime}_p =
+\partial\mu^*_p/\partial\mu_p$ (§3.4.2), $r = (p, q)$ indexes the Cholesky parameter
+$\ell_{pq}$, and $a^s_{ir} = (\partial L_{pq}/\partial\ell_{pq})\,\eta^s_{iq}$ as in §4.3.3;
+$e^s_{ir}$ is the derivative of the transformed deviation $\gamma^{s*}_{ip}$ in $\ell_{pq}$
+(§3.4.3, Steps 1–3). The constants' part of $z$ is an indicator. So $z^0$ and the
+constants do not depend on the draw, and each Cholesky entry of $z$ is a covariate of the
+alternative, $W_{iap}$, times a factor of the draw, $e^s_{ir}$. The second derivatives of
+utility (§4.3) factor the same way: they are nonzero only at $(\mu_p, \mu_p)$, where they
+equal $W_{iap}\,\mu^{*\prime\prime}_p$, and between two Cholesky parameters
+$r = (p, q)$ and $r' = (p, q')$ of one row, where they equal $W_{iap}\, h^s_{i,rr'}$ with
 
 $$
-\mathrm{sum\_Pzz\_cc}_{s} = \tilde{Z}_{c}^s\, (\tilde{Z}_{c}^s)^\top,
-\qquad \tilde{Z}_{c,[:,a]}^s = \sqrt{P_{ia}^s}\; z_{c,ia}^s,
+h^s_{i,rr'} = f_p''(\gamma^s_{ip})\, a^s_{ir}\, a^s_{ir'}
+  + \mathbf{1}_{q = q'}\, f_p'(\gamma^s_{ip})\, \frac{\partial^2 L_{pq}}{\partial\ell_{pq}^2}\, \eta^s_{iq}.
 $$
 
-where $\tilde{Z}_c^s \in \mathbb{R}^{K_c \times J_{\text{eff}}^*}$ and $J_{\text{eff}}^*$
-counts the active (non-outside-option) alternatives. One `dsyrk` call per draw over
-$J_{\text{eff}}^*$ columns would replace $J_{\text{eff}}^*$ individual `dsyr` rank-1
-updates. The identity holds by the same $P_{ia}^s \geq 0$ argument as Identities A and B.
+**Two products per situation.** Every term of Identity C has the form
+$\sum_s \omega_s \sum_a P^s_{ia}\, \phi_a\, \psi_s$: a covariate $\phi$ of the alternative
+times a factor $\psi$ of the draw (with the residual $d^s_{ia}$ in place of $P^s_{ia}$ for
+$H_V$), and every entry of the columns of $F$ and $G$ that Identities A and B multiply out
+is such a sum at one draw, $\sum_a P^s_{ia}\, \phi_a\, \psi_s$ (with the residuals for
+$G$). A sum over both can be taken over the alternatives first or over the draws first,
 
-**Implementation choice.** The implementation retains the per-alternative rank-1
-accumulation (`sum_Pzz_cc += P_a * (zc_a * zc_a.t())`). Both forms are correct; the
-result flows into `buf_Pzz_cc` via the Identity C scalar-times-matrix step at the end of
-each draw. Identity D is recorded here to establish that the batched form is available
-without changing any result; the per-alternative form is kept for auditability.
+$$
+\sum_s \omega_s \sum_a P^s_{ia}\, \phi_a\, \psi_s
+  = \sum_a \phi_a \bigl(P_i\, (\omega \odot \psi)\bigr)_a
+  = \sum_s \omega_s\, \psi_s\, \bigl(\phi^\top P_i\bigr)_s,
+$$
+
+where $P_i$ is the matrix of the probabilities $P^s_{ia}$, a row per alternative, the
+outside option's included when there is one (its covariates are zero, so it drops out of
+every sum until they are centered below). Collect the
+covariates in $Z_i = [X_i \mid W_i \mid W^{(2)}_i]$, whose last block holds the products
+$W_{iap}W_{iap'}$ for $p \le p'$, and the draw factors in
+$E_\omega = [\omega \mid \omega \odot e_r]$, an $S \times (1 + n_L)$ matrix for $n_L$
+Cholesky parameters. Two products per situation then give every sum:
+
+$$
+Q_i = Z_i^\top P_i, \qquad R_i = P_i\, E_\omega.
+$$
+
+The columns of $Q_i$ are the sums over the alternatives at each draw: $\sum_a P^s_{ia}
+X_{ia}$, $\sum_a P^s_{ia} W_{ia}$ and $Y^s_{i,pp'} = \sum_a P^s_{ia} W_{iap} W_{iap'}$. The
+rows of $R_i$ are the sums over the draws for each alternative: its posterior probability
+$\pi_{ia} = \sum_s \omega_s P^s_{ia}$ and $A_{ia,r} = \sum_s \omega_s P^s_{ia}\, e^s_{ir}$.
+The residuals need no product of their own:
+$\sum_a d^s_{ia} X_{ia} = X_{ij_i} - \sum_a P^s_{ia} X_{ia}$ and
+
+$$
+b^s_{ip} = \sum_a d^s_{ia}\, W_{iap} = W_{ij_ip} - \sum_a P^s_{ia} W_{iap}
+$$
+
+are rows of $Q_i$ less the chosen alternative's covariates (nothing is subtracted from when
+the outside option is chosen); $b_i$ is the $K_w \times S$ matrix $W_i^\top\texttt{DiffW}$
+of §3.5.
+
+**Identity C**, block by block, is then
+
+$$
+\mathrm{buf\_Pzz}_{00} = \sum_a \pi_{ia}\, z^0_{ia} z^{0\top}_{ia},
+\qquad
+\bigl(\mathrm{buf\_Pzz}_{0\zeta}\bigr)_{\cdot r} = \sum_a W_{iap}\, A_{ia,r}\; z^0_{ia},
+\qquad
+\bigl(\mathrm{buf\_Pzz}_{\zeta\zeta}\bigr)_{rr'} = \sum_s \omega_s\, e^s_{ir}\, e^s_{ir'}\;
+  Y^s_{i,p(r)p(r')},
+$$
+
+with $p$ the row of $r$ in the second, the column of a constant $k$ in the cd block,
+$\sum_{a \to k} \bigl(\pi_{ia}\, z^0_{ia},\; (W_{iap}\, A_{ia,r})_r\bigr)$, and its dd
+entry $\sum_{a \to k} \pi_{ia}$ (sums over the rows $a$ that list alternative $k$); and
+
+$$
+\bigl(\mathrm{buf\_diff\_HV}\bigr)_{\mu_p\mu_p} = \mu^{*\prime\prime}_p \sum_s \omega_s\, b^s_{ip},
+\qquad
+\bigl(\mathrm{buf\_diff\_HV}\bigr)_{rr'} = \sum_s \omega_s\, h^s_{i,rr'}\, b^s_{ip}
+\quad \text{($r$, $r'$ in row $p$)}.
+$$
+
+The blocks with at most one Cholesky index sum over the draws first (through $R_i$); the
+$(\zeta, \zeta)$ block sums over the alternatives first, since its covariate products
+number $K_w(K_w + 1)/2$ where its draw products $e_r e_{r'}$ number $n_L(n_L + 1)/2$; and
+$H_V$, whose sum over the alternatives is $b$, does too.
+
+**Identities A and B** read their columns off $Q_i$ as well. Column $s$ of $F$ (§4.4.3) is
+
+$$
+\sqrt{\omega_s}\,\Bigl(\textstyle\sum_a P^s_{ia} X_{ia},\;\;
+\mu^{*\prime} \odot \sum_a P^s_{ia} W_{ia},\;\;
+\bigl(e^s_{ir} \sum_a P^s_{ia} W_{iap}\bigr)_r,\;\;
+\bigl(\sum_{a \to k} P^s_{ia}\bigr)_k\Bigr),
+$$
+
+and the score $g_{is}$ in column $s$ of $G$ is the same with the residuals for the
+probabilities, $\bigl(X_{ij_i} - \sum_a P^s_{ia}X_{ia},\; \mu^{*\prime} \odot b^s_i,\;
+(e^s_{ir}\, b^s_{ip})_r,\; (\mathbf{1}_{j_i \to k} - \sum_{a \to k} P^s_{ia})_k\bigr)$.
+$F F^\top$ and $G G^\top$ are formed as in §4.4.3.
+
+**Cost.** Per situation the two products take
+$O\bigl(J_i S\,(K_x + K_w + K_w(K_w + 1)/2 + 1 + n_L)\bigr)$ operations, against
+$O(J_i S K_c^2)$ for the rank-one updates they replace, and the per-draw vectors of
+§4.4.1 are never formed. The blocks read off the products cost $O(J_i K_0 (K_0 + n_L))$
+per situation and $O(S\, n_L^2)$ per likelihood unit, and Identities A and B keep their
+products (§4.4.6).
+
+**Centering.** Identities B and C nearly cancel: at each draw,
+$-\sum_a P^s_{ia} z^s_{ia} z^{s\top}_{ia} + \bigl(\sum_a P^s_{ia} z^s_{ia}\bigr)
+\bigl(\sum_a P^s_{ia} z^s_{ia}\bigr)^\top$ is minus the covariance of $z$ across the
+situation's alternatives, which is small next to either term when the covariates share a
+large common level or the probabilities are nearly degenerate; and the two products of
+this subsection associate their sums differently, so that, formed from the levels, their
+rounding errors would not cancel with them. The covariance, and the scores, are unchanged
+when every alternative's covariates are shifted by one vector $c_i$, the outside option's
+included (its covariates are zero, so it takes $-c_i$): the probabilities sum to one and
+the residuals to zero,
+
+$$
+\sum_a P^s_{ia}(z_a - c)(z_a - c)^\top - \Bigl(\sum_a P^s_{ia}(z_a - c)\Bigr)
+\Bigl(\sum_a P^s_{ia}(z_a - c)\Bigr)^\top = \sum_a P^s_{ia} z_a z_a^\top -
+\Bigl(\sum_a P^s_{ia} z_a\Bigr)\Bigl(\sum_a P^s_{ia} z_a\Bigr)^\top,
+\qquad
+\sum_a d^s_{ia}(z_a - c) = \sum_a d^s_{ia} z_a,
+$$
+
+with the sums over every alternative. A shift of $W_i$ by $c_w$ shifts each Cholesky entry
+$\zeta^s_{ia,r}$ by $c_{w,p} e^s_{ir}$, the same for every alternative at a draw, so the
+identities hold for it as well. The kernel shifts $X_i$ and $W_i$ by the covariates of the
+alternative with the largest posterior probability $\pi_{ia}$ (by zero when that is the
+outside option) before forming $Z_i$, so that both products work on the covariates'
+deviations rather than their levels.
+
+**Floating point.** The identities hold in real arithmetic and change only the order of
+the additions. Judged against a 60-digit evaluation of the per-draw formulas (§4.1–§4.3)
+on 137 Hessians of the package's reference battery, the largest normwise error,
+$\max|H - H^*| / \max(1, \max|H^*|)$, was $4.7 \times 10^{-15}$ on designs with columns of
+ordinary scale, $4.0 \times 10^{-13}$ on designs with columns rescaled by factors between
+$10^{-4}$ and $350$, and $3.4 \times 10^{-16}$ with columns rescaled by
+$10^{\pm 7}$ (nearly degenerate probabilities); the per-alternative accumulation it
+replaces erred by $3.7 \times 10^{-12}$, $5.9 \times 10^{-11}$ and $2.3 \times 10^{-5}$ on
+the same Hessians, the last in entries whose exact value is below $10^{-100}$.
 
 #### 4.4.5 Final Assembly and Symmetry
 
-After the $S$-loop for individual $i$, let $\mathrm{opg\_pz} = [G \mid F][G \mid
-F]^\top$, with the weights of §4.4.3. The Hessian $\sum_s \omega_{is}(H_{is} + (g_{is} -
+After the products of §4.4.3–§4.4.4 for individual $i$, let $\mathrm{opg\_pz} = [G \mid
+F][G \mid F]^\top$, with the weights of §4.4.3. The Hessian $\sum_s \omega_{is}(H_{is} + (g_{is} -
 g_i)(g_{is} - g_i)^\top)$ is assembled block-by-block into `hess_t1` (the code builds it
 in place in `opg_pz`, reading each block before overwriting it):
 
@@ -880,10 +1019,9 @@ H_i = \mathrm{hess\_t1},
 $$
 
 **Symmetry strategy.** $H_i$ is exactly symmetric in floating point, not only in exact
-arithmetic: $G G^\top$ and $F_t F_t^\top$ are symmetric products, `buf_Pzz_cc` and
-`buf_diff_HV_cc` are accumulated as full symmetric matrices (the per-alternative loop
-writes both $(r, p)$ and $(p, r)$ for off-diagonal $L$-$L$ entries in `sum_diff_H_V_cc`),
-and the dc block is written as the transpose of the cd block. So only the upper triangle
+arithmetic: $G G^\top$ and $F_t F_t^\top$ are symmetric products, each block of
+`buf_Pzz_cc` and `buf_diff_HV_cc` is formed on its upper triangle and mirrored, and the
+dc block is written as the transpose of the cd block. So only the upper triangle
 of $w_i H_i$ is added into the result, which is mirrored once after the parallel region
 (§4.4.6); the mirror is the sum the lower triangle would have accumulated.
 
@@ -898,8 +1036,8 @@ situation $t$. Everything in §4.4.1–§4.4.5 runs in $u$'s **compact block** o
 $K_c + J_{d,u}$ local parameters, the continuous parameters first and then $u$'s free ASCs
 in increasing global order, so that each $J_d$-sized piece there is restricted to the
 constants $u$'s likelihood involves. Each situation has its own slots as well: the
-per-situation, per-draw pieces (`sum_Pzz_cd`, `sum_Pzz_dd`, $F_t$) are formed on its
-$K_c + J_{d,t}$ parameters and added into $u$'s slots, and an alternative listed twice in a
+per-situation pieces (the probability sums $\sum_{a \to k} P^s_{ta}$ and $F_t$) are formed on
+its $K_c + J_{d,t}$ parameters and added into $u$'s slots, and an alternative listed twice in a
 situation adds into one slot, as the dense scatter did. The product $G G^\top$ then costs
 $O(S\,(K_c+J_{d,u})^2)$ per unit and each $F_t F_t^\top$ costs $O(S\,(K_c+J_{d,t})^2)$ per
 situation, instead of $O(S\,n_\text{params}^2)$: on a school-census design with 2,620
@@ -926,7 +1064,12 @@ Non-finite terms spread as the dense products spread them: a non-finite row of $
 of the centered $G$ makes the rows and columns of the parameters concerned `NaN` in the
 result ($0 \cdot \mathrm{NaN}$), and a non-finite weight makes every entry outside the
 unit's block `NaN` ($w \cdot 0$; `NA` for a missing weight), or, with several such units,
-every entry outside the intersection of their blocks.
+every entry outside the intersection of their blocks. A draw whose weight $\omega_{is}$ is
+zero (its likelihood underflows next to the unit's largest) is left out of the per-unit sums
+of §4.4.4's $(\zeta, \zeta)$ and $H_V$ blocks, as in exact arithmetic, because their draw
+factors $e^s_{ir} e^s_{ir'}$ and $h^s_{i,rr'}$ may overflow at such a draw; it still enters
+$F_t$ and $G$, so a draw factor $e^s_{ir}$ that is itself non-finite makes its parameters'
+rows and columns `NaN` by the rule above.
 
 ### 4.5 Panel Hessian: the Louis (1982) Identity and Its Two-Pass Assembly
 
@@ -957,27 +1100,36 @@ $\mathrm{sum\_Pz}$ vectors — an identity the algebra does not license. `mxl_he
 therefore runs two passes per unit, sharing the same draw loop that computes $\omega_{ns}$
 (§2.6):
 
-- **Pass 1** is `mxl_unit_simulate()` without residuals: it yields $\lambda_{ns}$ (the
-  per-draw log-likelihoods of the unit's choices), their log-sum-exp over draws, and
-  $\omega_{ns}$ — exactly as in §3.5.
-- **Pass 2** loops situations $t$ outer, draws $s$ inner, repeating §4.4's per-alternative
-  block accumulation with $\omega_{ns}$ everywhere §4.4 used $P_{is}$. A unit whose draws
-  pass 1 had to split into batches ($R_n S > 2^{19}$) does not keep the $R_n \times S$
-  matrix $W_n \Gamma_n$: each situation's $m_t \times S$ rows of it are formed in turn, so
-  a thread's memory grows with the largest choice set rather than with the unit:
-  - **Identity C** (linear pieces): `buf_Pzz_cc/cd/dd` and `buf_diff_HV_cc` accumulate
-    $\omega_{ns}\,\mathrm{sum\_Pzz}_{nts}$ and $\omega_{ns}\,\mathrm{sum\_diff\_HV}_{nts}$ at
-    *every* $(t,s)$ pair in the unit — linear accumulation does not care whether it is
-    summed within or across situations.
+- **Pass 1** is the draw loop of `mxl_unit_simulate()` without residuals, the same
+  operations in the same order: it yields $\lambda_{ns}$ (the per-draw log-likelihoods of
+  the unit's choices), their log-sum-exp over draws, and $\omega_{ns}$ — exactly as in
+  §3.5 — and keeps every situation's probabilities at every draw for pass 2.
+- **Pass 2** loops over the situations $t$. For each it takes the probability matrix $P_t$
+  (its $m_t$ inside alternatives and the outside option, at every draw) from pass 1, or,
+  for a unit whose rows-by-draws matrices exceed the batch budget of §3.5 ($R_n S$ above
+  $2^{18}$, $2^{19}/3$ with an outside option) and which pass 1 therefore splits into
+  batches of draws without keeping them, forms it from that situation's $m_t \times S$
+  rows of $W_n \Gamma_n$, so that a thread's memory grows with the largest choice set
+  rather than with the unit; then it forms the two products of §4.4.4,
+  $Q_t = Z_t^\top P_t$ and $R_t = P_t E_\omega$. The draw weights $\omega_{ns}$ and the draw
+  factors $e^s_{nr}$ are the unit's, shared by all its situations, since its draws are:
+  - **Identity C** (linear pieces): the blocks read off $R_t$ (`buf_Pzz_cc`'s
+    $(z^0, z^0)$ and $(z^0, \zeta)$ blocks, `buf_Pzz_cd`, `buf_Pzz_dd`) are summed over the
+    situations; the $(\zeta, \zeta)$ block and `buf_diff_HV_cc` depend on the situation only
+    through $Y^s_{nt}$ and $b^s_{nt}$, so these are summed across the situations draw by
+    draw, $Y^s_n = \sum_t Y^s_{nt}$ and $b^s_n = \sum_t b^s_{nt}$ (the latter is §3.5's
+    $W_n^\top\texttt{DiffW}$), and the two blocks are formed once per unit — linear
+    accumulation does not care whether it is summed within or across situations.
   - **Identity B** (`F_stash`, the $\mathrm{sum\_Pz}\,\mathrm{sum\_Pz}^\top$ term): column
     $s$ is *overwritten* each situation with $\sqrt{\omega_{ns}}\,\mathrm{sum\_Pz}_{nts}$,
-    and $F_t F_t^\top$, formed on the situation's slots (§4.4.6), is added into `opg_pz`
-    once *per situation*, immediately after that
-    situation's $S$-loop — situations' outer products are added, never combined before
+    read off $Q_t$, and $F_t F_t^\top$, formed on the situation's slots (§4.4.6), is added
+    into `opg_pz` once *per situation*, immediately after it is formed — situations' outer
+    products are added, never combined before
     squaring: $\sum_t F_t F_t^\top = \sum_t \sum_s \omega_{ns}\,\mathrm{sum\_Pz}_{nts}\,
     \mathrm{sum\_Pz}_{nts}^\top$.
   - **Identity A** (`G_stash`, the score outer product): column $s$ instead *accumulates*
-    $g_{nts}$ across every situation in the unit, and only after the situation loop ends is
+    $g_{nts}$ across every situation in the unit (its $\mu$ and Cholesky rows once per unit,
+    from $b_n$), and only after the situation loop ends is
     it centered at $\bar g_n$, scaled by $\sqrt{\omega_{ns}}$ and squared once:
     $G G^\top = \sum_s \omega_{ns} (g_{ns} - \bar g_n)(g_{ns} - \bar g_n)^\top$ with
     $g_{ns} = \sum_t g_{nts}$ — the situation sum must happen *before* squaring here, the
@@ -1526,8 +1678,8 @@ $$
 with $F_t$ the situation's slot probabilities scaled by $\sqrt{\omega_{ns}}$ and $G$ the
 decision maker's per-draw scores of the constants, centered at their posterior mean and
 scaled likewise: the complete information less the missing one (Louis 1982, §4.5). It
-needs none of the per-alternative $K_c$-vectors and $K_c \times K_c$ outer products that
-dominate the full Hessian, and costs about three gradient passes. A trial point the line
+needs no continuous block and costs about three gradient passes, against three to four
+for the full Hessian, whose continuous blocks Identity D forms (§4.4.4). A trial point the line
 search accepts gives the next step's curvature from the same pass. The solve stops when the
 Newton decrement $\nu = \tfrac12\, g_\delta^\top \mathcal I_{\delta\delta}^{-1} g_\delta$ over
 the mean weight falls below `tol_decrement` ($10^{-12}$), or when every constant's score,
