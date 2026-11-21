@@ -630,14 +630,19 @@ designs of their own, described where they appear.
   the standard errors move by up to 4.8e-5 relative and the estimates by up
   to 2.4e-6.
 - **A covariate that varies within no choice situation, with no outside
-  option, now leaves every standard error of a mixed logit NA.** Such a
-  covariate (a decision maker's age entered alone, say) cancels from every
-  utility difference and is not identified. Its row and column of the Hessian
-  are now exactly zero, so the information is singular, and the fit says so
-  and reports NA standard errors; before, rounding gave it a large finite
-  standard error (414,284 in one example) and the other parameters theirs.
-  Interact such a covariate with an alternative's attribute or constant, or
-  drop it.
+  option, now leaves every Hessian-based standard error of a mixed logit
+  NA.** Such a covariate (a decision maker's age entered alone, say) cancels
+  from every utility difference and is not identified. Its row and column of
+  the Hessian are now exactly zero, so the information is singular:
+  `se_method = "hessian"` (the default), `"sandwich"` and `"cluster"`, whose
+  bread is that Hessian, say so and report every standard error as NA.
+  Before, rounding gave the covariate finite standard errors of no meaning
+  (414,284 from the Hessian and 0.021 from the sandwich in one example).
+  `se_method = "bhhh"` is unchanged: the outer product of the scores still
+  gives such a covariate a huge but finite standard error (8.5e12 in the same
+  example), so a finite BHHH standard error does not show that a coefficient
+  is identified. Interact such a covariate with an alternative's attribute or
+  constant, or drop it.
 - **Robust and clustered variances no longer form the matrix of every decision
   maker's score** (42 GB for 2 million students with 2,620 parameters, held
   twice while it was weighted). The robust meat of `vcov(type = "robust")` and

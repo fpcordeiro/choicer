@@ -63,11 +63,13 @@ mxlh_reference <- function(theta, fx, eta = fx$eta, weights = fx$weights,
         V <- as.numeric(X[rows, , drop = FALSE] %*% par$beta + Wt %*% coef) +
           par$delta[fx$alt_idx[rows]]
         V_all <- if (outside) c(V, 0) else V
-        P_all <- exp(V_all - max(V_all))
+        V_sh <- V_all - max(V_all)
+        P_all <- exp(V_sh)
         P_all <- P_all / sum(P_all)
         P <- P_all[seq_len(m)]
         j <- fx$choice_idx[t]                  # 0: the outside option
-        lam[s] <- lam[s] + log(if (j == 0L) P_all[m + 1L] else P[j])
+        # log P_j from the shifted utilities, finite where P_j underflows
+        lam[s] <- lam[s] + V_sh[if (j == 0L) m + 1L else j] - log(sum(exp(V_sh)))
         Z <- matrix(0, m, n)                   # utility gradients, one row per alternative
         if (K_x > 0L) Z[, seq_len(K_x)] <- X[rows, , drop = FALSE]
         if (fx$rc_mean) Z[, i_mu + seq_len(K_w)] <- sweep(Wt, 2L, dmu, "*")

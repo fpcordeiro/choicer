@@ -981,6 +981,37 @@ $10^{\pm 7}$ (nearly degenerate probabilities); the per-alternative accumulation
 replaces erred by $3.7 \times 10^{-12}$, $5.9 \times 10^{-11}$ and $2.3 \times 10^{-5}$ on
 the same Hessians, the last in entries whose exact value is below $10^{-100}$.
 
+**Range.** The $(\zeta, \zeta)$ block takes each Cholesky entry
+$\zeta^s_{ia,r} = W_{iap}\, e^s_{ir}$ apart and squares its two factors separately, so
+either factor can pass the double range (about $1.3 \times 10^{154}$ before it is squared)
+where $\zeta$ does not. Take a log-normal draw factor of $10^{176}$ against covariates that
+are zero, whose exact terms are zero rather than $\infty \cdot 0$, or covariates of
+$10^{160}$ against Cholesky entries of $10^{-160}$. Two guards keep the products from
+overflowing where the per-alternative products they replace did not.
+
+- A likelihood unit whose covariates of a random coefficient pass $2^{128}$ in magnitude,
+  or stay below $2^{-128}$ without being zero, forms that coefficient's products
+  $W_{iap} W_{iap'}$ divided by the power of two that brings its largest covariate into
+  $[1/2, 1)$, and its $(\zeta, \zeta)$ terms multiply the power back.
+- An entry of the $(\zeta, \zeta)$ block whose plain sum is not finite is summed again,
+  each term $\omega_s\, e^s_{ir}\, e^s_{ir'}\, Y^s_{i,pp'}$ formed from its factors'
+  significands and exponents. No intermediate product then overflows unless the term itself
+  does.
+
+Multiplying by a power of two is exact. On covariates and draw factors of ordinary
+magnitude neither guard changes the result. For the same reason, a normal coefficient's
+diagonal factor $h^s_{i,rr} = f''_p\,(a^s_{pp})^2 + f'_p\, L_{pp}\, \eta^s_p$ (§4.3.2), whose
+$f''_p$ is zero, is formed without its first term, which would be $0 \cdot \infty$ once
+$L_{pp}$ passes about $10^{154}$.
+
+Neither guard covers underflow. A term whose partial products $\omega_s e^s_{ir}$ and
+$\omega_s e^s_{ir} e^s_{ir'}$ fall below the normal range ($2^{-1022}$) loses bits, or is
+flushed to zero, before it meets $Y^s_{i,pp'}$, where the per-alternative products kept
+it. In a test with covariates of $2^{100}$ against Cholesky entries of $2^{-560}$, this
+moved one entry of order $10^{-278}$ ($2.0 \times 10^{-278}$ against
+$5.4 \times 10^{-278}$); the correlation of its two parameters in the information is
+$10^{-138}$.
+
 #### 4.4.5 Final Assembly and Symmetry
 
 After the products of §4.4.3–§4.4.4 for individual $i$, let $\mathrm{opg\_pz} = [G \mid

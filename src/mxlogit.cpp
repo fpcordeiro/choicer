@@ -1156,50 +1156,92 @@ inline void mxl_unit_score_local(const MxlUnitData& ud, MxlUnitScratch& sc,
 // ============================================================================
 
 // The continuous block's layout for Identity D, built once per call on the
-// primary thread: each Cholesky parameter r's row p and column q, with
-// dL_pq / dl_pq and d2L_pq / dl_pq^2; the products w_p w_p2 (p2 <= p) whose
-// sums over the alternatives give the (zeta, zeta) block; and the pairs of
-// Cholesky parameters r2 <= r of one row, H_V's entries.
+// primary thread before the memory check, so it holds O(n_L) entries only:
+// each Cholesky parameter r's row p and column q, with dL_pq / dl_pq and
+// d2L_pq / dl_pq^2, and where each row's parameters end (a row's parameters
+// are adjacent in theta, so H_V's entries, the pairs r2 <= r of one row, are
+// visited row by row). The products w_p w_p2 (p2 <= p) whose sums over the
+// alternatives give the (zeta, zeta) block are ordered by p, then p2:
+// product j = p (p + 1) / 2 + p2 (w2_index()). Their count grows with K_w^2
+// and Y's offsets with S K_w^2, so both are formed in 64 bits; the rows of
+// Z_t must fit an int.
 struct MxlHessLayout {
   int K_x = 0, K_w = 0, K_0 = 0;  // fixed and random coefficients; length of z0
   int n_L = 0, n_w2 = 0, n_z = 0; // Cholesky parameters; products; rows of Z_t
   std::vector<int> p_of, q_of;    // Cholesky parameter r -> (p, q)
   std::vector<double> dL, d2L;    // dL_pq / dl_pq and d2L_pq / dl_pq^2
-  std::vector<int> w2_p, w2_p2;   // product j: w_p w_p2, p2 <= p
-  std::vector<int> w2_of;         // p * K_w + p2 (p2 <= p) -> product j
-  std::vector<int> hv_r, hv_r2;   // the pairs r2 <= r of one row
+  std::vector<int> row_end;       // row p: parameters row_end[p - 1] .. row_end[p] - 1
 
   MxlHessLayout(const MxlParams& par, const int K_x_, const int K_w_,
                 const bool rc_correlation, const bool rc_mean)
       : K_x(K_x_), K_w(K_w_), K_0(K_x_ + (rc_mean ? K_w_ : 0)),
-        n_L(par.L_size), n_w2(K_w_ * (K_w_ + 1) / 2),
-        n_z(K_x_ + K_w_ + K_w_ * (K_w_ + 1) / 2) {
+        n_L(par.L_size) {
+    const choicer_off n_w2_ = static_cast<choicer_off>(K_w) * (K_w + 1) / 2;
+    const choicer_off n_z_ = static_cast<choicer_off>(K_x) + K_w + n_w2_;
+    if (n_z_ > std::numeric_limits<int>::max()) {
+      Rcpp::stop("The Hessian of %d random coefficients would form %.0f "
+                 "products of their covariates per alternative, more than an "
+                 "int can count.", K_w, static_cast<double>(n_w2_));
+    }
+    n_w2 = static_cast<int>(n_w2_);
+    n_z = static_cast<int>(n_z_);
     for (int p = 0; p < K_w; ++p) {     // the order of theta's L block
-      for (int q = 0; q <= p; ++q) {
-        if (!rc_correlation && q != p) continue;
+      for (int q = rc_correlation ? 0 : p; q <= p; ++q) {
         p_of.push_back(p);
         q_of.push_back(q);
         dL.push_back(p == q ? par.L(p, p) : 1.0);
         d2L.push_back(p == q ? par.L(p, p) : 0.0);
       }
-    }
-    w2_of.assign(static_cast<std::size_t>(K_w) * K_w, -1);
-    for (int p = 0; p < K_w; ++p) {
-      for (int p2 = 0; p2 <= p; ++p2) {
-        w2_of[p * K_w + p2] = static_cast<int>(w2_p.size());
-        w2_p.push_back(p);
-        w2_p2.push_back(p2);
-      }
-    }
-    for (int r = 0; r < n_L; ++r) {
-      for (int r2 = 0; r2 <= r; ++r2) {
-        if (p_of[r2] != p_of[r]) continue;
-        hv_r.push_back(r);
-        hv_r2.push_back(r2);
-      }
+      row_end.push_back(static_cast<int>(p_of.size()));
     }
   }
+
+  // Product j of w_p w_p2, p2 <= p
+  static choicer_off w2_index(const int p, const int p2) {
+    return static_cast<choicer_off>(p) * (p + 1) / 2 + p2;
+  }
 };
+
+// The powers of two by which a unit's covariates of each random coefficient
+// enter the products w_p w_p2, into k (W_u's columns, R x K_w): 0 while the
+// largest |w| of column p lies in [2^-128, 2^128] (or is 0, or not finite);
+// otherwise k_p with that largest |w| / 2^k_p in [1/2, 1), so that the
+// centered products neither overflow nor underflow, and the (zeta, zeta)
+// sums multiply the 2^k back. Returns whether any k_p is nonzero.
+inline bool mxl_hess_w_shifts(const arma::mat& W_u, std::vector<int>& k) {
+  const double big = std::ldexp(1.0, 128), small = std::ldexp(1.0, -128);
+  bool any = false;
+  k.assign(W_u.n_cols, 0);
+  for (arma::uword p = 0; p < W_u.n_cols; ++p) {
+    const double* w = W_u.colptr(p);
+    double w_max = 0.0;
+    for (arma::uword i = 0; i < W_u.n_rows; ++i) {
+      const double a = std::fabs(w[i]);
+      if (a > w_max) w_max = a;
+    }
+    if (std::isfinite(w_max) && (w_max > big || (w_max > 0.0 && w_max < small))) {
+      k[p] = std::ilogb(w_max) + 1;
+      any = true;
+    }
+  }
+  return any;
+}
+
+// omega e e2 y 2^k of the (zeta, zeta) sums, formed so that no intermediate
+// product leaves the double range unless the result does: the factors'
+// significands (each in [1/2, 1)) multiplied, their exponents added. For a
+// unit whose products are shifted, and for a sum whose plain products
+// overflow (a draw factor e whose square passes the double range, against a
+// zero or small y, where the exact term is finite).
+inline double mxl_hess_scaled_term(const double om, const double e,
+                                   const double e2, const double y,
+                                   const int k) {
+  int k1 = 0, k2 = 0, k3 = 0, k4 = 0;
+  const double m = std::frexp(om, &k1) * std::frexp(e, &k2) *
+                   std::frexp(e2, &k3) * std::frexp(y, &k4);
+  if (!std::isfinite(m)) return m;  // a factor that is not finite
+  return std::ldexp(m, k1 + k2 + k3 + k4 + k);
+}
 
 // Bytes of one thread's Hessian buffers at the largest unit, m = K_c + a
 // local parameters (a free ASCs, at most min(J_d, rows)), and the largest
@@ -1213,7 +1255,8 @@ struct MxlHessLayout {
 // n_w2)), one situation's sums over the alternatives Q_t (n_z x S), its
 // probabilities and slot sums (2 n_t S), its covariates Z_t, their z0 rows
 // twice and its posterior sums R_t and B_t (n_t (n_z + 2 K_0 + 2 n_L + 1)),
-// the reference covariates (K_x + K_w), two m-vectors and the non-finite
+// the reference covariates (K_x + K_w), the unit's shifts of W's columns and
+// an alternative's shifted w (2 K_w), two m-vectors and the non-finite
 // records; and, for a unit split into draw batches, the situation's W_t (m_t x
 // K_w) and W_t Gamma (m_t x S), which the batch budget does not bound. (A unit
 // in one batch keeps its probabilities within that budget: the kernel's
@@ -1233,7 +1276,7 @@ inline double mxl_hessian_unit_bytes(const MxlUnitData& ud,
                            S * (2.0 * n_L + 2.0 + hl.K_w + hl.n_w2) +
                            S * hl.n_z + 2.0 * n_t * S +
                            n_t * (hl.n_z + 2.0 * K_0 + 2.0 * n_L + 1.0) +
-                           hl.K_x + hl.K_w + m_t * (S + ud.W.n_cols)) +
+                           hl.K_x + 3.0 * hl.K_w + m_t * (S + ud.W.n_cols)) +
          5.0 * ud.n_params;
 }
 
@@ -1400,6 +1443,10 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
     // of P (a_t x S), Z_t's z0 rows and the same times pi.
     arma::mat P_t, Zt, Q, RT, Bt, SP, Z0, Zpi;
     arma::vec cref;
+    // The unit's powers of two for W's columns in the products (all zero
+    // for covariates of ordinary magnitude), and an alternative's shifted w
+    std::vector<int> w_shift;
+    arma::vec w_sh(K_w);
     // Identities A and B and the unit's block:
     arma::mat G_stash;  // m_u x S: per-draw scores, then centered and scaled
     arma::mat F_stash;  // (Kc + a_t) x S: sqrt(omega_s) sum_a P z, situation t
@@ -1452,6 +1499,7 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
       // log-likelihood is undefined.
       if (!std::isfinite(lse)) continue;
       const arma::mat eta_u = mxl_eta_view(ud, sc);
+      const bool shifted = mxl_hess_w_shifts(sc.W_u, w_shift);
 
       // The unit's slots: m_u = Kc + a_u local parameters.
       mxl_unit_map(ud, sc, mp);
@@ -1545,8 +1593,16 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
         for (int a = 0; a < n_t; ++a) {
           double* z = Zt.colptr(a);
           for (int k = 0; k < K_xw; ++k) z[k] -= cref[k];
-          for (int j = 0; j < n_w2; ++j) {
-            z[K_xw + j] = z[K_x + hl.w2_p[j]] * z[K_x + hl.w2_p2[j]];
+          // the products w_p w_p2 in w2_index()'s order, of the unit's
+          // shifted w where its covariates' magnitude asks for it
+          const double* w = z + K_x;
+          if (shifted) {
+            for (int p = 0; p < K_w; ++p) w_sh[p] = std::ldexp(w[p], -w_shift[p]);
+            w = w_sh.memptr();
+          }
+          double* zp = z + K_xw;
+          for (int p = 0; p < K_w; ++p) {
+            for (int p2 = 0; p2 <= p; ++p2) *zp++ = w[p] * w[p2];
           }
         }
         // Sums over the alternatives at each draw
@@ -1693,13 +1749,28 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
         }
         for (int r = 0; r < n_L; ++r) buf_Pzz_cc(j, idx_L_start + r) = sj * V0(j, r);
       }
+      // A sum whose plain products overflow (omega e e2 past the double range
+      // against a zero or small y, where main's (w e)(w e2) was finite), or a
+      // pair of shifted columns, is formed again by mxl_hess_scaled_term().
+      const choicer_off y_ld = n_w2;  // Y's leading dimension: S n_w2 may pass 2^31
       for (int r = 0; r < n_L; ++r) {
         for (int r2 = 0; r2 <= r; ++r2) {
-          const double* y = Y.colptr(0) + hl.w2_of[hl.p_of[r] * K_w + hl.p_of[r2]];
+          const int p = hl.p_of[r], p2 = hl.p_of[r2];  // p2 <= p
+          const double* y = Y.colptr(0) + MxlHessLayout::w2_index(p, p2);
+          const int k = shifted ? w_shift[p] + w_shift[p2] : 0;
           double v = 0.0;
-          for (int s = 0; s < Sdraw; ++s) {
-            if (sc.omega[s] == 0.0) continue;
-            v += Mt(1 + r, s) * E(r2, s) * y[s * n_w2];
+          if (k == 0) {
+            for (int s = 0; s < Sdraw; ++s) {
+              if (sc.omega[s] == 0.0) continue;
+              v += Mt(1 + r, s) * E(r2, s) * y[s * y_ld];
+            }
+          }
+          if (k != 0 || !std::isfinite(v)) {
+            v = 0.0;
+            for (int s = 0; s < Sdraw; ++s) {
+              if (sc.omega[s] == 0.0) continue;
+              v += mxl_hess_scaled_term(sc.omega[s], E(r, s), E(r2, s), y[s * y_ld], k);
+            }
           }
           buf_Pzz_cc(idx_L_start + r2, idx_L_start + r) = v;
         }
@@ -1715,21 +1786,27 @@ Rcpp::NumericMatrix mxl_hessian_parallel(
           buf_diff_HV_cc(idx_mu_start + p, idx_mu_start + p) = dmu2_final_dmu2[p] * v;
         }
       }
-      for (std::size_t h = 0; h < hl.hv_r.size(); ++h) {
-        const int r = hl.hv_r[h], r2 = hl.hv_r2[h];
-        const int p = hl.p_of[r], q = hl.q_of[r], q2 = hl.q_of[r2];
-        double v = 0.0;
-        for (int s = 0; s < Sdraw; ++s) {
-          if (sc.omega[s] == 0.0) continue;
-          const double f1 = sc.Dgamma1(p, s), f2 = sc.Dgamma2(p, s);
-          const double a1 = hl.dL[r] * eta_u(q, s);  // d gamma_p / d l_r
-          const double hs = r2 == r
-                                ? f2 * (a1 * a1) + f1 * (hl.d2L[r] * eta_u(q, s))
-                                : f2 * a1 * (hl.dL[r2] * eta_u(q2, s));
-          v += sc.omega[s] * hs * bW(p, s);
+      for (int p = 0; p < K_w; ++p) {
+        const int r0 = p == 0 ? 0 : hl.row_end[p - 1];  // row p's first parameter
+        for (int r = r0; r < hl.row_end[p]; ++r) {
+          for (int r2 = r0; r2 <= r; ++r2) {   // the pairs r2 <= r of row p
+            const int q = hl.q_of[r], q2 = hl.q_of[r2];
+            double v = 0.0;
+            for (int s = 0; s < Sdraw; ++s) {
+              if (sc.omega[s] == 0.0) continue;
+              const double f1 = sc.Dgamma1(p, s), f2 = sc.Dgamma2(p, s);
+              const double a1 = hl.dL[r] * eta_u(q, s);  // d gamma_p / d l_r
+              // f2 = 0 (a normal coefficient): no f2 a1^2 term, which would
+              // be 0 x Inf where L_pp passes 1e154
+              const double hs = r2 != r ? f2 * a1 * (hl.dL[r2] * eta_u(q2, s))
+                                : f2 == 0.0 ? f1 * (hl.d2L[r] * eta_u(q, s))
+                                : f2 * (a1 * a1) + f1 * (hl.d2L[r] * eta_u(q, s));
+              v += sc.omega[s] * hs * bW(p, s);
+            }
+            buf_diff_HV_cc(idx_L_start + r, idx_L_start + r2) = v;
+            buf_diff_HV_cc(idx_L_start + r2, idx_L_start + r) = v;
+          }
         }
-        buf_diff_HV_cc(idx_L_start + r, idx_L_start + r2) = v;
-        buf_diff_HV_cc(idx_L_start + r2, idx_L_start + r) = v;
       }
       buf_Pzz_cd.set_size(Kc, a_u);
       for (int k = 0; k < a_u; ++k) {
