@@ -1030,6 +1030,17 @@ mxl_hessian_parallel <- function(theta, X, W, alt_idx, choice_idx, M, weights, e
     .Call(`_choicer_mxl_hessian_parallel`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti, draw_batch, acc_bytes)
 }
 
+#' Which likelihood units the mixed logit Hessian forms by Identity D
+#'
+#' For tests: whether mxl_hessian_parallel() forms each likelihood unit's
+#' Hessian by Identity D (TRUE) or, outside that identity's range, by the
+#' direct formula (FALSE): its own check (§4.4.4 of the mixed logit math
+#' article, "Range"). Takes mxl_hessian_parallel()'s arguments up to Ti.
+#' @noRd
+mxl_hessian_identity_d_units <- function(theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation = TRUE, rc_mean = FALSE, use_asc = TRUE, include_outside_option = FALSE, gen_seed = -1L, gen_scramble = 1L, gen_S = 0L, Ti = NULL) {
+    .Call(`_choicer_mxl_hessian_identity_d_units`, theta, X, W, alt_idx, choice_idx, M, weights, eta_draws, rc_dist, rc_correlation, rc_mean, use_asc, include_outside_option, gen_seed, gen_scramble, gen_S, Ti)
+}
+
 #' The objective, gradient and constants' block of the information (internal)
 #'
 #' For the inner Newton solve of \code{run_mxlogit(concentrate_out_asc =

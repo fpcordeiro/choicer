@@ -614,7 +614,16 @@ designs of their own, described where they appear.
   30 fixed coefficients, 0.63 s instead of 12.0 s at one thread; on the
   claims-style panel (400 patients, 518 parameters), 0.47 s instead of
   4.92 s at one thread. It now costs three to four evaluations of the
-  gradient, where it cost 30 to 80.
+  gradient, where it cost 30 to 80. A decision maker whose magnitudes could
+  take those products out of the double range is still formed per
+  alternative and draw, as before: one with a covariate that spreads over a
+  situation's alternatives by more than 2^64 (about 1.8e19), a draw factor or
+  mean derivative beyond 2^64, or a nonzero covariate, draw factor or mean
+  derivative below 2^-128 (about 2.9e-39). There, a draw of weight zero
+  leaves NaN only in the rows of the parameters whose draw factors overflow
+  at it, and a zero second derivative (a normal coefficient's, or a
+  log-normal draw's whose exponential underflows) no longer turns entries
+  NaN once a Cholesky entry passes about 1e154.
 - Each situation's covariates are first centered on its alternative of largest
   posterior probability. That leaves the Hessian unchanged in exact arithmetic
   and keeps its rounding small where the covariates share a large common level
