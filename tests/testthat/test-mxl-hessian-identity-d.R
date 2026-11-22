@@ -380,41 +380,47 @@ test_that("a covariate spread that overflows takes the direct formula", {
 
 test_that("a covariate below the range's floor keeps a small parameter's information", {
   # One decision maker with two mirrored binary tasks: a fixed covariate (0, 1)
-  # and a log-normal coefficient's covariates (0, c), L = 37, draws 1 and 0.97,
-  # so draw factors near 4e17 and 1e17. At c = 2^-540 the coefficient's
-  # utility derivatives are near 2^-482 and its information near 4e-291,
-  # while c^2 underflows: below the floor of Identity D's range (2^-128), the
-  # decision maker takes the direct formula. Small as it is, that information
-  # is correlated with beta's: with it beta's standard error is 3.09, without
-  # it 1.06, and with its sign reversed the information is not positive
-  # definite. At 2^-129 the decision maker is outside the range too, at 2^-128
-  # inside. The information in closed form: at every draw each task is a
-  # binary logit at P = 1/2 (beta = 0, and c e_s is far below a rounding of
-  # 1/2), so it adds P (1 - P) z z' with z = (1, c e_s), the derivatives of
-  # the second alternative's utility; the draws weigh 1/2 each, the scores
-  # of the two tasks cancel, and so do their H_V terms. (The reference
-  # helper adds those H_V terms, near 1e-144, to each task's 1e-291 before
-  # they cancel, and loses it.)
+  # and two correlated normal coefficients, the first's covariates zero, the
+  # second's (0, c). Draws eta_1 = 2^40 and 2^39 (eta_2 = 0) make L_21's draw
+  # factor eta_1 large: at c = 2^-540 its utility derivatives c eta_1 are near
+  # 2^-500 and their squares representable, while c^2 underflows, so Identity
+  # D would lose the information and reverse its sign. Below the floor of the
+  # range (2^-128) the decision maker takes the direct formula. Small as it
+  # is (near 1e-301), that information is correlated with beta's: with it
+  # beta's standard error is 4.47, without it 1.41. At 2^-129 the decision
+  # maker is outside the range too, at 2^-128 inside.
+  # Every second derivative of utility is zero here (normal coefficients,
+  # L_21 off the diagonal, eta_2 = 0), so no H_V term has to cancel (the
+  # direct formula's per-task terms cancel only to rounding, so a design that
+  # needs them to would test the platform's last bits). At every draw each
+  # task is a binary logit at P = 1/2 (beta = 0, and c eta_1 is far below a
+  # rounding of 1/2), adding P (1 - P) z z' with z = (1, c eta_1) on (beta,
+  # L_21); the draws weigh 1/2 each, the two tasks' scores cancel exactly, and
+  # the rows of L_11 and L_22 are zero.
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
   se_beta <- function(I) sqrt(1 / (I[1L, 1L] - I[1L, 2L]^2 / I[2L, 2L]))
+  b <- c(1L, 3L)                            # beta and L_21 in theta
   for (k in c(540L, 129L, 128L)) {
     c0 <- 2^-k
+    eta <- array(0, c(2L, 2L, 1L))
+    eta[1L, , 1L] <- c(2^40, 2^39)
     fx <- list(name = "two mirrored tasks", X = matrix(c(0, 1, 0, 1)),
-               W = matrix(c(0, c0, 0, c0)), alt_idx = rep(1:2, 2L),
+               W = cbind(0, c(0, c0, 0, c0)), alt_idx = rep(1:2, 2L),
                choice_idx = c(1L, 2L), M = c(2L, 2L), weights = c(1, 1), Ti = 2L,
-               eta = array(c(1, 0.97), c(1L, 2L, 1L)), theta = c(0, log(37)),
-               rc_dist = 1L, rc_correlation = FALSE, rc_mean = FALSE,
-               use_asc = FALSE, include_outside_option = FALSE, K_w = 1L,
+               eta = eta, theta = c(0, 0, 0.5, 0),  # beta, log L_11, L_21, log L_22
+               rc_dist = c(0L, 0L), rc_correlation = TRUE, rc_mean = FALSE,
+               use_asc = FALSE, include_outside_option = FALSE, K_w = 2L,
                K_x = 1L, J = 2L, S = 2L)
     expect_identical(mxlh_identity_d_units(fx), k <= 128L)
     H <- mxlp_call("hessian", fx)
-    eta <- fx$eta[1L, , 1L]
-    z <- c0 * exp(37 * eta) * 37 * eta      # d utility / d log L, per draw
+    z <- c0 * eta[1L, , 1L]                 # d utility / d L_21, per draw
     I <- 0.5 * matrix(c(1, mean(z), mean(z), mean(z^2)), 2L)
-    expect_lt(max(abs(H / I - 1)), 1e-12, label = sprintf("c = 2^-%d: entrywise error", k))
-    expect_equal(se_beta(H), se_beta(I), tolerance = 1e-12)
-    expect_gt(se_beta(I), 3)
+    expect_true(all(H[-b, ] == 0) && all(H[, -b] == 0))
+    expect_lt(max(abs(H[b, b] / I - 1)), 1e-12,
+              label = sprintf("c = 2^-%d: entrywise error", k))
+    expect_equal(se_beta(H[b, b]), se_beta(I), tolerance = 1e-12)
+    expect_gt(se_beta(I), 4)
   }
 })
 
