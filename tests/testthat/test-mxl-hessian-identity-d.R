@@ -568,33 +568,79 @@ test_that("a covariate that varies within no situation has exactly zero rows", {
 
 test_that("a covariate with one value in a situation adds nothing there where its factors overflow", {
   # Decision maker 3 of a cross-section: its covariates of the log-normal
-  # coefficient are 1 on every alternative, those of the normal one 0, and at
-  # its first draw eta_1 = 1e308 with L_21 = 1e-308, so gamma_2 stays of
-  # order one while L_21's draw factor exp(gamma_2) eta_1 and its curvature
-  # factor exp(gamma_2) eta_1^2 overflow (L_11 = 1 keeps the normal
-  # coefficient's factors finite); it lies outside Identity D's range. Its
-  # covariates move no probability, so it adds nothing to either
+  # coefficient are c on every alternative (c = 1, or 0), those of the normal
+  # one 0, and at its first draw eta_1 = 1e308 with L_21 = 1e-308, so
+  # gamma_2 stays of order one while L_21's draw factor exp(gamma_2) eta_1
+  # and its curvature factor exp(gamma_2) eta_1^2 overflow (L_11 = 1 keeps
+  # the normal coefficient's factors finite); it lies outside Identity D's
+  # range. Its covariates move no probability, so it adds nothing to either
   # coefficient's rows, and its utilities do not depend on the draws: the
-  # exact Hessian is the one with those covariates and that draw zero. The
-  # kernel before Identity D gave L_21's row NaN; the direct formula's zero,
-  # had it been multiplied by the curvature factor, its diagonal entry.
+  # exact Hessian is the one with those covariates and that draw zero. With
+  # an outside option the same holds for c = 0 (c = 1 would move the inside
+  # alternatives against it, and be identified). The kernel before Identity
+  # D gave L_21's row NaN; the direct formula's zeros, had they been
+  # multiplied by the curvature factor, its diagonal entry.
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
-  fx <- cdx_fixture("xsec", 1171, panel = FALSE, rc_dist = c(0L, 1L))
-  u <- 3L
-  rows_u <- (c(0L, cumsum(fx$M))[u] + 1L):cumsum(fx$M)[u]
-  fx$W[rows_u, 1L] <- 0
-  fx$W[rows_u, 2L] <- 1
-  l <- fx$K_x + fx$K_w                      # theta's L_11 and L_21 follow
-  fx$theta[l + 1:2] <- c(0, 1e-308)
-  fx$eta[1L, 1L, u] <- 1e308
-  ft <- fx
-  ft$W[rows_u, 2L] <- 0
-  ft$eta[1L, 1L, u] <- 0
-  expect_false(mxlh_identity_d_units(fx)[u])
-  H <- mxlp_call("hessian", fx)
-  expect_true(all(is.finite(H)))
-  mxlp_expect_close(H, mxlh_reference(ft$theta, ft), 1e-12, "the kernel vs the exact Hessian")
+  for (cfg in list(c(oo = 0, c = 1), c(oo = 0, c = 0), c(oo = 1, c = 0))) {
+    fx <- cdx_fixture("xsec", 1171, panel = FALSE, rc_dist = c(0L, 1L),
+                      include_outside_option = cfg[["oo"]] == 1)
+    u <- 3L
+    rows_u <- (c(0L, cumsum(fx$M))[u] + 1L):cumsum(fx$M)[u]
+    fx$W[rows_u, 1L] <- 0
+    fx$W[rows_u, 2L] <- cfg[["c"]]
+    l <- fx$K_x + fx$K_w                    # theta's L_11 and L_21 follow
+    fx$theta[l + 1:2] <- c(0, 1e-308)
+    fx$eta[1L, 1L, u] <- 1e308
+    ft <- fx
+    ft$W[rows_u, 2L] <- 0
+    ft$eta[1L, 1L, u] <- 0
+    lab <- sprintf("[outside option = %s, c = %g]", cfg[["oo"]] == 1, cfg[["c"]])
+    expect_false(mxlh_identity_d_units(fx)[u], label = lab)
+    H <- mxlp_call("hessian", fx)
+    expect_true(all(is.finite(H)), label = lab)
+    mxlp_expect_close(H, mxlh_reference(ft$theta, ft), 1e-12,
+                      paste(lab, "the kernel vs the exact Hessian"))
+  }
+})
+
+test_that("an all-zero covariate leaves an identified coefficient's standard error", {
+  # The first PR review's converged fit: three situations, one log-normal
+  # coefficient whose L the weights put at 100. The first person's
+  # covariates are zero on both alternatives, so their choice probability is
+  # 1/2 whatever the coefficient. With their first draw at 4 or 7 their draw
+  # factors exceed Identity D's range and they take the direct formula, where
+  # at 7 the curvature factor exp(700) 700^2 overflows against those zeros.
+  # They add nothing to the information either way, nor with covariates
+  # (1, 1): the other two give 0.006597433 and the standard error 12.31154.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  p <- mean(stats::plogis(-exp(c(1, -1))))
+  fit_one <- function(first, w1) {
+    d <- data.frame(id = rep(1:3, each = 2L), alt = rep(1:2, 3L),
+                    chosen = c(1, 0, 1, 0, 0, 1), w = c(w1, 0, 1, 0, 1),
+                    wt = rep(c(1, p, 1 - p), each = 2L))
+    a <- prepare_mxl_data(d, "id", "alt", "chosen", character(), "w",
+                          weights_col = "wt", rc_correlation = FALSE)
+    eta <- array(c(first, 0, 0.01, -0.01, 0.01, -0.01), c(1L, 2L, 3L))
+    fit <- suppressWarnings(suppressMessages(run_mxlogit(
+      input_data = a, eta_draws = eta, theta_init = log(100), rc_mean = FALSE,
+      rc_dist = 1L, use_asc = FALSE)))
+    inside <- mxl_hessian_identity_d_units(coef(fit), a$X, a$W, a$alt_idx,
+                                           a$choice_idx, a$M, a$weights, eta,
+                                           rc_dist = 1L, rc_correlation = FALSE,
+                                           rc_mean = FALSE, use_asc = FALSE)
+    expect_identical(inside, c(FALSE, TRUE, TRUE))
+    fit
+  }
+  ref <- fit_one(4, c(0, 0))
+  expect_equal(ref$se[[1L]], 12.31154, tolerance = 1e-6)
+  for (first in c(4, 7)) for (w1 in list(c(0, 0), c(1, 1))) {
+    lab <- sprintf("first draw %g, first person's covariates (%g, %g)", first, w1[1L], w1[2L])
+    fit <- fit_one(first, w1)
+    expect_identical(coef(fit), coef(ref), label = lab)
+    expect_equal(fit$se, ref$se, tolerance = 1e-12, label = lab)
+  }
 })
 
 test_that("an unidentified covariate leaves Hessian-based standard errors NA on both paths", {

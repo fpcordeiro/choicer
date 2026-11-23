@@ -1023,16 +1023,18 @@ adds nothing to Identity C or $H_V$, as in Identity D. Where $f''_p$ is zero (a 
 coefficient, or a log-normal draw whose $e^{\gamma}$ underflowed), the diagonal factor
 $h^s_{i,rr} = f''_p\,(a^s_{pp})^2 + f'_p\, L_{pp}\, \eta^s_p$ (§4.3.2) has no first term,
 which would be $0 \cdot \infty$ once $a^s_{pp}$ passes about $10^{154}$ (Identity D's $h$
-leaves it out too). And without an outside option, a covariate with one finite, nonzero
-value on all of a situation's alternatives enters that situation as zero, as Identity D's
-centering makes it, and $H_V$ forms none of its curvature factors there: it moves no
-probability there, so its terms cancel exactly, while their sums from its level leave
-rounding, enough to give a covariate that varies within no situation a nonzero row of
-the Hessian and a finite standard error, and its curvature factors can overflow. Elsewhere
-it repeats that formula bit for bit: with every unit sent to it, 1,683 of the 1,700
-Hessians that main's tests compute equal main's, and the other 17, each with a situation
-where a covariate has one value (in 16, a situation with one alternative), differ from
-them by at most $6 \times 10^{-16}$ in the measure above.
+leaves it out too). And a covariate with one value on all of a situation's alternatives
+adds nothing to that situation: it moves no probability there, so its terms cancel
+exactly. $H_V$ forms none of its curvature factors there, which can overflow against a
+covariate that is zero (with or without an outside option), giving $0 \cdot \infty$ where
+the exact term is zero. Without an outside option, a finite, nonzero value also enters as
+zero, as Identity D's centering makes it: summed from its level, its terms leave
+rounding, enough to give a covariate that varies within no situation a nonzero row of the
+Hessian and a finite standard error. Elsewhere it repeats that formula bit for bit: with
+every unit sent to it, 1,683 of the 1,700 Hessians that main's tests compute equal
+main's, and the other 17, each with a situation where a covariate has one value (in 16,
+a situation with one alternative), differ from them by at most $6 \times 10^{-16}$ in the
+measure above.
 
 **Scores that cancel.** Both formulas, like the kernel before them, weight $H_V$ by the
 residuals $d^s_{ia}$ of rounded probabilities: through the sums $b^s_{ip}$ above, or one
