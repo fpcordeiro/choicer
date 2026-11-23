@@ -1300,10 +1300,12 @@ inline bool mxl_hess_unit_in_range(const MxlUnitData& ud,
 }
 
 // The direct formula's per-(t, s) buffers (mxl_hessian_unit_direct()),
-// sized on a thread's first unit outside Identity D's range.
+// sized on a thread's first unit outside Identity D's range, and its flags
+// for the situation's covariates that are the same on every alternative.
 struct MxlHessDirect {
   arma::mat sum_Pzz_cc, sum_diff_H_V_cc, zz, sum_Pzz_cd;
   arma::vec zc_a, sum_Pz_c, g_c, sum_Pzz_dd, sum_Pz_d, g_d;
+  std::vector<unsigned char> level;  // K_x + K_w: X's columns, then W's
 };
 
 // The loaded unit's blocks by the direct formula, the kernel's before
@@ -1313,13 +1315,20 @@ struct MxlHessDirect {
 // the unit's buffers with the draw's weight (Identity C), into column s of
 // G_stash (Identity A's g_s, uncentered) and of F_stash (Identity B), whose
 // product enters opg_pz once per situation. The arithmetic is that kernel's,
-// in its order, except where exact arithmetic leaves a term out and its
-// products need not be finite: a draw of weight zero adds nothing to Identity
-// C or H_V (as in Identity D), and where f'' is zero (a normal coefficient, or
-// a log-normal draw whose exp(gamma) underflowed) H_V has no f'' term (0 x Inf
-// once dL eta passes 1e154). P_keep: pass 1's probabilities for a unit
-// in one draw batch, or nullptr to form each situation's again. The caller
-// zeroes G_stash and opg_pz.
+// in its order, except where exact arithmetic leaves a term out and that
+// kernel's products need not be finite, or zero: a draw of weight zero adds
+// nothing to Identity C or H_V (as in Identity D); where f'' is zero (a normal
+// coefficient, or a log-normal draw whose exp(gamma) underflowed) H_V has no
+// f'' term (0 x Inf once dL eta passes 1e154); and, without an outside option,
+// a covariate with the same finite, nonzero value on every alternative of a
+// situation enters that situation as zero, and H_V skips it. Such a covariate
+// moves no probability there, so its terms cancel in exact arithmetic; summed
+// from the covariate's level they leave rounding, which gives a covariate that
+// varies within no situation a nonzero row and a finite standard error where
+// its information is exactly zero (Identity D's centering makes it zero, too),
+// and its curvature factors can overflow.
+// P_keep: pass 1's probabilities for a unit in one draw batch, or nullptr to
+// form each situation's again. The caller zeroes G_stash and opg_pz.
 static void mxl_hessian_unit_direct(
     const MxlUnitData& ud, MxlUnitScratch& sc, MxlUnitMap& mp,
     const arma::mat& eta_u, const double* P_keep, MxlHessDirect& dr,
@@ -1329,6 +1338,7 @@ static void mxl_hessian_unit_direct(
   const MxlLayout& lay = ud.lay;
   const MxlParams& par = ud.par;
   const int Sdraw = ud.S;
+  const int K_x = static_cast<int>(sc.X_u.n_cols);
   const int K_w = ud.W.n_cols;
   const int idx_beta_start = par.idx_beta_start;
   const int idx_mu_start = par.idx_mu_start;
@@ -1348,6 +1358,7 @@ static void mxl_hessian_unit_direct(
   dr.zc_a.set_size(Kc);
   dr.sum_Pz_c.set_size(Kc);
   dr.g_c.set_size(Kc);
+  dr.level.resize(static_cast<std::size_t>(K_x + K_w));
   buf_Pzz_cc.zeros();
   buf_diff_HV_cc.zeros();
   buf_Pzz_cd.zeros(Kc, a_u);
@@ -1368,6 +1379,16 @@ static void mxl_hessian_unit_direct(
     dr.g_d.set_size(a_t);
     F_stash.set_size(Kc + a_t, Sdraw);
     const int chosen_alt = lay.chosen(t);
+
+    // The covariates with one finite, nonzero value on all of the
+    // situation's alternatives (none with an outside option, whose zeros
+    // differ): they enter as zero (see above)
+    for (int k = 0; k < K_x + K_w; ++k) {
+      const double* z = (k < K_x ? sc.X_u.colptr(k) : sc.W_u.colptr(k - K_x)) + first;
+      bool level = !include_outside_option && z[0] != 0.0 && std::isfinite(z[0]);
+      for (int a = 1; level && a < m_t; ++a) level = z[a] == z[0];
+      dr.level[k] = level;
+    }
 
     for (int s = 0; s < Sdraw; ++s) {
       const auto eta_i_s = eta_u.col(s);
@@ -1403,13 +1424,19 @@ static void mxl_hessian_unit_direct(
 
         const int current_a_idx = include_outside_option ? a - 1 : a;
         const mxl_off row = lay.row_off[t] + current_a_idx;  // stacked row of alt a
-        const arma::rowvec w_ap_row = sc.W_u.row(row - sc.r0);
+        arma::rowvec w_ap_row = sc.W_u.row(row - sc.r0);
+        for (int p = 0; p < K_w; ++p) {
+          if (dr.level[K_x + p]) w_ap_row(p) = 0.0;
+        }
 
         // The continuous block of z
         arma::vec& zc_a = dr.zc_a;
         zc_a.zeros();
         if (idx_mu_start > idx_beta_start) {
           zc_a.subvec(idx_beta_start, idx_mu_start - 1) = sc.X_u.row(row - sc.r0).t();
+          for (int k = 0; k < K_x; ++k) {
+            if (dr.level[k]) zc_a[idx_beta_start + k] = 0.0;
+          }
         }
         if (rc_mean) {
           for (int p = 0; p < K_w; ++p) {
@@ -1448,10 +1475,13 @@ static void mxl_hessian_unit_direct(
           dr.g_d(k_sit) += diff;
         }
 
-        // H_V, in the (mu, L) x (mu, L) sub-block
+        // H_V, in the (mu, L) x (mu, L) sub-block. A covariate entered as
+        // zero adds nothing: its curvature factors, which can overflow
+        // where its terms are exactly zero, are not formed.
         arma::mat& hv = dr.sum_diff_H_V_cc;
         if (rc_mean) {
           for (int p = 0; p < K_w; ++p) {
+            if (dr.level[K_x + p]) continue;
             hv(idx_mu_start + p, idx_mu_start + p) +=
                 diff * w_ap_row(p) * dmu2_final_dmu2(p);
           }
@@ -1459,6 +1489,10 @@ static void mxl_hessian_unit_direct(
         if (rc_correlation) {
           int lp_idx_r = 0;
           for (int p = 0; p < K_w; ++p) {
+            if (dr.level[K_x + p]) {  // row p's p + 1 Cholesky parameters
+              lp_idx_r += p + 1;
+              continue;
+            }
             const double f_p_prime = dgamma_final_dgamma(p);
             const double f_p_double_prime = d2gamma_final_dgamma2(p);
             for (int q = 0; q <= p; ++q, ++lp_idx_r) {
@@ -1485,6 +1519,7 @@ static void mxl_hessian_unit_direct(
           }
         } else {
           for (int p = 0; p < K_w; ++p) {
+            if (dr.level[K_x + p]) continue;
             const int r = idx_L_start + p;
             const double f_p_prime = dgamma_final_dgamma(p);
             const double f_p_double_prime = d2gamma_final_dgamma2(p);
@@ -1548,8 +1583,9 @@ static void mxl_hessian_unit_direct(
 // twice and its posterior sums R_t and B_t (n_t (n_z + 2 K_0 + 2 n_L + 1)),
 // the reference covariates (K_x + K_w), two m-vectors and the non-finite
 // records; the direct formula's buffers, for a unit outside Identity D's
-// range (three K_c x K_c, K_c x a, three K_c- and three a-vectors, and an
-// alternative's covariates, K_x + K_w); and, for a unit split into draw
+// range (three K_c x K_c, K_c x a, three K_c- and three a-vectors, an
+// alternative's covariates, K_x + K_w, and a byte per covariate for the
+// situation's flags); and, for a unit split into draw
 // batches, the situation's W_t (m_t x K_w) and W_t Gamma (m_t x S), which
 // the batch budget does not bound. (A unit in one batch keeps its
 // probabilities within that budget: the kernel's n_mats.)
@@ -1569,7 +1605,7 @@ inline double mxl_hessian_unit_bytes(const MxlUnitData& ud,
                            S * hl.n_z + 2.0 * n_t * S +
                            n_t * (hl.n_z + 2.0 * K_0 + 2.0 * n_L + 1.0) +
                            2.0 * (hl.K_x + hl.K_w) + m_t * (S + ud.W.n_cols)) +
-         5.0 * ud.n_params;
+         hl.K_x + hl.K_w + 5.0 * ud.n_params;
 }
 
 //' Analytical Hessian of the log-likelihood v2

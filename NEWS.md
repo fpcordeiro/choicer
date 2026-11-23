@@ -621,9 +621,12 @@ designs of their own, described where they appear.
   mean derivative beyond 2^64, or a nonzero covariate, draw factor or mean
   derivative below 2^-128 (about 2.9e-39). There, a draw of weight zero
   leaves NaN only in the rows of the parameters whose draw factors overflow
-  at it, and a zero second derivative (a normal coefficient's, or a
-  log-normal draw's whose exponential underflows) no longer turns entries
-  NaN once a Cholesky entry passes about 1e154.
+  at it; a zero second derivative (a normal coefficient's, or that of a
+  log-normal draw whose exponential underflows) no longer turns entries NaN
+  once a Cholesky entry passes about 1e154; and, without an outside option, a
+  covariate with one value on all of a situation's alternatives adds nothing
+  to that situation, so that a covariate that varies within no situation has
+  exactly zero rows for these decision makers too (see below).
 - Each situation's covariates are first centered on its alternative of largest
   posterior probability. That leaves the Hessian unchanged in exact arithmetic
   and keeps its rounding small where the covariates share a large common level

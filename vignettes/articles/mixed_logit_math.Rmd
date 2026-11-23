@@ -993,12 +993,13 @@ that are zero, whose exact terms are zero rather than $\infty \cdot 0$; covariat
 $10^{160}$ against Cholesky entries of $10^{-160}$; a mean derivative of $10^{160}$
 against covariates of $10^{-160}$; covariates of $-10^{308}$ and $10^{308}$, whose
 difference, the centering, overflows by itself; or covariates of $2^{-540}$ against draw
-factors near $4 \times 10^{17}$, whose products $W_{iap} W_{iap'}$ underflow to zero where
-the derivatives' squares, near $10^{-290}$, do not. Information that small still
-matters: it can be strongly correlated with that of a parameter of ordinary size, so that
-dropping it, or reversing its sign, moves that parameter's standard error. Scaling a
-unit's covariates by one power of two does not mend this: in a panel, one task's large
-covariates would push another task's ordinary ones below the double range.
+factors of $2^{40}$ (about $1.1 \times 10^{12}$), whose products $W_{iap} W_{iap'}$
+underflow to zero where the derivatives' squares, near $10^{-301}$, do not. Information
+that small still matters: it can be strongly correlated with that of a parameter of
+ordinary size, so that dropping it, or reversing its sign, moves that parameter's
+standard error. Scaling a unit's covariates by one power of two does not mend this: in a
+panel, one task's large covariates would push another task's ordinary ones below the
+double range.
 
 The kernel therefore checks each likelihood unit before forming it. It uses Identity D
 when every nonzero covariate, draw factor $e^s_{ir}$ and mean derivative
@@ -1016,15 +1017,48 @@ its correlation with any parameter of ordinary information is negligible.
 
 A unit outside that range is formed by the per-alternative formula instead, which forms
 the utility's derivatives before any product and so keeps their range. Its arithmetic is
-that formula's, in its order, with two terms left out where exact arithmetic leaves them
-out and the formula's products need not be finite. A draw of weight zero adds nothing to
-Identity C or $H_V$, as in Identity D. And where $f''_p$ is zero (a normal coefficient, or
-a log-normal draw whose $e^{\gamma}$ underflowed), the diagonal factor
+that formula's, in its order, with three kinds of term left out where exact arithmetic
+leaves them out and the formula's would not be finite, or not zero. A draw of weight zero
+adds nothing to Identity C or $H_V$, as in Identity D. Where $f''_p$ is zero (a normal
+coefficient, or a log-normal draw whose $e^{\gamma}$ underflowed), the diagonal factor
 $h^s_{i,rr} = f''_p\,(a^s_{pp})^2 + f'_p\, L_{pp}\, \eta^s_p$ (§4.3.2) has no first term,
 which would be $0 \cdot \infty$ once $a^s_{pp}$ passes about $10^{154}$ (Identity D's $h$
-leaves it out too). Elsewhere it repeats that formula bit for bit: with every unit sent to
-it, the 1,700 Hessians that the package's tests compute equal those of the kernel before
-Identity D.
+leaves it out too). And without an outside option, a covariate with one finite, nonzero
+value on all of a situation's alternatives enters that situation as zero, as Identity D's
+centering makes it, and $H_V$ forms none of its curvature factors there: it moves no
+probability there, so its terms cancel exactly, while their sums from its level leave
+rounding, enough to give a covariate that varies within no situation a nonzero row of
+the Hessian and a finite standard error, and its curvature factors can overflow. Elsewhere
+it repeats that formula bit for bit: with every unit sent to it, 1,683 of the 1,700
+Hessians that main's tests compute equal main's, and the other 17, each with a situation
+where a covariate has one value (in 16, a situation with one alternative), differ from
+them by at most $6 \times 10^{-16}$ in the measure above.
+
+**Scores that cancel.** Both formulas, like the kernel before them, weight $H_V$ by the
+residuals $d^s_{ia}$ of rounded probabilities: through the sums $b^s_{ip}$ above, or one
+alternative at a time. Where a unit's situations mirror one another, the residuals'
+sums over its situations cancel at leading order, leaving a term of first order in the
+random coefficients' contributions to utility. Two binary situations with covariates $0$
+and $w$ on their two alternatives,
+chosen differently, where the rest of the utility ties the alternatives, give
+$b^s_{1p} + b^s_{2p} = -\tanh(v_s/2)\, w$, with $v_s$ the random coefficients' utility
+difference at draw $s$. What is left of $H_V$, $\tanh(v_s/2)\, \partial^2 v_s /
+\partial\ell^2$ in the information, is of the same order in $v_s$ as the rest of that
+parameter's information, $2 P (1 - P) (\partial v_s / \partial\ell)^2$, and can be as
+large, and through that parameter's correlation with a fixed coefficient it moves the
+fixed coefficient's standard error. Formed from probabilities rounded near $1/2$, it
+carries a relative error of about $10^{-16} / |v_s|$, and once $|v_s|$ is below about
+$10^{-16}$ it is lost: Identity D drops it, and the per-alternative formula leaves in its
+place a rounding residue of either sign, far larger than the term. The problem is
+ill-conditioned there. In such a panel with $v_s$ near $3 \times 10^{-147}$ (covariates
+of $2^{-540}$ against a log-normal coefficient near $e^{37}$), the fixed coefficient's
+standard error is 1.81, and moving one situation's covariate by one unit in the last
+place makes it 1.41, or leaves the information indefinite (exact arithmetic, at 1,300
+digits). At these draws the kernel gives 3.09, the standard error without the term; at
+nearby draws the per-alternative formula also gives 1.41, or an information that is not
+positive definite. Each is what exact arithmetic gives for a covariate less than one unit
+in the last place from the given one. With $|v_s|$ near $10^{-8}$ the kernel gives 1.81
+to eight digits.
 
 #### 4.4.5 Final Assembly and Symmetry
 
