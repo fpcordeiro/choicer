@@ -98,7 +98,9 @@ without \code{person_col}).
 \item \code{include_outside_option}: Logical flag.
 \item \code{rc_correlation}: Logical flag.
 \item \code{alt_mapping}: data.table mapping alternatives to summary statistics.
-\item \code{dropped_cols}: Names of columns dropped due to collinearity, if any.
+\item \code{dropped_cols}: Names of the columns dropped, if any: collinear
+ones, and without an outside option those that vary within no
+choice situation (see below).
 \item \code{data_spec}: List with column-name metadata (incl. \code{person_col}).
 }
 }
@@ -115,6 +117,44 @@ the prepared order, which is ascending id in the cross-section; with
 ascending id, and an error otherwise points to \code{weights_col}, which is
 aligned by id and is the safer interface.
 }
+\section{Covariates that vary within no choice situation}{
+
+A covariate with one value on all of a choice situation's alternatives, in
+every situation (a decision maker's age, say, entered on its own), adds the
+same amount to every alternative's utility within each situation. Without
+an outside option it cancels from every utility difference, so the
+likelihood does not depend on its coefficient: neither a fixed coefficient
+nor a random coefficient's mean and its row of the Cholesky factor is
+identified. The preparation drops such columns of \code{covariate_cols} and
+\code{random_var_cols} with a warning that names them (class
+\code{choicer_unidentified_covariates}), and stops when no random coefficient
+remains; \code{prepare_mxl_data()} lists them in \code{dropped_cols}. It compares
+each choice situation's alternatives on their own, so in a panel a
+covariate that changes between a decision maker's situations but within
+none of them is dropped too. The comparison is exact and takes each column
+alone: a covariate whose values differ across a situation's alternatives
+only by rounding is not found, nor is a combination of columns that varies
+within no situation (\code{x} and \code{x + age} differ by \code{age}), and either leaves
+the information singular or nearly so. Such a characteristic can still
+shift choices through its interaction with an alternative's attribute or
+constant. Dropping a random coefficient's column moves the random
+coefficients after it to other dimensions of the Halton sequence, so their
+estimates differ by simulation error from those of a fit that kept it.
+
+With an outside option such a covariate moves the inside alternatives
+against the outside option and is kept, with a message (none where no
+situation has two alternatives: there every covariate is such a
+covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}) only its
+variation between choice situations identifies it: a covariate with one
+value over the whole sample is then collinear with the constants.
+
+A design built or edited by hand and passed as \code{input_data} is not
+checked: without an outside option, the Hessian's rows for such a
+covariate are zero there, the information is singular, and every standard
+error taken from the Hessian (\code{se_method} \code{"hessian"}, \code{"sandwich"} and
+\code{"cluster"}) is \code{NA}.
+}
+
 \section{Column names}{
 
 No column the model uses (the id, alternative, choice, covariate, weight,

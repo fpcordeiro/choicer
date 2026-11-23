@@ -2003,6 +2003,31 @@ design_column_step <- function(M) {
     .Call(`_choicer_design_column_step`, M)
 }
 
+#' Whether each column of a design varies within some choice situation
+#'
+#' A prepared design's rows are its choice situations' alternatives,
+#' situation by situation: the first `M[1]` rows are the first situation's,
+#' the next `M[2]` the second's, and so on. Column `k` varies within a
+#' situation when one of the situation's rows holds another value than its
+#' first row (`!=`: -0 and 0 are one value, and NaN differs from every
+#' value); a column that varies within no situation adds the same amount to
+#' every alternative's utility in each of them. Each column is read in
+#' place, a situation at a time, until the first situation within which it
+#' varies, so a column that varies is usually decided in its first rows and
+#' one that does not is read once; nothing of the design's size is
+#' allocated, where comparing a column with its situations' first rows in R
+#' would allocate three vectors of its length.
+#'
+#' @param X A double matrix whose rows are the situations' alternatives.
+#' @param M An integer vector of the situations' sizes, summing to
+#'   `nrow(X)`.
+#' @returns A logical vector, one element per column of `X`: `TRUE` where
+#'   the column varies within at least one situation.
+#' @noRd
+design_varies_within <- function(X, M) {
+    .Call(`_choicer_design_varies_within`, X, M)
+}
+
 #' Query choicer OpenMP thread settings
 #'
 #' @return A list with OpenMP availability, active/max thread settings, CPU

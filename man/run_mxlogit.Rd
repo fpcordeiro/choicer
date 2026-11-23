@@ -87,8 +87,13 @@ reproduce the estimation draws.}
 situation without \code{person_col} (convenience workflow only). Default
 100.}
 
-\item{rc_dist}{Integer vector indicating distribution of random coefficients
-(0 = normal, 1 = log-normal). Default: all normal.}
+\item{rc_dist}{Integer vector indicating the distribution of each random
+coefficient (0 = normal, 1 = log-normal), one entry per column of
+\code{random_var_cols}. Where the preparation drops some of those
+columns (collinear ones, and those that vary within no choice situation
+without an outside option), the entries follow the kept columns by name;
+one entry per column of \code{input_data$W} is read as it is. Default:
+all normal.}
 
 \item{rc_mean}{Logical indicating whether to estimate means for random
 coefficients.}
@@ -156,7 +161,11 @@ names (\eqn{\beta} block: column names of \code{X};
 Cholesky block: \code{L_<i><j>} for \eqn{i \ge j}; ASC block:
 \code{ASC_<level>}). Unlisted parameters default to \eqn{\pm\infty}.
 This is the recommended form for typical use, e.g.
-\code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.}
+\code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.
+\code{L_<i><j>} number the random coefficients the fit keeps, so
+where the preparation drops a column of \code{random_var_cols}
+(collinear, or varying within no choice situation) bounds named
+by them are an error.}
 }}
 
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
@@ -816,6 +825,44 @@ do not hold, and \code{predict(type = "shares")} and \code{\link{blp}}
 reproduce the targets (as shares of the whole sample,
 \code{fit$share_targets$engine}) and the constants only on a
 cross-section.
+}
+
+\section{Covariates that vary within no choice situation}{
+
+A covariate with one value on all of a choice situation's alternatives, in
+every situation (a decision maker's age, say, entered on its own), adds the
+same amount to every alternative's utility within each situation. Without
+an outside option it cancels from every utility difference, so the
+likelihood does not depend on its coefficient: neither a fixed coefficient
+nor a random coefficient's mean and its row of the Cholesky factor is
+identified. The preparation drops such columns of \code{covariate_cols} and
+\code{random_var_cols} with a warning that names them (class
+\code{choicer_unidentified_covariates}), and stops when no random coefficient
+remains; \code{prepare_mxl_data()} lists them in \code{dropped_cols}. It compares
+each choice situation's alternatives on their own, so in a panel a
+covariate that changes between a decision maker's situations but within
+none of them is dropped too. The comparison is exact and takes each column
+alone: a covariate whose values differ across a situation's alternatives
+only by rounding is not found, nor is a combination of columns that varies
+within no situation (\code{x} and \code{x + age} differ by \code{age}), and either leaves
+the information singular or nearly so. Such a characteristic can still
+shift choices through its interaction with an alternative's attribute or
+constant. Dropping a random coefficient's column moves the random
+coefficients after it to other dimensions of the Halton sequence, so their
+estimates differ by simulation error from those of a fit that kept it.
+
+With an outside option such a covariate moves the inside alternatives
+against the outside option and is kept, with a message (none where no
+situation has two alternatives: there every covariate is such a
+covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}) only its
+variation between choice situations identifies it: a covariate with one
+value over the whole sample is then collinear with the constants.
+
+A design built or edited by hand and passed as \code{input_data} is not
+checked: without an outside option, the Hessian's rows for such a
+covariate are zero there, the information is singular, and every standard
+error taken from the Hessian (\code{se_method} \code{"hessian"}, \code{"sandwich"} and
+\code{"cluster"}) is \code{NA}.
 }
 
 \section{Column names}{

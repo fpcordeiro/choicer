@@ -1,6 +1,7 @@
 // Data-preparation helpers behind prepare_mnl_data(), prepare_mxl_data() and
 // prepare_mnp_data() (prepare_nl_data() calls the first) and the hierarchical
-// preparations, and the column steps behind run_mxlogit()'s default start.
+// preparations, the check of the mixed logit's covariates for variation within
+// choice situations, and the column steps behind run_mxlogit()'s default start.
 #include <Rcpp.h>
 #include <algorithm>
 #include <climits>
@@ -269,6 +270,72 @@ SEXP design_column_step(SEXP M) {
   double* s = REAL(out);
   const double* x = REAL_RO(M);
   for (R_xlen_t k = 0; k < K; ++k) s[k] = column_step(x + k * n, n);
+  UNPROTECT(1);
+  return out;
+}
+
+//' Whether each column of a design varies within some choice situation
+//'
+//' A prepared design's rows are its choice situations' alternatives,
+//' situation by situation: the first `M[1]` rows are the first situation's,
+//' the next `M[2]` the second's, and so on. Column `k` varies within a
+//' situation when one of the situation's rows holds another value than its
+//' first row (`!=`: -0 and 0 are one value, and NaN differs from every
+//' value); a column that varies within no situation adds the same amount to
+//' every alternative's utility in each of them. Each column is read in
+//' place, a situation at a time, until the first situation within which it
+//' varies, so a column that varies is usually decided in its first rows and
+//' one that does not is read once; nothing of the design's size is
+//' allocated, where comparing a column with its situations' first rows in R
+//' would allocate three vectors of its length.
+//'
+//' @param X A double matrix whose rows are the situations' alternatives.
+//' @param M An integer vector of the situations' sizes, summing to
+//'   `nrow(X)`.
+//' @returns A logical vector, one element per column of `X`: `TRUE` where
+//'   the column varies within at least one situation.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+SEXP design_varies_within(SEXP X, SEXP M) {
+  if (TYPEOF(X) != REALSXP || !Rf_isMatrix(X)) {
+    Rcpp::stop("`X` must be a double matrix");
+  }
+  if (TYPEOF(M) != INTSXP) {
+    Rcpp::stop("`M` must be an integer vector");
+  }
+  const R_xlen_t n = Rf_nrows(X);
+  const R_xlen_t K = Rf_ncols(X);
+  const R_xlen_t N = XLENGTH(M);
+  const int* m = INTEGER_RO(M);
+  R_xlen_t rows = 0;
+  for (R_xlen_t i = 0; i < N; ++i) {
+    if (m[i] == NA_INTEGER || m[i] < 0) {
+      Rcpp::stop("`M` must hold the situations' sizes");
+    }
+    rows += m[i];
+  }
+  if (rows != n) {
+    Rcpp::stop("`M` must sum to the rows of `X`");
+  }
+  SEXP out = PROTECT(Rf_allocVector(LGLSXP, K));
+  int* varies = LOGICAL(out);
+  const double* x = REAL_RO(X);
+  for (R_xlen_t k = 0; k < K; ++k) {
+    const double* col = x + k * n;
+    bool found = false;
+    R_xlen_t first = 0;  // the situation's first row
+    for (R_xlen_t i = 0; i < N && !found; ++i) {
+      const R_xlen_t end = first + m[i];
+      for (R_xlen_t r = first + 1; r < end; ++r) {
+        if (col[r] != col[first]) {
+          found = true;
+          break;
+        }
+      }
+      first = end;
+    }
+    varies[k] = found;
+  }
   UNPROTECT(1);
   return out;
 }

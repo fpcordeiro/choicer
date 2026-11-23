@@ -1160,6 +1160,62 @@ label_matrix <- function(mat, alt_mapping) {
     call = sys.call(-1L)))
 }
 
+#' Covariates that vary within no choice situation
+#'
+#' A covariate with one value on all of a choice situation's alternatives, in
+#' every situation (a decision maker's characteristic entered alone), adds
+#' the same amount to every alternative's utility in each of them.
+#' `design_varies_within()` compares each situation's rows on their own, so
+#' that in a panel a covariate that changes between a decision maker's
+#' situations but within none of them is found too. Without an outside option
+#' such a covariate cancels from every utility difference, and the likelihood
+#' does not depend on its coefficients: its columns are to be dropped, and one
+#' warning names them (class `choicer_unidentified_covariates`, printed at
+#' once, since a long fit may follow). With an outside option it moves the
+#' inside alternatives against the outside option, and is kept, with a
+#' message; with constants only its variation between situations identifies
+#' it, so the message claims no more. Where no situation has two
+#' alternatives (a binary choice against the outside option) every covariate
+#' is such a covariate, and there is no message. Both name up to ten columns,
+#' as `.warn_not_finite()` does.
+#'
+#' @param mats Named list of design matrices whose rows are the situations'
+#'   alternatives, each named by the argument that lists its columns.
+#' @param M Integer vector of the situations' sizes.
+#' @param include_outside_option Whether the model has an outside option.
+#' @returns A list like `mats` of logical vectors, `TRUE` for the columns to
+#'   keep.
+#' @noRd
+.check_within_variation <- function(mats, M, include_outside_option) {
+  keep <- lapply(mats, design_varies_within, M = M)
+  flagged <- unlist(Map(function(m, k, arg) {
+    if (!all(k)) paste0(colnames(m)[!k], " (", arg, ")")
+  }, mats, keep, names(mats)), use.names = FALSE)
+  if (length(flagged) == 0L) return(keep)
+  shown <- paste(utils::head(flagged, 10L), collapse = ", ")
+  if (length(flagged) > 10L) {
+    shown <- paste0(shown, " and ", length(flagged) - 10L, " more")
+  }
+  if (include_outside_option) {
+    if (any(M > 1L)) {
+      message("Covariate(s) that vary within no choice situation kept: ",
+              shown, ". With an outside option they move the inside ",
+              "alternatives against it; with constants, only their ",
+              "variation between choice situations identifies them.")
+    }
+    return(lapply(keep, function(k) rep(TRUE, length(k))))
+  }
+  .warn_now(warningCondition(
+    paste0("Covariate(s) that vary within no choice situation dropped: ",
+           shown, ". Each adds the same amount to every alternative's ",
+           "utility in a choice situation, so without an outside option it ",
+           "cancels from the choice probabilities and is not identified. To ",
+           "let such a characteristic shift choices, interact it with an ",
+           "alternative's attribute or constant."),
+    class = "choicer_unidentified_covariates"))
+  keep
+}
+
 #' Design matrix gathered from the source columns
 #'
 #' `X[i, ] = src[rows[i], cols]` in double storage: the values and layout of

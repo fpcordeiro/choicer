@@ -645,20 +645,50 @@ designs of their own, described where they appear.
   constants have no finite maximum, where the information is nearly singular,
   the standard errors move by up to 4.8e-5 relative and the estimates by up
   to 2.4e-6.
-- **A covariate that varies within no choice situation, with no outside
-  option, now leaves every Hessian-based standard error of a mixed logit
-  NA.** Such a covariate (a decision maker's age entered alone, say) cancels
-  from every utility difference and is not identified. Its row and column of
-  the Hessian are now exactly zero, so the information is singular:
-  `se_method = "hessian"` (the default), `"sandwich"` and `"cluster"`, whose
-  bread is that Hessian, say so and report every standard error as NA.
-  Before, rounding gave the covariate finite standard errors of no meaning
-  (414,284 from the Hessian and 0.021 from the sandwich in one example).
-  `se_method = "bhhh"` is unchanged: the outer product of the scores still
-  gives such a covariate a huge but finite standard error (8.5e12 in the same
-  example), so a finite BHHH standard error does not show that a coefficient
-  is identified. Interact such a covariate with an alternative's attribute or
-  constant, or drop it.
+- **In a design built by hand, a covariate that varies within no choice
+  situation, with no outside option, now leaves every Hessian-based standard
+  error of a mixed logit NA.** Such a covariate (a decision maker's age
+  entered alone, say) cancels from every utility difference and is not
+  identified. Its row and column of the Hessian are now exactly zero, so the
+  information is singular: `se_method = "hessian"` (the default),
+  `"sandwich"` and `"cluster"`, whose bread is that Hessian, say so and
+  report every standard error as NA. Before, rounding gave the covariate
+  finite standard errors of no meaning (414,284 from the Hessian and 0.021
+  from the sandwich in one example). `se_method = "bhhh"` is unchanged: the
+  outer product of the scores still gives such a covariate a huge but finite
+  standard error (8.5e12 in the same example), so a finite BHHH standard
+  error does not show that a coefficient is identified. `prepare_mxl_data()`,
+  and so `run_mxlogit()`, now drops such a covariate (next item), so this
+  concerns an `input_data` built or edited by hand. To let such a
+  characteristic shift choices, interact it with an alternative's attribute
+  or constant.
+- **`prepare_mxl_data()`, and so `run_mxlogit()`, drops a covariate that
+  varies within no choice situation when there is no outside option, with a
+  warning.** Such a covariate adds the same amount to every alternative's
+  utility within each choice situation, so it cancels from the choice
+  probabilities: neither a fixed coefficient nor a random coefficient's mean
+  and its row of the Cholesky factor is identified. The preparation drops
+  such columns of `covariate_cols` and `random_var_cols` with a warning that
+  names them (class `choicer_unidentified_covariates`), lists them in
+  `dropped_cols`, and stops when no random coefficient remains, as the
+  hierarchical Bayes preparations already treat their covariates. It
+  compares each choice situation's alternatives on their own, so in a panel
+  a covariate that changes between a decision maker's situations but within
+  none of them is dropped too. The comparison is exact and takes each column
+  alone: a combination of columns that varies within no situation (`x` and
+  `x + age`) still leaves the information singular. Dropping a random
+  coefficient's column moves the random coefficients after it to other
+  dimensions of the Halton sequence, so their estimates move by simulation
+  error. With an outside option such a covariate moves the inside
+  alternatives against it and is kept, with a message; with constants, only
+  its variation between choice situations identifies it. `rc_dist`, given
+  for the columns of `random_var_cols`, follows the kept columns by name,
+  here and where a random coefficient's column is dropped for collinearity,
+  which used to stop the first kernel call ("rc_dist must be a vector of
+  length K_w"). Bounds named by the Cholesky factor (`L_<i><j>`, which
+  number the columns kept) are then an error, where they could bind another
+  coefficient, and a preparation that collinearity leaves with no random
+  coefficient now stops, where the fit stopped later on `K_w`.
 - **Robust and clustered variances no longer form the matrix of every decision
   maker's score** (42 GB for 2 million students with 2,620 parameters, held
   twice while it was weighted). The robust meat of `vcov(type = "robust")` and

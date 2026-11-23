@@ -486,8 +486,13 @@
 #' @param S Integer number of Halton draws per decision maker, or per choice
 #'   situation without \code{person_col} (convenience workflow only). Default
 #'   100.
-#' @param rc_dist Integer vector indicating distribution of random coefficients
-#'   (0 = normal, 1 = log-normal). Default: all normal.
+#' @param rc_dist Integer vector indicating the distribution of each random
+#'   coefficient (0 = normal, 1 = log-normal), one entry per column of
+#'   \code{random_var_cols}. Where the preparation drops some of those
+#'   columns (collinear ones, and those that vary within no choice situation
+#'   without an outside option), the entries follow the kept columns by name;
+#'   one entry per column of \code{input_data$W} is read as it is. Default:
+#'   all normal.
 #' @param rc_mean Logical indicating whether to estimate means for random
 #'   coefficients.
 #' @param rc_correlation Logical indicating whether random coefficients are
@@ -550,7 +555,11 @@
 #'       Cholesky block: \code{L_<i><j>} for \eqn{i \ge j}; ASC block:
 #'       \code{ASC_<level>}). Unlisted parameters default to \eqn{\pm\infty}.
 #'       This is the recommended form for typical use, e.g.
-#'       \code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.}
+#'       \code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.
+#'       \code{L_<i><j>} number the random coefficients the fit keeps, so
+#'       where the preparation drops a column of \code{random_var_cols}
+#'       (collinear, or varying within no choice situation) bounds named
+#'       by them are an error.}
 #'   }
 #' @param optimizer Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
 #'   or a custom function. See \code{\link{run_mnlogit}} for details.
@@ -1159,6 +1168,7 @@
 #'   and the memory check of the compiled routines),
 #'   \code{vignette("mxl")} (many alternatives: constants, convergence and
 #'   standard errors)
+#' @inheritSection prepare_mxl_data Covariates that vary within no choice situation
 #' @inheritSection prepare_mnl_data Column names
 #' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
@@ -1392,6 +1402,15 @@ run_mxlogit <- function(
   n_asc <- if (use_asc) J - 1 else 0
   n_params <- K_x + mu_size + L_size + n_asc
 
+  # rc_dist gives each random coefficient's distribution. Given for the
+  # columns random_var_cols named, of which the preparation may have dropped
+  # some (collinear ones, and those that vary within no choice situation
+  # without an outside option), it follows the kept columns by name.
+  rv_cols <- input_data$data_spec$random_var_cols
+  if (length(rc_dist) != K_w && length(rc_dist) == length(rv_cols) &&
+      all(colnames(input_data$W) %in% rv_cols)) {
+    rc_dist <- rc_dist[match(colnames(input_data$W), rv_cols)]
+  }
   if (is.null(rc_dist)) rc_dist <- rep(0L, K_w)
 
   # Parameter index map (built early so the scaling layer can address blocks)
@@ -1436,6 +1455,23 @@ run_mxlogit <- function(
     c("ASC_<label>", "Mu_<variable>", "L_<i><j>", "Sigma_<i><j>",
       "exp(Mu_<variable>)")
   )
+
+  # The Cholesky factor's names number the kept random coefficients. Where the
+  # preparation dropped some of random_var_cols, a bound named L_<i><j> could
+  # mean either numbering and would bind another coefficient than the one
+  # meant, so it is an error (a positional bound or start has the wrong
+  # length, and Mu_<variable> names the column).
+  w_dropped <- setdiff(rv_cols, colnames(input_data$W))
+  named_L <- intersect(c(names(lower), names(upper)), sigma_names)
+  if (length(w_dropped) > 0L && length(named_L) > 0L) {
+    stop("Bounds named by the Cholesky factor (",
+         paste(unique(named_L), collapse = ", "), ") are ambiguous: the ",
+         "preparation dropped ", paste(w_dropped, collapse = ", "), " from ",
+         "`random_var_cols`, so L_<i><j> number the columns kept (",
+         paste(colnames(input_data$W), collapse = ", "), "). Leave the ",
+         "dropped columns out of `random_var_cols` to name these bounds.",
+         call. = FALSE)
+  }
 
   # Normalize lower/upper bounds (natural units); a box that holds no start
   # is an error here, before the draws, rather than at the optimizer.
@@ -2349,9 +2385,46 @@ run_mxlogit <- function(
 #'     \item `include_outside_option`: Logical flag.
 #'     \item `rc_correlation`: Logical flag.
 #'     \item `alt_mapping`: data.table mapping alternatives to summary statistics.
-#'     \item `dropped_cols`: Names of columns dropped due to collinearity, if any.
+#'     \item `dropped_cols`: Names of the columns dropped, if any: collinear
+#'       ones, and without an outside option those that vary within no
+#'       choice situation (see below).
 #'     \item `data_spec`: List with column-name metadata (incl. `person_col`).
 #'   }
+#' @section Covariates that vary within no choice situation:
+#' A covariate with one value on all of a choice situation's alternatives, in
+#' every situation (a decision maker's age, say, entered on its own), adds the
+#' same amount to every alternative's utility within each situation. Without
+#' an outside option it cancels from every utility difference, so the
+#' likelihood does not depend on its coefficient: neither a fixed coefficient
+#' nor a random coefficient's mean and its row of the Cholesky factor is
+#' identified. The preparation drops such columns of `covariate_cols` and
+#' `random_var_cols` with a warning that names them (class
+#' `choicer_unidentified_covariates`), and stops when no random coefficient
+#' remains; `prepare_mxl_data()` lists them in `dropped_cols`. It compares
+#' each choice situation's alternatives on their own, so in a panel a
+#' covariate that changes between a decision maker's situations but within
+#' none of them is dropped too. The comparison is exact and takes each column
+#' alone: a covariate whose values differ across a situation's alternatives
+#' only by rounding is not found, nor is a combination of columns that varies
+#' within no situation (`x` and `x + age` differ by `age`), and either leaves
+#' the information singular or nearly so. Such a characteristic can still
+#' shift choices through its interaction with an alternative's attribute or
+#' constant. Dropping a random coefficient's column moves the random
+#' coefficients after it to other dimensions of the Halton sequence, so their
+#' estimates differ by simulation error from those of a fit that kept it.
+#'
+#' With an outside option such a covariate moves the inside alternatives
+#' against the outside option and is kept, with a message (none where no
+#' situation has two alternatives: there every covariate is such a
+#' covariate). With constants (`use_asc = TRUE` in `run_mxlogit()`) only its
+#' variation between choice situations identifies it: a covariate with one
+#' value over the whole sample is then collinear with the constants.
+#'
+#' A design built or edited by hand and passed as `input_data` is not
+#' checked: without an outside option, the Hessian's rows for such a
+#' covariate are zero there, the information is singular, and every standard
+#' error taken from the Hessian (`se_method` `"hessian"`, `"sandwich"` and
+#' `"cluster"`) is `NA`.
 #' @inheritSection prepare_mnl_data Column names
 #' @inheritSection prepare_mnl_data Missing and non-finite values
 #' @examples
@@ -2538,16 +2611,12 @@ prepare_mxl_data <- function(
   X <- warn_once(.gather_matrix(src, covariate_cols, dt$.choicer_row))
   X_res <- check_collinearity(X)
   X <- X_res$mat
-  if (!is.null(X_res$dropped)) dropped_vars <- X_res$dropped # accumulate dropped vars if we had multiple checks
-
-
   W <- warn_once(.gather_matrix(src, random_var_cols, dt$.choicer_row))
   W_res <- check_collinearity(W)
   W <- W_res$mat
-  if (!is.null(W_res$dropped)) {
-     if(exists("dropped_vars")) dropped_vars <- c(dropped_vars, W_res$dropped)
-     else dropped_vars <- W_res$dropped
-  }
+  # The columns dropped: collinear ones of X, then of W, then those that vary
+  # within no choice situation (below)
+  dropped_vars <- c(X_res$dropped, W_res$dropped)
 
   dt[, .choicer_row := NULL]
   .check_index_covariates(c(covariate_cols, random_var_cols),
@@ -2559,6 +2628,36 @@ prepare_mxl_data <- function(
 
   ## M[i] - # alternatives per choice situation
   M <- .n_rows_by(dt, id_col)                                   # length N
+
+  ## Covariates that vary within no choice situation ---------------------------
+  ## A covariate with one value on all of a situation's alternatives, in every
+  ## situation, moves every alternative's utility alike. Without an outside
+  ## option it cancels from the choice probabilities: neither its fixed
+  ## coefficient nor a random coefficient's mean and row of the Cholesky factor
+  ## is identified, and the Hessian's rows for them are exactly zero (each
+  ## situation's covariates are centered on one of its alternatives), so every
+  ## Hessian-based standard error would be NA. Such columns are dropped with a
+  ## warning; with an outside option they are kept, with a message
+  ## (.check_within_variation()). The design is read in prepared order, a
+  ## situation at a time, after the index columns' check (an index column
+  ## entered as a covariate is that check's error) and the collinearity drops
+  ## (which take an all-zero column among others).
+  keep <- .check_within_variation(
+    list(covariate_cols = X, random_var_cols = W), M, include_outside_option)
+  if (!all(keep$covariate_cols) || !all(keep$random_var_cols)) {
+    dropped_vars <- c(dropped_vars, colnames(X)[!keep$covariate_cols],
+                      colnames(W)[!keep$random_var_cols])
+    X <- X[, keep$covariate_cols, drop = FALSE]
+    W <- W[, keep$random_var_cols, drop = FALSE]
+    if (ncol(X) == 0L) dimnames(X) <- NULL  # as gathered for no covariates
+  }
+  rm(keep)
+  if (length(random_var_cols) > 0L && ncol(W) == 0L) {
+    stop("No random coefficient remains: the preparation dropped every ",
+         "column of `random_var_cols` (collinear columns, and without an ",
+         "outside option those that vary within no choice situation).",
+         call. = FALSE)
+  }
 
   ## N: number of individuals / choice situations
   ids <- dt[[id_col]][!duplicated(dt[[id_col]])]  # vector of ids in *current* order
@@ -2682,7 +2781,7 @@ prepare_mxl_data <- function(
       include_outside_option = include_outside_option,
       rc_correlation = rc_correlation,
       alt_mapping = alt_mapping[],
-      dropped_cols = if(exists("dropped_vars")) dropped_vars else NULL,
+      dropped_cols = dropped_vars,
       data_spec = list(
         id_col = id_col,
         alt_col = alt_col,
