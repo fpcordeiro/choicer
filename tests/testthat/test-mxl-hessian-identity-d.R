@@ -392,11 +392,12 @@ test_that("a covariate below the range's floor keeps a small parameter's informa
   # Every second derivative of utility is zero here (normal coefficients,
   # L_21 off the diagonal, eta_2 = 0), so no H_V term has to cancel (the
   # direct formula's per-task terms cancel only to rounding, so a design that
-  # needs them to would test the platform's last bits). At every draw each
-  # task is a binary logit at P = 1/2 (beta = 0, and c eta_1 is far below a
-  # rounding of 1/2), adding P (1 - P) z z' with z = (1, c eta_1) on (beta,
-  # L_21); the draws weigh 1/2 each, the two tasks' scores cancel exactly, and
-  # the rows of L_11 and L_22 are zero.
+  # needs them to would test the platform's last bits; the next test has one
+  # with a log-normal coefficient). At every draw each task is a binary logit
+  # at P = 1/2 + tanh(v / 2) / 2, v = c eta_1 L_21 (beta = 0), adding P (1 -
+  # P) z z' with z = (1, c eta_1) on (beta, L_21); the draws weigh 1/2 each,
+  # the two tasks' scores sum to -tanh(v / 2) z, and the rows of L_11 and L_22
+  # are zero. Every term in v^2 is far below rounding.
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
   se_beta <- function(I) sqrt(1 / (I[1L, 1L] - I[1L, 2L]^2 / I[2L, 2L]))
@@ -421,6 +422,80 @@ test_that("a covariate below the range's floor keeps a small parameter's informa
               label = sprintf("c = 2^-%d: entrywise error", k))
     expect_equal(se_beta(H[b, b]), se_beta(I), tolerance = 1e-12)
     expect_gt(se_beta(I), 4)
+  }
+})
+
+test_that("a log-normal coefficient keeps its curvature term where mirrored tasks' scores cancel", {
+  # One decision maker with two binary tasks of the same design, chosen
+  # differently: a fixed covariate (0, 1) and a log-normal coefficient's
+  # covariates (0, c), L = 37, draws 1 and 0.97, beta = 0. At each draw the
+  # utility difference v = c exp(37 eta) is small and the two tasks' residual
+  # sums cancel at leading order. What is left is first order in v, and
+  # through H_V it adds tanh(v / 2) times v's second derivative in log L to
+  # log L's information, as much as the rest of it: with it beta's standard
+  # error is 1.81, without it 3.09. Formed from probabilities rounded near
+  # 1/2, both paths resolve that term with a relative error near 1e-16 / v,
+  # and v is near 1e-2 at c = 2^-60 and 1e-8 at 2^-80. (Below v of about
+  # 1e-16, from about c = 2^-106 here, the term is lost, as in the kernel
+  # before Identity D; the problem is ill-conditioned there, since moving one
+  # task's covariate by one unit in the last place moves the exact standard
+  # error to 1.41 or leaves the information indefinite: §4.4.4.) The
+  # references: the per-draw Louis identity in closed form, written with tanh
+  # so that nothing cancels, and at 2^-60 second differences of the
+  # log-likelihood.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  se_beta <- function(I) sqrt(1 / (I[1L, 1L] - I[1L, 2L]^2 / I[2L, 2L]))
+  eta <- c(1, 0.97)
+  th2 <- log(37)
+  closed <- function(c0, curvature = TRUE) {
+    g <- exp(th2) * eta                 # gamma_s
+    v <- c0 * exp(g)                    # the utility difference at each draw
+    dv <- cbind(1, v * g)               # its derivatives in (beta, log L)
+    tv <- tanh(v / 2)                   # 2 P - 1, minus the tasks' residual sum
+    l <- (1 - tv^2) / 4                 # P (1 - P), the draw's likelihood
+    om <- l / sum(l)
+    sc <- -tv * dv                      # the draw's score
+    I <- tcrossprod(colSums(om * sc))
+    for (s in seq_along(eta)) {
+      I <- I + om[s] * (2 * l[s] * tcrossprod(dv[s, ]) - tcrossprod(sc[s, ]))
+      if (curvature) I[2L, 2L] <- I[2L, 2L] + om[s] * tv[s] * v[s] * g[s] * (g[s] + 1)
+    }
+    I
+  }
+  loglik <- function(beta, t2, c0) {
+    v <- beta + c0 * exp(exp(t2) * eta)
+    log(mean(stats::plogis(v) * stats::plogis(-v)))
+  }
+  for (k in c(60L, 80L)) {
+    c0 <- 2^-k
+    fx <- list(name = "two mirrored tasks", X = matrix(c(0, 1, 0, 1)),
+               W = matrix(c(0, c0, 0, c0)), alt_idx = rep(1:2, 2L),
+               choice_idx = c(1L, 2L), M = c(2L, 2L), weights = c(1, 1), Ti = 2L,
+               eta = array(eta, c(1L, 2L, 1L)), theta = c(0, th2), rc_dist = 1L,
+               rc_correlation = FALSE, rc_mean = FALSE, use_asc = FALSE,
+               include_outside_option = FALSE, K_w = 1L, K_x = 1L, J = 2L, S = 2L)
+    I <- closed(c0)
+    expect_gt(se_beta(closed(c0, curvature = FALSE)) - se_beta(I), 1)
+    if (k == 60L) {
+      h <- 1e-4
+      f <- function(b, t2) loglik(b, t2, c0)
+      cross <- (f(h, th2 + h) - f(h, th2 - h) - f(-h, th2 + h) + f(-h, th2 - h)) / 4
+      I_fd <- -matrix(c(f(h, th2) - 2 * f(0, th2) + f(-h, th2), cross, cross,
+                        f(0, th2 + h) - 2 * f(0, th2) + f(0, th2 - h)), 2L) / h^2
+      expect_lt(max(abs(I_fd / I - 1)), 1e-4, label = "second differences vs the closed form")
+    }
+    # Identity D; then the direct formula, the decision maker sent outside
+    # the range by a fixed covariate of coefficient zero spread by 2^70
+    for (f in list(fx, mxlh_with_spread(fx, 2^70))) {
+      b <- if (f$K_x == 1L) 1:2 else c(1L, 3L)    # beta and log L in theta
+      lab <- sprintf("c = 2^-%d, %s", k, if (f$K_x == 1L) "Identity D" else "direct formula")
+      expect_identical(mxlh_identity_d_units(f), f$K_x == 1L, label = lab)
+      H <- mxlp_call("hessian", f)[b, b]
+      expect_lt(max(abs(H / I - 1)), if (k == 60L) 1e-11 else 1e-6,
+                label = paste0(lab, ": entrywise error"))
+      expect_equal(se_beta(H), se_beta(I), tolerance = 1e-7, label = lab)
+    }
   }
 })
 
@@ -458,8 +533,13 @@ test_that("a covariate that varies within no situation has exactly zero rows", {
   # difference: its parameters are not identified and their rows of the exact
   # Hessian are zero. Centered on one of the situation's own alternatives, the
   # kernel's covariates are exact zeros there, so those rows are exact zeros
-  # too and the information is singular. With an outside option the covariate
-  # moves the inside alternatives against it and is identified.
+  # too and the information is singular. The direct formula, which forms the
+  # utility's derivatives from the covariates' levels, enters such a
+  # covariate as zero in each situation, so the rows are exact zeros on both
+  # paths: with a first draw of 1e-60 every decision maker's draw factors fall
+  # below the range's floor and it takes the direct formula. With an outside
+  # option the covariate moves the inside alternatives against it and is
+  # identified.
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
   for (ioo in c(FALSE, TRUE)) {
@@ -469,13 +549,84 @@ test_that("a covariate that varies within no situation has exactly zero rows", {
     fx$X[, 1L] <- stats::rnorm(length(fx$M))[sit]
     fx$W[, 1L] <- stats::rnorm(length(fx$M))[sit]
     unid <- c(1L, fx$K_x + 1L, fx$K_x + fx$K_w + 1L)  # beta_1, mu_1, l_11
-    H <- mxlp_call("hessian", fx)
-    mxlp_expect_close(H, mxlh_reference(fx$theta, fx), 1e-12,
-                      sprintf("[outside option = %s] Hessian vs the reference", ioo))
-    if (ioo) {
-      expect_true(all(diag(H)[unid] != 0))
-    } else {
-      expect_true(all(H[unid, ] == 0) && all(H[, unid] == 0))
+    for (direct in c(FALSE, TRUE)) {
+      if (direct) fx$eta[, 1L, ] <- 1e-60
+      lab <- sprintf("[outside option = %s, %s]", ioo,
+                     if (direct) "direct formula" else "Identity D")
+      expect_true(all(mxlh_identity_d_units(fx) == !direct), label = lab)
+      H <- mxlp_call("hessian", fx)
+      mxlp_expect_close(H, mxlh_reference(fx$theta, fx), 1e-12,
+                        paste(lab, "Hessian vs the reference"))
+      if (ioo) {
+        expect_true(all(diag(H)[unid] != 0), label = lab)
+      } else {
+        expect_true(all(H[unid, ] == 0) && all(H[, unid] == 0), label = lab)
+      }
     }
   }
+})
+
+test_that("a covariate with one value in a situation adds nothing there where its factors overflow", {
+  # Decision maker 3 of a cross-section: its covariates of the log-normal
+  # coefficient are 1 on every alternative, those of the normal one 0, and at
+  # its first draw eta_1 = 1e308 with L_21 = 1e-308, so gamma_2 stays of
+  # order one while L_21's draw factor exp(gamma_2) eta_1 and its curvature
+  # factor exp(gamma_2) eta_1^2 overflow (L_11 = 1 keeps the normal
+  # coefficient's factors finite); it lies outside Identity D's range. Its
+  # covariates move no probability, so it adds nothing to either
+  # coefficient's rows, and its utilities do not depend on the draws: the
+  # exact Hessian is the one with those covariates and that draw zero. The
+  # kernel before Identity D gave L_21's row NaN; the direct formula's zero,
+  # had it been multiplied by the curvature factor, its diagonal entry.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  fx <- cdx_fixture("xsec", 1171, panel = FALSE, rc_dist = c(0L, 1L))
+  u <- 3L
+  rows_u <- (c(0L, cumsum(fx$M))[u] + 1L):cumsum(fx$M)[u]
+  fx$W[rows_u, 1L] <- 0
+  fx$W[rows_u, 2L] <- 1
+  l <- fx$K_x + fx$K_w                      # theta's L_11 and L_21 follow
+  fx$theta[l + 1:2] <- c(0, 1e-308)
+  fx$eta[1L, 1L, u] <- 1e308
+  ft <- fx
+  ft$W[rows_u, 2L] <- 0
+  ft$eta[1L, 1L, u] <- 0
+  expect_false(mxlh_identity_d_units(fx)[u])
+  H <- mxlp_call("hessian", fx)
+  expect_true(all(is.finite(H)))
+  mxlp_expect_close(H, mxlh_reference(ft$theta, ft), 1e-12, "the kernel vs the exact Hessian")
+})
+
+test_that("an unidentified covariate leaves Hessian-based standard errors NA on both paths", {
+  # The release note's case through run_mxlogit(): a decision maker's age
+  # entered alone, with no outside option, cancels from every utility
+  # difference. With the first draw 0 every decision maker lies in Identity
+  # D's range; with 1e-45 that draw's factors fall below its floor and every
+  # decision maker takes the direct formula. The fits are the same, and so is
+  # the singular information.
+  on.exit(set_omp_threads(2L), add = TRUE)
+  set_omp_threads(1L)
+  set.seed(619)
+  n <- 200L
+  alt <- rep(1:4, n)
+  d <- data.frame(id = rep(seq_len(n), each = 4L), alt = alt,
+                  chosen = as.integer(alt == rep(sample(4L, n, replace = TRUE), each = 4L)),
+                  age = rep(stats::runif(n, 20, 80), each = 4L), w = stats::rnorm(4L * n))
+  a <- prepare_mxl_data(d, "id", "alt", "chosen", "age", "w")
+  draws <- get_halton_normals(10L, n, 1L)
+  fits <- lapply(c(0, 1e-45), function(first) {
+    draws[1L, 1L, ] <- first
+    fit <- suppressMessages(run_mxlogit(
+      input_data = a, eta_draws = draws, use_asc = FALSE, rc_mean = FALSE,
+      scale_vars = "none", se_method = "hessian"))
+    inside <- mxl_hessian_identity_d_units(coef(fit), a$X, a$W, a$alt_idx,
+                                           a$choice_idx, a$M, a$weights, draws,
+                                           rc_dist = 0L, rc_correlation = FALSE,
+                                           rc_mean = FALSE, use_asc = FALSE)
+    lab <- sprintf("first draw %g", first)
+    expect_true(all(inside == (first == 0)), label = lab)
+    expect_true(all(is.na(fit$se)), label = lab)
+    fit
+  })
+  expect_identical(coef(fits[[1L]]), coef(fits[[2L]]))
 })
