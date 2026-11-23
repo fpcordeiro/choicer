@@ -623,10 +623,14 @@ designs of their own, described where they appear.
   leaves NaN only in the rows of the parameters whose draw factors overflow
   at it; a zero second derivative (a normal coefficient's, or that of a
   log-normal draw whose exponential underflows) no longer turns entries NaN
-  once a Cholesky entry passes about 1e154; and, without an outside option, a
-  covariate with one value on all of a situation's alternatives adds nothing
-  to that situation, so that a covariate that varies within no situation has
-  exactly zero rows for these decision makers too (see below).
+  once a Cholesky entry passes about 1e154; a random coefficient's covariate
+  that is zero on all of a situation's alternatives (with or without an
+  outside option) no longer turns entries NaN where the coefficient's second
+  derivative overflows at a draw (a log-normal coefficient near e^700, say);
+  and, without an outside option, a covariate with one value on all of a
+  situation's alternatives adds nothing to that situation, so that a
+  covariate that varies within no situation has exactly zero rows for these
+  decision makers too (see below).
 - Each situation's covariates are first centered on its alternative of largest
   posterior probability. That leaves the Hessian unchanged in exact arithmetic
   and keeps its rounding small where the covariates share a large common level

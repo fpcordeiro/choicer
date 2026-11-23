@@ -1301,7 +1301,10 @@ inline bool mxl_hess_unit_in_range(const MxlUnitData& ud,
 
 // The direct formula's per-(t, s) buffers (mxl_hessian_unit_direct()),
 // sized on a thread's first unit outside Identity D's range, and its flags
-// for the situation's covariates that are the same on every alternative.
+// for the situation's covariates that are the same on every alternative:
+// MXL_HESS_ZERO, zero on all of them (and so on the outside option too), or
+// MXL_HESS_LEVEL, one finite, nonzero value and no outside option.
+enum : unsigned char { MXL_HESS_VARIES = 0, MXL_HESS_ZERO = 1, MXL_HESS_LEVEL = 2 };
 struct MxlHessDirect {
   arma::mat sum_Pzz_cc, sum_diff_H_V_cc, zz, sum_Pzz_cd;
   arma::vec zc_a, sum_Pz_c, g_c, sum_Pzz_dd, sum_Pz_d, g_d;
@@ -1319,14 +1322,16 @@ struct MxlHessDirect {
 // kernel's products need not be finite, or zero: a draw of weight zero adds
 // nothing to Identity C or H_V (as in Identity D); where f'' is zero (a normal
 // coefficient, or a log-normal draw whose exp(gamma) underflowed) H_V has no
-// f'' term (0 x Inf once dL eta passes 1e154); and, without an outside option,
-// a covariate with the same finite, nonzero value on every alternative of a
-// situation enters that situation as zero, and H_V skips it. Such a covariate
-// moves no probability there, so its terms cancel in exact arithmetic; summed
-// from the covariate's level they leave rounding, which gives a covariate that
-// varies within no situation a nonzero row and a finite standard error where
-// its information is exactly zero (Identity D's centering makes it zero, too),
-// and its curvature factors can overflow.
+// f'' term (0 x Inf once dL eta passes 1e154); and a covariate with one value
+// on every alternative of a situation adds nothing to that situation. Such a
+// covariate moves no probability there, so its terms cancel in exact
+// arithmetic. H_V skips it, since its curvature factors can overflow where
+// they multiply a zero (an all-zero covariate's 0 x Inf, with an outside
+// option too). And without an outside option, where the value is finite and
+// nonzero, it enters the situation as zero: summed from its level, its terms
+// leave rounding, which gives a covariate that varies within no situation a
+// nonzero row and a finite standard error where its information is exactly
+// zero (Identity D's centering makes it zero, too).
 // P_keep: pass 1's probabilities for a unit in one draw batch, or nullptr to
 // form each situation's again. The caller zeroes G_stash and opg_pz.
 static void mxl_hessian_unit_direct(
@@ -1380,14 +1385,16 @@ static void mxl_hessian_unit_direct(
     F_stash.set_size(Kc + a_t, Sdraw);
     const int chosen_alt = lay.chosen(t);
 
-    // The covariates with one finite, nonzero value on all of the
-    // situation's alternatives (none with an outside option, whose zeros
-    // differ): they enter as zero (see above)
+    // The covariates with one value on all of the situation's alternatives
+    // (see above): zero, which H_V skips; or finite and nonzero without an
+    // outside option (whose zeros differ), which also enters as zero
     for (int k = 0; k < K_x + K_w; ++k) {
       const double* z = (k < K_x ? sc.X_u.colptr(k) : sc.W_u.colptr(k - K_x)) + first;
-      bool level = !include_outside_option && z[0] != 0.0 && std::isfinite(z[0]);
-      for (int a = 1; level && a < m_t; ++a) level = z[a] == z[0];
-      dr.level[k] = level;
+      bool same = std::isfinite(z[0]);
+      for (int a = 1; same && a < m_t; ++a) same = z[a] == z[0];
+      dr.level[k] = !same ? MXL_HESS_VARIES
+                    : z[0] == 0.0 ? MXL_HESS_ZERO
+                    : include_outside_option ? MXL_HESS_VARIES : MXL_HESS_LEVEL;
     }
 
     for (int s = 0; s < Sdraw; ++s) {
@@ -1426,7 +1433,7 @@ static void mxl_hessian_unit_direct(
         const mxl_off row = lay.row_off[t] + current_a_idx;  // stacked row of alt a
         arma::rowvec w_ap_row = sc.W_u.row(row - sc.r0);
         for (int p = 0; p < K_w; ++p) {
-          if (dr.level[K_x + p]) w_ap_row(p) = 0.0;
+          if (dr.level[K_x + p] == MXL_HESS_LEVEL) w_ap_row(p) = 0.0;
         }
 
         // The continuous block of z
@@ -1435,7 +1442,7 @@ static void mxl_hessian_unit_direct(
         if (idx_mu_start > idx_beta_start) {
           zc_a.subvec(idx_beta_start, idx_mu_start - 1) = sc.X_u.row(row - sc.r0).t();
           for (int k = 0; k < K_x; ++k) {
-            if (dr.level[k]) zc_a[idx_beta_start + k] = 0.0;
+            if (dr.level[k] == MXL_HESS_LEVEL) zc_a[idx_beta_start + k] = 0.0;
           }
         }
         if (rc_mean) {
@@ -1475,13 +1482,14 @@ static void mxl_hessian_unit_direct(
           dr.g_d(k_sit) += diff;
         }
 
-        // H_V, in the (mu, L) x (mu, L) sub-block. A covariate entered as
-        // zero adds nothing: its curvature factors, which can overflow
-        // where its terms are exactly zero, are not formed.
+        // H_V, in the (mu, L) x (mu, L) sub-block. A covariate with one
+        // value on the situation's alternatives (zero, or entered as zero)
+        // adds nothing: its curvature factors, which can overflow where its
+        // terms are exactly zero, are not formed.
         arma::mat& hv = dr.sum_diff_H_V_cc;
         if (rc_mean) {
           for (int p = 0; p < K_w; ++p) {
-            if (dr.level[K_x + p]) continue;
+            if (dr.level[K_x + p] != MXL_HESS_VARIES) continue;
             hv(idx_mu_start + p, idx_mu_start + p) +=
                 diff * w_ap_row(p) * dmu2_final_dmu2(p);
           }
@@ -1489,7 +1497,7 @@ static void mxl_hessian_unit_direct(
         if (rc_correlation) {
           int lp_idx_r = 0;
           for (int p = 0; p < K_w; ++p) {
-            if (dr.level[K_x + p]) {  // row p's p + 1 Cholesky parameters
+            if (dr.level[K_x + p] != MXL_HESS_VARIES) {  // row p's p + 1 parameters
               lp_idx_r += p + 1;
               continue;
             }
@@ -1519,7 +1527,7 @@ static void mxl_hessian_unit_direct(
           }
         } else {
           for (int p = 0; p < K_w; ++p) {
-            if (dr.level[K_x + p]) continue;
+            if (dr.level[K_x + p] != MXL_HESS_VARIES) continue;
             const int r = idx_L_start + p;
             const double f_p_prime = dgamma_final_dgamma(p);
             const double f_p_double_prime = d2gamma_final_dgamma2(p);
