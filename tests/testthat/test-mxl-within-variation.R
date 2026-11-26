@@ -391,20 +391,24 @@ test_that("after a collinearity drop rc_dist takes one entry per kept column", {
   expect_identical(f2$se, f0$se)
 })
 
-test_that("such columns are dropped before collinear ones are looked for", {
-  # A task's start time (one value per task, a timestamp) and its end: at
-  # their scale the QR finds the two collinear and drops the later column.
-  # The start goes first, so the end is kept in either order, next to another
-  # random coefficient too.
+test_that("such columns go first, and collinearity is judged within situations", {
+  # A task's start time (one value per task, a timestamp) and its end, or two
+  # end times: on raw levels, at their scale, the QR finds them collinear and
+  # drops the later column. The start goes first, and the collinearity check
+  # takes each row less its situation's first row, so every end time is kept,
+  # in either order, next to another random coefficient too.
   d <- wv_data(96L)
   d$start <- 1.6e9 + d$id
   d$end <- d$start + stats::runif(nrow(d), 0, 10)
+  d$end_b <- d$start + stats::runif(nrow(d), 0, 10)
   qr_kept <- function(cols) {
     colnames(suppressMessages(check_collinearity(as.matrix(d[cols])))$mat)
   }
   expect_identical(qr_kept(c("start", "end")), "start")
   expect_identical(qr_kept(c("end", "start")), "end")
-  for (rv in list(c("start", "end"), c("end", "start"), c("w", "start", "end"))) {
+  expect_identical(qr_kept(c("end", "end_b")), "end")
+  for (rv in list(c("start", "end"), c("end", "start"), c("w", "start", "end"),
+                  c("start", "end", "end_b"))) {
     lab <- paste(rv, collapse = ", ")
     res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice", "x", rv))
     expect_identical(colnames(res$value$W), setdiff(rv, "start"), label = lab)
@@ -415,6 +419,32 @@ test_that("such columns are dropped before collinear ones are looked for", {
                      list(within = match("start", rv), collinear = integer()),
                      label = lab)
   }
+  # x and x + age vary alike within every situation: one goes, in either
+  # order and in either role, where raw levels kept both. So does one of a
+  # set of dummies for every alternative, which sums to one in each row.
+  d$xa <- d$x + d$age
+  d$wa <- d$w + d$age
+  for (cov in list(c("age", "x", "xa"), c("x", "xa", "age"), c("xa", "age", "x"))) {
+    lab <- paste(cov, collapse = ", ")
+    res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice", cov, "w"))
+    kept <- setdiff(cov, "age")
+    expect_identical(colnames(res$value$X), kept[1L], label = lab)
+    expect_identical(res$value$dropped_cols, c("age", kept[2L]), label = lab)
+    expect_length(res$messages, 1L)
+    expect_match(res$messages, paste0("dropped due to collinearity of their ",
+                                      "variation within choice situations: ",
+                                      kept[2L], "[[:space:]]*$"), label = lab)
+  }
+  res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice", "x",
+                                     c("w", "age", "wa")))
+  expect_identical(colnames(res$value$W), "w")
+  expect_identical(res$value$random_var_dropped,
+                   list(within = 2L, collinear = 3L))
+  for (j in 1:3) d[[paste0("d", j)]] <- as.numeric(d$alt == j)
+  res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice",
+                                     c("x", "d1", "d2", "d3"), "w"))
+  expect_identical(colnames(res$value$X), c("x", "d1", "d2"))
+  expect_identical(res$value$dropped_cols, "d3")
   # With an outside option the check comes after the QR, so that its message
   # names only columns kept
   d$zero <- 0
@@ -427,6 +457,68 @@ test_that("such columns are dropped before collinear ones are looked for", {
   kept <- grep("kept:", res$messages, value = TRUE)
   expect_length(kept, 1L)
   expect_match(kept, "kept: age \\(covariate_cols\\)\\. ")
+})
+
+test_that("the QR by row chunks judges variation within groups as in memory", {
+  # remove_nullspace_cols() factors a million elements or more by row chunks;
+  # with `first` each chunk is less its rows' groups' first rows, read from
+  # the matrix wherever the chunk boundaries fall. Its rank and pivot are
+  # those of qr() on the whole matrix less its first rows.
+  set.seed(99)
+  M <- sample(2:5, 40L, replace = TRUE)
+  g <- rep(seq_along(M), M)
+  first <- rep.int(cumsum(c(1, M[-length(M)])), M)
+  n <- sum(M)
+  m <- cbind(a = stats::rnorm(n), lvl = stats::rnorm(length(M))[g],
+             b = stats::rnorm(n))
+  m <- cbind(m, ab = m[, "a"] + m[, "lvl"], big = 1e6 + m[, "lvl"] + m[, "b"])
+  # design_rows_less_first() writes a block of rows less their groups' first
+  # rows, which may lie before the block
+  expect_identical(design_rows_less_first(m, 5, 30, first),
+                   unname(m[5:30, ] - m[first[5:30], ]))
+  expect_identical(design_rows_less_first(m, 1, n, first),
+                   unname(m - m[first, ]))
+  expect_error(design_rows_less_first(m, 0, 3, first), "rows of `X`")
+  expect_error(design_rows_less_first(m, 3, n + 1, first), "rows of `X`")
+  expect_error(design_rows_less_first(m, 4, 3, first), "rows of `X`")
+  expect_error(design_rows_less_first(m, 1, 3, as.integer(first)),
+               "double vector")
+  bad <- first
+  bad[2L] <- n + 1
+  expect_error(design_rows_less_first(m, 1, 3, bad), "hold rows of `X`")
+  ref <- qr(m - m[first, , drop = FALSE], tol = 1e-7)
+  expect_identical(ref$rank, 2L)
+  for (rows in c(7L, 23L, n)) {
+    q <- .qr_rank_pivot(m, 1e-7, rows = rows, first = first)
+    expect_identical(q$rank, ref$rank, label = rows)
+    expect_identical(q$pivot, ref$pivot, label = rows)
+  }
+  # Within groups only a and b vary on their own; on raw levels lvl and big
+  # are columns of their own, and ab is a + lvl
+  expect_identical(colnames(remove_nullspace_cols(m, first = first)),
+                   c("a", "b"))
+  expect_identical(colnames(remove_nullspace_cols(m)), c("a", "lvl", "b", "big"))
+})
+
+test_that("the record of the drops is read only while W has the columns kept", {
+  # Reordered or replaced columns of a prepared W: the record no longer says
+  # which coefficient is which, so an rc_dist for every column of
+  # random_var_cols is refused, as without a record
+  d <- wv_data(99L)
+  d$w2 <- stats::rnorm(nrow(d))
+  d$z <- stats::rnorm(nrow(d))
+  a <- suppressWarnings(prepare_mxl_data(d, "id", "alt", "choice", "x",
+                                         c("age", "w", "w2")))
+  draws <- get_halton_normals(5L, a$N, 2L)
+  b <- a
+  b$W <- b$W[, c("w2", "w")]
+  expect_error(run_mxlogit(input_data = b, eta_draws = draws,
+                           rc_dist = c(0L, 1L, 0L)), "length K_w")
+  b <- a
+  b$W[, "w2"] <- d$z  # wv_data() rows are in prepared order
+  colnames(b$W)[2L] <- "z"
+  expect_error(run_mxlogit(input_data = b, eta_draws = draws,
+                           rc_dist = c(0L, 1L, 0L)), "length K_w")
 })
 
 test_that("a column named twice in one list is an error", {

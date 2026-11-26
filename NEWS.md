@@ -675,19 +675,26 @@ designs of their own, described where they appear.
   compares each choice situation's alternatives on their own, so in a panel
   a covariate that changes between a decision maker's situations but within
   none of them is dropped too. The comparison is exact and takes each column
-  alone: a combination of columns that varies within no situation (`x` and
-  `x + age`) still leaves the information singular. Dropping a random
-  coefficient's column moves the random coefficients after it to other
-  dimensions of the Halton sequence, so their estimates move by simulation
-  error. Such columns are dropped before collinear ones are looked for, as
-  in the hierarchical Bayes preparations, so that one cannot make that check
-  drop another column (a task's end time entered after its start, a
-  timestamp, which the QR finds collinear with it at that scale). With an
-  outside option such a covariate moves the inside alternatives against it
-  and is kept, with a message. With constants, only its variation between
-  choice situations identifies a fixed coefficient or a random coefficient's
-  mean; a random coefficient's spread is also identified by the correlation
-  it gives the inside alternatives' utilities, within a choice situation and
+  alone. Dropping a random coefficient's column moves the random
+  coefficients after it to other dimensions of the Halton sequence, so their
+  estimates move by simulation error. A column of zeros among others is
+  such a column, so without an outside option it now gets this warning
+  rather than the collinearity message, as in the hierarchical Bayes
+  preparations. These columns go first. Without an outside option the
+  collinearity check then judges the other columns by their variation
+  within choice situations (each row less its situation's first row), the
+  only variation that identifies them there, and its message says so. So it
+  now drops a column of a combination that varies within no situation (`x`
+  and `x + age`) and one of a set of dummies for every alternative, both of
+  which it kept on raw levels. It also keeps a task's end time that, on raw
+  levels and at their scale, it dropped as collinear with the task's start
+  time (a timestamp) or with another end time. With an outside option such
+  a covariate moves the inside alternatives against it and is kept, with a
+  message, and the collinearity check takes the columns as they are. With
+  constants, only its variation between choice situations identifies a
+  fixed coefficient or a random coefficient's mean; a random coefficient's
+  spread is also identified by the correlation it gives the inside
+  alternatives' utilities, within a choice situation and, in a panel,
   across a decision maker's situations. `rc_dist`, given for the columns of
   `random_var_cols`, follows the columns kept after such a drop. After a
   collinearity drop the kept columns' coefficients absorb the dropped one's,

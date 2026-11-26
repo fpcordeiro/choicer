@@ -495,7 +495,9 @@
 #'   its coefficient, so their distributions could differ from those asked
 #'   for; an entry for every column of \code{random_var_cols} is then an
 #'   error, and \code{rc_dist} takes one entry per column kept. One entry per
-#'   column of \code{input_data$W} is read as it is. Default: all normal.
+#'   column of \code{input_data$W} is read as it is, as is an
+#'   \code{input_data} whose \code{W} no longer has the columns the
+#'   preparation kept. Default: all normal.
 #' @param rc_mean Logical indicating whether to estimate means for random
 #'   coefficients.
 #' @param rc_correlation Logical indicating whether random coefficients are
@@ -1409,14 +1411,20 @@ run_mxlogit <- function(
 
   # The columns of random_var_cols the preparation dropped, by position: those
   # that vary within no choice situation (without an outside option) and the
-  # collinear ones. The record is read only while W has the columns it leaves:
-  # a design built or edited by hand is taken as it is.
+  # collinear ones. The record is read only while W has the columns it
+  # leaves, as many and, where W has names, by name in that order: a design
+  # built or edited by hand is taken as it is.
   rv_cols <- input_data$data_spec$random_var_cols
   w_drop <- input_data[["random_var_dropped", exact = TRUE]]
   w_kept <- if (!is.null(w_drop)) {
     setdiff(seq_along(rv_cols), unlist(w_drop, use.names = FALSE))
   }
-  if (length(w_kept) != K_w) w_drop <- w_kept <- NULL
+  w_names <- colnames(input_data$W)
+  if (length(w_kept) != K_w ||
+      (!is.null(w_names) && !identical(w_names, as.character(rv_cols[w_kept])))) {
+    w_drop <- w_kept <- NULL
+  }
+  rm(w_names)
 
   # rc_dist gives each random coefficient's distribution. Given for every
   # column of random_var_cols, it follows the kept columns when those dropped
@@ -2418,8 +2426,9 @@ run_mxlogit <- function(
 #'     \item `rc_correlation`: Logical flag.
 #'     \item `alt_mapping`: data.table mapping alternatives to summary statistics.
 #'     \item `dropped_cols`: Names of the columns dropped, if any: without an
-#'       outside option those that vary within no choice situation (see
-#'       below), then collinear ones.
+#'       outside option those that vary within no choice situation, then
+#'       collinear ones (judged there by their variation within choice
+#'       situations; see below).
 #'     \item `data_spec`: List with column-name metadata (incl. `person_col`).
 #'     \item `random_var_dropped`: Only where columns of `random_var_cols`
 #'       were dropped: their positions in it, as a list of `within` (varying
@@ -2441,18 +2450,25 @@ run_mxlogit <- function(
 #' covariate that changes between a decision maker's situations but within
 #' none of them is dropped too. The comparison is exact and takes each column
 #' alone: a covariate whose values differ across a situation's alternatives
-#' only by rounding is not found, nor is a combination of columns that varies
-#' within no situation (`x` and `x + age` differ by `age`), and either leaves
-#' the information singular or nearly so. Such a characteristic can still
-#' shift choices through its interaction with an alternative's attribute or
-#' constant. Dropping a random coefficient's column moves the random
-#' coefficients after it to other dimensions of the Halton sequence, so their
-#' estimates differ by simulation error from those of a fit that kept it.
-#' These columns are dropped before collinear ones are looked for, so that a
-#' column of no use to the likelihood cannot decide which column that check
-#' drops: entered after a task's start time (a timestamp, one value per
-#' task), its end time is too close to it at that scale for the QR, which
-#' would drop the end and keep the start.
+#' only by rounding is not found, and leaves the information nearly
+#' singular. Such a characteristic can still shift choices through its
+#' interaction with an alternative's attribute or constant. Dropping a random
+#' coefficient's column moves the random coefficients after it to other
+#' dimensions of the Halton sequence, so their estimates differ by simulation
+#' error from those of a fit that kept it.
+#'
+#' These columns are dropped first. The check for collinear columns then
+#' judges the others by their variation within choice situations (each row
+#' less its situation's first row), the only variation that identifies them
+#' without an outside option, and says so in its message. A combination of
+#' columns that varies within no situation (`x` and `x + age` differ by
+#' `age`) is collinear there, so one of its columns is dropped. On raw levels
+#' that check would keep both, and it could drop a column that identifies a
+#' coefficient: a task's end time looks collinear at its scale with the
+#' task's start time (a timestamp, one value per task) or with another end
+#' time. A set of dummies for every alternative, which sums to one in each
+#' row, loses one of them. With an outside option the check takes the
+#' columns as they are.
 #'
 #' With an outside option such a covariate moves the inside alternatives
 #' against the outside option and is kept, with a message (none where no
@@ -2693,17 +2709,23 @@ prepare_mxl_data <- function(
   ## situation at a time, after the index columns' check (an index column
   ## entered as a covariate is that check's error). Without an outside option
   ## this comes before the collinearity check, as in the hierarchical Bayes
-  ## preparation: such a column, of no use to the likelihood, could otherwise
-  ## decide which column that check drops (a timestamp next to the time a
-  ## task ended: at their scale the QR finds the two collinear). With one, it
-  ## comes after, so that its message names no column the QR drops. A matrix
-  ## is subset only where it loses a column.
+  ## preparation, and that check then judges the columns by their variation
+  ## within choice situations (each row less its situation's first row), the
+  ## only variation that identifies them there: on raw levels it can drop a
+  ## column that varies within situations next to one that does not (a
+  ## task's end time next to its start, a timestamp, at whose scale the QR
+  ## finds the two collinear) or two such (two end times), and keep a
+  ## combination that cancels (x and x + age). With an outside option the
+  ## levels identify the columns: the QR takes them as they are, and the
+  ## message comes after it, so that it names no column the QR drops. A
+  ## matrix is subset only where it loses a column.
   ## w_pos: the positions in random_var_cols of W's columns, which
   ## run_mxlogit() needs to match rc_dist and bounds to the kept columns (the
   ## names repeat nowhere, but a W edited by hand may have lost them).
   w_pos <- seq_along(random_var_cols)
   w_within <- integer()
   dropped_vars <- character()
+  first <- NULL
   if (!include_outside_option) {
     keep <- .check_within_variation(
       list(covariate_cols = X, random_var_cols = W), M, FALSE)
@@ -2719,17 +2741,18 @@ prepare_mxl_data <- function(
       W <- W[, keep$random_var_cols, drop = FALSE]
     }
     rm(keep)
+    # Each row's situation's first row (double: no integer overflow)
+    first <- rep.int(cumsum(c(1, M[-length(M)])), M)
   }
-  X_res <- check_collinearity(X)
+  X_res <- check_collinearity(X, first)
   X <- X_res$mat
-  W_res <- check_collinearity(W)
+  W_res <- check_collinearity(W, first)
   w_collinear <- w_pos[!colnames(W) %in% colnames(W_res$mat)]
-  w_pos <- setdiff(w_pos, w_collinear)
   W <- W_res$mat
   # The columns dropped: those that vary within no choice situation, of X
   # then of W, then the collinear ones of X and of W
   dropped_vars <- c(dropped_vars, X_res$dropped, W_res$dropped)
-  rm(X_res, W_res)
+  rm(X_res, W_res, first, w_pos)
   if (include_outside_option) {
     .check_within_variation(list(covariate_cols = X, random_var_cols = W), M,
                             TRUE)

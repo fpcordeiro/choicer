@@ -102,8 +102,9 @@ without \code{person_col}).
 \item \code{rc_correlation}: Logical flag.
 \item \code{alt_mapping}: data.table mapping alternatives to summary statistics.
 \item \code{dropped_cols}: Names of the columns dropped, if any: without an
-outside option those that vary within no choice situation (see
-below), then collinear ones.
+outside option those that vary within no choice situation, then
+collinear ones (judged there by their variation within choice
+situations; see below).
 \item \code{data_spec}: List with column-name metadata (incl. \code{person_col}).
 \item \code{random_var_dropped}: Only where columns of \code{random_var_cols}
 were dropped: their positions in it, as a list of \code{within} (varying
@@ -140,18 +141,25 @@ each choice situation's alternatives on their own, so in a panel a
 covariate that changes between a decision maker's situations but within
 none of them is dropped too. The comparison is exact and takes each column
 alone: a covariate whose values differ across a situation's alternatives
-only by rounding is not found, nor is a combination of columns that varies
-within no situation (\code{x} and \code{x + age} differ by \code{age}), and either leaves
-the information singular or nearly so. Such a characteristic can still
-shift choices through its interaction with an alternative's attribute or
-constant. Dropping a random coefficient's column moves the random
-coefficients after it to other dimensions of the Halton sequence, so their
-estimates differ by simulation error from those of a fit that kept it.
-These columns are dropped before collinear ones are looked for, so that a
-column of no use to the likelihood cannot decide which column that check
-drops: entered after a task's start time (a timestamp, one value per
-task), its end time is too close to it at that scale for the QR, which
-would drop the end and keep the start.
+only by rounding is not found, and leaves the information nearly
+singular. Such a characteristic can still shift choices through its
+interaction with an alternative's attribute or constant. Dropping a random
+coefficient's column moves the random coefficients after it to other
+dimensions of the Halton sequence, so their estimates differ by simulation
+error from those of a fit that kept it.
+
+These columns are dropped first. The check for collinear columns then
+judges the others by their variation within choice situations (each row
+less its situation's first row), the only variation that identifies them
+without an outside option, and says so in its message. A combination of
+columns that varies within no situation (\code{x} and \code{x + age} differ by
+\code{age}) is collinear there, so one of its columns is dropped. On raw levels
+that check would keep both, and it could drop a column that identifies a
+coefficient: a task's end time looks collinear at its scale with the
+task's start time (a timestamp, one value per task) or with another end
+time. A set of dummies for every alternative, which sums to one in each
+row, loses one of them. With an outside option the check takes the
+columns as they are.
 
 With an outside option such a covariate moves the inside alternatives
 against the outside option and is kept, with a message (none where no

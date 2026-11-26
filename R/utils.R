@@ -37,18 +37,30 @@ convertTime <- function(time) {
 #'
 #' Keeps the columns that `qr(mat, tol)` retains. Designs with a million or
 #' more elements are factored by row chunks (`.qr_rank_pivot()`), without a
-#' design-sized copy.
+#' design-sized copy. With `first`, the decision is taken on the matrix's
+#' variation within groups of rows, `mat - mat[first, ]`, and the columns are
+#' still dropped from `mat`: a choice model without an outside option
+#' identifies its covariates' coefficients only through their differences
+#' within choice situations. Raw levels can make that check both too strict
+#' (two timestamps that differ by seconds look collinear at their scale) and
+#' too lax (`x` and `x + age` are collinear within every situation).
 #' @param mat A matrix
 #' @param tol Tolerance for rank determination
+#' @param first `NULL`, or for each row the row index of its group's first
+#'   row.
 #' @returns Matrix with linearly dependent columns removed
 #' @noRd
-remove_nullspace_cols <- function(mat, tol = 1e-7) {
+remove_nullspace_cols <- function(mat, tol = 1e-7, first = NULL) {
   if (is.null(mat)) return(mat)
   if (ncol(mat) == 1) return(mat)
   qrdecomp <- if (as.numeric(nrow(mat)) * ncol(mat) < 1e6) {
-    qr(mat, tol = tol)
+    qr(if (is.null(first) || nrow(mat) == 0L) {
+      mat
+    } else {
+      design_rows_less_first(mat, 1, nrow(mat), first)
+    }, tol = tol)
   } else {
-    .qr_rank_pivot(mat, tol)
+    .qr_rank_pivot(mat, tol, first = first)
   }
   rank <- qrdecomp$rank
   if (rank == ncol(mat)) return(mat)
@@ -70,19 +82,31 @@ remove_nullspace_cols <- function(mat, tol = 1e-7) {
 #' per chunk, against LINPACK's p^2 vector calls, whose per-call overhead
 #' can dominate at this size); its column pivoting is undone, as only the
 #' Gram matrix matters. Beyond `mat`, memory holds a few chunk-sized buffers
-#' and a p x p factor, and there is no limit of 2^31 - 1 elements.
+#' and a p x p factor, and there is no limit of 2^31 - 1 elements. With
+#' `first`, each chunk is taken less its rows' groups' first rows, read from
+#' `mat` wherever the chunk boundaries fall and written in one allocation
+#' (`design_rows_less_first()`), so the factor is that of
+#' `mat - mat[first, ]`, still without a design-sized copy.
 #'
 #' @param mat A numeric matrix.
 #' @param tol Tolerance for rank determination, as in qr().
 #' @param rows Rows per chunk (about 2^20 elements by default).
+#' @param first `NULL`, or for each row the row index of its group's first
+#'   row (see `remove_nullspace_cols()`).
 #' @returns The qr() of the final R factor (its rank and pivot are used).
 #' @noRd
 .qr_rank_pivot <- function(mat, tol = 1e-7,
-                           rows = max(ncol(mat), floor(2^20 / ncol(mat)))) {
+                           rows = max(ncol(mat), floor(2^20 / ncol(mat))),
+                           first = NULL) {
   n <- nrow(mat)
   R <- NULL
   for (s in seq(1, n, by = rows)) {
-    chunk <- mat[s:min(n, s + rows - 1), , drop = FALSE]
+    e <- min(n, s + rows - 1)
+    chunk <- if (is.null(first)) {
+      mat[s:e, , drop = FALSE]
+    } else {
+      design_rows_less_first(mat, s, e, first)
+    }
     q <- qr(rbind(R, chunk), LAPACK = TRUE)
     R <- qr.R(q)[, order(q$pivot), drop = FALSE]
   }
@@ -91,16 +115,22 @@ remove_nullspace_cols <- function(mat, tol = 1e-7) {
 
 #' Check for collinearity and remove dependent columns
 #' @param X A matrix
+#' @param first `NULL`, or for each row the row index of its choice
+#'   situation's first row: the columns are then judged by their variation
+#'   within choice situations (see `remove_nullspace_cols()`), as the message
+#'   says.
 #' @returns List with `mat` (cleaned matrix) and `dropped` (names of dropped columns)
 #' @noRd
-check_collinearity <- function(X) {
+check_collinearity <- function(X, first = NULL) {
   colnames_before <- colnames(X)
-  X <- remove_nullspace_cols(X)
+  X <- remove_nullspace_cols(X, first = first)
   colnames_after <- colnames(X)
   colnames_diff <- setdiff(colnames_before, colnames_after)
   if (length(colnames_diff) > 0) {
-    message("The following variables were dropped due to collinearity: ",
-            paste(colnames_diff, collapse = ", "))
+    message("The following variables were dropped due to collinearity",
+            if (!is.null(first)) {
+              " of their variation within choice situations"
+            }, ": ", paste(colnames_diff, collapse = ", "))
   }
   return(list(mat = X, dropped = colnames_diff))
 }
@@ -1208,7 +1238,8 @@ label_matrix <- function(mat, alt_mapping) {
               "coefficient or a random coefficient's mean; a random ",
               "coefficient's spread is also identified by the correlation ",
               "it gives the inside alternatives' utilities, within a choice ",
-              "situation and across a decision maker's situations.")
+              "situation and, in a panel, across a decision maker's ",
+              "situations.")
     }
     return(lapply(keep, function(k) rep(TRUE, length(k))))
   }

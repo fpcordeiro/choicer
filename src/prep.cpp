@@ -1,7 +1,8 @@
 // Data-preparation helpers behind prepare_mnl_data(), prepare_mxl_data() and
 // prepare_mnp_data() (prepare_nl_data() calls the first) and the hierarchical
 // preparations, the check of the mixed logit's covariates for variation within
-// choice situations, and the column steps behind run_mxlogit()'s default start.
+// choice situations and the rows within them that its collinearity check
+// factors, and the column steps behind run_mxlogit()'s default start.
 #include <Rcpp.h>
 #include <algorithm>
 #include <climits>
@@ -335,6 +336,64 @@ SEXP design_varies_within(SEXP X, SEXP M) {
       first = end;
     }
     varies[k] = found;
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+//' Rows of a design less their choice situations' first rows
+//'
+//' `X[from:to, ] - X[first[from:to], ]`, written column by column in one
+//' allocation, where R would allocate the rows, their situations' first rows
+//' and the difference. `remove_nullspace_cols()` judges a design without an
+//' outside option by this variation within choice situations, whole or by
+//' row chunks (`.qr_rank_pivot()`), whose first rows may lie in an earlier
+//' chunk: they are read from `X`.
+//'
+//' @param X A double matrix.
+//' @param from,to The first and last row of the block (1-based).
+//' @param first A double vector, one element per row of `X`: the row
+//'   (1-based) of its situation's first row.
+//' @returns A double matrix of `to - from + 1` rows and the columns of `X`,
+//'   without names.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+SEXP design_rows_less_first(SEXP X, double from, double to, SEXP first) {
+  if (TYPEOF(X) != REALSXP || !Rf_isMatrix(X)) {
+    Rcpp::stop("`X` must be a double matrix");
+  }
+  const R_xlen_t n = Rf_nrows(X);
+  const R_xlen_t K = Rf_ncols(X);
+  if (TYPEOF(first) != REALSXP || XLENGTH(first) != n) {
+    Rcpp::stop("`first` must be a double vector with one element per row");
+  }
+  if (!(from >= 1 && to <= static_cast<double>(n) && from <= to) ||
+      from != std::floor(from) || to != std::floor(to)) {
+    Rcpp::stop("`from` and `to` must be rows of `X`");
+  }
+  const R_xlen_t a = static_cast<R_xlen_t>(from) - 1;
+  const R_xlen_t b = static_cast<R_xlen_t>(to);
+  const double* f = REAL_RO(first);
+  for (R_xlen_t i = a; i < b; ++i) {
+    if (!(f[i] >= 1 && f[i] <= static_cast<double>(n)) ||
+        f[i] != std::floor(f[i])) {
+      Rcpp::stop("`first` must hold rows of `X`");
+    }
+  }
+  const R_xlen_t m = b - a;
+  if (m > INT_MAX || K > INT_MAX) {
+    Rcpp::stop("the block is too large for a matrix");
+  }
+  SEXP out = PROTECT(Rf_allocMatrix(REALSXP, static_cast<int>(m),
+                                    static_cast<int>(K)));
+  double* o = REAL(out);
+  const double* x = REAL_RO(X);
+  for (R_xlen_t k = 0; k < K; ++k) {
+    const double* col = x + k * n;
+    double* oc = o + k * m;
+    for (R_xlen_t i = a; i < b; ++i) {
+      oc[i - a] = col[i] - col[static_cast<R_xlen_t>(f[i]) - 1];
+    }
   }
   UNPROTECT(1);
   return out;

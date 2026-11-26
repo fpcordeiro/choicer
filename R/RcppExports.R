@@ -2028,6 +2028,26 @@ design_varies_within <- function(X, M) {
     .Call(`_choicer_design_varies_within`, X, M)
 }
 
+#' Rows of a design less their choice situations' first rows
+#'
+#' `X[from:to, ] - X[first[from:to], ]`, written column by column in one
+#' allocation, where R would allocate the rows, their situations' first rows
+#' and the difference. `remove_nullspace_cols()` judges a design without an
+#' outside option by this variation within choice situations, whole or by
+#' row chunks (`.qr_rank_pivot()`), whose first rows may lie in an earlier
+#' chunk: they are read from `X`.
+#'
+#' @param X A double matrix.
+#' @param from,to The first and last row of the block (1-based).
+#' @param first A double vector, one element per row of `X`: the row
+#'   (1-based) of its situation's first row.
+#' @returns A double matrix of `to - from + 1` rows and the columns of `X`,
+#'   without names.
+#' @noRd
+design_rows_less_first <- function(X, from, to, first) {
+    .Call(`_choicer_design_rows_less_first`, X, from, to, first)
+}
+
 #' Query choicer OpenMP thread settings
 #'
 #' @return A list with OpenMP availability, active/max thread settings, CPU
