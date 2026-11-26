@@ -30,9 +30,12 @@ prepare_mxl_data(
 \item{choice_col}{Name of the column indicating chosen alternative (1 = chosen, 0 = not chosen)}
 
 \item{covariate_cols}{Vector of names of columns to be used as covariates;
-\code{NULL} where every coefficient is random}
+\code{NULL} where every coefficient is random. Each column is named
+once.}
 
-\item{random_var_cols}{Vector of names of columns to be used as random variables}
+\item{random_var_cols}{Vector of names of columns to be used as random
+variables, each named once (a column may also be in
+\code{covariate_cols}).}
 
 \item{weights}{Optional vector of weights, one per choice situation in the
 prepared order (ascending id; see Details). If NULL, equal weights are
@@ -98,10 +101,14 @@ without \code{person_col}).
 \item \code{include_outside_option}: Logical flag.
 \item \code{rc_correlation}: Logical flag.
 \item \code{alt_mapping}: data.table mapping alternatives to summary statistics.
-\item \code{dropped_cols}: Names of the columns dropped, if any: collinear
-ones, and without an outside option those that vary within no
-choice situation (see below).
+\item \code{dropped_cols}: Names of the columns dropped, if any: without an
+outside option those that vary within no choice situation (see
+below), then collinear ones.
 \item \code{data_spec}: List with column-name metadata (incl. \code{person_col}).
+\item \code{random_var_dropped}: Only where columns of \code{random_var_cols}
+were dropped: their positions in it, as a list of \code{within} (varying
+within no choice situation) and \code{collinear}. \code{run_mxlogit()} reads
+it to match \code{rc_dist} and bounds to the kept columns.
 }
 }
 \description{
@@ -140,13 +147,23 @@ shift choices through its interaction with an alternative's attribute or
 constant. Dropping a random coefficient's column moves the random
 coefficients after it to other dimensions of the Halton sequence, so their
 estimates differ by simulation error from those of a fit that kept it.
+These columns are dropped before collinear ones are looked for, so that a
+column of no use to the likelihood cannot decide which column that check
+drops: entered after a task's start time (a timestamp, one value per
+task), its end time is too close to it at that scale for the QR, which
+would drop the end and keep the start.
 
 With an outside option such a covariate moves the inside alternatives
 against the outside option and is kept, with a message (none where no
 situation has two alternatives: there every covariate is such a
-covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}) only its
-variation between choice situations identifies it: a covariate with one
-value over the whole sample is then collinear with the constants.
+covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}), only its
+variation between choice situations identifies a fixed coefficient or a
+random coefficient's mean: a covariate with one value over the whole
+sample is then collinear with the constants. A random coefficient's spread
+is identified otherwise too. Its draw moves every inside alternative of a
+situation alike, which correlates their utilities within the situation
+and, in a panel, across a decision maker's situations: with one value over
+the whole sample, it is a random intercept for the inside alternatives.
 
 A design built or edited by hand and passed as \code{input_data} is not
 checked: without an outside option, the Hessian's rows for such a

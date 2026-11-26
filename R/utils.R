@@ -1173,11 +1173,14 @@ label_matrix <- function(mat, alt_mapping) {
 #' warning names them (class `choicer_unidentified_covariates`, printed at
 #' once, since a long fit may follow). With an outside option it moves the
 #' inside alternatives against the outside option, and is kept, with a
-#' message; with constants only its variation between situations identifies
-#' it, so the message claims no more. Where no situation has two
-#' alternatives (a binary choice against the outside option) every covariate
-#' is such a covariate, and there is no message. Both name up to ten columns,
-#' as `.warn_not_finite()` does.
+#' message. With constants only its variation between situations identifies
+#' a fixed coefficient or a random coefficient's mean, while a random
+#' coefficient's spread also shows in the correlation it gives the inside
+#' alternatives' utilities (an error component: within a situation and, in a
+#' panel, across a decision maker's situations), so the message says so.
+#' Where no situation has two alternatives (a binary choice against the
+#' outside option) every covariate is such a covariate, and there is no
+#' message. Both name up to ten columns, as `.warn_not_finite()` does.
 #'
 #' @param mats Named list of design matrices whose rows are the situations'
 #'   alternatives, each named by the argument that lists its columns.
@@ -1200,8 +1203,12 @@ label_matrix <- function(mat, alt_mapping) {
     if (any(M > 1L)) {
       message("Covariate(s) that vary within no choice situation kept: ",
               shown, ". With an outside option they move the inside ",
-              "alternatives against it; with constants, only their ",
-              "variation between choice situations identifies them.")
+              "alternatives against it. With constants, only their ",
+              "variation between choice situations identifies a fixed ",
+              "coefficient or a random coefficient's mean; a random ",
+              "coefficient's spread is also identified by the correlation ",
+              "it gives the inside alternatives' utilities, within a choice ",
+              "situation and across a decision maker's situations.")
     }
     return(lapply(keep, function(k) rep(TRUE, length(k))))
   }

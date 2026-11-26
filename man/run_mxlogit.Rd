@@ -89,11 +89,14 @@ situation without \code{person_col} (convenience workflow only). Default
 
 \item{rc_dist}{Integer vector indicating the distribution of each random
 coefficient (0 = normal, 1 = log-normal), one entry per column of
-\code{random_var_cols}. Where the preparation drops some of those
-columns (collinear ones, and those that vary within no choice situation
-without an outside option), the entries follow the kept columns by name;
-one entry per column of \code{input_data$W} is read as it is. Default:
-all normal.}
+\code{random_var_cols}. Where the preparation drops columns that vary
+within no choice situation (without an outside option), the entries
+follow the kept columns: those columns cancel from the likelihood. Where
+it drops a column as collinear with the others, their coefficients absorb
+its coefficient, so their distributions could differ from those asked
+for; an entry for every column of \code{random_var_cols} is then an
+error, and \code{rc_dist} takes one entry per column kept. One entry per
+column of \code{input_data$W} is read as it is. Default: all normal.}
 
 \item{rc_mean}{Logical indicating whether to estimate means for random
 coefficients.}
@@ -165,7 +168,9 @@ This is the recommended form for typical use, e.g.
 \code{L_<i><j>} number the random coefficients the fit keeps, so
 where the preparation drops a column of \code{random_var_cols}
 (collinear, or varying within no choice situation) bounds named
-by them are an error.}
+by them are an error. An \code{input_data} built by hand, or
+whose \code{W} gained or lost columns after the preparation, is
+taken as it is.}
 }}
 
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
@@ -850,13 +855,23 @@ shift choices through its interaction with an alternative's attribute or
 constant. Dropping a random coefficient's column moves the random
 coefficients after it to other dimensions of the Halton sequence, so their
 estimates differ by simulation error from those of a fit that kept it.
+These columns are dropped before collinear ones are looked for, so that a
+column of no use to the likelihood cannot decide which column that check
+drops: entered after a task's start time (a timestamp, one value per
+task), its end time is too close to it at that scale for the QR, which
+would drop the end and keep the start.
 
 With an outside option such a covariate moves the inside alternatives
 against the outside option and is kept, with a message (none where no
 situation has two alternatives: there every covariate is such a
-covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}) only its
-variation between choice situations identifies it: a covariate with one
-value over the whole sample is then collinear with the constants.
+covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}), only its
+variation between choice situations identifies a fixed coefficient or a
+random coefficient's mean: a covariate with one value over the whole
+sample is then collinear with the constants. A random coefficient's spread
+is identified otherwise too. Its draw moves every inside alternative of a
+situation alike, which correlates their utilities within the situation
+and, in a panel, across a decision maker's situations: with one value over
+the whole sample, it is a random intercept for the inside alternatives.
 
 A design built or edited by hand and passed as \code{input_data} is not
 checked: without an outside option, the Hessian's rows for such a

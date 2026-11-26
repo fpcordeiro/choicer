@@ -679,16 +679,27 @@ designs of their own, described where they appear.
   `x + age`) still leaves the information singular. Dropping a random
   coefficient's column moves the random coefficients after it to other
   dimensions of the Halton sequence, so their estimates move by simulation
-  error. With an outside option such a covariate moves the inside
-  alternatives against it and is kept, with a message; with constants, only
-  its variation between choice situations identifies it. `rc_dist`, given
-  for the columns of `random_var_cols`, follows the kept columns by name,
-  here and where a random coefficient's column is dropped for collinearity,
-  which used to stop the first kernel call ("rc_dist must be a vector of
-  length K_w"). Bounds named by the Cholesky factor (`L_<i><j>`, which
-  number the columns kept) are then an error, where they could bind another
-  coefficient, and a preparation that collinearity leaves with no random
-  coefficient now stops, where the fit stopped later on `K_w`.
+  error. Such columns are dropped before collinear ones are looked for, as
+  in the hierarchical Bayes preparations, so that one cannot make that check
+  drop another column (a task's end time entered after its start, a
+  timestamp, which the QR finds collinear with it at that scale). With an
+  outside option such a covariate moves the inside alternatives against it
+  and is kept, with a message. With constants, only its variation between
+  choice situations identifies a fixed coefficient or a random coefficient's
+  mean; a random coefficient's spread is also identified by the correlation
+  it gives the inside alternatives' utilities, within a choice situation and
+  across a decision maker's situations. `rc_dist`, given for the columns of
+  `random_var_cols`, follows the columns kept after such a drop. After a
+  collinearity drop the kept columns' coefficients absorb the dropped one's,
+  so their distributions can differ from those asked for: an `rc_dist` for
+  every column still stops, now with an error that names the kept columns,
+  rather than at the first kernel call ("rc_dist must be a vector of length
+  K_w"). Bounds named by the Cholesky factor (`L_<i><j>`, which number the
+  columns kept) are an error after either drop, where they could bind
+  another coefficient. `covariate_cols` and `random_var_cols` may no longer
+  name a column twice, as in `prepare_mnl_data()`: collinearity dropped the
+  repeat without a message. A preparation that collinearity leaves with no
+  random coefficient now stops, where the fit stopped later on `K_w`.
 - **Robust and clustered variances no longer form the matrix of every decision
   maker's score** (42 GB for 2 million students with 2,620 parameters, held
   twice while it was weighted). The robust meat of `vcov(type = "robust")` and

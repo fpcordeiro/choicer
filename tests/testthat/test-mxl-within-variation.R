@@ -134,8 +134,14 @@ test_that("such a covariate is dropped without an outside option, situation by s
     expect_length(res$messages, 0L)
     a <- res$value
     expect_identical(a$dropped_cols, col, label = lab)
+    # The positions in random_var_cols of the columns dropped from it
+    expect_identical(a$random_var_dropped,
+                     if (role == "random_var_cols") {
+                       list(within = 2L, collinear = integer())
+                     }, label = lab)
     b <- prepare_mxl_data(d, "id", "alt", "choice", base$covariate_cols,
                           base$random_var_cols, person_col = person)
+    expect_null(b$random_var_dropped)
     same <- setdiff(names(b), c("dropped_cols", "data_spec"))
     expect_identical(a[same], b[same], label = lab)
     expect_identical(a$data_spec[[role]], cols[[role]], label = lab)
@@ -191,12 +197,17 @@ test_that("the preparation stops when no random coefficient remains", {
     }), "No random coefficient remains")
   expect_match(conditionMessage(w),
                "dropped: age \\(random_var_cols\\), inc \\(random_var_cols\\)\\.")
-  # So does one that collinearity leaves with none (two columns of zeros),
-  # which reached the fit and stopped it on K_w
+  # Two columns of zeros vary within no situation either. With an outside
+  # option that check keeps them, and collinearity leaves none, which reached
+  # the fit and stopped it on K_w
   d$z1 <- 0
   d$z2 <- 0
-  expect_error(suppressMessages(prepare_mxl_data(d, "id", "alt", "choice", "x",
+  expect_error(suppressWarnings(prepare_mxl_data(d, "id", "alt", "choice", "x",
                                                  c("z1", "z2"))),
+               "No random coefficient remains")
+  expect_error(suppressMessages(prepare_mxl_data(d, "id", "alt", "choice", "x",
+                                                 c("z1", "z2"),
+                                                 include_outside_option = TRUE)),
                "No random coefficient remains")
   # Every fixed coefficient may go: a mixed logit needs none, and the
   # preparation is the one without fixed coefficients
@@ -251,6 +262,25 @@ test_that("bounds named by the Cholesky factor stop after a random coefficient's
   # bound binds
   f2 <- fit(c("w1", "w2"), lower = c(L_22 = 0))
   expect_gte(coef(f2)[["L_22"]], 0)
+  # The preparation's record of its drops decides, by position, not W's
+  # names: without them, a W with nothing dropped keeps its named bounds, one
+  # with a drop does not, and rc_dist still follows the kept columns
+  a <- prepare_mxl_data(d, "id", "alt", "choice", "x", "w1")
+  colnames(a$W) <- NULL
+  f3 <- wv_collect(run_mxlogit(input_data = a,
+                               eta_draws = get_halton_normals(20L, a$N, 1L),
+                               lower = c(L_11 = 0)))$value
+  expect_gte(coef(f3)[["L_11"]], 0)
+  a <- suppressWarnings(prepare_mxl_data(d, "id", "alt", "choice", "x",
+                                         c("age", "w1", "w2")))
+  colnames(a$W) <- NULL
+  draws <- get_halton_normals(20L, a$N, 2L)
+  expect_error(run_mxlogit(input_data = a, eta_draws = draws,
+                           upper = c(L_22 = 0)),
+               "dropped age from `random_var_cols`, so L_<i><j> number the columns kept \\(w1, w2\\)")
+  f4 <- wv_collect(run_mxlogit(input_data = a, eta_draws = draws,
+                               rc_dist = c(0L, 1L, 0L)))$value
+  expect_identical(f4$rc_dist, c(1L, 0L))
 })
 
 test_that("with an outside option and one alternative per situation there is no message", {
@@ -323,10 +353,12 @@ test_that("with an outside option such a covariate is estimated", {
   }
 })
 
-test_that("rc_dist follows the kept columns after a collinearity drop", {
-  # A random coefficient's column dropped for collinearity used to leave an
-  # rc_dist given for random_var_cols one entry too long, which the first
-  # kernel call refused; in both workflows it now follows the kept columns
+test_that("after a collinearity drop rc_dist takes one entry per kept column", {
+  # w2 = 2 * w: the coefficient on w absorbs w2's, so an rc_dist for both
+  # columns (a log-normal draw plus twice a normal one) asks for a
+  # coefficient that neither distribution gives. It stops, as it did at the
+  # first kernel call, now naming the kept columns, in both workflows. One
+  # entry per kept column fits the model without w2, as does the default.
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
   d <- wv_data(95L, N = 100L)
@@ -337,18 +369,91 @@ test_that("rc_dist follows the kept columns after a collinearity drop", {
       covariate_cols = "x", random_var_cols = rv, rc_dist = rc_dist,
       S = 20L))$value
   }
-  f1 <- fit(c("w", "w2"), c(1L, 0L))
+  stops <- "dropped w2 as collinear with the others.*one entry per column kept \\(w\\)"
+  expect_error(suppressMessages(fit(c("w", "w2"), c(1L, 0L))), stops)
+  f1 <- fit(c("w", "w2"), 1L)
   f0 <- fit("w", 1L)
   expect_identical(colnames(f1$data$W), "w")
   expect_identical(f1$rc_dist, 1L)
   expect_identical(coef(f1), coef(f0))
   expect_identical(f1$se, f0$se)
+  expect_identical(coef(fit(c("w", "w2"), NULL)), coef(fit("w", NULL)))
   a <- suppressMessages(prepare_mxl_data(d, "id", "alt", "choice", "x",
                                          c("w", "w2")))
-  f2 <- wv_collect(run_mxlogit(input_data = a,
-                               eta_draws = get_halton_normals(20L, 100L, 1L),
-                               rc_dist = c(1L, 0L)))$value
-  expect_identical(f2$rc_dist, 1L)
+  expect_identical(a$random_var_dropped,
+                   list(within = integer(), collinear = 2L))
+  draws <- get_halton_normals(20L, 100L, 1L)
+  expect_error(run_mxlogit(input_data = a, eta_draws = draws,
+                           rc_dist = c(1L, 0L)), stops)
+  f2 <- wv_collect(run_mxlogit(input_data = a, eta_draws = draws,
+                               rc_dist = 1L))$value
   expect_identical(coef(f2), coef(f0))
   expect_identical(f2$se, f0$se)
+})
+
+test_that("such columns are dropped before collinear ones are looked for", {
+  # A task's start time (one value per task, a timestamp) and its end: at
+  # their scale the QR finds the two collinear and drops the later column.
+  # The start goes first, so the end is kept in either order, next to another
+  # random coefficient too.
+  d <- wv_data(96L)
+  d$start <- 1.6e9 + d$id
+  d$end <- d$start + stats::runif(nrow(d), 0, 10)
+  qr_kept <- function(cols) {
+    colnames(suppressMessages(check_collinearity(as.matrix(d[cols])))$mat)
+  }
+  expect_identical(qr_kept(c("start", "end")), "start")
+  expect_identical(qr_kept(c("end", "start")), "end")
+  for (rv in list(c("start", "end"), c("end", "start"), c("w", "start", "end"))) {
+    lab <- paste(rv, collapse = ", ")
+    res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice", "x", rv))
+    expect_identical(colnames(res$value$W), setdiff(rv, "start"), label = lab)
+    expect_identical(res$value$dropped_cols, "start", label = lab)
+    expect_length(wv_unidentified(res), 1L)
+    expect_length(res$messages, 0L)  # nothing collinear is left
+    expect_identical(res$value$random_var_dropped,
+                     list(within = match("start", rv), collinear = integer()),
+                     label = lab)
+  }
+  # With an outside option the check comes after the QR, so that its message
+  # names only columns kept
+  d$zero <- 0
+  res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice",
+                                     c("x", "zero", "age"), "w",
+                                     include_outside_option = TRUE))
+  expect_identical(colnames(res$value$X), c("x", "age"))
+  expect_identical(res$value$dropped_cols, "zero")
+  expect_match(res$messages, "dropped due to collinearity: zero", all = FALSE)
+  kept <- grep("kept:", res$messages, value = TRUE)
+  expect_length(kept, 1L)
+  expect_match(kept, "kept: age \\(covariate_cols\\)\\. ")
+})
+
+test_that("a column named twice in one list is an error", {
+  # Collinearity used to drop the repeat without a message, and rc_dist and
+  # the bounds named by the Cholesky factor could not say which was meant. A
+  # column may be in both lists: a fixed mean and a random deviation from it.
+  d <- wv_data(97L)
+  d$z <- stats::rnorm(nrow(d))
+  expect_error(prepare_mxl_data(d, "id", "alt", "choice", "x", c("w", "w", "z")),
+               "`random_var_cols` names a column more than once: w\\.")
+  expect_error(prepare_mxl_data(d, "id", "alt", "choice", c("x", "z", "x"), "w"),
+               "`covariate_cols` names a column more than once: x\\.")
+  a <- prepare_mxl_data(d, "id", "alt", "choice", c("x", "w"), "w")
+  expect_identical(colnames(a$X), c("x", "w"))
+  expect_identical(colnames(a$W), "w")
+})
+
+test_that("the outside-option message qualifies what identifies a random coefficient", {
+  # With constants a covariate's variation between situations identifies a
+  # fixed coefficient or a random coefficient's mean only, while a random
+  # coefficient's spread also shows in the correlation of the inside
+  # alternatives' utilities
+  d <- wv_data(98L, outside = TRUE)
+  res <- wv_collect(prepare_mxl_data(d, "id", "alt", "choice", "x",
+                                     c("w", "age"),
+                                     include_outside_option = TRUE))
+  expect_match(res$messages,
+               "identifies a fixed coefficient or a random coefficient's mean; a random coefficient's spread is also identified",
+               fixed = TRUE)
 })
