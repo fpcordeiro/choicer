@@ -2003,6 +2003,51 @@ design_column_step <- function(M) {
     .Call(`_choicer_design_column_step`, M)
 }
 
+#' Whether each column of a design varies within some choice situation
+#'
+#' A prepared design's rows are its choice situations' alternatives,
+#' situation by situation: the first `M[1]` rows are the first situation's,
+#' the next `M[2]` the second's, and so on. Column `k` varies within a
+#' situation when one of the situation's rows holds another value than its
+#' first row (`!=`: -0 and 0 are one value, and NaN differs from every
+#' value); a column that varies within no situation adds the same amount to
+#' every alternative's utility in each of them. Each column is read in
+#' place, a situation at a time, until the first situation within which it
+#' varies, so a column that varies is usually decided in its first rows and
+#' one that does not is read once; nothing of the design's size is
+#' allocated, where comparing a column with its situations' first rows in R
+#' would allocate three vectors of its length.
+#'
+#' @param X A double matrix whose rows are the situations' alternatives.
+#' @param M An integer vector of the situations' sizes, summing to
+#'   `nrow(X)`.
+#' @returns A logical vector, one element per column of `X`: `TRUE` where
+#'   the column varies within at least one situation.
+#' @noRd
+design_varies_within <- function(X, M) {
+    .Call(`_choicer_design_varies_within`, X, M)
+}
+
+#' Rows of a design less their choice situations' first rows
+#'
+#' `X[from:to, ] - X[first[from:to], ]`, written column by column in one
+#' allocation, where R would allocate the rows, their situations' first rows
+#' and the difference. `remove_nullspace_cols()` judges a design without an
+#' outside option by this variation within choice situations, whole or by
+#' row chunks (`.qr_rank_pivot()`), whose first rows may lie in an earlier
+#' chunk: they are read from `X`.
+#'
+#' @param X A double matrix.
+#' @param from,to The first and last row of the block (1-based).
+#' @param first A double vector, one element per row of `X`: the row
+#'   (1-based) of its situation's first row.
+#' @returns A double matrix of `to - from + 1` rows and the columns of `X`,
+#'   without names.
+#' @noRd
+design_rows_less_first <- function(X, from, to, first) {
+    .Call(`_choicer_design_rows_less_first`, X, from, to, first)
+}
+
 #' Query choicer OpenMP thread settings
 #'
 #' @return A list with OpenMP availability, active/max thread settings, CPU

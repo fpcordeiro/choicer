@@ -87,8 +87,18 @@ reproduce the estimation draws.}
 situation without \code{person_col} (convenience workflow only). Default
 100.}
 
-\item{rc_dist}{Integer vector indicating distribution of random coefficients
-(0 = normal, 1 = log-normal). Default: all normal.}
+\item{rc_dist}{Integer vector indicating the distribution of each random
+coefficient (0 = normal, 1 = log-normal), one entry per column of
+\code{random_var_cols}. Where the preparation drops columns that vary
+within no choice situation (without an outside option), the entries
+follow the kept columns: those columns cancel from the likelihood. Where
+it drops a column as collinear with the others, their coefficients absorb
+its coefficient, so their distributions could differ from those asked
+for; an entry for every column of \code{random_var_cols} is then an
+error, and \code{rc_dist} takes one entry per column kept. One entry per
+column of \code{input_data$W} is read as it is, as is an
+\code{input_data} whose \code{W} no longer has the columns the
+preparation kept. Default: all normal.}
 
 \item{rc_mean}{Logical indicating whether to estimate means for random
 coefficients.}
@@ -156,7 +166,13 @@ names (\eqn{\beta} block: column names of \code{X};
 Cholesky block: \code{L_<i><j>} for \eqn{i \ge j}; ASC block:
 \code{ASC_<level>}). Unlisted parameters default to \eqn{\pm\infty}.
 This is the recommended form for typical use, e.g.
-\code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.}
+\code{lower = c(L_11 = -5, L_22 = -5)} to clip Cholesky diagonals.
+\code{L_<i><j>} number the random coefficients the fit keeps, so
+where the preparation drops a column of \code{random_var_cols}
+(collinear, or varying within no choice situation) bounds named
+by them are an error. An \code{input_data} built by hand, or
+whose \code{W} gained or lost columns after the preparation, is
+taken as it is.}
 }}
 
 \item{optimizer}{Optimizer to use: \code{"nloptr"} (default), \code{"optim"},
@@ -816,6 +832,61 @@ do not hold, and \code{predict(type = "shares")} and \code{\link{blp}}
 reproduce the targets (as shares of the whole sample,
 \code{fit$share_targets$engine}) and the constants only on a
 cross-section.
+}
+
+\section{Covariates that vary within no choice situation}{
+
+A covariate with one value on all of a choice situation's alternatives, in
+every situation (a decision maker's age, say, entered on its own), adds the
+same amount to every alternative's utility within each situation. Without
+an outside option it cancels from every utility difference, so the
+likelihood does not depend on its coefficient: neither a fixed coefficient
+nor a random coefficient's mean and its row of the Cholesky factor is
+identified. The preparation drops such columns of \code{covariate_cols} and
+\code{random_var_cols} with a warning that names them (class
+\code{choicer_unidentified_covariates}), and stops when no random coefficient
+remains; \code{prepare_mxl_data()} lists them in \code{dropped_cols}. It compares
+each choice situation's alternatives on their own, so in a panel a
+covariate that changes between a decision maker's situations but within
+none of them is dropped too. The comparison is exact and takes each column
+alone: a covariate whose values differ across a situation's alternatives
+only by rounding is not found, and leaves the information nearly
+singular. Such a characteristic can still shift choices through its
+interaction with an alternative's attribute or constant. Dropping a random
+coefficient's column moves the random coefficients after it to other
+dimensions of the Halton sequence, so their estimates differ by simulation
+error from those of a fit that kept it.
+
+These columns are dropped first. The check for collinear columns then
+judges the others by their variation within choice situations (each row
+less its situation's first row), the only variation that identifies them
+without an outside option, and says so in its message. A combination of
+columns that varies within no situation (\code{x} and \code{x + age} differ by
+\code{age}) is collinear there, so one of its columns is dropped. On raw levels
+that check would keep both, and it could drop a column that identifies a
+coefficient: a task's end time looks collinear at its scale with the
+task's start time (a timestamp, one value per task) or with another end
+time. A set of dummies for every alternative, which sums to one in each
+row, loses one of them. With an outside option the check takes the
+columns as they are.
+
+With an outside option such a covariate moves the inside alternatives
+against the outside option and is kept, with a message (none where no
+situation has two alternatives: there every covariate is such a
+covariate). With constants (\code{use_asc = TRUE} in \code{run_mxlogit()}), only its
+variation between choice situations identifies a fixed coefficient or a
+random coefficient's mean: a covariate with one value over the whole
+sample is then collinear with the constants. A random coefficient's spread
+is identified otherwise too. Its draw moves every inside alternative of a
+situation alike, which correlates their utilities within the situation
+and, in a panel, across a decision maker's situations: with one value over
+the whole sample, it is a random intercept for the inside alternatives.
+
+A design built or edited by hand and passed as \code{input_data} is not
+checked: without an outside option, the Hessian's rows for such a
+covariate are zero there, the information is singular, and every standard
+error taken from the Hessian (\code{se_method} \code{"hessian"}, \code{"sandwich"} and
+\code{"cluster"}) is \code{NA}.
 }
 
 \section{Column names}{

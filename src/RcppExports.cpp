@@ -1407,6 +1407,30 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// design_varies_within
+SEXP design_varies_within(SEXP X, SEXP M);
+RcppExport SEXP _choicer_design_varies_within(SEXP XSEXP, SEXP MSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type X(XSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type M(MSEXP);
+    rcpp_result_gen = Rcpp::wrap(design_varies_within(X, M));
+    return rcpp_result_gen;
+END_RCPP
+}
+// design_rows_less_first
+SEXP design_rows_less_first(SEXP X, double from, double to, SEXP first);
+RcppExport SEXP _choicer_design_rows_less_first(SEXP XSEXP, SEXP fromSEXP, SEXP toSEXP, SEXP firstSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< SEXP >::type X(XSEXP);
+    Rcpp::traits::input_parameter< double >::type from(fromSEXP);
+    Rcpp::traits::input_parameter< double >::type to(toSEXP);
+    Rcpp::traits::input_parameter< SEXP >::type first(firstSEXP);
+    rcpp_result_gen = Rcpp::wrap(design_rows_less_first(X, from, to, first));
+    return rcpp_result_gen;
+END_RCPP
+}
 // thread_info
 Rcpp::List thread_info();
 RcppExport SEXP _choicer_thread_info() {
@@ -1537,6 +1561,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_choicer_spd_solve", (DL_FUNC) &_choicer_spd_solve, 4},
     {"_choicer_prep_gather_design", (DL_FUNC) &_choicer_prep_gather_design, 3},
     {"_choicer_design_column_step", (DL_FUNC) &_choicer_design_column_step, 1},
+    {"_choicer_design_varies_within", (DL_FUNC) &_choicer_design_varies_within, 2},
+    {"_choicer_design_rows_less_first", (DL_FUNC) &_choicer_design_rows_less_first, 4},
     {"_choicer_thread_info", (DL_FUNC) &_choicer_thread_info, 0},
     {"_choicer_get_num_threads", (DL_FUNC) &_choicer_get_num_threads, 0},
     {"_choicer_set_num_threads", (DL_FUNC) &_choicer_set_num_threads, 1},

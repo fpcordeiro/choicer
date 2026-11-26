@@ -649,7 +649,9 @@ test_that("an unidentified covariate leaves Hessian-based standard errors NA on 
   # difference. With the first draw 0 every decision maker lies in Identity
   # D's range; with 1e-45 that draw's factors fall below its floor and every
   # decision maker takes the direct formula. The fits are the same, and so is
-  # the singular information.
+  # the singular information. prepare_mxl_data() drops such a covariate
+  # (test-mxl-within-variation.R), so the design is edited after it, as a
+  # design built by hand can be.
   on.exit(set_omp_threads(2L), add = TRUE)
   set_omp_threads(1L)
   set.seed(619)
@@ -658,7 +660,9 @@ test_that("an unidentified covariate leaves Hessian-based standard errors NA on 
   d <- data.frame(id = rep(seq_len(n), each = 4L), alt = alt,
                   chosen = as.integer(alt == rep(sample(4L, n, replace = TRUE), each = 4L)),
                   age = rep(stats::runif(n, 20, 80), each = 4L), w = stats::rnorm(4L * n))
-  a <- prepare_mxl_data(d, "id", "alt", "chosen", "age", "w")
+  a <- prepare_mxl_data(transform(d, age = seq_along(age)), "id", "alt",
+                        "chosen", "age", "w")
+  a$X[, "age"] <- d$age  # d's rows are in prepared order
   draws <- get_halton_normals(10L, n, 1L)
   fits <- lapply(c(0, 1e-45), function(first) {
     draws[1L, 1L, ] <- first

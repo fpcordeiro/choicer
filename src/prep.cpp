@@ -1,6 +1,8 @@
 // Data-preparation helpers behind prepare_mnl_data(), prepare_mxl_data() and
 // prepare_mnp_data() (prepare_nl_data() calls the first) and the hierarchical
-// preparations, and the column steps behind run_mxlogit()'s default start.
+// preparations, the check of the mixed logit's covariates for variation within
+// choice situations and the rows within them that its collinearity check
+// factors, and the column steps behind run_mxlogit()'s default start.
 #include <Rcpp.h>
 #include <algorithm>
 #include <climits>
@@ -269,6 +271,130 @@ SEXP design_column_step(SEXP M) {
   double* s = REAL(out);
   const double* x = REAL_RO(M);
   for (R_xlen_t k = 0; k < K; ++k) s[k] = column_step(x + k * n, n);
+  UNPROTECT(1);
+  return out;
+}
+
+//' Whether each column of a design varies within some choice situation
+//'
+//' A prepared design's rows are its choice situations' alternatives,
+//' situation by situation: the first `M[1]` rows are the first situation's,
+//' the next `M[2]` the second's, and so on. Column `k` varies within a
+//' situation when one of the situation's rows holds another value than its
+//' first row (`!=`: -0 and 0 are one value, and NaN differs from every
+//' value); a column that varies within no situation adds the same amount to
+//' every alternative's utility in each of them. Each column is read in
+//' place, a situation at a time, until the first situation within which it
+//' varies, so a column that varies is usually decided in its first rows and
+//' one that does not is read once; nothing of the design's size is
+//' allocated, where comparing a column with its situations' first rows in R
+//' would allocate three vectors of its length.
+//'
+//' @param X A double matrix whose rows are the situations' alternatives.
+//' @param M An integer vector of the situations' sizes, summing to
+//'   `nrow(X)`.
+//' @returns A logical vector, one element per column of `X`: `TRUE` where
+//'   the column varies within at least one situation.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+SEXP design_varies_within(SEXP X, SEXP M) {
+  if (TYPEOF(X) != REALSXP || !Rf_isMatrix(X)) {
+    Rcpp::stop("`X` must be a double matrix");
+  }
+  if (TYPEOF(M) != INTSXP) {
+    Rcpp::stop("`M` must be an integer vector");
+  }
+  const R_xlen_t n = Rf_nrows(X);
+  const R_xlen_t K = Rf_ncols(X);
+  const R_xlen_t N = XLENGTH(M);
+  const int* m = INTEGER_RO(M);
+  R_xlen_t rows = 0;
+  for (R_xlen_t i = 0; i < N; ++i) {
+    if (m[i] == NA_INTEGER || m[i] < 0) {
+      Rcpp::stop("`M` must hold the situations' sizes");
+    }
+    rows += m[i];
+  }
+  if (rows != n) {
+    Rcpp::stop("`M` must sum to the rows of `X`");
+  }
+  SEXP out = PROTECT(Rf_allocVector(LGLSXP, K));
+  int* varies = LOGICAL(out);
+  const double* x = REAL_RO(X);
+  for (R_xlen_t k = 0; k < K; ++k) {
+    const double* col = x + k * n;
+    bool found = false;
+    R_xlen_t first = 0;  // the situation's first row
+    for (R_xlen_t i = 0; i < N && !found; ++i) {
+      const R_xlen_t end = first + m[i];
+      for (R_xlen_t r = first + 1; r < end; ++r) {
+        if (col[r] != col[first]) {
+          found = true;
+          break;
+        }
+      }
+      first = end;
+    }
+    varies[k] = found;
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+//' Rows of a design less their choice situations' first rows
+//'
+//' `X[from:to, ] - X[first[from:to], ]`, written column by column in one
+//' allocation, where R would allocate the rows, their situations' first rows
+//' and the difference. `remove_nullspace_cols()` judges a design without an
+//' outside option by this variation within choice situations, whole or by
+//' row chunks (`.qr_rank_pivot()`), whose first rows may lie in an earlier
+//' chunk: they are read from `X`.
+//'
+//' @param X A double matrix.
+//' @param from,to The first and last row of the block (1-based).
+//' @param first A double vector, one element per row of `X`: the row
+//'   (1-based) of its situation's first row.
+//' @returns A double matrix of `to - from + 1` rows and the columns of `X`,
+//'   without names.
+//' @noRd
+// [[Rcpp::export(rng = false)]]
+SEXP design_rows_less_first(SEXP X, double from, double to, SEXP first) {
+  if (TYPEOF(X) != REALSXP || !Rf_isMatrix(X)) {
+    Rcpp::stop("`X` must be a double matrix");
+  }
+  const R_xlen_t n = Rf_nrows(X);
+  const R_xlen_t K = Rf_ncols(X);
+  if (TYPEOF(first) != REALSXP || XLENGTH(first) != n) {
+    Rcpp::stop("`first` must be a double vector with one element per row");
+  }
+  if (!(from >= 1 && to <= static_cast<double>(n) && from <= to) ||
+      from != std::floor(from) || to != std::floor(to)) {
+    Rcpp::stop("`from` and `to` must be rows of `X`");
+  }
+  const R_xlen_t a = static_cast<R_xlen_t>(from) - 1;
+  const R_xlen_t b = static_cast<R_xlen_t>(to);
+  const double* f = REAL_RO(first);
+  for (R_xlen_t i = a; i < b; ++i) {
+    if (!(f[i] >= 1 && f[i] <= static_cast<double>(n)) ||
+        f[i] != std::floor(f[i])) {
+      Rcpp::stop("`first` must hold rows of `X`");
+    }
+  }
+  const R_xlen_t m = b - a;
+  if (m > INT_MAX || K > INT_MAX) {
+    Rcpp::stop("the block is too large for a matrix");
+  }
+  SEXP out = PROTECT(Rf_allocMatrix(REALSXP, static_cast<int>(m),
+                                    static_cast<int>(K)));
+  double* o = REAL(out);
+  const double* x = REAL_RO(X);
+  for (R_xlen_t k = 0; k < K; ++k) {
+    const double* col = x + k * n;
+    double* oc = o + k * m;
+    for (R_xlen_t i = a; i < b; ++i) {
+      oc[i - a] = col[i] - col[static_cast<R_xlen_t>(f[i]) - 1];
+    }
+  }
   UNPROTECT(1);
   return out;
 }
